@@ -5,6 +5,7 @@
 //! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
 use super::{Native, NativeCall, Vm, VmError, lossy};
+use crate::host::FileStat;
 use crate::text::{atof, expand_escape, fold, is_match, match_cost, to_f32};
 use crate::vars::Entry;
 
@@ -314,6 +315,8 @@ impl Vm {
         if !self.check_write_path(file)? {
             let line = self.messages().invalid_write_name(&shown);
             self.error(line);
+        } else if !self.admit_export(file, contents.len() as u64, append) {
+            self.refuse_write_quota(&shown);
         } else if self.export_to_host(file, contents, append) {
             return Ok(());
         } else {
@@ -343,6 +346,10 @@ impl Vm {
             return Ok(false);
         }
         self.objects.add_work(contents.len() as u64);
+        if !self.admit_export(file, contents.len() as u64, append) {
+            self.refuse_write_quota(&shown);
+            return Ok(false);
+        }
         if self.export_to_host(file, contents, append) {
             return Ok(true);
         }
@@ -351,13 +358,30 @@ impl Vm {
         Ok(false)
     }
 
+    /// Whether the write quota takes an `export` of `bytes` to `file` (after what the file holds, for an append).
+    fn admit_export(&mut self, file: &[u8], bytes: u64, append: bool) -> bool {
+        // Asked without a look-up: the quota must not change what the resource manager lists.
+        let mut start = 0;
+        if append {
+            let mark = self.host_work_mark();
+            if let FileStat::Found { len } = self.files.stat_without_look_up(file) {
+                start = len;
+            }
+            self.charge_host_work(mark);
+        }
+        self.admit_write(start.saturating_add(bytes), bytes, 1)
+    }
+
     /// The write of an `export`, if the file can be written: not while another object has it open, and the
     /// host must take it. Like every `openFileForWrite` it tells the file rules the file was opened for writing.
     /// Out of line: `write_export` is live while a refusal's BackTrace runs.
     #[inline(never)]
     fn export_to_host(&mut self, file: &[u8], contents: &[u8], append: bool) -> bool {
         self.note_path(file);
-        if self.file_objects.is_locked(file) || !self.host_write(file, contents, append) {
+        if self.file_objects.is_locked(file) {
+            return false;
+        }
+        if !self.host_write(file, contents, append) {
             return false;
         }
         self.policies.files.zero(file);

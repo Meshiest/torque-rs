@@ -266,3 +266,26 @@ fn an_unknown_package_is_reported_in_the_runtimes_own_words() {
         )]
     );
 }
+
+#[test]
+fn removing_a_dead_tag_twice_keeps_counts() {
+    let mut vm = Vm::new();
+    vm.set_tag_rules(TagRules {
+        ignore_dead_removal: false,
+        ..TagRules::default()
+    });
+    let tag = text(&mut vm, "addTaggedString", &["hello"]);
+    text(&mut vm, "removeTaggedString", &[&tag]);
+    // The rule only prints the line: the slot stays free, so the next string takes it and the one after another.
+    text(&mut vm, "removeTaggedString", &[&tag]);
+    assert!(
+        lines(&mut vm)
+            .iter()
+            .any(|(_, l)| l.contains("Ref count is already 0"))
+    );
+    let a = text(&mut vm, "addTaggedString", &["a"]);
+    let b = text(&mut vm, "addTaggedString", &["b"]);
+    assert_eq!(a, tag);
+    assert_ne!(a, b);
+    assert_eq!(text(&mut vm, "getTaggedString", &[&a]), "a");
+}

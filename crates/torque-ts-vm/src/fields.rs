@@ -97,6 +97,18 @@ pub enum Value {
     FloatList(Rc<[f32]>),
 }
 
+impl Value {
+    /// The bytes the value keeps besides itself (a text's, a list's), which an object's memory account counts.
+    pub fn held_bytes(&self) -> usize {
+        match self {
+            Value::Text(text) => text.len(),
+            Value::IntList(list) => size_of_val(&**list),
+            Value::FloatList(list) => size_of_val(&**list),
+            _ => 0,
+        }
+    }
+}
+
 /// The identity matrix, a fresh object's transform.
 pub const IDENTITY: Mat4 = [
     [1.0, 0.0, 0.0, 0.0],

@@ -324,7 +324,6 @@ impl Plugin for NetHostPlugin {
                     transport: Rc::clone(wiring.transport()),
                     game: TorqueNet::default(),
                     engine: Rc::clone(wiring.state()),
-                    step_limit: None,
                     clock: NetClock::Sim,
                     ghosts: TgeGhostGame,
                     container: Rc::clone(&game.container),

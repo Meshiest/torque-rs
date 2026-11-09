@@ -227,7 +227,7 @@ impl std::fmt::Debug for ResourceRules {
 /// Whether one component of a path is acceptable to a host that maps names onto a real folder: not empty,
 /// not `.` or `..`, no `/`, `\`, `:`, NUL or other control character, none of the characters Windows
 /// forbids in a name (`*?"<>|`), no trailing dot or space (Windows drops them, so `x.` and `x` are one
-/// file), and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9` and `LPT1`-`LPT9`, the
+/// file), and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9` and `LPT0`-`LPT9`, the
 /// latter two also with the superscript digits U+00B9, U+00B2, U+00B3, `CONIN$` and `CONOUT$`; in any case,
 /// with or without an extension), which would open the device instead of a file.
 pub fn sanitize_component(part: &[u8]) -> bool {
@@ -248,13 +248,13 @@ pub fn sanitize_component(part: &[u8]) -> bool {
     let stem = fold(stem);
     let stem = stem.trim_ascii_end();
     const DEVICES: [&[u8]; 6] = [b"con", b"prn", b"aux", b"nul", b"conin$", b"conout$"];
-    // COM1-COM9 and LPT1-LPT9, and COM and LPT with the superscript digits U+00B9, U+00B2 and U+00B3 (UTF-8
-    // C2 B9, C2 B2, C2 B3), which Windows also treats as ports.
+    // COM0-COM9 and LPT0-LPT9 (Microsoft's naming rules list the zeros too), and COM and LPT with the superscript
+    // digits U+00B9, U+00B2 and U+00B3 (UTF-8 C2 B9, C2 B2, C2 B3), which Windows also treats as ports.
     let numbered = |prefix: &[u8]| {
         stem.starts_with(prefix)
             && matches!(
                 stem.get(3..),
-                Some([b'1'..=b'9'] | [0xc2, 0xb9 | 0xb2 | 0xb3])
+                Some([b'0'..=b'9'] | [0xc2, 0xb9 | 0xb2 | 0xb3])
             )
     };
     !(DEVICES.contains(&stem) || numbered(b"com") || numbered(b"lpt"))

@@ -48,6 +48,10 @@ pub struct StringStack {
     frame_offsets: Vec<usize>,
     /// Bytes written (and call arguments collected) since the last [`take_written`](Self::take_written).
     written: u64,
+    /// Bytes [`string`](Self::string) scanned since the last [`take_written`](Self::take_written): an operation that reads
+    /// the current string without popping it (a save, a conversion) can repeat over one long string, so each read costs
+    /// its bytes.
+    scanned: std::cell::Cell<u64>,
     /// A write was cut at [`MAX_STRING_BYTES`] since the last [`take_overflow`](Self::take_overflow).
     overflowed: bool,
     /// Where `argv[1]` and `argv[2]` of the argument array point, which [`args`](Self::args) sets as `getArgcArgv`
@@ -77,6 +81,7 @@ impl StringStack {
             start_offsets: Vec::new(),
             frame_offsets: Vec::new(),
             written: 0,
+            scanned: std::cell::Cell::new(0),
             overflowed: false,
             arg_at: [None; 2],
             spare_args: Vec::new(),
@@ -121,9 +126,9 @@ impl StringStack {
         true
     }
 
-    /// Bytes written since the last call (the VM charges them to the step budget).
+    /// Bytes written and scanned since the last call (the VM charges them to the step budget).
     pub fn take_written(&mut self) -> u64 {
-        std::mem::take(&mut self.written)
+        std::mem::take(&mut self.written).saturating_add(self.scanned.take())
     }
 
     /// Whether a write was cut at [`MAX_STRING_BYTES`] since the last call.
@@ -178,7 +183,10 @@ impl StringStack {
 
     /// The current slot, up to its terminator.
     pub fn string(&self) -> &[u8] {
-        let end = self.start + self.strlen_at(self.start);
+        let len = self.strlen_at(self.start);
+        self.scanned
+            .set(self.scanned.get().saturating_add(len as u64));
+        let end = self.start + len;
         &self.buffer[self.start..end]
     }
 

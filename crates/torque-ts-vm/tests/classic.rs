@@ -8,6 +8,7 @@ use torque_ts_compiler::classic::{Profile, compile};
 use torque_ts_vm::code::CodeBlock;
 use torque_ts_vm::exec::classic::{self, ClassicExecutor, TGE14_DIALECT};
 use torque_ts_vm::host::Purpose;
+use torque_ts_vm::policy::Limits;
 use torque_ts_vm::vm::{Level, Vm, VmError};
 
 fn classic_vm() -> Vm {
@@ -305,4 +306,47 @@ fn exec_compiles_a_clean_source_once_and_a_broken_one_twice() {
         1
     );
     assert!(lines.contains(&"clean".to_string()) && lines.contains(&"before".to_string()));
+}
+
+#[test]
+fn chained_assignments_are_charged_by_their_bytes() {
+    // 400 saves of one 64 KiB value a round: 400,000 steps of copying a round, so a 2M limit stops the loop within a few
+    // rounds (one step a save would let some 5,000 rounds copy 128 GB).
+    let chain: String = (0..400).map(|i| format!("$g{i} = ")).collect();
+    let src = format!(
+        "function f() {{ %s = \"x\"; for (%i = 0; %i < 16; %i++) %s = %s @ %s;          while (1) {{ {chain}%s; $n++; }} }} f();"
+    );
+    let mut vm = classic_vm();
+    vm.set_step_limit(Some(2_000_000));
+    assert_eq!(run_in(&mut vm, &src), Err(VmError::StepLimit));
+    let rounds: u32 = String::from_utf8(vm.global("$n").unwrap_or_default())
+        .unwrap()
+        .parse()
+        .unwrap_or(0);
+    assert!(rounds <= 5, "{rounds}");
+    assert_eq!(vm.global("$g399").map(|g| g.len()), Some(1 << 16));
+}
+
+#[test]
+fn global_and_local_growth_stops_at_the_memory_limit() {
+    const LIMIT: u64 = 8 << 20;
+    let mut vm = classic_vm();
+    vm.set_limits(Limits {
+        max_script_bytes: LIMIT,
+        ..Default::default()
+    });
+    vm.set_step_limit(Some(50_000_000));
+    let src = "function big() { %s = \"x\"; for (%i = 0; %i < 20; %i++) %s = %s @ %s; return %s; }\n\
+               function locals() { %b = big(); for (%i = 0; %i < 50; %i++) %l[%i] = %b; }";
+    run_in(&mut vm, src).unwrap();
+    assert_eq!(run_in(&mut vm, "locals();"), Err(VmError::MemoryLimit));
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
+    assert_eq!(
+        run_in(
+            &mut vm,
+            "%b = big(); for (%i = 0; %i < 50; %i++) $g[%i] = %b;"
+        ),
+        Err(VmError::MemoryLimit)
+    );
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
 }

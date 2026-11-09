@@ -351,10 +351,10 @@ impl FileObjects {
         true
     }
 
-    /// The length of the path `id` writes, if it is open for writing.
-    pub(crate) fn write_path_len(&self, id: ObjId) -> Option<usize> {
+    /// The path `id` writes and the size its file will have with what it wrote so far, if it is open for writing.
+    pub(crate) fn write_target(&self, id: ObjId) -> Option<(&[u8], u64)> {
         match self.open.get(&id) {
-            Some(Open::Write { path, .. }) => Some(path.len()),
+            Some(Open::Write { path, stream }) => Some((path, stream.pos)),
             _ => None,
         }
     }

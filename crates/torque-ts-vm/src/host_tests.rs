@@ -1,4 +1,4 @@
-use super::{Clock, VirtualClock, pick_name};
+use super::{Clock, VirtualClock, pick_name, sanitize_component};
 
 #[test]
 fn a_virtual_clock_moves_one_millisecond_a_read_and_never_back() {
@@ -40,4 +40,14 @@ fn an_exact_spelling_wins_over_a_case_variant() {
     assert_eq!(pick_name([], "ok.cs"), None);
     // Only ASCII case folds: no other equivalence makes two names one.
     assert_eq!(pick_name(["\u{c9}.cs"], "\u{e9}.cs"), None);
+}
+
+#[test]
+fn every_numbered_port_name_is_a_device() {
+    for name in ["com0", "COM0.cs", "lpt0.txt", "com9", "lpt1", "com\u{b9}"] {
+        assert!(!sanitize_component(name.as_bytes()), "{name}");
+    }
+    for name in ["com", "com10", "lpt", "computer.cs", "lpt0x"] {
+        assert!(sanitize_component(name.as_bytes()), "{name}");
+    }
 }

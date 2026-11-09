@@ -25,7 +25,7 @@ use torque_server::net::hostevent::HostEvent;
 use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
 use torque_server::net::transport::{MemoryEnd, MemoryTransport, SharedTransport};
 use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use torque_server::server::{FIRST_PASS_MS, RunEnd, Server, TICK_MS};
+use torque_server::server::{FIRST_PASS_MS, RunEnd, STEP_LIMIT, Server, TICK_MS};
 use torque_server::state::{START_GHOST_BITS, ServerState};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
@@ -277,7 +277,6 @@ fn net_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
             transport,
             game: TorqueNet::default(),
             engine: Rc::clone(&state),
-            step_limit: None,
             clock: NetClock::Sim,
             ghosts: TgeGhostGame,
             container,
@@ -355,6 +354,51 @@ fn carry(s: &NetServer, end: &MemoryEnd, client: &mut Client, addr: SocketAddr, 
     if heard && let Some(p) = client.protocol_mut() {
         end.inject(addr, &p.ack_packet(now));
     }
+}
+
+#[test]
+fn a_net_run_keeps_the_servers_step_limit() {
+    let (mut s, shared, end) = net_server();
+    assert_eq!(s.vm.step_limit(), Some(STEP_LIMIT));
+    s.vm.eval(
+        b"new SimGroup(ClientGroup); function spin() { while (1) {} }
+              function GameConnection::onConnect(%c) { $joined++; }",
+    )
+    .unwrap();
+    join(
+        &mut s,
+        &shared,
+        &end,
+        SocketAddr::from(([127, 0, 0, 1], 50_000)),
+    );
+    assert_eq!(
+        s.vm.global("$joined").as_deref(),
+        Some(&b"1"[..]),
+        "the join ran script"
+    );
+    assert_eq!(
+        s.vm.step_limit(),
+        Some(STEP_LIMIT),
+        "the join's runs put it back"
+    );
+    // A smaller limit, so a debug build spins briefly: after a second join's runs, a looping event still stops at it.
+    s.vm.set_step_limit(Some(100_000));
+    join(
+        &mut s,
+        &shared,
+        &end,
+        SocketAddr::from(([127, 0, 0, 1], 50_001)),
+    );
+    assert_eq!(s.vm.step_limit(), Some(100_000));
+    s.vm.eval(b"schedule(0, 0, spin);").unwrap();
+    let until = s.vm.sim_time() + 4 * TICK_MS;
+    s.run(until, |_| false);
+    assert_eq!(s.vm.step_limit(), Some(100_000));
+    assert!(
+        s.vm.steps() >= 100_000,
+        "the event ran to the limit: {}",
+        s.vm.steps()
+    );
 }
 
 #[test]

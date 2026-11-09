@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use common::Rng;
 use torque_ts_bytecode::Dialect;
-use torque_ts_compiler::{Output, Purpose, compile};
+use torque_ts_compiler::{Output, Purpose, classic, compile};
 
 fn t3d() -> Dialect {
     Dialect::torque3d()
@@ -40,9 +40,8 @@ const CORPUS: &[&[u8]] = &[
     include_bytes!("fixtures/corpus/019_misc.cs"),
 ];
 
-/// Compiles `src` both ways, with and without a file name, and checks what any compile must give: a code
-/// only without a syntax error or for `exec`, a syntax error reported with a message, code that
-/// decodes.
+/// Compiles `src` both ways, with and without a file name, in both dialects, and checks what any compile must give: a
+/// code only without a syntax error or for `exec`, a syntax error reported with a message, code that decodes.
 fn hammer(src: &[u8]) {
     for (purpose, file) in [
         (Purpose::Run, Some(&b"t.cs"[..])),
@@ -51,7 +50,32 @@ fn hammer(src: &[u8]) {
     ] {
         let out = compile(src, file, purpose, &t3d());
         sane(&out, purpose, src);
+        classic_sane(&classic_compile(src, file, purpose), src);
     }
+}
+
+fn classic_compile(src: &[u8], file: Option<&[u8]>, purpose: Purpose) -> classic::Output {
+    classic::compile(src, file, purpose, &classic::Profile::tge14())
+}
+
+/// What any compile of the TGE 1.4 grammar and its two-pass code generator must give: an answer that is not the worker's
+/// panic, and a syntax error reported with a message.
+fn classic_sane(out: &classic::Output, src: &[u8]) {
+    let what = || String::from_utf8_lossy(&src[..src.len().min(80)]).into_owned();
+    assert!(
+        !out.diagnostics
+            .iter()
+            .any(|d| d.text == b"the compiler could not run"
+                || d.text.starts_with(b"internal error")),
+        "{}: the classic compiler panicked or could not run: {:?}",
+        what(),
+        common::texts(&out.diagnostics)
+    );
+    assert!(
+        !out.syntax_error || !out.diagnostics.is_empty(),
+        "{}: a classic error without a message",
+        what()
+    );
 }
 
 fn sane(out: &Output, purpose: Purpose, src: &[u8]) {
@@ -312,6 +336,9 @@ fn deep_and_long_inputs_end_cleanly() {
             let out = compile(&src, Some(b"t.cs"), Purpose::Run, &t3d());
             let secs = start.elapsed().as_secs_f64();
             sane(&out, Purpose::Run, &src);
+            let start = Instant::now();
+            classic_sane(&classic_compile(&src, Some(b"t.cs"), Purpose::Run), &src);
+            let secs = secs.max(start.elapsed().as_secs_f64());
             if secs > worst.0 {
                 worst = (secs, open);
             }

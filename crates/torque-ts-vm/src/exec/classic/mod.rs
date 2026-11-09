@@ -603,7 +603,7 @@ impl<'a> Cx<'a> {
         };
         st.cur_var = table.and_then(|table| {
             let slot = if create {
-                Some(table.add_slot_folded(key, name))
+                table.add_slot_folded(key, name)
             } else {
                 table.slot_folded(key)
             }?;

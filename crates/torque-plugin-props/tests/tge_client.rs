@@ -72,7 +72,6 @@ fn game_server() -> (
             transport,
             game: TorqueNet::default(),
             engine: Rc::clone(&state),
-            step_limit: None,
             clock: NetClock::Sim,
             ghosts: TgeGhostGame,
             container: game.container,

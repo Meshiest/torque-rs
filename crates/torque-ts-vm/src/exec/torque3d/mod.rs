@@ -45,6 +45,7 @@ use crate::code::CodeBlock;
 use crate::exec::{
     Executor, RunMark, RunMode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
 };
+use crate::memory::MemoryCharge;
 use crate::ns::{Callable, EntryRef};
 use crate::sim::ObjId;
 use crate::tags::tag_text;
@@ -109,8 +110,16 @@ enum IterVar {
 
 /// What a `foreach` loop walks: the words of a text (`foreach$`) or the members of a set.
 enum IterOver {
-    Words { text: Vec<u8>, at: usize },
-    Set { set: ObjId, index: usize },
+    /// The text, which counts in the memory account while the loop runs.
+    Words {
+        text: Vec<u8>,
+        at: usize,
+        _held: MemoryCharge,
+    },
+    Set {
+        set: ObjId,
+        index: usize,
+    },
 }
 
 struct Iter {
@@ -183,6 +192,19 @@ impl State {
 
     fn pop(&mut self) -> Result<Value, VmError> {
         self.stack.pop().ok_or(VmError::StackUnderflow)
+    }
+
+    /// Counts `bytes` of text copied or scanned against the step budget.
+    fn charge(&mut self, bytes: usize) {
+        self.work = self.work.saturating_add(bytes as u64);
+    }
+
+    /// The top value, its text's bytes charged: for an operation that copies or scans the value it leaves on the stack (a
+    /// save, an `_NP` jump), so that one long string read again and again costs its bytes each time.
+    fn top_charged(&mut self) -> Result<&mut Value, VmError> {
+        let len = self.stack.last().ok_or(VmError::StackUnderflow)?.text_len();
+        self.charge(len);
+        self.top()
     }
 
     fn top(&mut self) -> Result<&mut Value, VmError> {
@@ -404,7 +426,7 @@ impl<'a> Cx<'a> {
         let mark = self.vm.enter_frame(block, call, mode.with_own_frame());
         let mut st = self.st();
         let regs = st.registers.len();
-        st.work = st.work.saturating_add(count as u64);
+        st.charge(count);
         st.registers.resize(regs + count, Value::default());
         let (iters, creation) = (st.iters.len(), st.creation.len());
         st.frames.push(Frame {
@@ -452,6 +474,11 @@ impl<'a> Cx<'a> {
     ) -> Result<usize, VmError> {
         let code = block.words();
         let declared = fetch(code, ip + 8)? as usize;
+        // Each parameter is a register, so a count past the register cap is a broken file; the rounds are charged.
+        if declared > MAX_REGISTERS {
+            return Err(VmError::BadIndex { ip: ip + 8 });
+        }
+        self.st().charge(declared);
         let passed = args.len().saturating_sub(1).min(declared);
         for (i, value) in args.into_iter().skip(1).take(passed).enumerate() {
             let reg = fetch(code, ip + 10 + i)?;
@@ -621,7 +648,7 @@ impl<'a> Cx<'a> {
                 Ok(ip + 2)
             }
             Op::SetCurVarArray | Op::SetCurVarArrayCreate => {
-                let name = self.st().top()?.string().into_owned();
+                let name = self.st().top_charged()?.string().into_owned();
                 self.set_cur_var(&name, op == Op::SetCurVarArrayCreate);
                 Ok(ip)
             }
@@ -743,14 +770,14 @@ impl<'a> Cx<'a> {
             // Both read the value as a float (`JMPIF` too, as Torque3D's does).
             Op::JmpIfF | Op::JmpIf => st.pop()?.float() != 0.0,
             Op::JmpIfNotNp => {
-                let taken = st.top()?.int() == 0;
+                let taken = st.top_charged()?.int() == 0;
                 if !taken {
                     st.pop()?;
                 }
                 taken
             }
             _ => {
-                let taken = st.top()?.int() != 0;
+                let taken = st.top_charged()?.int() != 0;
                 if !taken {
                     st.pop()?;
                 }
@@ -877,7 +904,7 @@ impl<'a> Cx<'a> {
         };
         st.cur_var = table.and_then(|table| {
             let slot = if create {
-                Some(table.add_slot_folded(key, name))
+                table.add_slot_folded(key, name)
             } else {
                 table.slot_folded(key)
             }?;
@@ -921,7 +948,7 @@ impl<'a> Cx<'a> {
     /// float or text. Nothing without a variable.
     #[inline(never)]
     fn save_var(&mut self, op: Op) -> Result<(), VmError> {
-        let value = self.st().top()?.clone();
+        let value = self.st().top_charged()?.clone();
         self.with_var(|e| match op {
             Op::SaveVarUint => e.set_int(value.int() as u32),
             Op::SaveVarFlt => e.set_float(value.float()),
@@ -953,7 +980,7 @@ impl<'a> Cx<'a> {
                     Op::SaveLocalVarFlt => Value::Float(top.float()),
                     _ => Value::Str(top.string().into_owned()),
                 };
-                st.work = st.work.saturating_add(value.text_len() as u64);
+                st.charge(value.text_len());
                 *st.register(reg, ip)? = value;
                 Ok(())
             }
@@ -1412,7 +1439,7 @@ impl<'a> Cx<'a> {
             }
             Op::SetCurFieldArray => {
                 let mut st = self.st();
-                let index = st.top()?.string().into_owned();
+                let index = st.top_charged()?.string().into_owned();
                 st.cur_field_array = index.get(..MAX_FIELD_ARRAY).unwrap_or(&index).to_vec();
             }
             Op::SetCurFieldType => {
@@ -1548,7 +1575,7 @@ impl<'a> Cx<'a> {
     /// act on it. When none is found the text becomes the return variable (a field component reads it).
     #[inline(never)]
     fn set_cur_object(&mut self) -> Result<(), VmError> {
-        let text = self.st().top()?.string().into_owned();
+        let text = self.st().top_charged()?.string().into_owned();
         let found = if text.contains(&b' ') {
             None
         } else {
@@ -1577,7 +1604,7 @@ impl<'a> Cx<'a> {
             FieldTarget::Live(id) => Some(id).filter(|id| self.vm.objects().contains(*id)),
             _ => None,
         };
-        let name = self.st().top()?.string().into_owned();
+        let name = self.st().top_charged()?.string().into_owned();
         let found = match object {
             Some(set) if self.vm.objects().is_set(set) => {
                 self.vm.objects().find_internal(set, &name, recurse)
@@ -1682,9 +1709,7 @@ impl<'a> Cx<'a> {
             let st = &mut *st;
             let mut value = std::mem::take(&mut st.field_value);
             value.clear();
-            st.stack
-                .last()
-                .ok_or(VmError::StackUnderflow)?
+            st.top_charged()?
                 .with_string(|text| value.extend_from_slice(text));
             let array = std::mem::take(&mut st.cur_field_array);
             let frame = st.frame();
@@ -1769,13 +1794,13 @@ impl<'a> Cx<'a> {
                     .register(*reg, 0)
                     .map(|v| v.string().into_owned())
                     .unwrap_or_default();
-                st.work = st.work.saturating_add(text.len() as u64);
+                st.charge(text.len());
                 text
             }
             ComponentSource::Variable => {
                 let text = self.with_var(|e| e.get_string()).unwrap_or_default();
                 let mut st = self.st();
-                st.work = st.work.saturating_add(text.len() as u64);
+                st.charge(text.len());
                 text
             }
             ComponentSource::Text(text) => text.clone(),
@@ -1903,9 +1928,17 @@ impl<'a> Cx<'a> {
                 };
                 let fail = fetch(code, at + if global { 3 } else { 2 })? as usize;
                 *ip = at + if global { 4 } else { 3 };
-                let text = self.st().top()?.string().into_owned();
+                let text = self.st().top_charged()?.string().into_owned();
                 let over = if op == Op::IterBeginStr {
-                    IterOver::Words { text, at: 0 }
+                    let mut held = MemoryCharge::new(self.vm.objects().memory());
+                    if !held.resize(text.len()) {
+                        return Err(VmError::MemoryLimit);
+                    }
+                    IterOver::Words {
+                        text,
+                        at: 0,
+                        _held: held,
+                    }
                 } else {
                     match self.vm.objects().find(&text) {
                         Some(set) if self.vm.objects().is_set(set) => {
@@ -1958,7 +1991,7 @@ impl<'a> Cx<'a> {
                 return Err(VmError::StackUnderflow);
             };
             match &mut iter.over {
-                IterOver::Words { text, at } => {
+                IterOver::Words { text, at, .. } => {
                     let Some(rest) = text.get(*at..).filter(|r| !r.is_empty()) else {
                         return Ok(false);
                     };
@@ -1985,15 +2018,16 @@ impl<'a> Cx<'a> {
         };
         match var {
             Ok(reg) => {
-                st.work = st.work.saturating_add(next.text_len() as u64);
+                st.charge(next.text_len());
                 *st.register(reg, ip)? = next;
             }
             Err(name) => {
                 drop(st);
-                let entry = self.vm.global_table_mut().add(&name);
-                match next {
-                    Value::Int(id) => entry.set_int(id as u32),
-                    other => other.with_string(|text| entry.set_string(text)),
+                if let Some(entry) = self.vm.global_table_mut().add(&name) {
+                    match next {
+                        Value::Int(id) => entry.set_int(id as u32),
+                        other => other.with_string(|text| entry.set_string(text)),
+                    }
                 }
             }
         }

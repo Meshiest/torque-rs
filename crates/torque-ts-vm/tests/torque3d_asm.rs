@@ -398,3 +398,133 @@ fn register_counts_are_bounded_and_charged() {
     a.op(Op::LoadLocalVarStr).word(1 << 20);
     assert_eq!(a.run(&mut vm), Err(VmError::BadIndex { ip: 1 }));
 }
+
+/// Code that pushes `text`, then loops: `$n++`, then `body` (which leaves the stack as it found it, `text` on top), then
+/// back to the loop's start (`body` jumps there itself when `jumps`).
+fn counted_loop(text: &str, jumps: bool, body: impl FnOnce(&mut Asm, u32)) -> Asm {
+    let mut a = Asm::default();
+    a.op(Op::LoadImmedStr).text(text);
+    let start = u32::try_from(a.code.len()).unwrap();
+    a.op(Op::SetCurVarCreate).ident("$n");
+    a.op(Op::LoadVarFlt);
+    a.op(Op::LoadImmedUint).word(1);
+    a.op(Op::Add);
+    a.op(Op::SaveVarFlt);
+    a.op(Op::PopStk);
+    body(&mut a, start);
+    if !jumps {
+        a.op(Op::Jmp).word(start);
+    }
+    a
+}
+
+/// The rounds `a` ran before the step limit of 1M stopped it.
+fn rounds_to_the_limit(a: &Asm) -> u64 {
+    let mut vm = Vm::new();
+    vm.set_step_limit(Some(1_000_000));
+    assert_eq!(a.run(&mut vm), Err(VmError::StepLimit));
+    let n = vm.global("$n").expect("the loop ran");
+    String::from_utf8(n).unwrap().parse().unwrap()
+}
+
+#[test]
+fn a_save_loop_on_a_long_string_meets_the_step_limit() {
+    // Each save copies the 1 MiB string again: 16,384 steps a round, so about 61 rounds fit (one step a save would be 70k).
+    let big = "x".repeat(1 << 20);
+    let a = counted_loop(&big, false, |a, _| {
+        a.op(Op::SetCurVarCreate).ident("$g");
+        a.op(Op::SaveVarStr);
+    });
+    let rounds = rounds_to_the_limit(&a);
+    assert!((50..=64).contains(&rounds), "{rounds}");
+    // A field save and a variable-array name are charged the same way.
+    let a = counted_loop(&big, false, |a, _| {
+        a.op(Op::SetCurVarArrayCreate);
+        a.op(Op::SetCurFieldArray);
+    });
+    let rounds = rounds_to_the_limit(&a);
+    assert!((25..=32).contains(&rounds), "{rounds}");
+}
+
+#[test]
+fn an_np_jump_loop_on_a_long_string_meets_the_step_limit() {
+    // "111…1" is true: `JMPIFNP` jumps and keeps it, and each round reads all of it again.
+    let big = "1".repeat(1 << 20);
+    let a = counted_loop(&big, true, |a, start| {
+        a.op(Op::JmpIfNp).word(start);
+    });
+    let rounds = rounds_to_the_limit(&a);
+    assert!((50..=64).contains(&rounds), "{rounds}");
+}
+
+#[test]
+fn a_huge_declared_parameter_count_is_refused() {
+    // A function declaring `argc` parameters, all with no default: register 0, flags 0, default 0 each.
+    let declare = |argc: u32| {
+        let mut a = Asm::default();
+        a.op(Op::FuncDecl)
+            .ident("f")
+            .word(0)
+            .word(0)
+            .word(0)
+            .word(0)
+            .word(1)
+            .word(0)
+            .word(argc)
+            .word(1);
+        let end_slot = 1 + 2 + 2 + 2 + 1;
+        a.code.extend(std::iter::repeat_n(0, 3 * argc as usize));
+        a.op(Op::ReturnVoid);
+        a.code[end_slot] = u32::try_from(a.code.len()).unwrap();
+        a.op(Op::ReturnVoid);
+        a
+    };
+    let mut vm = Vm::new();
+    declare(4096).run(&mut vm).unwrap();
+    vm.set_step_limit(Some(u64::MAX));
+    vm.invoke(None, b"f", &[]).unwrap();
+    assert!(
+        vm.steps() >= 4096 / 64,
+        "the rounds are charged: {}",
+        vm.steps()
+    );
+    declare(4097).run(&mut vm).unwrap();
+    assert_eq!(vm.invoke(None, b"f", &[]), Err(VmError::BadIndex { ip: 9 }));
+}
+
+#[test]
+fn an_object_lookup_loop_on_a_long_string_meets_the_step_limit() {
+    // `SETCUROBJECT` reads its name and leaves it on the stack: each round copies the 1 MiB name again.
+    let big = "x".repeat(1 << 20);
+    let a = counted_loop(&big, false, |a, _| {
+        a.op(Op::SetCurObject);
+    });
+    let rounds = rounds_to_the_limit(&a);
+    assert!((50..=64).contains(&rounds), "{rounds}");
+}
+
+#[test]
+fn a_word_loop_charges_the_text_it_copies() {
+    // Each round pushes the 1 MiB text (charged) and starts a `foreach$` over it, which copies it again.
+    let big = "x".repeat(1 << 20);
+    let mut a = Asm::default();
+    a.op(Op::LoadImmedStr).text(&big);
+    a.op(Op::SaveLocalVarStr).word(0);
+    a.op(Op::PopStk);
+    let start = u32::try_from(a.code.len()).unwrap();
+    a.op(Op::SetCurVarCreate).ident("$n");
+    a.op(Op::LoadVarFlt);
+    a.op(Op::LoadImmedUint).word(1);
+    a.op(Op::Add);
+    a.op(Op::SaveVarFlt);
+    a.op(Op::PopStk);
+    a.op(Op::LoadLocalVarStr).word(0);
+    a.op(Op::IterBeginStr).word(1).ident("$w");
+    let fail = a.code.len();
+    a.word(0);
+    a.op(Op::IterEnd);
+    a.op(Op::Jmp).word(start);
+    a.code[fail] = start;
+    let rounds = rounds_to_the_limit(&a);
+    assert!((25..=32).contains(&rounds), "{rounds}");
+}

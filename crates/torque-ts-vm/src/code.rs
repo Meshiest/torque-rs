@@ -13,6 +13,7 @@ use std::sync::LazyLock;
 use torque_ts_bytecode::classic::ClassicDialect;
 use torque_ts_bytecode::{Dialect, DsoError, DsoFile, StringTable};
 
+use crate::memory::{MemoryAccount, MemoryCharge};
 use crate::ns::{Entry, EntryRef};
 use crate::text::fold;
 
@@ -159,6 +160,8 @@ pub struct CodeBlock {
     /// A named block's first word is `line << 8 | code[ip]` (`CodeBlock::calcBreakList`); an unnamed
     /// one (evaluated text) keeps the raw line, as that step is skipped without a file name.
     lines: Vec<(u32, u32)>,
+    /// What the block counts in a `Vm`'s memory account while it is alive ([`hold`](Self::hold)).
+    held: Option<MemoryCharge>,
 }
 
 impl std::fmt::Debug for CodeBlock {
@@ -185,12 +188,34 @@ impl CodeBlock {
             sites: RefCell::new(NameMap::default()),
             tags: RefCell::new(NameMap::default()),
             lines: Vec::new(),
+            held: None,
         }
     }
 
     /// Loads `dso`, a file of `format`, as the code block of `name` (None for evaluated text).
     pub fn from_dso(
         dso: &DsoFile,
+        name: Option<&[u8]>,
+        format: &dyn DsoFormat,
+    ) -> Result<CodeBlock, LoadError> {
+        CodeBlock::load(dso, dso.code.clone(), name, format)
+    }
+
+    /// [`from_dso`](Self::from_dso) of a file the caller is done with: its code moves into the block instead of being
+    /// copied.
+    pub fn from_dso_owned(
+        mut dso: DsoFile,
+        name: Option<&[u8]>,
+        format: &dyn DsoFormat,
+    ) -> Result<CodeBlock, LoadError> {
+        let code = std::mem::take(&mut dso.code);
+        CodeBlock::load(&dso, code, name, format)
+    }
+
+    /// The load of `dso`, whose code words are `code` (`dso.code` is not read).
+    fn load(
+        dso: &DsoFile,
+        mut code: Vec<u32>,
         name: Option<&[u8]>,
         format: &dyn DsoFormat,
     ) -> Result<CodeBlock, LoadError> {
@@ -201,7 +226,13 @@ impl CodeBlock {
             });
         }
         let global = format.global_strings(dso);
-        let mut code = dso.code.clone();
+        // The line entries read the code words before the identifier fixups.
+        let entry = if name.is_some() {
+            LineEntry::WithCode
+        } else {
+            LineEntry::Line
+        };
+        let lines = line_entries(&dso.line_breaks, &code, entry);
         let mut names: Vec<Vec<u8>> = Vec::new();
         let mut seen: HashMap<Vec<u8>, usize> = HashMap::new();
         // Entries naming one offset share one name: each distinct offset is scanned, folded and hashed once,
@@ -250,24 +281,6 @@ impl CodeBlock {
                 *slot = word;
             }
         }
-        let lines = dso
-            .line_breaks
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|pair| {
-                let (line, ip) = (pair[0], pair[1]);
-                let inst = match name {
-                    // A named block's entry carries the code word at `ip` in its low byte, as Torque3D's
-                    // `CodeBlock::calcBreakList` makes it (identifier operands hold their raw words there).
-                    Some(_) => {
-                        line.wrapping_shl(8) | dso.code.get(ip as usize).copied().unwrap_or(0)
-                    }
-                    None => line,
-                };
-                (inst, ip)
-            })
-            .collect();
         Ok(CodeBlock {
             name: name.map(Rc::from),
             code,
@@ -279,7 +292,31 @@ impl CodeBlock {
             sites: RefCell::new(NameMap::default()),
             tags: RefCell::new(NameMap::default()),
             lines,
+            held: None,
         })
+    }
+
+    /// What the block takes in memory: its code, string tables, floats, names and line table.
+    pub fn size(&self) -> usize {
+        let names: usize = self.names.iter().map(Vec::len).sum();
+        size_of_val(&*self.code)
+            + self.global_strings.len()
+            + self.function_strings.len()
+            + size_of_val(&*self.global_floats)
+            + size_of_val(&*self.function_floats)
+            + names
+            + size_of_val(&*self.lines)
+    }
+
+    /// Counts the block's [`size`](Self::size) in `account` for as long as the block lives; false, with the refusal noted
+    /// on the account, when it does not fit (the block should not run).
+    pub fn hold(&mut self, account: &MemoryAccount) -> bool {
+        let mut held = MemoryCharge::new(account);
+        if !held.resize(self.size()) {
+            return false;
+        }
+        self.held = Some(held);
+        true
     }
 
     /// The entry the plain function call at `ip` is bound to by the `Vm` with this id, if it has
@@ -395,4 +432,32 @@ impl CodeBlock {
         }
         self.names.get(word as usize - 1).map(Vec::as_slice)
     }
+}
+
+/// What a block's line entry holds besides the ip.
+#[derive(Clone, Copy)]
+enum LineEntry {
+    /// The raw line: evaluated text, which skips `CodeBlock::calcBreakList`.
+    Line,
+    /// A named block's: the line, with the code word at `ip` in its low byte, as Torque3D's `CodeBlock::calcBreakList`
+    /// makes it (identifier operands hold their raw words there).
+    WithCode,
+}
+
+/// The line entries of a block: per (line, ip) pair of `breaks`, the entry and the ip.
+fn line_entries(breaks: &[u32], code: &[u32], entry: LineEntry) -> Vec<(u32, u32)> {
+    breaks
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[line, ip]| {
+            let inst = match entry {
+                LineEntry::WithCode => {
+                    line.wrapping_shl(8) | code.get(ip as usize).copied().unwrap_or(0)
+                }
+                LineEntry::Line => line,
+            };
+            (inst, ip)
+        })
+        .collect()
 }

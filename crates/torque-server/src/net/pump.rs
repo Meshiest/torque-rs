@@ -110,17 +110,15 @@ fn run_for<T, G: NetGame>(
     owner: Option<ObjId>,
     f: impl FnOnce(&mut Vm) -> T,
 ) -> Option<T> {
-    {
+    let run = {
         let mut sh = shared.borrow_mut();
         let cap = owner.map(|obj| sh.share_left(obj));
-        if !sh.begin_run(vm, strict, cap) {
-            return None;
-        }
-    }
+        sh.begin_run(vm, strict, cap)?
+    };
     let out = f(vm);
     {
         let mut sh = shared.borrow_mut();
-        let used = sh.end_run(vm);
+        let used = sh.end_run(vm, run);
         if let Some(obj) = owner {
             sh.charge_share(obj, used);
         }

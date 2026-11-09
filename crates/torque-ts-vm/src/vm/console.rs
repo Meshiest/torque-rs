@@ -4,26 +4,26 @@
 //! Follows Torque3D's MIT-licensed `console/consoleFunctions.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here
 //! is this crate's own.
 
-use super::{Level, Native, NativeCall, Vm};
+use super::{Level, Native, Vm};
 use crate::text::until_nul;
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
-
 /// The arguments of `echo`, `warn` and `error`, joined with nothing between them (each ends at its first
-/// NUL, as C strings do).
-fn joined(c: &NativeCall) -> Vec<u8> {
+/// NUL, as C strings do), up to the [`MAX_LOG_LINE`](super::MAX_LOG_LINE) bytes the log keeps of a line: nothing past
+/// them is copied, however many or long the arguments.
+fn joined(argv: &[Vec<u8>]) -> Vec<u8> {
     let mut line = Vec::new();
-    for i in 1..c.argv.len() {
-        line.extend_from_slice(arg(c, i));
+    for arg in argv.iter().skip(1) {
+        if line.len() >= super::MAX_LOG_LINE {
+            break;
+        }
+        super::push_capped(&mut line, until_nul(arg));
     }
     line
 }
 
 pub(super) fn register(vm: &mut Vm) {
     vm.register("echo", 2, 0, "echo(text...) - prints a line", |vm, c| {
-        let line = joined(c);
+        let line = joined(&c.argv);
         vm.print(&line);
         Native::Void
     });
@@ -33,7 +33,7 @@ pub(super) fn register(vm: &mut Vm) {
         0,
         "warn(text...) - prints a warning line",
         |vm, c| {
-            let line = joined(c);
+            let line = joined(&c.argv);
             vm.log_bytes(Level::Warning, &line);
             Native::Void
         },
@@ -44,7 +44,7 @@ pub(super) fn register(vm: &mut Vm) {
         0,
         "error(text...) - prints an error line",
         |vm, c| {
-            let line = joined(c);
+            let line = joined(&c.argv);
             vm.log_bytes(Level::Error, &line);
             Native::Void
         },
@@ -86,3 +86,7 @@ pub(super) fn register(vm: &mut Vm) {
         |vm, _| Native::Int(vm.clock.real_time_ms() as i32),
     );
 }
+
+#[cfg(test)]
+#[path = "console_tests.rs"]
+mod tests;

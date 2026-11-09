@@ -14,6 +14,7 @@ use crate::events::{EventLimits, EventQueue};
 pub(crate) use crate::exec::RunMode as Mode;
 use crate::exec::{Executor, RunMark, ScriptCall, argc_ok, script_name_ref, script_target};
 use crate::host::{Clock, Compiler, FileHost, NoCompiler, NoFiles, SystemClock};
+use crate::memory::{DEFAULT_SCRIPT_BYTES, MEMORY_LIMIT_PREF};
 use crate::ns::{Activation, Callable, EntryRef, Holder, Namespaces};
 use crate::sim::{ClassId, ObjId, Objects, SimObject};
 use crate::tags::TagTable;
@@ -23,6 +24,7 @@ use crate::vars::{Dictionary, Entry};
 mod console;
 mod file_natives;
 mod files;
+pub use files::MAX_DSO_BYTES;
 pub use files::{EVAL_ERROR_TEXT_BYTES, EvalReport};
 mod interface;
 mod lifecycle;
@@ -137,6 +139,8 @@ pub enum VmError {
     StringTooLong,
     /// The `Vm` has no executor to run script with ([`NoExecutor`](crate::exec::NoExecutor)).
     NoExecutor,
+    /// A store would have taken what scripts hold past the memory limit ([`crate::memory`]); it was not made.
+    MemoryLimit,
 }
 
 impl std::fmt::Display for VmError {
@@ -166,6 +170,7 @@ impl std::fmt::Display for VmError {
             VmError::EventLimit => write!(f, "too many events fired in one advance of the clock"),
             VmError::StringTooLong => write!(f, "a string grew past {MAX_STRING_BYTES} bytes"),
             VmError::NoExecutor => write!(f, "this Vm has no executor to run script"),
+            VmError::MemoryLimit => write!(f, "scripts would hold more than their memory limit"),
         }
     }
 }
@@ -425,6 +430,8 @@ pub struct Vm {
     /// What the `FileObject`s have open (`classes::file_object`; a table of the `Vm`'s own, so that no borrow of
     /// it can be held across anything that runs script code or prints).
     pub(crate) file_objects: crate::classes::file_object::FileObjects,
+    /// What scripts wrote in the current window of the write quota ([`WriteQuota`](crate::policy::WriteQuota)).
+    pub(crate) writes: file_natives::WriteWindow,
     /// Tells this `Vm` apart from others: tagged-literal conversions are stamped with it.
     id: u64,
     /// The stamp of this `Vm`'s call-site bindings: `id` at first, a fresh one after the host resets the
@@ -486,6 +493,10 @@ impl Vm {
     /// A `Vm` that runs Torque3D's TorqueScript: the [`Torque3dExecutor`](crate::exec::torque3d::Torque3dExecutor),
     /// its compiler and natives ([`torque3d::install`](crate::exec::torque3d::install)). A game with a dialect of its
     /// own makes its `Vm` with [`with_executor`](Self::with_executor).
+    ///
+    /// A new `Vm` has no step limit: a script that never ends hangs its host, and `charge_work` and `ensure_budget` refuse
+    /// nothing. A host that runs scripts it does not trust sets one ([`set_step_limit`](Self::set_step_limit); a
+    /// server made with `torque_server::server::Server` has 50 million steps). Its memory limit is [`DEFAULT_SCRIPT_BYTES`].
     pub fn new() -> Vm {
         let mut vm = Vm::with_executor(Rc::new(crate::exec::torque3d::Torque3dExecutor::new()));
         crate::exec::torque3d::install(&mut vm);
@@ -500,13 +511,15 @@ impl Vm {
 
     /// [`with_executor`](Self::with_executor) with the object tables started as `sim` says.
     pub fn with_config(executor: Rc<dyn Executor>, sim: crate::sim::SimConfig) -> Vm {
+        let objects = Objects::with_config(sim);
+        objects.memory().set_limit(DEFAULT_SCRIPT_BYTES);
         let mut vm = Vm {
             executor,
-            globals: Dictionary::default(),
+            globals: Dictionary::with_account(objects.memory().clone()),
             frames: Vec::new(),
             frame_pool: Vec::new(),
             namespaces: Namespaces::default(),
-            objects: Objects::with_config(sim),
+            objects,
             this_object: None,
             creating: Vec::new(),
             traces: Vec::new(),
@@ -532,6 +545,7 @@ impl Vm {
             native_events: Box::default(),
             preload_error: Box::default(),
             file_objects: Default::default(),
+            writes: Default::default(),
             id: 0,
             binding_epoch: 0,
             log: Box::default(),
@@ -556,6 +570,8 @@ impl Vm {
         }
         vm.add_global_effects("$instantGroup", crate::effects::Effects::ENGINE);
         vm.add_global_effects("$Con::*", crate::effects::Effects::ENGINE);
+        // The memory limit of every later run.
+        vm.add_global_effects(MEMORY_LIMIT_PREF, crate::effects::Effects::ENGINE);
         vm.register(
             "call",
             2,
@@ -1190,17 +1206,23 @@ impl Vm {
 
     /// `$name = <float>` as `SAVEVAR_FLT` stores it (a float variable: the text is `%g` of the 32-bit value).
     pub fn set_global_float(&mut self, name: &[u8], value: f64) {
-        self.globals.add(name).set_float(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_float(value);
+        }
     }
 
     /// `$name = <uint>` as `SAVEVAR_UINT` stores it.
     pub fn set_global_uint(&mut self, name: &[u8], value: u32) {
-        self.globals.add(name).set_int(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_int(value);
+        }
     }
 
     /// `$name = <text>` as `SAVEVAR_STR` stores it, by a name of any bytes.
     pub fn set_global_text(&mut self, name: &[u8], value: &[u8]) {
-        self.globals.add(name).set_string(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_string(value);
+        }
     }
 
     /// How many times text has been evaluated here (`eval`, the native or the host's `Vm::eval`).
@@ -1319,6 +1341,7 @@ impl Vm {
             self.drop_events_of_unregistered();
             // A host budget with run steps (a tick's callbacks) lowers this run's limit to what it has left.
             self.begin_charged_run();
+            self.begin_memory_run();
         } else {
             self.depth = self.depth.saturating_add(REENTRY_COST);
         }
@@ -1346,6 +1369,9 @@ impl Vm {
         self.executor.restore(saved.exec, result.is_err() || cut);
         if cut && result.is_ok() {
             return Err(VmError::StringTooLong);
+        }
+        if self.running == 0 && result.is_ok() && self.objects.memory().take_refused() {
+            return Err(VmError::MemoryLimit);
         }
         result
     }
@@ -1840,14 +1866,12 @@ impl Vm {
     }
 
     pub fn set_global(&mut self, name: &str, value: &str) {
-        self.globals
-            .add(name.as_bytes())
-            .set_string(value.as_bytes());
+        self.set_global_text(name.as_bytes(), value.as_bytes());
     }
 
     /// [`set_global`](Self::set_global) with a value of any bytes (a host's text from the network: not necessarily UTF-8).
     pub fn set_global_bytes(&mut self, name: &str, value: &[u8]) {
-        self.globals.add(name.as_bytes()).set_string(value);
+        self.set_global_text(name.as_bytes(), value);
     }
 
     /// Runs a block from its start in a fresh local frame and returns the string left on the string
@@ -1900,7 +1924,10 @@ impl Vm {
             traces: self.traces.len(),
         };
         if call.is_some() || mode.has_own_frame() {
-            let frame = self.frame_pool.pop().unwrap_or_default();
+            let frame = self
+                .frame_pool
+                .pop()
+                .unwrap_or_else(|| Dictionary::with_account(self.objects.memory().clone()));
             self.frames.push(frame);
             self.alloc_frame_entered();
         }
@@ -1977,7 +2004,7 @@ impl Vm {
         }
         let want = want.cloned();
         match want.as_ref().and_then(|block| block.name()) {
-            Some(name) => self.globals.add(CON_FILE).set_string(name),
+            Some(name) => self.set_global_text(CON_FILE, name),
             None => {
                 self.globals.remove(CON_FILE);
             }
@@ -2068,7 +2095,7 @@ fn native_to_string(result: Native) -> Result<Vec<u8>, VmError> {
 }
 
 /// Appends as much of `text` as fits below [`MAX_LOG_LINE`] bytes.
-fn push_capped(out: &mut Vec<u8>, text: &[u8]) {
+pub(crate) fn push_capped(out: &mut Vec<u8>, text: &[u8]) {
     let room = MAX_LOG_LINE.saturating_sub(out.len());
     out.extend_from_slice(text.get(..room).unwrap_or(text));
 }

@@ -122,6 +122,18 @@ fn overflow_message(name: &[u8]) -> String {
     )
 }
 
+/// What [`Vm::checked_dso`] does with a `.dso` of another version: the first lookup reports it, the one after a check
+/// compile (an older `.dso` that would run after all) passes over it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OtherVersion {
+    Report,
+    Skip,
+}
+
+/// The largest `.dso` `exec` loads, as large as the largest source the compiler takes: a loaded block holds several times
+/// its file's size, so a bigger one is refused before it is parsed (and the source, if there is one, runs instead).
+pub const MAX_DSO_BYTES: usize = 16 << 20;
+
 /// The room for the path of a compiled file (`exec`'s and `compile`'s 512-byte name buffer, as in Torque3D's MIT-licensed
 /// `console/torquescript/runtime.cpp`): 511 bytes and the terminator.
 const MAX_DSO_PATH: usize = 511;
@@ -608,10 +620,13 @@ impl Vm {
         let mut loadable = None;
         // The first compile's result, when the second can be that same one.
         let mut again = None;
-        if let Some(bytes) = &dso
+        let mut dso = dso;
+        if dso.is_some()
             && (source.is_none() || self.files.modified(&dso_path) >= self.files.modified(path))
         {
-            loadable = self.checked_dso(&dso_path, bytes);
+            loadable = dso
+                .take()
+                .and_then(|bytes| self.checked_dso(&dso_path, bytes, OtherVersion::Report));
         }
         if let Some(text) = &source
             && loadable.is_none()
@@ -628,8 +643,8 @@ impl Vm {
                     return Prepared::OutOfBudget;
                 }
                 again = Some(first).filter(|first| first.same_as_run);
-                let wanted = self.executor.format().version();
-                loadable = dso.filter(|bytes| dso_version(bytes) == wanted);
+                loadable =
+                    dso.and_then(|bytes| self.checked_dso(&dso_path, bytes, OtherVersion::Skip));
             }
         }
         let mode = Mode::top_level(no_calls);
@@ -651,7 +666,7 @@ impl Vm {
             return Prepared::OutOfBudget;
         }
         match compiled.code {
-            Some(code) => match self.load_compiled(&code, Some(&name)) {
+            Some(code) => match self.load_compiled(code, Some(&name)) {
                 Some(block) => Prepared::Run(block, mode),
                 // A block that does not load still counts as executed.
                 None => Prepared::Done(true),
@@ -660,26 +675,36 @@ impl Vm {
         }
     }
 
-    /// The DSO's bytes when its version is the executor's dialect's; otherwise the version error (TGE also shows a
-    /// "Script/Executable version mismatch" message box and quits, which this does not).
-    fn checked_dso(&mut self, path: &[u8], bytes: &[u8]) -> Option<Vec<u8>> {
-        let version = dso_version(bytes);
+    /// The DSO's bytes when its version is the executor's dialect's and it is at most [`MAX_DSO_BYTES`] (every `.dso`
+    /// `exec` loads passes here). A file of another version is refused as `other` says (TGE also shows a
+    /// "Script/Executable version mismatch" message box and quits, which this does not); an oversized one with an error.
+    fn checked_dso(&mut self, path: &[u8], bytes: Vec<u8>, other: OtherVersion) -> Option<Vec<u8>> {
+        let version = dso_version(&bytes);
         let wanted = self.executor.format().version();
-        if version == wanted {
-            return Some(bytes.to_vec());
+        if version != wanted {
+            if other == OtherVersion::Report {
+                self.error(format!(
+                    "ERROR: DSO file \"{}\" is version {version}, expected version {wanted}",
+                    lossy(path)
+                ));
+            }
+            return None;
         }
-        self.error(format!(
-            "ERROR: DSO file \"{}\" is version {version}, expected version {wanted}",
-            lossy(path)
-        ));
-        None
+        if bytes.len() > MAX_DSO_BYTES {
+            self.error(format!(
+                "ERROR: DSO file \"{}\" is larger than {MAX_DSO_BYTES} bytes",
+                lossy(path)
+            ));
+            return None;
+        }
+        Some(bytes)
     }
 
     /// Parses and loads a DSO; a damaged one is reported and gives None.
     fn load_dso(&mut self, path: &[u8], bytes: &[u8], name: &[u8]) -> Option<Rc<CodeBlock>> {
         let executor = Rc::clone(&self.executor);
         match executor.format().parse(bytes) {
-            Ok(dso) => self.load_compiled(&dso, Some(name)),
+            Ok(dso) => self.load_compiled(dso, Some(name)),
             Err(e) => {
                 self.error(format!(
                     "exec: cannot load compiled script {}: {e}",
@@ -690,15 +715,16 @@ impl Vm {
         }
     }
 
-    fn load_compiled(&mut self, dso: &DsoFile, name: Option<&[u8]>) -> Option<Rc<CodeBlock>> {
+    fn load_compiled(&mut self, dso: DsoFile, name: Option<&[u8]>) -> Option<Rc<CodeBlock>> {
         let executor = Rc::clone(&self.executor);
-        match CodeBlock::from_dso(dso, name, executor.format()) {
+        match CodeBlock::from_dso_owned(dso, name, executor.format()) {
             Ok(mut block) => {
                 // Loading a block interns each identifier (`StringTable->insert`, case-insensitive), so every name of the
                 // block is spelled as the string table first saw it anywhere: a function, a variable or a field named by two
                 // files in two cases prints the first file's spelling in both.
                 block.respell_names(|n| self.strings.intern(n));
-                Some(Rc::new(block))
+                // The code counts in the memory account while anything runs it (an `eval`'s functions keep it alive).
+                block.hold(self.objects.memory()).then(|| Rc::new(block))
             }
             Err(e) => {
                 let shown = name.map_or_else(|| "<input>".to_string(), lossy);
@@ -770,7 +796,7 @@ impl Vm {
         // here on, in the compiler's messages, the block's paths and `exec`'s. An `eval`'s text has no name.
         let name = name.map(|n| self.file_name(n));
         let (code, verdict) = self.compile_source(text, name.as_deref(), Purpose::Run);
-        let block = code.and_then(|code| self.load_compiled(&code, name.as_deref()));
+        let block = code.and_then(|code| self.load_compiled(code, name.as_deref()));
         (block, verdict)
     }
 

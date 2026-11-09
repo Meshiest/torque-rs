@@ -22,6 +22,39 @@
 //!   how many each left out once its second is over
 //!   (`a_flood_of_unknown_commands_prints_a_few_lines_a_second_and_how_many_it_left_out`,
 //!   `each_source_has_its_own_unknown_command_lines_and_a_timer_reports_what_it_left_out`).
+//! - The step budget is a time budget: an operation that copies or scans a value it leaves on the stack (a save, a
+//!   variable or field array name, an object lookup, a `foreach$`'s text, an `_NP` jump, the classic executor's every
+//!   read of the current string) is charged its bytes each time (`chained_assignments_are_charged_by_their_bytes` in both
+//!   executors' tests, `a_save_loop_on_a_long_string_meets_the_step_limit`,
+//!   `an_np_jump_loop_on_a_long_string_meets_the_step_limit`, `an_object_lookup_loop_on_a_long_string_meets_the_step_limit`,
+//!   `a_word_loop_charges_the_text_it_copies`); a
+//!   function's declared parameter count is at most the register cap (4096 a frame) and charged
+//!   (`a_huge_declared_parameter_count_is_refused`).
+//! - A native's work is linear in its arguments or charged as it goes: a set a script passes is tested through
+//!   [`vm::words::ByteSet`] (`strip_chars_and_next_token_are_linear_in_their_arguments`), `StripMLControlChars` checks
+//!   the budget after each scan (`strip_ml_scans_stop_at_the_step_limit`), and `echo`, `warn` and `error` build at
+//!   most one log line (`echo_joins_at_most_one_log_line`).
+//! - What scripts keep counts in the `Vm`'s [`memory::MemoryAccount`]: variables, dynamic fields, objects with their
+//!   names, internal names and static texts, `foreach$` texts, loaded code (an `eval`'s functions keep theirs alive), and
+//!   a class's own state through a [`memory::MemoryCharge`] (a MessageVector's lines). A store past the limit
+//!   ([`policy::Limits::max_script_bytes`], at most [`memory::MAX_SCRIPT_BYTES`], which the engine-effect pref
+//!   [`memory::MEMORY_LIMIT_PREF`] can lower and never raise) is not made and ends the run with
+//!   [`vm::VmError::MemoryLimit`], so what is held stays under the limit; a buffer grows to exactly what it was admitted
+//!   for, and a dictionary's spare entries are not counted (`global_and_field_growth_stops_at_the_memory_limit`,
+//!   `global_and_local_growth_stops_at_the_memory_limit`, `loop_texts_names_and_code_count_in_the_memory_limit`).
+//! - Scripts write at most [`policy::FileRules::write_quota`] to files in each hour of simulation time
+//!   ([`policy::WRITE_WINDOW_MS`]): bytes per file and in all, and files opened, through `writeLine`, `export` (the
+//!   engine's prefs too) and `fileCopy` alike (`writes_stop_at_the_write_quota`).
+//! - Every `.dso` `exec` loads, with or without its source, is refused over [`vm::MAX_DSO_BYTES`] before it is parsed
+//!   (`an_oversized_dso_is_refused`), and a removal of a freed tag never changes its counts, whatever [`tags::TagRules`]
+//!   say (`removing_a_dead_tag_twice_keeps_counts`).
+//! - No input panics the runtime, and every case's time stays within 5 microseconds a step of its runs' steps: random
+//!   programs, their bytecode mutated, strings up to the size cap through what copies or scans them, and every native
+//!   called from script with hostile arguments, in both executors (`tests/fuzz.rs`:
+//!   `random_programs_run_through_both_executors`, `mutated_code_never_panics_the_executor`,
+//!   `long_strings_stay_in_proportion`, `every_native_survives_hostile_arguments`; a server's natives in torque-app's
+//!   `the_servers_natives_survive_hostile_arguments`). `TORQUE_FUZZ_VM=<rounds>` runs a long sweep (every long-string
+//!   case at the cap, 1 MiB arguments, every server native), `TORQUE_FUZZ_SEED` another seed.
 //! - [`host::FileHost::read_prefix`] keeps `read`'s refusals; a host over real files reads only the prefix
 //!   (`a_prefix_read_gives_the_first_bytes_of_a_file_or_an_entry_with_the_reads_refusals`, in `torque-resource`).
 //!
@@ -61,6 +94,7 @@ pub mod geometry {
 pub mod host;
 pub mod idhash;
 pub mod listing;
+pub mod memory;
 pub mod namehash;
 pub mod ns;
 pub mod policy;

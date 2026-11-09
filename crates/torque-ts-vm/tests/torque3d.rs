@@ -3,9 +3,13 @@
 
 use std::rc::Rc;
 
-use torque_ts_vm::code::{CodeBlock, torque3d_format};
+use torque_ts_vm::classes::install_specs;
+use torque_ts_vm::code::{CodeBlock, DsoFormat, torque3d_format};
+use torque_ts_vm::effects::Effects;
 use torque_ts_vm::host::{MemFiles, Purpose};
-use torque_ts_vm::vm::{Level, Vm, VmError};
+use torque_ts_vm::memory::MEMORY_LIMIT_PREF;
+use torque_ts_vm::policy::{FileRules, Limits, WriteQuota};
+use torque_ts_vm::vm::{Level, MAX_DSO_BYTES, Vm, VmError};
 
 /// Compiles `src` as the file `test.cs` and runs it in `vm`; returns the run's result.
 fn run_in(vm: &mut Vm, src: &str) -> Result<String, VmError> {
@@ -436,4 +440,215 @@ fn script_functions_called_from_rust_get_text_arguments() {
 fn a_native_that_runs_script_shares_the_executor() {
     let src = "function inner(%a) { return %a @ \"!\"; } echo(call(\"inner\", \"x\") @ call(\"inner\", 1 + 1));";
     assert_eq!(lines(src), ["x!2!"]);
+}
+
+#[test]
+fn chained_assignments_are_charged_by_their_bytes() {
+    // 400 saves of one 64 KiB value a round: 400,000 steps of copying a round, so a 2M limit stops the loop within a few
+    // rounds (one step a save would let some 5,000 rounds copy 128 GB).
+    let chain: String = (0..400).map(|i| format!("$g{i} = ")).collect();
+    let src = format!(
+        "function f() {{ %s = \"x\"; for (%i = 0; %i < 16; %i++) %s = %s @ %s;          while (1) {{ {chain}%s; $n++; }} }} f();"
+    );
+    let mut vm = Vm::new();
+    vm.set_step_limit(Some(2_000_000));
+    assert_eq!(run_in(&mut vm, &src), Err(VmError::StepLimit));
+    let rounds: u32 = String::from_utf8(vm.global("$n").unwrap_or_default())
+        .unwrap()
+        .parse()
+        .unwrap_or(0);
+    assert!(rounds <= 5, "{rounds}");
+    assert_eq!(vm.global("$g399").map(|g| g.len()), Some(1 << 16));
+}
+
+#[test]
+fn global_and_field_growth_stops_at_the_memory_limit() {
+    const LIMIT: u64 = 8 << 20;
+    let mut vm = Vm::new();
+    vm.set_limits(Limits {
+        max_script_bytes: LIMIT,
+        ..Default::default()
+    });
+    vm.set_step_limit(Some(50_000_000));
+    let big = "function big() { %s = \"x\"; for (%i = 0; %i < 20; %i++) %s = %s @ %s; return %s; }";
+    run_in(&mut vm, big).unwrap();
+    // 1 MiB a global: the ninth does not fit.
+    let globals = "%b = big(); for (%i = 0; %i < 50; %i++) $g[$n++] = %b;";
+    assert_eq!(run_in(&mut vm, globals), Err(VmError::MemoryLimit));
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
+    assert!(vm.global("$g6").is_some() && vm.global("$g9").is_none());
+    // A field write is refused the same way, and so is an object past the limit.
+    let fields = "new ScriptObject(O); %b = big(); for (%i = 0; %i < 50; %i++) O.f[%i] = %b;";
+    assert_eq!(run_in(&mut vm, fields), Err(VmError::MemoryLimit));
+    assert!(vm.memory_held() <= LIMIT);
+    let objects = "for (%i = 0; %i < 100000; %i++) new ScriptObject();";
+    assert_eq!(run_in(&mut vm, objects), Err(VmError::MemoryLimit));
+    assert!(vm.memory_held() <= LIMIT);
+    // What frees memory runs, and then a store that fits.
+    run_in(
+        &mut vm,
+        "for (%i = 0; %i < 50; %i++) $g[%i] = \"\"; O.delete(); $small = 1;",
+    )
+    .unwrap();
+    assert!(vm.memory_held() < LIMIT / 2, "{}", vm.memory_held());
+    // The pref lowers the next run's limit, and never raises it past the host's.
+    run_in(&mut vm, "$Pref::Script::MemoryLimit = 2;").unwrap();
+    assert_eq!(run_in(&mut vm, globals), Err(VmError::MemoryLimit));
+    assert_eq!(vm.memory_limit(), 2 << 20);
+    assert!(vm.memory_held() <= 2 << 20);
+    run_in(&mut vm, "for (%i = 0; %i < 50; %i++) $g[%i] = \"\";").unwrap();
+    run_in(&mut vm, "$Pref::Script::MemoryLimit = 1000000;").unwrap();
+    assert_eq!(run_in(&mut vm, globals), Err(VmError::MemoryLimit));
+    assert_eq!(vm.memory_limit(), LIMIT);
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
+    assert_eq!(
+        vm.global_effects(MEMORY_LIMIT_PREF.as_bytes()),
+        Effects::ENGINE
+    );
+}
+
+/// File rules whose write quota is 1 KiB a file, and 4 KiB and 20 files an hour.
+struct SmallQuota;
+
+impl FileRules for SmallQuota {
+    fn write_quota(&self) -> WriteQuota {
+        WriteQuota {
+            per_file: 1024,
+            per_hour: 4096,
+            files_per_hour: 20,
+        }
+    }
+}
+
+#[test]
+fn writes_stop_at_the_write_quota() {
+    let files = MemFiles::new();
+    let mut vm = Vm::new();
+    vm.set_file_host(files.clone());
+    vm.set_file_rules(Rc::new(SmallQuota));
+    vm.objects_mut()
+        .classes
+        .register("FileObject", "SimObject", &[]);
+    install_specs(&mut vm, &[]);
+    // A writer's lines stop at the file's quota: 100 lines of 12 bytes and CR LF, 73 of them fit in 1 KiB.
+    run_in(
+        &mut vm,
+        "%f = new FileObject(); %f.openForWrite(\"a.txt\"); \
+         for (%i = 0; %i < 100; %i++) %f.writeLine(\"0123456789ab\"); %f.close(); %f.delete();",
+    )
+    .unwrap();
+    let log = texts(&mut vm);
+    assert_eq!(
+        files.get("a.txt").map(|f| f.len()),
+        Some(73 * 14),
+        "{log:?}"
+    );
+    assert!(log.iter().any(|l| l.contains("written all they may")));
+    // Exports and copies count too, until the total is spent.
+    run_in(
+        &mut vm,
+        "for (%i = 0; %i < 48; %i++) $Big = $Big @ \"0123456789\"; \
+         for (%i = 0; %i < 10; %i++) export(\"$Big\", \"e\" @ %i @ \".cs\");",
+    )
+    .unwrap();
+    let exported = (0..10)
+        .filter(|i| files.get(&format!("e{i}.cs")).is_some())
+        .count();
+    assert!((1..10).contains(&exported), "{exported}");
+    // A copy (the hosts' `fileCopy` natives call this).
+    assert_eq!(vm.copy_file(b"a.txt", b"b.txt"), Ok(false));
+    assert!(files.get("b.txt").is_none(), "the hour's bytes are spent");
+    // The next hour of simulation time writes again: the copy, then files up to the hour's count.
+    let _ = vm.advance_time(3_600_000);
+    assert_eq!(vm.copy_file(b"a.txt", b"b.txt"), Ok(true));
+    assert!(files.get("b.txt").is_some(), "a new hour");
+    run_in(
+        &mut vm,
+        "$Small = 1; for (%i = 0; %i < 30; %i++) export(\"$Small\", \"f\" @ %i @ \".cs\");",
+    )
+    .unwrap();
+    let opened = (0..30)
+        .filter(|i| files.get(&format!("f{i}.cs")).is_some())
+        .count();
+    assert_eq!(opened, 19, "20 files an hour, the copy's included");
+}
+
+#[test]
+fn an_oversized_dso_is_refused() {
+    let files = MemFiles::new();
+    let mut big = vec![0u8; MAX_DSO_BYTES + 1];
+    big[..4].copy_from_slice(&torque3d_format().version().to_le_bytes());
+    files.insert("big.cs.dso", &big);
+    let mut vm = Vm::new();
+    vm.set_file_host(files.clone());
+    assert_eq!(
+        vm.invoke(None, b"exec", &[b"big.cs".to_vec()]).unwrap(),
+        b"0"
+    );
+    let log = texts(&mut vm);
+    assert!(log.iter().any(|l| l.contains("is larger than")), "{log:?}");
+    // Beside its source, newer or older: the source runs instead, whichever way `exec` comes to the compiled file.
+    for dso_first in [false, true] {
+        let files = MemFiles::new();
+        if dso_first {
+            files.insert("s.cs.dso", &big);
+        }
+        files.insert("s.cs", b"$ran = 1;");
+        if !dso_first {
+            files.insert("s.cs.dso", &big);
+        }
+        let mut vm = Vm::new();
+        vm.set_file_host(files);
+        vm.invoke(None, b"exec", &[b"s.cs".to_vec()]).unwrap();
+        assert_eq!(
+            vm.global("$ran").as_deref(),
+            Some(&b"1"[..]),
+            "dso first: {dso_first}"
+        );
+        let log = texts(&mut vm);
+        assert!(
+            log.iter().any(|l| l.contains("is larger than")),
+            "dso first: {dso_first}: {log:?}"
+        );
+    }
+}
+
+#[test]
+fn loop_texts_names_and_code_count_in_the_memory_limit() {
+    const LIMIT: u64 = 8 << 20;
+    let mut vm = Vm::new();
+    vm.set_limits(Limits {
+        max_script_bytes: LIMIT,
+        ..Default::default()
+    });
+    vm.set_step_limit(Some(50_000_000));
+    let big = "function big() { %s = \"x\"; for (%i = 0; %i < 20; %i++) %s = %s @ %s; return %s; }\n\
+               function nest(%b, %n) { if (%n == 0) return; foreach$ (%w in %b) { nest(%b, %n - 1); break; } }";
+    run_in(&mut vm, big).unwrap();
+    // Twelve nested loops over 1 MiB of text each.
+    assert_eq!(
+        run_in(&mut vm, "nest(big(), 12);"),
+        Err(VmError::MemoryLimit)
+    );
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
+    // Internal names, names and static texts of many objects.
+    for script in [
+        "%b = big(); for (%i = 0; %i < 50; %i++) { %o = new ScriptObject(); %o.setInternalName(%b @ %i); }",
+        "%b = big(); for (%i = 0; %i < 50; %i++) { %o = new ScriptObject(); %o.setName(%b @ %i); }",
+        "%b = big(); for (%i = 0; %i < 50; %i++) { %o = new ScriptObject(); %o.class = %b @ %i; }",
+    ] {
+        assert_eq!(
+            run_in(&mut vm, script),
+            Err(VmError::MemoryLimit),
+            "{script}"
+        );
+        assert!(vm.memory_held() <= LIMIT, "{script}: {}", vm.memory_held());
+    }
+    // Code an `eval` keeps alive: each function body holds a 256 KiB literal.
+    let chunk = "y".repeat(256 << 10);
+    let evals = format!(
+        "for (%i = 0; %i < 100; %i++) eval(\"function g\" @ %i @ \"() {{ return \\\"{chunk}\\\"; }}\");"
+    );
+    assert_eq!(run_in(&mut vm, &evals), Err(VmError::MemoryLimit));
+    assert!(vm.memory_held() <= LIMIT, "{}", vm.memory_held());
 }

@@ -420,8 +420,6 @@ pub struct NetShared<G: NetGame> {
     pub counters: Counters,
     /// When set, every phase of the tick loop pushes itself here.
     pub trace: Option<Vec<Phase>>,
-    /// The step limit of an outermost run outside the network host, which the passes put back after a run of theirs.
-    pub step_limit: Option<u64>,
     /// The steps one script run the network starts may take ([`NET_SCRIPT_RUN_STEPS`]).
     pub run_limit: u64,
     /// The remote commands one connection may run a second; the rest of the second's are dropped and counted. None (the
@@ -536,14 +534,15 @@ impl<G: NetGame> NetShared<G> {
     }
 
     /// Sets the VM's step limit for a script the network starts: [`NET_SCRIPT_RUN_STEPS`], or what is left of the window for a
-    /// `strict` one (cleanup, a drop's `onDrop`, is not strict: it runs whatever the window says, within the run limit). False,
+    /// `strict` one (cleanup, a drop's `onDrop`, is not strict: it runs whatever the window says, within the run limit). None,
     /// and nothing set, when a strict run has no steps left. `cap` lowers the limit further (a connection's share,
-    /// [`NET_CONN_SCRIPT_SHARE_STEPS`]).
-    pub fn begin_run(&mut self, vm: &mut Vm, strict: bool, cap: Option<u64>) -> bool {
+    /// [`NET_CONN_SCRIPT_SHARE_STEPS`]). The returned [`NetRun`] holds the limit the VM had, which
+    /// [`end_run`](Self::end_run) puts back: the server's own limit on every other run must survive the network's.
+    pub fn begin_run(&mut self, vm: &mut Vm, strict: bool, cap: Option<u64>) -> Option<NetRun> {
         self.roll_window();
         let left = self.window_budget.saturating_sub(self.window_used);
         if strict && left == 0 {
-            return false;
+            return None;
         }
         let mut limit = if strict {
             self.run_limit.min(left)
@@ -553,17 +552,18 @@ impl<G: NetGame> NetShared<G> {
         if let Some(cap) = cap {
             limit = limit.min(cap);
         }
+        let outer = vm.step_limit();
         vm.set_step_limit(Some(limit));
-        true
+        Some(NetRun { outer })
     }
 
-    /// Ends a run [`begin_run`](Self::begin_run) started: its steps join the window and the counters, and the VM's limit is put
-    /// back. Returns the steps the run took.
-    pub fn end_run(&mut self, vm: &mut Vm) -> u64 {
+    /// Ends a run [`begin_run`](Self::begin_run) started: its steps join the window and the counters, and the VM's limit from
+    /// before the run is put back. Returns the steps the run took.
+    pub fn end_run(&mut self, vm: &mut Vm, run: NetRun) -> u64 {
         let used = vm.steps();
         self.window_used = self.window_used.saturating_add(used);
         self.counters.script_steps = self.counters.script_steps.saturating_add(used);
-        vm.set_step_limit(self.step_limit);
+        vm.set_step_limit(run.outer);
         used
     }
 
@@ -602,6 +602,14 @@ impl<G: NetGame> NetShared<G> {
     }
 }
 
+/// A script run the network started ([`NetShared::begin_run`]): the step limit the VM had before it, which
+/// [`NetShared::end_run`] puts back.
+#[must_use = "a network run must end with `end_run`, which puts the VM's own step limit back"]
+#[derive(Debug)]
+pub struct NetRun {
+    outer: Option<u64>,
+}
+
 /// Sixteen bytes for the challenge digest's key, from the operating system's randomness as the standard library's hasher seeds
 /// draw it (a different seed per process and per call), mixed with the clock. The digest is keyed and verified server-side
 /// only.
@@ -624,8 +632,6 @@ pub struct Host<G: NetGame> {
     /// The game's state of the host.
     pub game: G,
     pub engine: Engine<G>,
-    /// The step limit of an outermost run outside the network host ([`NetShared::step_limit`]).
-    pub step_limit: Option<u64>,
     pub clock: NetClock,
     /// The game's ghost sources: the hub's game.
     pub ghosts: G::Ghosts,
@@ -643,7 +649,6 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         transport,
         game,
         engine,
-        step_limit,
         clock,
         ghosts: sources,
         container,
@@ -670,7 +675,6 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         source_work: HashMap::new(),
         counters: Counters::default(),
         trace: None,
-        step_limit,
         run_limit: NET_SCRIPT_RUN_STEPS,
         commands_per_conn_per_s: None,
         commands: None,

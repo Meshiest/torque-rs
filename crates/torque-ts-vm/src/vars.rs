@@ -7,6 +7,7 @@
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::memory::{ENTRY_COST, MemoryAccount};
 use crate::text::{
     atof, atoi, f64_to_u32, fold, format_g, format_int, until_nul, with_format_g, with_format_int,
 };
@@ -32,7 +33,8 @@ pub enum EngineType {
     Str,
 }
 
-#[derive(Debug, Clone)]
+/// A variable. Its bytes count in its dictionary's [`MemoryAccount`]: a store the account cannot take is not made.
+#[derive(Debug)]
 pub struct Entry {
     /// The name as it was first written (`export` prints it).
     name: Vec<u8>,
@@ -45,11 +47,38 @@ pub struct Entry {
     stale: Cell<bool>,
     /// Set for a variable the host registered ([`Dictionary::add_engine`]).
     engine: Option<EngineType>,
+    account: MemoryAccount,
+    /// What the entry counts in `account` ([`size`](Self::size) when it was last settled).
+    held: usize,
+}
+
+impl Drop for Entry {
+    fn drop(&mut self) {
+        self.account.settle(self.held, 0);
+    }
+}
+
+impl Clone for Entry {
+    fn clone(&self) -> Entry {
+        let mut entry = Entry {
+            name: self.name.clone(),
+            kind: self.kind,
+            sval: self.sval.clone(),
+            ival: self.ival.clone(),
+            fval: self.fval.clone(),
+            stale: self.stale.clone(),
+            engine: self.engine,
+            account: self.account.clone(),
+            held: 0,
+        };
+        entry.settle();
+        entry
+    }
 }
 
 impl Entry {
-    fn new(name: &[u8]) -> Entry {
-        Entry {
+    fn new(name: &[u8], account: MemoryAccount) -> Entry {
+        let mut entry = Entry {
             name: until_nul(name).to_vec(),
             kind: Kind::Str,
             sval: Vec::new(),
@@ -57,7 +86,45 @@ impl Entry {
             fval: Cell::new(0.0),
             stale: Cell::new(false),
             engine: None,
+            account,
+            held: 0,
+        };
+        entry.settle();
+        entry
+    }
+
+    /// What an entry spelled `name` counts before it holds a value.
+    fn new_size(name: &[u8]) -> usize {
+        ENTRY_COST + 2 * until_nul(name).len()
+    }
+
+    /// What the entry counts: its name twice (the spelling and the index key), its value's room and [`ENTRY_COST`].
+    fn size(&self) -> usize {
+        ENTRY_COST + 2 * self.name.capacity() + self.sval.capacity()
+    }
+
+    /// Brings the account up to date with what the entry holds now.
+    fn settle(&mut self) {
+        let size = self.size();
+        self.account.settle(self.held, size);
+        self.held = size;
+    }
+
+    /// Whether the account takes a value of `len` bytes in place of the one held ([`refill`] grows the room to exactly
+    /// `len`); a refusal is noted on the account.
+    fn admits_value(&self, len: usize) -> bool {
+        let extra = len.saturating_sub(self.sval.capacity());
+        if extra == 0 || self.account.fits(extra) {
+            return true;
         }
+        self.account.refuse();
+        false
+    }
+
+    /// Stops counting the entry (a spare one the dictionary keeps for reuse: it is counted again when it serves).
+    fn release(&mut self) {
+        self.account.settle(self.held, 0);
+        self.held = 0;
     }
 
     /// Makes a spare entry what [`Entry::new`] makes, keeping its buffers (a short value's room; a long one's is let go).
@@ -69,6 +136,7 @@ impl Entry {
         self.fval.set(0.0);
         self.stale.set(false);
         self.engine = None;
+        self.settle();
     }
 
     /// The host's C type, for a variable it registered.
@@ -80,6 +148,9 @@ impl Entry {
     /// `getIntValue` (`atoi` of it) and `getFloatValue` (`atof` of it) read from that text.
     fn store_engine(&mut self, t: EngineType, text: &[u8]) {
         let text = until_nul(text);
+        if !self.admits_value(text.len()) {
+            return;
+        }
         self.sval = match t {
             EngineType::S32 => atoi(text).to_string().into_bytes(),
             EngineType::Bool => {
@@ -93,6 +164,7 @@ impl Entry {
         self.fval.set(atof(&self.sval) as f32);
         self.stale.set(false);
         self.kind = Kind::Str;
+        self.settle();
     }
 
     /// The name as it was first written.
@@ -185,19 +257,25 @@ impl Entry {
             return self.store_engine(t, value);
         }
         let value = until_nul(value);
+        if !self.admits_value(value.len()) {
+            return;
+        }
         refill(&mut self.sval, value);
         self.stale.set(true);
         self.kind = Kind::Str;
+        self.settle();
     }
 }
 
 /// Puts `value` in `buffer`, reusing its room unless that is far more than `value` needs (a variable once set to a long string
-/// gives the room back when a short one replaces it).
+/// gives the room back when a short one replaces it). Room that must grow grows to exactly `value`'s length, so what a
+/// memory account was asked for is what the buffer takes.
 pub fn refill(buffer: &mut Vec<u8>, value: &[u8]) {
     if buffer.capacity() > 1024 && buffer.capacity() / 4 > value.len() {
         *buffer = value.to_vec();
     } else {
         buffer.clear();
+        buffer.reserve_exact(value.len());
         buffer.extend_from_slice(value);
     }
 }
@@ -223,6 +301,10 @@ pub fn string_views(value: &[u8]) -> (u32, f32) {
 /// current variable by slot ([`slot_folded`](Self::slot_folded)) and reach it again ([`at_mut`](Self::at_mut)) without
 /// hashing the name, as long as the dictionary's [`stamp`](Self::stamp) is the same: the stamp is unique to this dictionary
 /// and changes whenever an entry is removed (adding one moves none).
+///
+/// Its entries count their bytes in its [`MemoryAccount`] ([`with_account`](Self::with_account)): an entry the account cannot
+/// take is not added ([`add`](Self::add) and [`add_slot_folded`](Self::add_slot_folded) give None). The spare entries a
+/// [`clear`](Self::clear) keeps are not counted until they serve again.
 #[derive(Debug)]
 pub struct Dictionary {
     /// Folded name to slot.
@@ -234,6 +316,7 @@ pub struct Dictionary {
     /// Entries a [`clear`](Self::clear) let go, with their buffers, for the next additions (a frame's dictionary goes back to
     /// the VM's pool and serves the next call).
     spare: Vec<Entry>,
+    account: MemoryAccount,
 }
 
 /// The entries a dictionary keeps for reuse after a clear.
@@ -301,18 +384,30 @@ fn new_stamp() -> u64 {
 }
 
 impl Default for Dictionary {
+    /// A dictionary on an account of its own, with no limit.
     fn default() -> Dictionary {
+        Dictionary::with_account(MemoryAccount::default())
+    }
+}
+
+impl Dictionary {
+    /// An empty dictionary whose entries count in `account`.
+    pub fn with_account(account: MemoryAccount) -> Dictionary {
         Dictionary {
             index: crate::namehash::NameMap::default(),
             slots: Vec::new(),
             free: Vec::new(),
             stamp: new_stamp(),
             spare: Vec::new(),
+            account,
         }
     }
-}
 
-impl Dictionary {
+    /// The account its entries count in.
+    pub fn account(&self) -> &MemoryAccount {
+        &self.account
+    }
+
     pub fn get(&self, name: &[u8]) -> Option<&Entry> {
         crate::text::with_folded(name, |k| self.get_folded(k))
     }
@@ -362,26 +457,30 @@ impl Dictionary {
         self.add_slot_folded(key, name);
     }
 
-    /// [`add_folded`](Self::add_folded), giving the entry's slot.
-    pub fn add_slot_folded(&mut self, key: &[u8], name: &[u8]) -> usize {
+    /// [`add_folded`](Self::add_folded), giving the entry's slot; None when the account cannot take a new entry.
+    pub fn add_slot_folded(&mut self, key: &[u8], name: &[u8]) -> Option<usize> {
         if let Some(slot) = self.slot_folded(key) {
-            return slot;
+            return Some(slot);
         }
-        let slot = self.new_slot(name);
+        let slot = self.new_slot(name)?;
         self.index.insert(Key::new(until_nul(key)), slot);
-        slot
+        Some(slot)
     }
 
-    /// A slot holding a new entry spelled `name`.
-    fn new_slot(&mut self, name: &[u8]) -> usize {
+    /// A slot holding a new entry spelled `name`; None when the account cannot take it.
+    fn new_slot(&mut self, name: &[u8]) -> Option<usize> {
+        if !self.account.fits(Entry::new_size(name)) {
+            self.account.refuse();
+            return None;
+        }
         let entry = match self.spare.pop() {
             Some(mut entry) => {
                 entry.reset(name);
                 entry
             }
-            None => Entry::new(name),
+            None => Entry::new(name, self.account.clone()),
         };
-        match self.free.pop() {
+        Some(match self.free.pop() {
             Some(slot) => {
                 self.slots[slot] = Some(entry);
                 slot
@@ -390,31 +489,33 @@ impl Dictionary {
                 self.slots.push(Some(entry));
                 self.slots.len() - 1
             }
-        }
+        })
     }
 
     /// The entry for `name`, created empty when missing (with `name` as its spelling: the string
-    /// table keeps the first spelling of a name, and so does an entry until it is removed).
-    pub fn add(&mut self, name: &[u8]) -> &mut Entry {
+    /// table keeps the first spelling of a name, and so does an entry until it is removed). None when the account cannot
+    /// take a new entry (the refusal is noted on it).
+    pub fn add(&mut self, name: &[u8]) -> Option<&mut Entry> {
         let key = fold(until_nul(name));
         let slot = match self.slot_folded(&key) {
             Some(slot) => slot,
             None => {
-                let slot = self.new_slot(name);
+                let slot = self.new_slot(name)?;
                 self.index.insert(Key::new(&key), slot);
                 slot
             }
         };
-        self.slots[slot].get_or_insert_with(|| Entry::new(name))
+        self.slots.get_mut(slot)?.as_mut()
     }
 
     /// `Con::addVariable(name, type, &global)` before any script runs: the entry (spelled `name`, created if missing) is
     /// bound to a C variable of type `t` holding `initial` (the host's static value), and keeps the type until it is
     /// removed (`deleteVariables` drops the binding with the entry, as TGE's does).
     pub fn add_engine(&mut self, name: &[u8], t: EngineType, initial: &[u8]) {
-        let entry = self.add(name);
-        entry.engine = Some(t);
-        entry.store_engine(t, initial);
+        if let Some(entry) = self.add(name) {
+            entry.engine = Some(t);
+            entry.store_engine(t, initial);
+        }
     }
 
     /// Removes a variable; true when it existed.
@@ -443,7 +544,12 @@ impl Dictionary {
     pub fn clear(&mut self) {
         self.index.clear();
         let room = SPARE_ENTRIES.saturating_sub(self.spare.len());
-        self.spare.extend(self.slots.drain(..).flatten().take(room));
+        let spare = self.slots.drain(..).flatten().take(room).map(|mut entry| {
+            entry.reset(b"");
+            entry.release();
+            entry
+        });
+        self.spare.extend(spare);
         self.free.clear();
         self.stamp = new_stamp();
     }
@@ -511,11 +617,32 @@ mod engine_tests {
         assert!(e.is_string());
     }
 
+    /// A store grows the room to exactly the value, so the account holds what was admitted; a cleared dictionary's spare
+    /// entries are not counted, and a refused entry is not added.
+    #[test]
+    fn the_account_counts_the_room_entries_take() {
+        let account = MemoryAccount::with_limit(1 << 20);
+        let mut d = Dictionary::with_account(account.clone());
+        let e = d.add(b"%x").unwrap();
+        e.set_string(&[b'a'; 10]);
+        e.set_string(&[b'b'; 5000]);
+        assert_eq!(e.sval.capacity(), 5000);
+        assert_eq!(account.held() as usize, e.size());
+        d.add(b"%y").unwrap().set_string(b"y");
+        d.clear();
+        assert_eq!(account.held(), 0, "spare entries are not counted");
+        assert!(d.add(&[b'n'; 2 << 20]).is_none());
+        assert!(account.take_refused() && d.is_empty());
+        let e = d.add(b"%z").unwrap();
+        e.set_string(&vec![b'z'; 2 << 20]);
+        assert!(e.get_string().is_empty() && account.take_refused());
+    }
+
     /// SECURITY (resource cap): a variable that held a long string gives its room back when a short one replaces it.
     #[test]
     fn a_short_string_after_a_long_one_gives_the_room_back() {
         let mut d = Dictionary::default();
-        let e = d.add(b"%x");
+        let e = d.add(b"%x").unwrap();
         e.set_string(&vec![b'a'; 1 << 20]);
         e.set_string(b"b");
         assert!(e.sval.capacity() < 1024, "{}", e.sval.capacity());
@@ -532,17 +659,17 @@ mod engine_tests {
     #[test]
     fn slots_hold_their_entries_until_the_stamp_changes() {
         let mut d = Dictionary::default();
-        let a = d.add_slot_folded(b"%a", b"%A");
+        let a = d.add_slot_folded(b"%a", b"%A").unwrap();
         let stamp = d.stamp();
         d.at_mut(a).unwrap().set_string(b"1");
-        let b = d.add_slot_folded(b"%b", b"%b");
+        let b = d.add_slot_folded(b"%b", b"%b").unwrap();
         assert_eq!((d.stamp(), d.slot_folded(b"%a")), (stamp, Some(a)));
-        assert_eq!(d.add_slot_folded(b"%a", b"%a"), a);
+        assert_eq!(d.add_slot_folded(b"%a", b"%a").unwrap(), a);
         assert_eq!(d.at(a).unwrap().name(), b"%A");
         assert!(d.remove(b"%A"));
         assert_ne!(d.stamp(), stamp);
         assert!(d.at(a).is_none() && d.get(b"%a").is_none());
-        let c = d.add_slot_folded(b"%c", b"%c");
+        let c = d.add_slot_folded(b"%c", b"%c").unwrap();
         assert_eq!(c, a, "the emptied slot is used again");
         assert_eq!(d.get_folded(b"%b").map(Entry::name), Some(&b"%b"[..]));
         assert_eq!(d.at(b).map(Entry::name), Some(&b"%b"[..]));
@@ -555,7 +682,7 @@ mod engine_tests {
     #[test]
     fn a_name_is_the_same_variable_up_to_its_nul() {
         let mut d = Dictionary::default();
-        d.add(b"$Pref::Dev\0x").set_string(b"1");
+        d.add(b"$Pref::Dev\0x").unwrap().set_string(b"1");
         assert_eq!(
             d.get(b"$pref::dev").map(Entry::get_string).as_deref(),
             Some(&b"1"[..])
@@ -564,7 +691,9 @@ mod engine_tests {
             d.get(b"$Pref::Dev").map(Entry::name),
             Some(&b"$Pref::Dev"[..])
         );
-        let slot = d.add_slot_folded(b"$pref::dev\0y", b"$Pref::Dev\0y");
+        let slot = d
+            .add_slot_folded(b"$pref::dev\0y", b"$Pref::Dev\0y")
+            .unwrap();
         assert_eq!(d.slot_folded(b"$pref::dev"), Some(slot));
         assert_eq!(d.len(), 1);
         assert!(d.remove(b"$PREF::DEV\0z"));
@@ -577,12 +706,12 @@ mod engine_tests {
     fn a_cleared_dictionary_gives_fresh_entries() {
         let mut d = Dictionary::default();
         d.add_engine(b"$Old::Kept", EngineType::S32, b"5");
-        d.add(b"%x").set_float(2.5);
+        d.add(b"%x").unwrap().set_float(2.5);
         let long = [b'%'; 40];
-        d.add(&long).set_string(b"long");
+        d.add(&long).unwrap().set_string(b"long");
         d.clear();
         for name in [&b"%Y"[..], b"%z", &long] {
-            let e = d.add(name);
+            let e = d.add(name).unwrap();
             assert_eq!(e.name(), name);
             assert!(e.is_string() && e.get_string().is_empty() && e.engine_type().is_none());
             assert_eq!((e.get_int(), e.get_float()), (0, 0.0));
@@ -594,7 +723,7 @@ mod engine_tests {
     fn removing_a_registered_variable_drops_its_type() {
         let mut d = entry(EngineType::S32, b"4");
         assert!(d.remove(b"$PREF::X"));
-        d.add(b"$pref::x").set_string(b"2.7");
+        d.add(b"$pref::x").unwrap().set_string(b"2.7");
         let e = d.get(b"$pref::x").unwrap();
         assert_eq!((e.get_string(), e.engine_type()), (b"2.7".to_vec(), None));
     }

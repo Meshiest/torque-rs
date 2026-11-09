@@ -218,8 +218,15 @@ impl Vm {
                 .and_then(|o| o.slot(slot).cloned())
                 .unwrap_or_else(|| fields::zero(spec.ty));
             fields::set(spec.ty, &mut current, value, &mut VmEnv(self));
-            if let Some(stored) = self.target(id).and_then(|o| o.slot_mut(slot)) {
-                *stored = current;
+            // A text the memory account cannot take is not stored (the run ends at its next instruction).
+            if let Some(object) = self.target(id) {
+                let old = object.slot(slot).map_or(0, Value::held_bytes);
+                if object.has_room(current.held_bytes().saturating_sub(old))
+                    && let Some(stored) = object.slot_mut(slot)
+                {
+                    *stored = current;
+                    object.settle_own();
+                }
             }
         }
         if let (true, Some(validator), Some(first)) = (validated, spec.validator, first) {

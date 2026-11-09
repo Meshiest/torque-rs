@@ -7,7 +7,9 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::classes::file_object::MAX_OPEN_READ_BYTES;
 pub use crate::fields::FieldRules;
+use crate::memory::{DEFAULT_SCRIPT_BYTES, MAX_SCRIPT_BYTES};
 use crate::sim::{FIRST_DATABLOCK_ID, ObjId};
 pub use crate::tags::TagRules;
 use crate::vm::{Level, Vm};
@@ -88,6 +90,38 @@ pub trait FileRules {
     fn looked_up(&self, _path: &[u8]) {}
     /// A file was copied onto `path`, which existed with that length before (None: it did not).
     fn copied_onto(&self, _path: &[u8], _existed: Option<u64>) {}
+    /// How much scripts may write ([`WriteQuota`]).
+    fn write_quota(&self) -> WriteQuota {
+        WriteQuota::default()
+    }
+}
+
+/// The window of simulation time a [`WriteQuota`] counts in: an hour. The counts start again in each, so a server that
+/// runs for weeks still saves its prefs.
+pub const WRITE_WINDOW_MS: u32 = 3_600_000;
+
+/// What scripts may write through a `Vm` in each [`WRITE_WINDOW_MS`] of simulation time: a write (`writeLine`, `export`,
+/// `fileCopy`, and the engine's own prefs export, which goes through `export`) that would make a file larger than
+/// `per_file`, or pass `per_hour` bytes or `files_per_hour` files opened for writing in the window, is refused with the
+/// [`Messages::write_quota_used`] line, and writes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteQuota {
+    /// 256 MiB by default, what a `FileObject` reads at most.
+    pub per_file: u64,
+    /// 1 GiB by default.
+    pub per_hour: u64,
+    /// 4096 by default.
+    pub files_per_hour: u32,
+}
+
+impl Default for WriteQuota {
+    fn default() -> WriteQuota {
+        WriteQuota {
+            per_file: MAX_OPEN_READ_BYTES as u64,
+            per_hour: 1 << 30,
+            files_per_hour: 4096,
+        }
+    }
 }
 
 /// What a game checks of a file `exec` was asked to run, after the name is expanded and has an extension and before
@@ -123,6 +157,11 @@ pub struct Limits {
     /// fires between two looks at its clock (every event it takes counts, the first look comes after the first
     /// batch). 1 by default.
     pub pass_batch: usize,
+    /// The bytes scripts may hold in variables, objects and dynamic fields ([`crate::memory`]), lowered by the pref
+    /// [`MEMORY_LIMIT_PREF`](crate::memory::MEMORY_LIMIT_PREF) when that is smaller; at most
+    /// [`MAX_SCRIPT_BYTES`]. [`DEFAULT_SCRIPT_BYTES`]
+    /// by default.
+    pub max_script_bytes: u64,
 }
 
 impl Limits {
@@ -143,6 +182,7 @@ impl Default for Limits {
             max_active_packages: crate::ns::MAX_ACTIVE_PACKAGES,
             datablock_ids: DATABLOCK_IDS,
             pass_batch: 1,
+            max_script_bytes: DEFAULT_SCRIPT_BYTES,
         }
     }
 }
@@ -210,6 +250,10 @@ pub trait Messages {
     /// A write the host or another writer refused (error level).
     fn write_open_failed(&self, path: &str) -> String {
         format!("cannot open \"{path}\" for writing")
+    }
+    /// A write the [`WriteQuota`] refused (error level).
+    fn write_quota_used(&self, path: &str) -> String {
+        format!("cannot write \"{path}\": scripts have written all they may")
     }
     /// `cancel` of an event the runtime posted, not a script (error level).
     fn cancel_not_scheduled(&self, seq: i32) -> String {
@@ -362,6 +406,9 @@ impl Vm {
             .set_max_active(limits.max_active_packages);
         self.objects_mut()
             .set_datablock_id_limit(limits.datablock_id_limit());
+        self.objects()
+            .memory()
+            .set_limit(limits.max_script_bytes.min(MAX_SCRIPT_BYTES));
     }
 
     /// Sets how the runtime reports the failures [`ConsoleRules`] names.

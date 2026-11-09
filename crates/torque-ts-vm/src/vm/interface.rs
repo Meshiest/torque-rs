@@ -60,6 +60,9 @@ impl Vm {
                 return Err(VmError::StepLimit);
             }
         }
+        if self.objects.memory().take_refused() {
+            return Err(VmError::MemoryLimit);
+        }
         Ok(())
     }
 
