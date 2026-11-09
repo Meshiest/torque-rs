@@ -83,6 +83,8 @@
 //!   (`rpc_one_connection_cannot_crowd_out_the_others_inbox`).
 //! - Two RPCs may not share a script handler, compared without case after punctuation becomes `_`
 //!   (`rpc_two_rpcs_that_share_a_script_handler_do_not_register`).
+//! - Two RPCs may not ask for the same default permission: the plugin's id is one segment (`.` becomes `_`), and a clash after
+//!   that cleaning is refused at registration (`rpc_two_rpcs_that_share_a_default_permission_do_not_register`).
 //! - What a side sends is held to the same buckets the receiver applies, and a refused batch stays queued in order
 //!   (`rpc_what_a_side_sends_is_held_to_the_same_rates`, `rpc_a_refused_batch_stays_queued_in_order_and_replies_count_against_the_queue`).
 //!
@@ -760,7 +762,8 @@ impl<Req: NetMessage, Resp: NetMessage> RpcBuilder<'_, Req, Resp, ToServer> {
     }
 
     /// Asks for the default permission, `rpc.<plugin>.<name>` (the plugin's id and the RPC's name, lowercased, anything but
-    /// letters, digits, `.`, `_` and `-` made `_`): only callers who hold it may call. Replaces [`allow`](Self::allow).
+    /// letters, digits, `.`, `_` and `-` made `_`, and the plugin's `.` made `_` too so it is one segment): only callers who
+    /// hold it may call. Replaces [`allow`](Self::allow). An RPC whose default permission another RPC already has is refused.
     #[must_use]
     pub fn default_permission(mut self) -> Self {
         self.default_permission = true;
@@ -824,13 +827,14 @@ pub fn script_function(prefix: &str, name: &str) -> String {
     format!("{prefix}_{clean}")
 }
 
-/// The permission an RPC asks for by default: `rpc.<plugin>.<name>`.
+/// The permission an RPC asks for by default: `rpc.<plugin>.<name>`. The plugin's id is one segment (its `.` becomes `_`), so
+/// a plugin's id cannot reach into the RPC name's segments.
 fn default_permission_name(plugin: PluginId, name: &str) -> String {
-    let clean = |text: &str| -> String {
+    let clean = |text: &str, keep_dot: bool| -> String {
         text.to_ascii_lowercase()
             .chars()
             .map(|c| {
-                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') || (keep_dot && c == '.') {
                     c
                 } else {
                     '_'
@@ -838,7 +842,11 @@ fn default_permission_name(plugin: PluginId, name: &str) -> String {
             })
             .collect()
     };
-    format!("rpc.{}.{}", clean(plugin.as_str()), clean(name))
+    format!(
+        "rpc.{}.{}",
+        clean(plugin.as_str(), false),
+        clean(name, true)
+    )
 }
 
 fn valid_name(name: &str) -> bool {
@@ -853,6 +861,7 @@ impl<Req: NetMessage, Resp: NetMessage, D> RpcBuilder<'_, Req, Resp, D> {
     fn finish(mut self, handler: Handler) -> RpcRef<Req, Resp> {
         let plugin = self.engine.current_plugin();
         let mut bad_permission = None;
+        let mut default_clash = None;
         if self.default_permission {
             let name = default_permission_name(plugin, &self.name);
             if let Err(error) = torque_permissions::Permission::parse(&name) {
@@ -860,6 +869,15 @@ impl<Req: NetMessage, Resp: NetMessage, D> RpcBuilder<'_, Req, Resp, D> {
                     "the default permission `{name}` is not a permission ({error}): shorten the plugin id or the RPC name, or name one with `allow`"
                 ));
             }
+            default_clash = self
+                .engine
+                .list::<RpcEntry>()
+                .iter()
+                .find(|e| {
+                    matches!(&e.allow, Allow::Permission(p) if *p == name)
+                        && default_permission_name(e.plugin, &e.name) == name
+                })
+                .map(|e| (name.clone(), e.name.clone(), e.plugin));
             self.allow = Allow::Permission(name);
         } else if let Allow::Permission(p) = &self.allow
             && let Err(error) = torque_permissions::Permission::parse(p)
@@ -883,6 +901,11 @@ impl<Req: NetMessage, Resp: NetMessage, D> RpcBuilder<'_, Req, Resp, D> {
         let response = MessageCodec::of::<Resp>();
         let problem = if let Some(error) = bad_permission {
             Some(format!("RPC `{}`: {error}", self.name))
+        } else if let Some((permission, other, other_plugin)) = default_clash {
+            Some(format!(
+                "RPC `{}` and RPC `{other}` of plugin `{other_plugin}` would both ask for the default permission `{permission}` (a plugin id's `.` becomes `_`, names are lowercased and punctuation becomes `_`): rename one, or name a permission with `allow`",
+                self.name
+            ))
         } else if let Some((function, other)) = script_clash {
             Some(format!(
                 "RPC `{}` and RPC `{other}` would both be handled by the script function `{function}` (an RPC name's punctuation becomes `_` in the function, and the function's case is ignored): rename one",

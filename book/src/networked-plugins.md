@@ -341,7 +341,7 @@ connection (128 KiB each); a client that goes over its share is dropped with the
 server before the handler runs; `cx.has_permission("..")`, `cx.caller()` and `cx.resolve(ghost)` are what a check and a handler
 ask. A permission named in `allow` is validated when the RPC is registered and declared for the plugin if it is not already (see
 [Permissions](#permissions)); `.default_permission()` asks for `rpc.<plugin>.<name>` instead (the plugin's id and the RPC's name,
-lowercased, other characters made `_`). After that the server script's `onRpcCheck(%client, %name)`, if the game defines it, must
+lowercased, other characters made `_`, the plugin's `.` too, so it is one segment; two RPCs that end up with the same one are refused). After that the server script's `onRpcCheck(%client, %name)`, if the game defines it, must
 answer true for the call to run: `0`, `false`, an empty answer and a function that fails all deny it (a game that defines none leaves
 the decision to `Allow`). A call whose caller has no connection object on the server is refused. A server command takes the same
 check: `CommandSpec::requires("chat.mute")`. A client has no permissions of its own: `has_permission` is false there.

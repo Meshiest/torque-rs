@@ -635,7 +635,7 @@ fn rpc_default_permission_is_named_after_the_plugin_and_the_rpc() {
     let table = engine.net_rpcs().unwrap();
     let entry = table.get(table.id("defaulted").unwrap()).unwrap();
     assert!(
-        matches!(&entry.allow, Allow::Permission(p) if p == "rpc.test.rpc.defaulted"),
+        matches!(&entry.allow, Allow::Permission(p) if p == "rpc.test_rpc.defaulted"),
         "{:?}",
         entry.allow
     );
@@ -646,12 +646,12 @@ fn rpc_default_permission_is_named_after_the_plugin_and_the_rpc() {
         .map(|d| d.name.as_str())
         .collect();
     assert!(
-        declared.contains(&"rpc.test.rpc.defaulted") && declared.contains(&"props.spawn"),
+        declared.contains(&"rpc.test_rpc.defaulted") && declared.contains(&"props.spawn"),
         "{declared:?}"
     );
     // The holder of exactly that permission is let in, a stranger is not.
     let mut roles = torque_permissions::Roles::default();
-    roles.define("caller", &["rpc.test.rpc.*"]).unwrap();
+    roles.define("caller", &["rpc.test_rpc.*"]).unwrap();
     let mut subject = torque_permissions::Subject::default();
     subject.add_role(&roles, "caller").unwrap();
     let mut pair = Pair::as_caller(&engine, STRANGER, Holder { roles, subject });
@@ -1451,6 +1451,73 @@ fn rpc_two_rpcs_that_share_a_script_handler_do_not_register() {
     assert!(
         EngineBuilder::new()
             .add_plugins(Clash("chat.note", "chat.talk"))
+            .build()
+            .is_ok()
+    );
+}
+
+#[test]
+fn rpc_two_rpcs_that_share_a_default_permission_do_not_register() {
+    struct Ask(&'static [&'static str]);
+    impl Plugin for Ask {
+        fn build(&self, engine: &mut EngineBuilder) {
+            for name in self.0 {
+                engine
+                    .net()
+                    .rpc::<Echo, ()>(name)
+                    .to_server()
+                    .default_permission()
+                    .server(|_cx: &mut RpcCx, _r: Echo| Ok(()));
+            }
+        }
+    }
+    impl crate::PluginType for Ask {
+        const ID: PluginId = PluginId::new("test.ask");
+    }
+    macro_rules! plugin {
+        ($ty:ident, $id:literal, $names:expr) => {{
+            struct $ty;
+            impl Plugin for $ty {
+                fn build(&self, engine: &mut EngineBuilder) {
+                    Ask($names).build(engine);
+                }
+            }
+            impl crate::PluginType for $ty {
+                const ID: PluginId = PluginId::new($id);
+            }
+            $ty
+        }};
+    }
+    let refused = |builder: &mut EngineBuilder| builder.build().unwrap_err().to_string();
+
+    // Plugin `a.b` with `c` and plugin `a` with `b.c` get different permissions (the plugin's id is one segment).
+    let engine = EngineBuilder::new()
+        .add_plugins(plugin!(Dotted, "a.b", &["c"]))
+        .add_plugins(plugin!(Plain, "a", &["b.c"]))
+        .build()
+        .expect("distinct permissions");
+    let table = engine.net_rpcs().unwrap();
+    let permission = |name: &str| match &table.get(table.id(name).unwrap()).unwrap().allow {
+        Allow::Permission(p) => p.clone(),
+        _ => panic!("{name}: not a permission"),
+    };
+    assert_eq!(permission("c"), "rpc.a_b.c");
+    assert_eq!(permission("b.c"), "rpc.a.b.c");
+    // `a.b` and `a_b` clean to the same segment.
+    let error = refused(
+        EngineBuilder::new()
+            .add_plugins(plugin!(Dotted2, "a.b", &["c"]))
+            .add_plugins(plugin!(Under, "a_b", &["c"])),
+    );
+    assert!(error.contains("default permission"), "{error}");
+    // Names that differ only in case or punctuation, in one plugin.
+    let error = refused(EngineBuilder::new().add_plugins(Ask(&["Ping", "ping"])));
+    assert!(error.contains("default permission"), "{error}");
+    // Distinct names are fine, across plugins too.
+    assert!(
+        EngineBuilder::new()
+            .add_plugins(plugin!(One, "a.b", &["c", "d"]))
+            .add_plugins(plugin!(Two, "a", &["b.e"]))
             .build()
             .is_ok()
     );
