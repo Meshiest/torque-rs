@@ -5,6 +5,14 @@
 //! ([`sky`]), the water's planar target and its frame terms ([`water`]), and the static geometry's arena ([`arena`]) culled into
 //! draw lists ([`cull`]); what a world's static geometry brings beside the engine's frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains, full-frame pipelines, the pass
 //! and draw counts by kind).
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - Nothing past the device's largest buffer is asked of it: an upload whose loose draws do not fit leaves them out for the frame
+//!   and counts it ([`HdWorld::oversize_uploads`]), the meshes' places too, so no draw reads another frame's places
+//!   (`loose_draws_past_the_largest_buffer_are_left_out_and_counted_not_a_panic`,
+//!   `a_table_of_mesh_places_past_the_largest_buffer_leaves_the_loose_draws_out`).
 
 use glam::Vec3;
 use torque_render_core::wgpu;

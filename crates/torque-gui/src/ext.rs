@@ -7,7 +7,7 @@ use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use torque_fonts::Font;
+use torque_fonts::{Font, FontUse};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -19,13 +19,18 @@ pub const DEFAULT_FONT_DIR: &str = "common/ui/cache";
 
 /// Where the GUI's fonts come from: a face at a size, loaded on first use.
 pub trait FontSource {
-    /// The font for `face` at `size`, read on first use with `read` (a path relative to the root folder).
+    /// The font for `face` at `size`, read on first use with `read` (a path relative to the root folder), kept under the quota
+    /// of `user` ([`FontUse`]: the fonts a server's text names must never take the game's own).
     fn font(
         &mut self,
         face: &str,
         size: i32,
+        user: FontUse,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Arc<Font>>;
+
+    /// A frame starts ([`torque_fonts::FontCache::next_frame`]): the markup fonts used from now on stay until the next one.
+    fn next_frame(&mut self);
 
     /// The cache under it (its counts, the faces it could not find).
     fn cache(&self) -> &torque_fonts::FontCache;
@@ -40,9 +45,14 @@ impl FontSource for torque_fonts::FontCache {
         &mut self,
         face: &str,
         size: i32,
+        user: FontUse,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Arc<Font>> {
-        self.get(face, size, read).map(|(f, _)| f)
+        self.get_for(face, size, user, read).map(|(f, _)| f)
+    }
+
+    fn next_frame(&mut self) {
+        torque_fonts::FontCache::next_frame(self);
     }
 
     fn cache(&self) -> &torque_fonts::FontCache {

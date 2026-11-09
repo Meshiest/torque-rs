@@ -2436,3 +2436,44 @@ fn client_script_a_prompt_takes_the_keys_and_escape_is_the_hosts() {
         "with no prompt and nothing held, the game's"
     );
 }
+
+#[test]
+fn client_script_the_server_layer_fonts_are_markup_and_never_the_games() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    for size in 8..=72u32 {
+        ops.create(
+            size - 6,
+            1,
+            Kind::Text,
+            &[
+                (Prop::Text, text("hi")),
+                (Prop::FontSize, PropValue::Number(f64::from(size))),
+            ],
+        );
+    }
+    rig.apply_ok(&ops);
+    // A frame loads at most its share of new markup fonts; the rest come in the next frames.
+    let mut keys = Vec::new();
+    for _ in 0..12 {
+        rig.draw();
+        keys.push(rig.cache.fonts.cache().server_usage().1);
+    }
+    let steps: Vec<usize> = keys.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(
+        keys[0] <= crate::draw::MAX_FRAME_MARKUP_LOADS as usize,
+        "{keys:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .all(|&s| s <= crate::draw::MAX_FRAME_MARKUP_LOADS as usize),
+        "{keys:?}"
+    );
+    // The sizes the realm named are kept under the server's share of the markup quota (a size the engine also uses is the
+    // engine's), so the game's fonts are never the ones it fills.
+    let (_, keys) = rig.cache.fonts.cache().server_usage();
+    assert!(keys >= 60, "{keys} server fonts");
+    assert!(keys <= torque_fonts::MAX_SERVER_FONTS);
+}

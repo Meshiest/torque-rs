@@ -30,6 +30,11 @@
 //! **Mounts speak only for their own files.** `ModsPlugin` adds an asset classifier that says untrusted for the paths a mod or a
 //! server mount serves and `None` for every other path; a path nobody says is trusted stays untrusted. Server files are checked with
 //! `Assets::debug_assert_untrusted` when they are mounted (`mount_server_files`). A new kind of mount does both.
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - `read_prefix` answers as `read` does, cut: a mod's file over the game's, the files under it below
+//!   and a zip mod's entry inflates only the prefix (`a_prefix_read_of_a_mods_file_is_the_start_of_what_a_read_gives`,
+//!   `a_prefix_read_of_a_zip_mods_file_is_its_start`).
 
 #![warn(missing_docs)]
 

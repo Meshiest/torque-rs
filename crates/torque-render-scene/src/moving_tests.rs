@@ -575,3 +575,154 @@ fn a_plugin_ghosts_skin_is_the_texture_its_first_material_shows() {
         "{skinned:?}"
     );
 }
+
+/// A world of `n` StaticShapes of the solid box (ghosts 1 to `n`) in a row along y, each its own shape file when `distinct`.
+fn crowd(n: u32, distinct: bool) -> (ClientWorld<TgeClientSet>, Files) {
+    let (one, files) = world([0.0; 3]);
+    let dts = files.0[CRATE].clone();
+    let mut w = one.clone();
+    let mut all = HashMap::new();
+    w.ghosts.clear();
+    for i in 1..=n {
+        let path = if distinct {
+            format!("demo/data/shapes/crate{i}.dts")
+        } else {
+            CRATE.to_string()
+        };
+        all.insert(path.clone(), dts.clone());
+        let db = 1000 + i;
+        w.datablocks.insert(
+            db,
+            datablock("StaticShapeData", &[("shapeFile", Value::str(&path))]),
+        );
+        let mut g = one.ghosts[&1].clone();
+        if let Some(TgeRecord::StaticShape(s)) = g.record.as_mut() {
+            s.shape.game.datablock = Some(db);
+            if let Some((xf, _)) = s.transform.as_mut() {
+                xf.position = [0.0, 3.0 * i as f32, 0.0].map(F32::new);
+            }
+        }
+        w.ghosts.insert(i, g);
+    }
+    (w, Files(all))
+}
+
+fn vertices(out: &ShapeDraws) -> usize {
+    out.opaque.iter().map(|d| d.vertices.len()).sum::<usize>()
+        + out
+            .translucent
+            .iter()
+            .flat_map(|(_, ds)| ds)
+            .map(|d| d.vertices.len())
+            .sum::<usize>()
+}
+
+#[test]
+fn a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first() {
+    let (w, files) = crowd(4096, false);
+    let (all, _) = draws_of(&w, &files, &(), ShapeSelect::All, None);
+    let each = vertices(&all) / 4096;
+    assert!(each > 0);
+    let budget = ShapeBudget {
+        max_vertices: 100 * each,
+        max_parses: None,
+    };
+    let (out, _) = with_budget(budget, None, || {
+        draws_of(&w, &files, &(), ShapeSelect::All, None)
+    });
+    assert!(vertices(&out) <= budget.max_vertices);
+    assert_eq!(out.over_budget, 4096 - 100);
+    // The nearest ones are drawn (the camera is at the origin, the row runs away along y).
+    let drawn: std::collections::BTreeSet<u32> = out.opaque_owners.iter().copied().collect();
+    assert_eq!(drawn, (1..=100).collect());
+}
+
+#[test]
+fn a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait() {
+    crate::shapes::clear_loaded();
+    let (w, files) = crowd(300, true);
+    let budget = ShapeBudget {
+        max_vertices: usize::MAX,
+        max_parses: Some(4),
+    };
+    let mut drawn = 0;
+    for frame in 1..=3 {
+        let before = crate::shapes::loaded_stats().0;
+        let (out, notes) = with_budget(budget, None, || {
+            draws_of(&w, &files, &(), ShapeSelect::All, None)
+        });
+        let loaded = crate::shapes::loaded_stats().0 - before;
+        assert!(loaded <= 4, "frame {frame}: {loaded} parsed");
+        assert!(notes.iter().any(|n| n.contains("put off")));
+        let now: std::collections::BTreeSet<u32> = out.opaque_owners.iter().copied().collect();
+        assert!(
+            now.len() > drawn,
+            "frame {frame}: the shapes loaded before are drawn"
+        );
+        drawn = now.len();
+    }
+    assert_eq!(drawn, 12);
+    crate::shapes::clear_loaded();
+}
+
+#[test]
+fn ghosts_of_one_shape_posed_the_same_share_one_kept_build() {
+    let (w, files) = crowd(100, false);
+    let (out, _) = crate::shapecache::with_cache(|| {
+        with_nodes(true, || draws_of(&w, &files, &(), ShapeSelect::All, None))
+    });
+    let stamps: std::collections::BTreeSet<u64> =
+        out.calls.values().flatten().map(|c| c.stamp).collect();
+    assert_eq!(out.calls.len(), 100);
+    assert_eq!(stamps.len(), 1, "{stamps:?}");
+    assert_eq!(crate::shapecache::kept_builds(), 1);
+}
+
+#[test]
+fn the_control_objects_shape_loads_whatever_the_parse_budget_has_left() {
+    crate::shapes::clear_loaded();
+    let (mut w, files) = crowd(300, true);
+    // The control object comes last in the ghosts' order, after 299 shapes nothing has parsed yet.
+    w.control.object = Some(300);
+    let budget = ShapeBudget {
+        max_vertices: usize::MAX,
+        max_parses: Some(4),
+    };
+    let before = crate::shapes::loaded_stats().0;
+    let (out, _) = with_budget(budget, None, || {
+        draws_of(&w, &files, &(), ShapeSelect::All, None)
+    });
+    assert!(
+        out.opaque_owners.contains(&300),
+        "the control object is drawn"
+    );
+    assert_eq!(
+        crate::shapes::loaded_stats().0 - before,
+        5,
+        "four parses and the control object's"
+    );
+    assert_eq!(out.put_off, 299 - 4);
+    crate::shapes::clear_loaded();
+}
+
+#[test]
+fn only_the_control_object_the_vehicle_it_drives_and_its_mounts_load_past_the_parse_budget() {
+    crate::shapes::clear_loaded();
+    let (mut w, files) = crowd(300, true);
+    w.control.object = Some(300);
+    // A vehicle the client runs on its own is not exempt; the one it drives is.
+    w.vehicle_render
+        .insert(299, w.ghosts[&1].pose().expect("a pose"));
+    let budget = ShapeBudget {
+        max_vertices: usize::MAX,
+        max_parses: Some(0),
+    };
+    let before = crate::shapes::loaded_stats().0;
+    let (out, _) = with_budget(budget, Some(298), || {
+        draws_of(&w, &files, &(), ShapeSelect::All, None)
+    });
+    let drawn: std::collections::BTreeSet<u32> = out.opaque_owners.iter().copied().collect();
+    assert_eq!(drawn, [298, 300].into());
+    assert_eq!(crate::shapes::loaded_stats().0 - before, 2);
+    crate::shapes::clear_loaded();
+}

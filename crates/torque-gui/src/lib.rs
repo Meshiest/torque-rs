@@ -43,6 +43,24 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `gui/core/guiControl.cpp` (Copyright (c)
 //! 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.), `gui/core/guiCanvas.cpp` (Copyright (c) 2012 GarageGames, LLC;
 //! Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - Every font lookup names whose it is ([`torque_fonts::FontUse`]): ML text's `<font:>` styles and a server's client-script
+//!   layer are markup, so they never take a profile's font; the GUI starts a font frame every frame (`Gui::frame`,
+//!   `draw::draw_canvas`; the server's layer is [`torque_fonts::FontUse::Server`]), and a frame's drawing loads at most
+//!   [`draw::MAX_FRAME_MARKUP_LOADS`] new markup fonts (`client_script_the_server_layer_fonts_are_markup_and_never_the_games`,
+//!   `a_reflow_of_a_thousand_font_tags_stays_within_the_markup_quota_and_spares_the_profiles`).
+//! - A reflow charges every font it loads before it rasterizes it, and names at most [`mltext::MAX_REFLOW_FACES`] faces
+//!   (`a_reflow_that_cannot_pay_for_its_fonts_stops`).
+//! - A reflow resolves at most [`mltext::MAX_REFLOW_BITMAP_NAMES`] bitmap names, each candidate and byte charged, each file
+//!   sized from its first [`mltext::BITMAP_HEADER_BYTES`] (`a_bitmap_is_sized_from_its_first_bytes_and_every_lookup_is_charged`,
+//!   `a_reflow_of_five_thousand_bitmap_names_resolves_at_most_its_cap_and_reads_only_headers`); a file not sized by its prefix is
+//!   read again at most once, up to [`mltext::BITMAP_SIZE_BYTES`] paid for first, and a file not sized is remembered so
+//!   (`a_bitmap_with_no_header_in_reach_is_read_at_most_once_and_never_past_its_cap`).
+//! - Every pass of a reflow is constant work: tags are pushed and their ids kept in a set, and every number is read from its tag
+//!   alone (`a_reflow_of_sixty_five_thousand_tags_is_linear`, `a_duplicate_tag_id_is_still_counted_once`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -536,6 +554,8 @@ impl Gui {
             vm.end_host_budget(saved);
         }
         self.0.borrow_mut().frames += 1;
+        let fonts = self.0.borrow().fonts.0.clone();
+        fonts.borrow_mut().next_frame();
         // `preRender` (`renderFrame` runs it over the canvas's children after the resize, before drawing): the dirty ML text
         // controls reflow (their `onResize` is a script call), the consoles follow the log, the console texts evaluate, under a
         // budget of their own.

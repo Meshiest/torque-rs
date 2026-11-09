@@ -1031,6 +1031,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     index_runs: slots::Runs,
     /// The previous positions' buffer while an upload needs none.
     spare_previous: Option<wgpu::Buffer>,
+    /// The uploads whose loose draws did not fit one buffer of the device ([`HdWorld::oversize_uploads`]), and a cap below
+    /// the device's largest buffer ([`HdWorld::set_buffer_cap`]).
+    oversize_uploads: u64,
+    buffer_cap: Option<u64>,
     particles: Particles,
     targets: Option<Targets>,
     timer: Option<Timer>,
@@ -2520,6 +2524,8 @@ impl<E: HdExtension> HdWorld<E> {
             node_baked: HashMap::new(),
             index_runs: slots::Runs::default(),
             spare_previous: None,
+            oversize_uploads: 0,
+            buffer_cap: None,
             particles: Particles::default(),
             targets: None,
             timer,
@@ -4488,6 +4494,20 @@ impl<E: HdExtension> HdWorld<E> {
         }
         // The meshes' places: each object's at its first, the rows of its placement now, its normals' turn and its placement at
         // the last frame.
+        let too_big = !self.nodes_fit(node_end)
+            || self.buffer_limit()
+                < (((rest_start + rest_count) * HD_VERTEX_BYTES)
+                    .max((index_rest + indices.len()) * 4) as u64);
+        if too_big {
+            // More than one buffer of the device holds (the vertices, the indices or the meshes' places): no loose draw this frame
+            // (counted), and nothing past the limit is asked of the device. The runs the old buffers held go with them.
+            self.oversize_uploads += 1;
+            self.runs.forget_vertices();
+            self.runs.forget_previous();
+            self.index_runs.forget_vertices();
+            self.loose = loose;
+            return;
+        }
         self.upload_nodes(scene, &loose.objects, node_end);
         if !indices.is_empty() || !index_writes.is_empty() {
             // A window syncs its control object every frame: the buffers are written in place while they are big enough (made
@@ -4705,12 +4725,21 @@ impl<E: HdExtension> HdWorld<E> {
         self.loose = loose;
     }
 
+    /// Whether the table of `end` meshes' places, with its room to grow, fits one storage buffer of the device.
+    fn nodes_fit(&self, end: usize) -> bool {
+        let max = self
+            .buffer_limit()
+            .min(self.device.limits().max_storage_buffer_binding_size);
+        end == 0 || (end + end / 4 + 64) as u64 * NODE_BYTES as u64 <= max
+    }
+
     /// The meshes' places of the frame's objects into the table (`end` places in all; made anew with room to grow when it is too
-    /// small): each object's at its first place.
+    /// small): each object's at its first place. The caller has checked [`HdWorld::nodes_fit`].
     fn upload_nodes(&mut self, scene: &E::Scene, objects: &[GpuObject], end: usize) {
         if end == 0 {
             return;
         }
+
         if (self.nodes.size() as usize) < end * NODE_BYTES {
             self.nodes = Self::nodes_buffer(&self.device, end + end / 4 + 64);
         }
@@ -4735,7 +4764,24 @@ impl<E: HdExtension> HdWorld<E> {
         self.queue.write_buffer(&self.nodes, 0, &bytes);
     }
 
-    /// `old` when it holds `size` bytes, else a new buffer with a quarter more room (and true); nothing written.
+    /// The largest buffer the loose draws are put in: the device's largest, or the cap below it.
+    fn buffer_limit(&self) -> u64 {
+        let max = self.device.limits().max_buffer_size;
+        self.buffer_cap.map_or(max, |cap| cap.min(max))
+    }
+
+    /// Caps the loose draws' buffers below the device's largest (None: the device's; a test lowers it).
+    pub fn set_buffer_cap(&mut self, cap: Option<u64>) {
+        self.buffer_cap = cap;
+    }
+
+    /// How many uploads left their loose draws out because they did not fit one buffer of the device.
+    pub fn oversize_uploads(&self) -> u64 {
+        self.oversize_uploads
+    }
+
+    /// `old` when it holds `size` bytes, else a new buffer with a quarter more room (and true), the room cut to the device's
+    /// largest buffer; nothing written. The caller keeps `size` within [`HdWorld::buffer_limit`].
     fn buffer_of(
         &self,
         old: Option<wgpu::Buffer>,
@@ -4749,11 +4795,10 @@ impl<E: HdExtension> HdWorld<E> {
         }) {
             return (b, false);
         }
+        let room = (size + size / 4).min(self.buffer_limit()).max(size);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
-            size: (size + size / 4)
-                .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-                .max(16),
+            size: room.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT).max(16),
             // (Read back by `HdWorld::check_loose`.)
             usage: usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,

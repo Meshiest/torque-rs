@@ -49,6 +49,15 @@
 //! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - A [`ghosts::GhostScene`] draws its moving shapes under [`ghosts::GhostOptions::budget`] (4M vertices and 4 shape parses a
+//!   frame by default) (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first` and
+//!   `a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait`, in `torque-render-scene`).
+//! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
+//!   the module is built for the web only, so no native test runs it).
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.

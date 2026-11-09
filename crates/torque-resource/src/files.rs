@@ -217,6 +217,19 @@ impl FileHost for ResourceFiles {
         self.0.folder.read(&os_name(path))
     }
 
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        if let Some(refusal) = (self.0.rules.refusal)(path) {
+            return FileRead::Refused(refusal);
+        }
+        if let FileRead::Found(contents) = self.0.written.read_prefix(path, max) {
+            return FileRead::Found(contents);
+        }
+        if safe_path(path).is_none() {
+            return FileRead::Missing;
+        }
+        self.0.folder.read_prefix(&os_name(path), max)
+    }
+
     fn stat(&self, path: &[u8]) -> FileStat {
         if let Some(refusal) = (self.0.rules.refusal)(path) {
             return FileStat::Refused(refusal);

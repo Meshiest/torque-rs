@@ -23,9 +23,11 @@
 //! (c) 2012 GarageGames, LLC), `gui/controls/guiMLTextEditCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is
 //! this crate's own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+
+use torque_fonts::FontUse;
 
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
@@ -41,6 +43,18 @@ pub const MAX_LINES: usize = 1 << 16;
 pub const MAX_BITMAPS: usize = 4096;
 /// The most passes the emitting loops take in one reflow.
 pub const MAX_REFLOW_STEPS: u64 = 1 << 22;
+/// The most faces one reflow's `<font:>` tags name; a tag naming another is taken and changes nothing.
+pub const MAX_REFLOW_FACES: usize = 8;
+/// The most bitmap names one reflow's `<bitmap:>` tags resolve; a tag naming another is taken and places nothing.
+pub const MAX_REFLOW_BITMAP_NAMES: usize = 64;
+/// The work charged for a font a reflow loads (a cache file's parse or a rasterization), on top of one unit per sheet pixel.
+pub const FONT_LOAD_WORK: u64 = 1 << 16;
+/// The work charged for each file name a `<bitmap:>` tries, on top of one unit per byte read.
+pub const BITMAP_LOOKUP_WORK: u64 = 256;
+/// The bytes of a bitmap read to size it (a PNG's header is in the first 33); a JPEG whose frame header comes later is read
+/// again up to [`BITMAP_SIZE_BYTES`], and one whose header is past those is not sized.
+pub const BITMAP_HEADER_BYTES: usize = 64 << 10;
+pub const BITMAP_SIZE_BYTES: usize = 1 << 20;
 
 /// The justifications (`mCurJustify`).
 pub const LEFT: u32 = 0;
@@ -241,14 +255,35 @@ pub fn set_dirty(gui: &Gui, id: ObjId) {
     with_state(gui, id, |s| s.dirty = true);
 }
 
-/// A font of the layout's styles, by face and size, through the GUI's font cache.
-fn font_of(vm: &Vm, gui: &Gui, face: &str, size: i32) -> Option<Arc<torque_fonts::Font>> {
+/// A font of the layout's styles, by face and size, through the GUI's font cache. A font the cache loads for it is charged to
+/// the step budget ([`FONT_LOAD_WORK`] and its sheet pixels), the estimate of its sheets before it is loaded: None when the
+/// budget cannot pay (the budget then refuses the rest of the reflow too).
+fn font_of(
+    vm: &Vm,
+    gui: &Gui,
+    face: &str,
+    size: i32,
+    user: FontUse,
+) -> Option<Arc<torque_fonts::Font>> {
     let fonts = gui.0.borrow().fonts.0.clone();
     let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
         FileRead::Found(b) => Some(b),
         _ => None,
     };
-    fonts.borrow_mut().font(face, size, &read)
+    let mut fonts = fonts.borrow_mut();
+    let loads = fonts.cache().loads;
+    let estimate = torque_fonts::estimated_sheet_pixels(size);
+    if !fonts.cache().contains(face, size) && !vm.charge_work(FONT_LOAD_WORK + estimate) {
+        return None;
+    }
+    let font = fonts.font(face, size, user, &read);
+    if fonts.cache().loads != loads
+        && let Some(f) = &font
+        && !vm.charge_work(torque_fonts::sheet_pixels(f).saturating_sub(estimate))
+    {
+        return None;
+    }
+    font
 }
 
 /// The sizes of the bitmaps ML text names: each name (lower case) resolved once to the file the texture search found (None:
@@ -258,8 +293,9 @@ fn font_of(vm: &Vm, gui: &Gui, face: &str, size: i32) -> Option<Arc<torque_fonts
 pub struct BitmapSizes {
     names: torque_images::lru::Lru<String, Option<String>>,
     files: torque_images::lru::Lru<String, Option<(u32, u32)>>,
-    /// How many files' headers were read.
+    /// How many files' headers were read, and the bytes read for them.
     pub reads: u64,
+    pub bytes_read: u64,
 }
 
 impl Default for BitmapSizes {
@@ -268,6 +304,7 @@ impl Default for BitmapSizes {
             names: torque_images::lru::Lru::new(crate::textures::MAX_TEXTURES, usize::MAX),
             files: torque_images::lru::Lru::new(crate::textures::MAX_TEXTURES, usize::MAX),
             reads: 0,
+            bytes_read: 0,
         }
     }
 }
@@ -282,23 +319,38 @@ impl std::fmt::Debug for BitmapSizes {
     }
 }
 
+/// What sizing a bitmap reads with: at most `max` bytes of the file at a path, None when it does not read.
+pub type ReadPrefix<'a> = &'a dyn Fn(&str, usize) -> Option<Vec<u8>>;
+
 impl BitmapSizes {
     /// The size of the bitmap `name` names, found as the texture manager finds it with `read`: the first candidate that reads,
-    /// sized by its header (a header the decoder would refuse, or a file that cannot be sized, is None).
+    /// sized by its first [`BITMAP_HEADER_BYTES`] (a header the decoder would refuse, or a file that cannot be sized, is None).
+    /// Every candidate tried pays `charge` [`BITMAP_LOOKUP_WORK`] and every byte read one unit; once `charge` refuses, nothing
+    /// more is read and the name is not remembered.
     pub fn size(
         &mut self,
         name: &str,
-        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+        read: ReadPrefix<'_>,
+        charge: &dyn Fn(u64) -> bool,
     ) -> Option<(u32, u32)> {
         let key = name.to_ascii_lowercase();
         let (file, bytes) = match self.names.get(&key) {
             Some(None) => return None,
             Some(Some(file)) => (file.clone(), None),
             None => {
-                let found = crate::textures::candidates(name)
-                    .into_iter()
-                    .filter(|p| torque_images::Kind::of_name(p).is_some())
-                    .find_map(|p| read(&p).map(|b| (p, b)));
+                let mut found = None;
+                for p in crate::textures::candidates(name) {
+                    if torque_images::Kind::of_name(&p).is_none() {
+                        continue;
+                    }
+                    if !charge(BITMAP_LOOKUP_WORK) {
+                        return None;
+                    }
+                    if let Some(b) = read(&p, BITMAP_HEADER_BYTES) {
+                        found = Some((p, b));
+                        break;
+                    }
+                }
                 self.names
                     .insert(key, found.as_ref().map(|(p, _)| p.clone()), 1);
                 let (file, bytes) = found?;
@@ -309,24 +361,41 @@ impl BitmapSizes {
         if let Some(found) = self.files.get(&fkey) {
             return *found;
         }
+        let kind = torque_images::Kind::of_name(&file)?;
         let bytes = match bytes {
             Some(b) => b,
-            None => read(&file)?,
+            None => read(&file, BITMAP_HEADER_BYTES)?,
         };
         self.reads += 1;
-        let size = torque_images::size_of(torque_images::Kind::of_name(&file)?, &bytes);
+        self.bytes_read += bytes.len() as u64;
+        let mut size = None;
+        if charge(bytes.len() as u64) {
+            size = torque_images::size_of(kind, &bytes);
+            // A frame header past the prefix: at most `BITMAP_SIZE_BYTES`, paid for before they are read.
+            if size.is_none()
+                && bytes.len() >= BITMAP_HEADER_BYTES
+                && charge(BITMAP_SIZE_BYTES as u64)
+                && let Some(more) = read(&file, BITMAP_SIZE_BYTES)
+            {
+                self.bytes_read += more.len() as u64;
+                size = torque_images::size_of(kind, &more);
+            }
+        }
+        // Sized or not (the budget refused, or no header was found), the file is not read again.
         self.files.insert(fkey, size, 1);
         size
     }
 }
 
-/// The size of a bitmap a `<bitmap:>` names, found as the texture manager finds it (cached in the GUI's state, [`BitmapSizes`]).
+/// The size of a bitmap a `<bitmap:>` names, found as the texture manager finds it (cached in the GUI's state, [`BitmapSizes`]),
+/// its lookups and reads charged to the step budget.
 fn bitmap_size(vm: &Vm, gui: &Gui, name: &str) -> Option<(u32, u32)> {
-    let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
+    let read = |p: &str, max: usize| match vm.file_host().read_prefix(p.as_bytes(), max) {
         FileRead::Found(b) => Some(b),
         _ => None,
     };
-    gui.0.borrow_mut().bitmap_sizes.size(name, &read)
+    let charge = |units: u64| vm.charge_work(units);
+    gui.0.borrow_mut().bitmap_sizes.size(name, &read, &charge)
 }
 
 /// The hexadecimal value of a byte as the colour tags read it (`0-9`, `A-Z`, `a-z`; anything else -1), wrapped to a byte.
@@ -407,6 +476,12 @@ struct Flow<'a> {
     atoms: usize,
     /// Duplicate `<tag:>` ids met (each a `Con::warnf` after the reflow).
     dup_tags: u32,
+    /// The `<tag:>` ids met (`out.tags` is pushed in text order and reversed at the end).
+    tag_ids: HashSet<u32>,
+    /// The faces (lower case) the `<font:>` tags named ([`MAX_REFLOW_FACES`]) and the bitmap names (lower case) the
+    /// `<bitmap:>` tags resolved ([`MAX_REFLOW_BITMAP_NAMES`]).
+    faces: HashSet<String>,
+    bitmap_names: HashSet<String>,
 }
 
 impl Flow<'_> {
@@ -414,7 +489,13 @@ impl Flow<'_> {
         if let Some(f) = self.fonts.get(key) {
             return Some(Arc::clone(f));
         }
-        let f = font_of(self.vm, self.gui, &key.0, key.1)?;
+        let Some(f) = font_of(self.vm, self.gui, &key.0, key.1, FontUse::Markup) else {
+            // A font the budget could not pay for ends the reflow; a font that is missing does not.
+            if !self.vm.charge_work(0) {
+                self.steps = MAX_REFLOW_STEPS;
+            }
+            return None;
+        };
         self.fonts.insert(key.clone(), Arc::clone(&f));
         Some(f)
     }
@@ -749,7 +830,7 @@ pub fn reflow(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
     let mbh = gui.ext().ml_max_bitmap_height(vm, id).unwrap_or(-1);
     let layout = {
         let vmr: &Vm = vm;
-        if font_of(vmr, gui, &face, size).is_none() {
+        if font_of(vmr, gui, &face, size, FontUse::Profile).is_none() {
             None
         } else {
             let color = profile.map_or([0, 0, 0, 255], |p| crate::profile::font_color(vmr, p, 0));
@@ -793,8 +874,12 @@ pub fn reflow(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
                 steps: 0,
                 atoms: 0,
                 dup_tags: 0,
+                tag_ids: HashSet::new(),
+                faces: HashSet::new(),
+                bitmap_names: HashSet::new(),
             };
             run_flow(&mut f);
+            f.out.tags.reverse();
             Some((f.out, f.dup_tags))
         }
     };
@@ -912,6 +997,13 @@ fn tag(f: &mut Flow) -> bool {
         }
         let face = String::from_utf8_lossy(&s[6..idx]).into_owned();
         f.scan += sz + 1;
+        let lower = face.to_ascii_lowercase();
+        if !f.faces.contains(&lower) {
+            if f.faces.len() >= MAX_REFLOW_FACES {
+                return true;
+            }
+            f.faces.insert(lower);
+        }
         if f.font(&(face.clone(), size as i32)).is_some() {
             let st = f.style_for_change();
             f.out.styles[st].font = (face, size as i32);
@@ -924,14 +1016,15 @@ fn tag(f: &mut Flow) -> bool {
             return false;
         }
         let id = atoi(&s[5..]) as u32;
-        if f.out.tags.iter().any(|t| t.0 == id) {
+        if f.tag_ids.contains(&id) {
             // `Con::warnf`: printed after the reflow.
             f.dup_tags = f.dup_tags.saturating_add(1);
             f.scan += idx + 1;
             return true;
         }
         if f.out.tags.len() < MAX_LINES {
-            f.out.tags.insert(0, (id, f.cur_y));
+            f.out.tags.push((id, f.cur_y));
+            f.tag_ids.insert(id);
         }
         f.scan += idx + 1;
         return true;
@@ -996,6 +1089,13 @@ fn tag(f: &mut Flow) -> bool {
         let name = String::from_utf8_lossy(&s[start..start + len]).into_owned();
         f.scan += idx + 1;
         f.process();
+        let lower = name.to_ascii_lowercase();
+        if !f.bitmap_names.contains(&lower) {
+            if f.bitmap_names.len() >= MAX_REFLOW_BITMAP_NAMES {
+                return true;
+            }
+            f.bitmap_names.insert(lower);
+        }
         let found = bitmap_size(f.vm, f.gui, &name)
             .map(|sz| (name.clone(), sz))
             .or_else(|| {
@@ -1186,7 +1286,7 @@ pub(crate) fn cursor_rect(vm: &Vm, gui: &Gui, id: ObjId) -> (i32, i32, i32) {
     let mut height = profile_of(vm, id)
         .and_then(|p| {
             let face = String::from_utf8_lossy(&text(vm, p, b"fontType")).into_owned();
-            font_of(vm, gui, &face, int(vm, p, b"fontSize"))
+            font_of(vm, gui, &face, int(vm, p, b"fontSize"), FontUse::Profile)
         })
         .map_or(0, |f| f.height as i32);
     let mut x = 0i32;

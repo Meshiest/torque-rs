@@ -3,6 +3,12 @@
 //! ([`threads`]) and the effects queue ([`effects`]). A game's view of the world wraps the record world and adds its own parts.
 //!
 //! [`tge`] is TGE 1.4's own set ([`tge::TgeClientSet`]) over `torque-ghosts`' TGE records, with a client ghost table for it.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - The world follows at most [`world::MAX_WORLD_GHOSTS`] ghosts whatever ghost table a server's accept allows, the ones past it
+//!   counted (`a_24_bit_ghost_table_is_followed_up_to_the_worlds_cap`).
 
 pub mod effects;
 pub mod images;

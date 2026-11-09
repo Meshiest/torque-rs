@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 
-use torque_fonts::TextColors;
+use torque_fonts::{FontUse, TextColors};
 use torque_images::lru::Lru;
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
@@ -598,7 +598,7 @@ impl DrawCache {
 
     /// The width and height in pixels of `text` in the font `face` at `size` (None: no font was found for them).
     pub fn text_size(&mut self, face: &str, size: i32, text: &[u8]) -> Option<(i32, i32)> {
-        let font = self.fonts.font(face, size, &|_| None)?;
+        let font = self.fonts.font(face, size, FontUse::Profile, &|_| None)?;
         Some((font.str_width(text), font.height as i32))
     }
 
@@ -619,7 +619,7 @@ impl DrawCache {
             color,
             outline,
         } = *look;
-        let Some(font) = self.fonts.font(face, size, &|_| None) else {
+        let Some(font) = self.fonts.font(face, size, FontUse::Profile, &|_| None) else {
             draws.report.no_font += 1;
             if draws.report.missing_fonts.len() < 64 {
                 draws.report.missing_fonts.insert(format!("{face}_{size}"));
@@ -728,9 +728,40 @@ struct Walk<'a> {
     /// Each profile's [`crate::GuiExtension::replaces_fill`], read once a frame (no script runs during the walk, so it holds
     /// for the frame).
     blurred: std::cell::RefCell<std::collections::HashMap<ObjId, bool>>,
+    /// Whose fonts the controls being drawn name: [`FontUse::Server`] while a server's layer draws.
+    font_use: FontUse,
+    /// The markup fonts this frame may still load ([`MAX_FRAME_MARKUP_LOADS`]).
+    markup_loads: u32,
 }
 
+/// The most markup fonts ([`FontUse::Markup`], [`FontUse::Server`]) one frame's drawing loads: past it a markup font not loaded
+/// yet draws nothing this frame (counted as a missing font) and loads in a later one, so text that names hundreds of fonts
+/// rasterizes a few a frame.
+pub const MAX_FRAME_MARKUP_LOADS: u32 = 8;
+
 impl Walk<'_> {
+    /// The font `face` at `size` for `user`, read through the `Vm`'s files on first use; a markup font not loaded yet waits for a
+    /// later frame once this one loaded [`MAX_FRAME_MARKUP_LOADS`].
+    fn font_for(
+        &mut self,
+        face: &str,
+        size: i32,
+        user: FontUse,
+    ) -> Option<Arc<torque_fonts::Font>> {
+        if user != FontUse::Profile && !self.cache.fonts.cache().contains(face, size) {
+            if self.markup_loads == 0 {
+                return None;
+            }
+            self.markup_loads -= 1;
+        }
+        let vm = self.vm;
+        let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
+            FileRead::Found(b) => Some(b),
+            _ => None,
+        };
+        self.cache.fonts.font(face, size, user, &read)
+    }
+
     /// A colour drawn at the subtree's opacity (unchanged at 1).
     fn faded(&self, mut c: [u8; 4]) -> [u8; 4] {
         if self.alpha < 1.0 {
@@ -908,12 +939,7 @@ impl Walk<'_> {
 
     /// The font `face` at `size` (a miss is counted in the report).
     fn font(&mut self, face: &str, size: i32) -> Option<Arc<torque_fonts::Font>> {
-        let vm = self.vm;
-        let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
-            FileRead::Found(b) => Some(b),
-            _ => None,
-        };
-        let font = self.cache.fonts.font(face, size, &read);
+        let font = self.font_for(face, size, self.font_use);
         if font.is_none() {
             self.out.draws.report.no_font += 1;
             if self.out.draws.report.missing_fonts.len() < 64 {
@@ -1570,11 +1596,7 @@ impl Walk<'_> {
         let profile = profile_of(vm, id)?;
         let face = String::from_utf8_lossy(&text_field(vm, profile, b"fontType")).into_owned();
         let size = int_field(vm, profile, b"fontSize");
-        let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
-            FileRead::Found(b) => Some(b),
-            _ => None,
-        };
-        let Some(font) = self.cache.fonts.font(&face, size, &read) else {
+        let Some(font) = self.font_for(&face, size, self.font_use) else {
             self.out.draws.report.no_font += 1;
             if self.out.draws.report.missing_fonts.len() < 64 {
                 self.out
@@ -1717,6 +1739,7 @@ impl Walk<'_> {
             return;
         };
         let start = self.quad_mark();
+        let user = std::mem::replace(&mut self.font_use, FontUse::Server);
         self.layer_control(root);
         // A focused text field (a leaf) is drawn again over everything else of the layer.
         if let Some((field, at)) = crate::client_script::focus_on_top(self.vm, self.gui) {
@@ -1727,6 +1750,7 @@ impl Walk<'_> {
         let viewport = self.viewport;
         self.set_clip(viewport);
         crate::client_script::draw_tooltip(&mut DrawCtx(self));
+        self.font_use = user;
         // Nothing of the layer shows in the chip's column.
         let column = self.gui.0.borrow().client_script.column;
         if let Some(column) = column {
@@ -1793,6 +1817,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     let viewport = [0, 0, w, h];
     let layers = crate::client_script::DrawPlan::of(vm, gui);
     let ext = gui.ext();
+    cache.fonts.next_frame();
     ext.begin_draw(gui, cache.fonts.as_mut());
     let mut walk = Walk {
         vm,
@@ -1806,6 +1831,8 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
         ext,
         alpha: 1.0,
         blurred: Default::default(),
+        font_use: FontUse::Profile,
+        markup_loads: MAX_FRAME_MARKUP_LOADS,
     };
     walk.out.draws.size = (w as u32, h as u32);
     if let Some(canvas) = canvas.filter(|c| vm.objects().contains(*c)) {

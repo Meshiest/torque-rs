@@ -133,3 +133,46 @@ fn planes_built_again_in_the_same_place_are_written_again() {
     let still = frame(&mut world, &mut s, true);
     assert!((still - lit).abs() < 2.0, "{lit} then {still}");
 }
+
+#[test]
+fn loose_draws_past_the_largest_buffer_are_left_out_and_counted_not_a_panic() {
+    let gpu = match Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    let mut s = PlainScene::default();
+    s.sun.towards = [-0.3, -0.2, 0.93];
+    s.sun.diffuse = [0.9; 3];
+    s.sun.ambient = [0.4; 3];
+    s.planes = vec![floor(30)];
+    s.planes_generation += 1;
+    let eye = look_at([0.0, -8.0, 4.0], [0.0, 0.0, 0.0]);
+    s.eye = Some(eye);
+    s.fov = 70;
+    s.size = SIZE;
+    let camera = HdCamera::new(eye, 70.0f32, s.visible_distance, SIZE.0, SIZE.1);
+    let target = gpu.offscreen(SIZE.0, SIZE.1).expect("a target");
+    let format = target.color.texture().format();
+    let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
+    let frame = |world: &mut HdWorld<NoExtension>, s: &mut PlainScene| {
+        s.generation += 1;
+        world.upload(s);
+        world
+            .draw(s, &camera, Some((&target.color, format, [0, 0])))
+            .expect("a frame");
+        let f = gpu.read_back(&target).expect("read back");
+        luminance_at(&f, &camera, [0.0, 0.0, 0.0])
+    };
+    world.set_buffer_cap(Some(64));
+    let left_out = frame(&mut world, &mut s);
+    assert_eq!(world.oversize_uploads(), 1);
+    world.set_buffer_cap(None);
+    let drawn = frame(&mut world, &mut s);
+    assert_eq!(world.oversize_uploads(), 1);
+    // The dark floor over the bright sky: not there, then there.
+    assert!(drawn + 40.0 < left_out, "{left_out} then {drawn}");
+    assert_eq!(gpu.device_errors().validation, 0);
+}

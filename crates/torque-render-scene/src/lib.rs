@@ -6,6 +6,21 @@
 //! their lines of sight ([`sight`]), the camera ([`camera`]) and TGE's matrix math ([`math`]). No GPU type appears here, and every type is `Send + Sync`.
 //!
 //! Files come through [`Assets`] (the caller's file reader).
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - A frame's moving shapes under [`moving::with_budget`] build at most [`moving::ShapeBudget::max_vertices`], the nearest first
+//!   (the control object always), the rest lowered or left out and counted
+//!   (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first`).
+//! - A build parses at most its budget of shape files; the rest wait for a later one
+//!   (`a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait`); the control object's shapes, the vehicle it drives
+//!   (given to [`moving::with_budget`]) and its mounts are not under it, and no other vehicle is
+//!   (`the_control_objects_shape_loads_whatever_the_parse_budget_has_left`,
+//!   `only_the_control_object_the_vehicle_it_drives_and_its_mounts_load_past_the_parse_budget`). What the budgets did
+//!   is counted in the frame's [`moving::ShapeDraws`] alone.
+//! - Ghosts of one shape posed the same share one kept build ([`shapecache`]'s content key)
+//!   (`ghosts_of_one_shape_posed_the_same_share_one_kept_build`).
 
 pub mod camera;
 pub mod decals;

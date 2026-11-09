@@ -80,8 +80,12 @@ pub const SELF_ID: ObjectId = ObjectId(u32::MAX - 1);
 pub const MAX_JUMP_SOUNDS: usize = 8;
 
 /// The work one tick's prediction may do in all (the world's construction and every move it runs, new and replayed): past it the
-/// replay stops, the last whole step's state kept ([`PredictStats::budget_stops`]).
-pub const TICK_WORK: u64 = 50_000_000;
+/// replay stops, the last whole step's state kept ([`PredictStats::budget_stops`]). Sized to about 8 ms on the reference machine
+/// (a unit took about 22 ns in the trace-hash scenarios' predictions and about 30 ns for a Player of the largest predicted box
+/// among hundreds of solids, `torque-sim`'s `work_units_cost`), so a server that has every tick replay all its moves takes a
+/// quarter of each tick at most. The trace-hash scenarios' busiest tick spends about 100,000, a vehicle's shape load included
+/// (its read and parse have their own budget: `drive::SHAPE_LOAD_WORK`).
+pub const TICK_WORK: u64 = 400_000;
 /// The most moves one tick runs: the list never holds more than `getNextMove`'s limit plus the move it then makes (45 + 1), so a
 /// correction replays at most that many.
 pub const MAX_REPLAY: usize = crate::net::moves::MAX_PENDING_MOVES + 1;
@@ -940,6 +944,7 @@ impl<W: PredictWorld> Predictor<W> {
 
     /// The client's tick, through the predictor ([`slot::Prediction::tick`]; TGE's: [`Predictor::tge_process`]).
     pub fn process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
+        self.shapes.start_tick();
         self.with_prediction(|p, sim| {
             p.tick(&mut slot::TickCx {
                 sim,
@@ -2307,8 +2312,22 @@ fn world_f32<W: PredictWorld>(world: &W, db: u32, name: &str) -> Option<f32> {
     }
 }
 
+/// The largest side of a Player's box prediction takes ([`player_data`]): a server's datablock of a huge `boundingBox` would have
+/// every replayed move collide with everything near (the server's own Player keeps its box).
+pub const MAX_PREDICTED_BOX: f32 = 16.0;
+
+/// A side of `boundingBox` as prediction takes it: within 0 to [`MAX_PREDICTED_BOX`], `default` for one that is not a number.
+fn predicted_side(side: f32, default: f32) -> f32 {
+    if side.is_finite() {
+        side.clamp(0.0, MAX_PREDICTED_BOX)
+    } else {
+        default
+    }
+}
+
 /// The client's PlayerData from the datablock the server sent (`PlayerData::unpackData`'s fields; the ones the server does not
-/// send keep the constructor's values), then `preload`'s products (the game's, `game`).
+/// send keep the constructor's values, `boundingBox` within [`MAX_PREDICTED_BOX`]), then `preload`'s products (the game's,
+/// `game`).
 pub fn player_data<W: PredictWorld>(
     world: &W,
     db: u32,
@@ -2374,7 +2393,10 @@ pub fn player_data<W: PredictWorld>(
     fl!(min_impact_speed, "minImpactSpeed");
     fl!(ground_impact_min_speed, "groundImpactMinSpeed");
     for k in 0..3 {
-        d.bounding_box[k] = f("boundingBox", k as u32, d.bounding_box[k]);
+        d.bounding_box[k] = predicted_side(
+            f("boundingBox", k as u32, d.bounding_box[k]),
+            d.bounding_box[k],
+        );
     }
     game.player_preload(&mut d);
     Some(d)
@@ -3318,3 +3340,17 @@ pub mod look;
 pub mod slot;
 
 pub use slot::{NetPrediction, Prediction, PredictionSlot, TgePrediction};
+
+#[cfg(test)]
+mod box_tests {
+    use super::*;
+
+    #[test]
+    fn a_predicted_players_box_is_held_to_the_largest_side_prediction_takes() {
+        assert_eq!(predicted_side(1.2, 1.0), 1.2);
+        assert_eq!(predicted_side(1.0e6, 1.0), MAX_PREDICTED_BOX);
+        assert_eq!(predicted_side(-3.0, 1.0), 0.0);
+        assert_eq!(predicted_side(f32::NAN, 2.3), 2.3);
+        assert_eq!(predicted_side(f32::INFINITY, 2.3), 2.3);
+    }
+}

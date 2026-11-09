@@ -809,6 +809,8 @@ impl TgeFeed {
             return;
         };
         let mut work = 0;
+        // Each datablock's read has the loads' whole budget.
+        self.shapes.start_tick();
         let Some(shape) =
             self.shapes
                 .get(path, self.reader.as_ref(), &mut work, WHEEL_SHAPE_BUDGET)

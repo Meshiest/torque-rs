@@ -42,6 +42,7 @@
 //! (Copyright (c) 2012 GarageGames, LLC), `gui/controls/guiTextEditSliderCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC); the
 //! code here is this crate's own.
 
+use torque_fonts::FontUse;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -127,7 +128,9 @@ fn font(vm: &Vm, gui: &Gui, id: ObjId) -> Option<std::sync::Arc<torque_fonts::Fo
         torque_ts_vm::host::FileRead::Found(b) => Some(b),
         _ => None,
     };
-    fonts.borrow_mut().font(&face, size, &read)
+    fonts
+        .borrow_mut()
+        .font(&face, size, FontUse::Profile, &read)
 }
 
 /// `setCursorPos(point)` (TGE 1.4): -1 left of the control, -2 at or past `ctrlOffset.x + extent.x` from it (TGE's measure), else the

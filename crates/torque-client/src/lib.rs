@@ -31,6 +31,20 @@
 //! world ([`ghost_world::ClientWorld`]) through the game's view of it ([`render::PoseView`], [`predict::game::PredictWorld`]) and
 //! the game's records through [`records`]; the ghost objects and the datablocks are made from the same. TGE's own answers are here
 //! too ([`conn::tge`], [`records::tge`]): a client over TGE's records needs no game crate.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - A tick's prediction spends at most [`predict::TICK_WORK`], about 8 ms of the reference machine (measured with
+//!   `torque-sim`'s `work_units_cost`; the trace-hash scenarios' lines must not change), and a predicted Player's box is held to
+//!   [`predict::MAX_PREDICTED_BOX`] (`a_predicted_players_box_is_held_to_the_largest_side_prediction_takes`).
+//! - A connection keeps at most [`ghost_objects::MAX_MIRRORS`] ghost objects, whatever its ghost table
+//!   (`a_wide_ghost_table_is_mirrored_up_to_the_live_cap`).
+//! - A shape prediction collides with loads once, on a budget of its own that a tick's loads share
+//!   ([`predict::drive::SHAPE_LOAD_WORK`]), and takes a fixed share of the tick's
+//!   (`a_collision_shape_of_megabytes_loads_once_for_a_small_share_of_the_tick`,
+//!   `the_loads_of_one_tick_share_one_load_budget_and_the_rest_load_on_later_ticks`); the trace-hash
+//!   scenarios' busiest tick stays under half of [`predict::TICK_WORK`].
 
 pub mod actionmap;
 pub mod conn;

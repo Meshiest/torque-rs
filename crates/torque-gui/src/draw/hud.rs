@@ -12,7 +12,6 @@
 //! `gui/controls/guiMLTextEditCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
 use torque_fonts::TextColors;
-use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 
 use super::{Walk, color_i, int_field, profile_of, text_field};
@@ -264,11 +263,7 @@ impl Walk<'_> {
         let name = &name[..name.len().min(MAX_NAME_BYTES)];
         let face = String::from_utf8_lossy(&text_field(vm, profile, b"fontType")).into_owned();
         let size = int_field(vm, profile, b"fontSize");
-        let read = |p: &str| match vm.file_host().read(p.as_bytes()) {
-            FileRead::Found(b) => Some(b),
-            _ => None,
-        };
-        let Some(font) = self.cache.fonts.font(&face, size, &read) else {
+        let Some(font) = self.font_for(&face, size, self.font_use) else {
             self.out.draws.report.no_font += 1;
             return;
         };

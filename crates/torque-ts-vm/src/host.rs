@@ -58,6 +58,18 @@ pub trait FileHost {
     /// `\x` replaces the base); the in-memory hosts here only ever look the path up in a table.
     fn read(&self, path: &[u8]) -> FileRead;
 
+    /// At most the first `max` bytes of the file at `path`, with the refusals of [`read`](Self::read): what sizes an image by
+    /// its header needs. The default reads the whole file and cuts it; a host over real files reads only the prefix.
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        match self.read(path) {
+            FileRead::Found(mut contents) => {
+                contents.truncate(max);
+                FileRead::Found(contents)
+            }
+            other => other,
+        }
+    }
+
     /// Whether the file exists and how long it is, with the refusals of [`read`](Self::read). The
     /// default reads the file. An implementation that looks at the file itself has the same duty as
     /// `read` to keep the answer inside its folders (`safe_path`, listing match, no `join`).
@@ -791,6 +803,16 @@ fn identity_at(at: &Path) -> Option<FileId> {
     }
 }
 
+/// At most `max` bytes from the start of `file`.
+pub fn read_up_to(file: std::fs::File, max: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    file.take(u64::try_from(max).unwrap_or(u64::MAX))
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 /// Opens the plain file `find` names (`find` looks at each component without following a link),
 /// then asks `find` again: what it names then, its last component not followed, must be the very
 /// file opened (the same identity). A folder on the way swapped for a link around the open is no
@@ -862,6 +884,16 @@ impl FileHost for DirHost {
             Ok(_) => FileRead::Found(contents),
             Err(_) => FileRead::Missing,
         }
+    }
+
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        if let Some(refusal) = (self.rules.refusal)(path) {
+            return FileRead::Refused(refusal);
+        }
+        let Some((file, _)) = open_found(|| self.resolve(path)) else {
+            return FileRead::Missing;
+        };
+        read_up_to(file, max).map_or(FileRead::Missing, FileRead::Found)
     }
 
     fn stat(&self, path: &[u8]) -> FileStat {

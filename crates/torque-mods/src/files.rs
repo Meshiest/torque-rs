@@ -274,6 +274,17 @@ impl FileHost for ModFiles {
         }
     }
 
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        match self.table.find(path) {
+            Some(hit) => hit
+                .mount
+                .package
+                .read_prefix(&hit.inner, max)
+                .map_or(FileRead::Missing, FileRead::Found),
+            None => self.inner.read_prefix(path, max),
+        }
+    }
+
     fn stat(&self, path: &[u8]) -> FileStat {
         match self.table.find(path) {
             Some(hit) => hit

@@ -315,7 +315,7 @@ impl Target {
             .ok_or_else(|| format!("the {} transport gave no link state", self.transport_id()))
     }
 
-    /// The game the page's address asks to join: `?room=<code>` a player's, else with `?join` (or `?server=`) the server
+    /// The game the page's address asks to join: `?room=<code>` a player's (Err: not a [`room_code`]), else with `?join` (or `?server=`) the server
     /// that served the page (or `?server=`'s); none asked, or the page is one to be played alone (its root element's
     /// `data-torque-solo="1"`: a site with no game server).
     pub fn from_page() -> Result<Option<Target>, String> {
@@ -325,7 +325,7 @@ impl Target {
         if let Some(code) = query("room") {
             return Ok(Some(Target::Room {
                 url: rooms_url()?,
-                code,
+                code: room_code(&code)?,
             }));
         }
         if query("join").is_some() || query("server").is_some() {

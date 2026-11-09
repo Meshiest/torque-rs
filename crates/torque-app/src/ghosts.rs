@@ -37,7 +37,8 @@ use torque_render_scene::images::{HeldMotion, ImageClock};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::render_pose;
 use torque_render_scene::moving::{
-    Hooks, ImageFrames, LiveAsk, ShapeSelect, draws_culled, with_shadow_body,
+    Hooks, ImageFrames, LiveAsk, ShapeBudget, ShapeSelect, draws_culled, with_budget,
+    with_shadow_body,
 };
 use torque_render_scene::particles::{Emitter, Rng};
 use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
@@ -221,6 +222,10 @@ pub struct GhostOptions {
     /// swimming, another Player is drawn swimming where its server's rule has it swim ([`swims`]), from where its record puts
     /// it (no record carries the pose).
     pub water: Vec<Box3>,
+    /// What a frame's moving shapes may cost: the vertices they build and the shape files they parse
+    /// ([`ShapeBudget`]: 4M vertices and 4 parses by default; the shapes past it are drawn at a lower detail, left out or put off,
+    /// and counted).
+    pub budget: ShapeBudget,
 }
 
 impl Default for GhostOptions {
@@ -236,6 +241,7 @@ impl Default for GhostOptions {
             bolt_stops: false,
             poses: None,
             water: Vec::new(),
+            budget: ShapeBudget::default(),
         }
     }
 }
@@ -1686,17 +1692,26 @@ impl<S: GhostStyle> GhostScene<S> {
         let mut notes = Vec::new();
         let select = self.options.select;
         let hooks = &self.hooks;
-        let shaped = with_shadow_body(self.options.shadow_body, || {
-            draws_culled(
-                world,
-                hooks,
-                assets,
-                &mut set,
-                &mut notes,
-                DetailPolicy::Highest,
-                select,
-                None,
-            )
+        // The vehicle the client drives: the one it runs that its control object rides.
+        let driven = world
+            .control
+            .object
+            .and_then(|c| world.mount_of(c))
+            .map(|(m, _)| m)
+            .filter(|m| world.vehicle_render.contains_key(m));
+        let shaped = with_budget(self.options.budget, driven, || {
+            with_shadow_body(self.options.shadow_body, || {
+                draws_culled(
+                    world,
+                    hooks,
+                    assets,
+                    &mut set,
+                    &mut notes,
+                    DetailPolicy::Highest,
+                    select,
+                    None,
+                )
+            })
         });
         let control = world.control.object;
         let drawn = |i: &u32| shaped.transforms.contains_key(i);

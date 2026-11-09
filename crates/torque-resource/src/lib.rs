@@ -14,6 +14,11 @@
 //! no reparse point), the length taken from the handle, the read stopped one byte past the cap and past a listed length. A new
 //! reader of such files uses it rather than `std::fs::read`. Tests: `tests/plain.rs` (`a_file_reads_whole_within_its_cap_and_its_listed_length`,
 //! `a_folder_and_a_link_are_not_plain_files`, which makes a symbolic link where the machine can).
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - `read_prefix` has `read`'s refusals and reads only the prefix of a file of the disk, and a zip's entry inflates only the
+//!   prefix (`a_prefix_read_gives_the_first_bytes_of_a_file_or_an_entry_with_the_reads_refusals`,
+//!   `a_prefix_read_of_a_zip_entry_inflates_only_the_prefix`).
 
 pub mod files;
 pub mod folder;

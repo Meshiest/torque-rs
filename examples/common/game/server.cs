@@ -127,11 +127,14 @@ function GameConnection::createFigure(%client, %dataBlock, %transform)
 // of a line with many `<` in it (a line with none is kept whole). The lines go to every client as data ('ChatMessage',
 // common/chat.cs), never into a script.
 //
-// The lines are counted by the address a client sends from (its IP, without the port number), so every connection from
-// one address shares one allowance (the host's own connection has its own) and a reconnect does not start a new one:
-// $Server::ChatBurst lines at once, then one more each $Server::ChatRefillMs. A line past that is dropped and its
-// connection told once. An address's allowance is forgotten once it is full again (a new one would allow as much); at most
-// $Server::ChatAddresses are kept, and a line from one more address is dropped.
+// The lines are counted by the network a client sends from (its IPv4 address without the last number and the port number, so the
+// addresses of one /24 share it; another address without its port), so every connection from one network shares one
+// allowance (the host's own connection has its own) and a reconnect does not start a new one: $Server::ChatBurst lines at
+// once, then one more each $Server::ChatRefillMs. A line past that is dropped and its connection told once, before any of
+// its cleaning is done (only its length is cut first). An allowance is forgotten once it is full again (a new one would allow
+// as much); at most $Server::ChatAddresses are kept, and a line from one more network makes room by forgetting the
+// allowance with the most lines left, so a few busy networks never shut the others out; the new network's allowance then
+// starts empty (it fills as any does), so cycling through networks never sends past the rate.
 $Server::NameBytes = 24;
 $Server::ChatBytes = 120;
 $Server::ChatBurst = 4;
@@ -153,13 +156,20 @@ $Server::Utf8Tail = "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8a\x8b\x8c\x8d\x8
 function cleanText(%text, %max)
 {
    %text = trim(StripMLControlChars(stripChars(%text, $Server::ControlBytes)));
-   %n = strlen(%text);
-   if (%n <= %max)
+   if (strlen(%text) <= %max)
+      return %text;
+   return trim(cutText(%text, %max));
+}
+
+// %text cut to at most %max bytes, never in the middle of a character.
+function cutText(%text, %max)
+{
+   if (strlen(%text) <= %max)
       return %text;
    %n = %max;
    while (%n > 0 && strstr($Server::Utf8Tail, getSubStr(%text, %n, 1)) >= 0)
       %n--;
-   return trim(getSubStr(%text, 0, %n));
+   return getSubStr(%text, 0, %n);
 }
 
 // The name %client goes by: the one it connected with, cleaned ("Player" and its number when nothing is left).
@@ -182,18 +192,35 @@ function GameConnection::chatAddress(%client)
 {
    if (%client.isHost)
       return "host";
-   %address = %client.getAddress();
+   return chatNetwork(%client.getAddress());
+}
+
+// The network an address ("IP:1.2.3.4:28000") counts its lines under: "IP:1.2.3" for IPv4, else the address without its port.
+function chatNetwork(%address)
+{
    %cut = -1;
    for (%at = strpos(%address, ":"); %at >= 0; %at = strpos(%address, ":", %at + 1))
       %cut = %at;
-   return %cut > 0 ? getSubStr(%address, 0, %cut) : %address;
+   if (%cut > 0)
+      %address = getSubStr(%address, 0, %cut);
+   if (getSubStr(%address, 0, 3) !$= "IP:")
+      return %address;
+   %dot = -1;
+   for (%at = strpos(%address, "."); %at >= 0; %at = strpos(%address, ".", %at + 1))
+      %dot = %at;
+   return %dot > 0 ? getSubStr(%address, 0, %dot) : %address;
 }
 
-// Whether %client may send a line now (one taken from its address's allowance when it may).
+// Whether %client may send a line now (one taken from its network's allowance when it may).
 function GameConnection::chatAllowed(%client)
 {
+   return chatAllowedFrom(%client.chatAddress());
+}
+
+// Whether a line from the network %address may go now (one taken from its allowance when it may).
+function chatAllowedFrom(%address)
+{
    %now = getSimTime();
-   %address = %client.chatAddress();
    %allowance = 0;
    for (%i = ChatAllowances.getCount() - 1; %i >= 0; %i--)
    {
@@ -207,12 +234,22 @@ function GameConnection::chatAllowed(%client)
    }
    if (!isObject(%allowance))
    {
+      %left = $Server::ChatBurst;
       if (ChatAllowances.getCount() >= $Server::ChatAddresses)
-         return false;
+      {
+         // The allowance with the most lines left goes (the first such, the oldest), and the new one starts empty and fills
+         // as any does: a flood of new networks never starts a fresh allowance.
+         %most = ChatAllowances.getObject(0);
+         for (%i = 1; %i < ChatAllowances.getCount(); %i++)
+            if (ChatAllowances.getObject(%i).left > %most.left)
+               %most = ChatAllowances.getObject(%i);
+         %most.delete();
+         %left = 0;
+      }
       %allowance = new ScriptObject()
       {
          address = %address;
-         left = $Server::ChatBurst;
+         left = %left;
          at = %now;
       };
       ChatAllowances.add(%allowance);
@@ -223,10 +260,12 @@ function GameConnection::chatAllowed(%client)
    return true;
 }
 
+// A line is cut to four times its length first (what a line's markup and control bytes may add), and cleaned only once its
+// network may send it: a client over its allowance costs the cut alone.
 function serverCmdSay(%client, %text)
 {
-   %text = cleanText(%text, $Server::ChatBytes);
-   if (%text $= "")
+   %text = cutText(%text, $Server::ChatBytes * 4);
+   if (trim(%text) $= "")
       return;
    if (!%client.chatAllowed())
    {
@@ -236,6 +275,9 @@ function serverCmdSay(%client, %text)
       return;
    }
    %client.chatWarned = false;
+   %text = cleanText(%text, $Server::ChatBytes);
+   if (%text $= "")
+      return;
    messageAll("chat", %client.name, %text);
 }
 

@@ -711,3 +711,46 @@ fn a_nested_stage_does_not_end_the_outer_mods_package_early() {
         "it was in a's package, not the base layer"
     );
 }
+
+#[test]
+fn a_prefix_read_of_a_mods_file_is_the_start_of_what_a_read_gives() {
+    use torque_ts_vm::host::FileRead;
+    let engine = engine();
+    let vm = server(
+        &engine,
+        game(&[
+            ("art/a.words", b"game words"),
+            ("mods/one/mod.toml", &mod_toml("one", "")),
+            ("mods/one/art/a.words", b"one mod's words"),
+        ]),
+        "server.cs",
+    );
+    let host = vm.file_host();
+    assert_eq!(
+        host.read_prefix(b"art/a.words", 3),
+        FileRead::Found(b"one".to_vec())
+    );
+    assert_eq!(
+        host.read_prefix(b"server.cs", 8),
+        FileRead::Found(b"function".to_vec())
+    );
+    assert_eq!(host.read_prefix(b"art/none.words", 8), FileRead::Missing);
+}
+
+#[test]
+fn a_prefix_read_of_a_zip_mods_file_is_its_start() {
+    use torque_ts_vm::host::FileRead;
+    let engine = engine();
+    let big = vec![b'w'; 2 << 20];
+    let zip = zip_of(&[
+        (MANIFEST, b"id = \"big\"\nversion = \"1.0.0\"\n"),
+        ("art/big.words", &big),
+    ]);
+    let vm = server(&engine, game(&[("mods/big.zip", &zip)]), "server.cs");
+    let host = vm.file_host();
+    assert_eq!(
+        host.read_prefix(b"art/big.words", 4),
+        FileRead::Found(b"wwww".to_vec())
+    );
+    assert_eq!(host.read_prefix(b"art/none.words", 4), FileRead::Missing);
+}

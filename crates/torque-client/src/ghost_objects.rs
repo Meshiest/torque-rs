@@ -32,6 +32,10 @@ use crate::game::GhostWidths;
 use crate::records::EngineRecord;
 use crate::state::ClientState;
 
+/// The most mirrors a connection keeps: the ghosts its world follows ([`ghost_world::world::MAX_WORLD_GHOSTS`], whatever ghost
+/// table the accept allows). A ghost born past it has no script object, until a walk of the table (a reset) finds room.
+pub const MAX_MIRRORS: usize = ghost_world::world::MAX_WORLD_GHOSTS;
+
 /// The mirror of one ghost: its object and the ghost's place in the world's birth order (a new ghost under the same index is
 /// another object).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,6 +256,7 @@ pub fn plan<S: ClientSet>(world: &mut ClientWorld<S>, mirrors: &mut Mirrors) -> 
         })
         .collect();
     p.born.sort_unstable();
+    p.born.truncate(MAX_MIRRORS.saturating_sub(mirrors.len()));
     p
 }
 
@@ -380,4 +385,39 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
             (None, None) => ts_vm::vm::Native::Str(Vec::new()),
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use ghost_world::tge::TgeClientSet;
+    use ghost_world::world::Ghost;
+    use ghosts::TgeClass;
+
+    use super::*;
+
+    #[test]
+    fn a_wide_ghost_table_is_mirrored_up_to_the_live_cap() {
+        let mut world = ClientWorld::<TgeClientSet>::default();
+        let n = MAX_MIRRORS as u32 + 100;
+        for index in 0..n {
+            let ghost = Ghost {
+                class: Some(TgeClass::StaticShape),
+                serial: 0,
+                always: false,
+                record: None,
+                part: (),
+                position: None,
+                updates: 0,
+            };
+            world.ghosts.insert(index, ghost);
+            let birth = u64::from(index) + 1;
+            world.birth_order.insert(index, birth);
+            world.ghost_log.push(GhostLogEntry::Born { index, birth });
+        }
+        let mut mirrors = Mirrors::for_ghost_bits(24, GhostWidths { min: 10, max: 20 });
+        let p = plan(&mut world, &mut mirrors);
+        assert_eq!(p.born.len(), MAX_MIRRORS);
+        // The oldest are the ones mirrored.
+        assert_eq!(p.born.last().map(|b| b.index), Some(MAX_MIRRORS as u32 - 1));
+    }
 }

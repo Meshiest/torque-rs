@@ -52,7 +52,7 @@ use torque_net::protocol::{Received, reader_at};
 use torque_ts_vm::fields::atob;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::text::{atoi, until_nul};
-use torque_ts_vm::vm::{Vm, VmError};
+use torque_ts_vm::vm::{CommandSource, Vm, VmError};
 
 use super::NetGame;
 use super::channels::ChannelHub;
@@ -938,8 +938,10 @@ fn run_followups<G: NetGame>(
                 }
                 let mut argv = vec![obj.to_string().into_bytes()];
                 argv.extend(args);
+                // Each connection's unknown-command lines are limited apart.
                 run_for(vm, shared, true, conn_obj, |vm| {
-                    vm.invoke(None, &name, &argv).map(|_| ())
+                    vm.invoke_from(CommandSource(u64::from(obj)), None, &name, &argv)
+                        .map(|_| ())
                 })
             }
             Followup::Print(line) => {

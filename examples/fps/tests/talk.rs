@@ -332,3 +332,80 @@ fn connections_from_one_address_share_the_allowance_and_a_reconnect_does_not_ref
     steps(&mut a, &mut b, &mut c, 300);
     assert_eq!(a.global("$Chat::Last"), "Ann: host");
 }
+
+/// Ann hosting on the floor, alone.
+fn host() -> ArenaGame {
+    let mut a = client("Ann", Some("fixtures/floor.mis"));
+    a.call("hostGame", &[]).unwrap();
+    for _ in 0..300 {
+        a.step(32);
+        if a.in_game() {
+            break;
+        }
+    }
+    assert!(a.in_game(), "the host is in its game");
+    a
+}
+
+/// Runs `text` on Ann's server.
+fn on_server(a: &mut ArenaGame, text: &str) -> String {
+    let vm = a.server.as_mut().unwrap().vm_mut();
+    String::from_utf8(vm.eval(text.as_bytes()).unwrap()).unwrap()
+}
+
+#[test]
+fn a_server_sending_ten_thousand_map_choices_leaves_sixty_four() {
+    let mut a = host();
+    a.call("clientCmdMapChoices", &["10000"]).unwrap();
+    for i in 0..10_000 {
+        a.call("clientCmdMapChoice", &[&format!("map{i}")]).unwrap();
+    }
+    assert_eq!(a.global("$Client::MapCount"), "64");
+    assert_eq!(a.global("$Client::MapChoice63"), "map63");
+    assert_eq!(a.global("$Client::MapChoice64"), "");
+}
+
+#[test]
+fn a_client_over_its_allowance_pays_only_the_cut() {
+    let mut a = host();
+    let cleaned = on_server(
+        &mut a,
+        "function cleanText(%text, %max) { $Test::Cleaned++; return %text; }\
+         function LimitedClient::chatAllowed(%client) { return false; }\
+         new ScriptObject(Limited) { class = \"LimitedClient\"; };\
+         %line = \"<color:ff0000>\";\
+         for (%i = 0; %i < 8; %i++) %line = %line @ %line;\
+         for (%i = 0; %i < 1000; %i++) serverCmdSay(Limited, %line);\
+         return $Test::Cleaned + 0;",
+    );
+    assert_eq!(cleaned, "0");
+}
+
+#[test]
+fn a_new_network_chats_once_its_allowance_fills_with_256_others_holding_one() {
+    let mut a = host();
+    let out = on_server(
+        &mut a,
+        "$Server::ChatRefillMs = 100;         for (%i = 0; %i < 256; %i++) chatAllowedFrom(\"IP:10.\" @ %i @ \".0\");         %new = chatAllowedFrom(\"IP:10.99.1\");         return %new SPC ChatAllowances.getCount() SPC chatNetwork(\"IP:10.1.2.3:28000\") SPC chatNetwork(\"IP:10.1.2.4:5\");",
+    );
+    // Room is made for it, empty: it chats once its allowance has filled.
+    assert_eq!(out, "0 256 IP:10.1.2 IP:10.1.2");
+    for _ in 0..10 {
+        a.step(32);
+    }
+    assert_eq!(
+        on_server(&mut a, "return chatAllowedFrom(\"IP:10.99.1\");"),
+        "1"
+    );
+}
+
+#[test]
+fn cycling_through_networks_never_sends_past_the_rate() {
+    let mut a = host();
+    let sent = on_server(
+        &mut a,
+        "$Server::ChatAddresses = 4; $Server::ChatBurst = 4; $Server::ChatRefillMs = 600000;         %sent = 0;         for (%i = 0; %i < 1000; %i++) %sent += chatAllowedFrom(\"IP:10.\" @ %i @ \".0\");         return %sent;",
+    );
+    // The first four networks' bursts; every network after them starts empty.
+    assert_eq!(sent, "4");
+}

@@ -13,6 +13,13 @@
 //! carries no notice). [`is_match`] follows the Torque Game Engine's `FindMatch::isMatch` (`core/findMatch.cc`, TGE
 //! 1.4, Copyright (C) GarageGames.com, Inc.; the Torque engine is MIT-licensed as Torque3D, Copyright (c) 2012 GarageGames,
 //! LLC, whose own `findMatch.cpp` matches differently). The code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - [`atoi`] reads only the bytes it takes (whitespace, a sign, digits): callers pass it the rest of a text, so a scan of the
+//!   whole input per call would make a pass over many numbers quadratic
+//!   (`atoi_stops_at_a_nul_as_at_any_other_byte_and_reads_only_what_it_takes`).
 
 use std::sync::OnceLock;
 
@@ -146,10 +153,10 @@ pub fn with_folded<R>(s: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
     }
 }
 
-/// C `atoi`: optional whitespace, optional sign, decimal digits, stop at the first other byte.
-/// Out-of-range values saturate to `i32::MIN` / `i32::MAX`, as C's `strtol` does.
+/// C `atoi`: optional whitespace, optional sign, decimal digits, stop at the first other byte (a NUL included).
+/// Out-of-range values saturate to `i32::MIN` / `i32::MAX`, as C's `strtol` does. Its cost is the bytes it takes, not the
+/// length of `s`: an ML reflow reads every tag's number from the rest of its text.
 pub fn atoi(s: &[u8]) -> i32 {
-    let s = until_nul(s);
     let mut i = 0;
     while i < s.len() && is_c_space(s[i]) {
         i += 1;

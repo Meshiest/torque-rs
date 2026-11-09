@@ -490,6 +490,7 @@ impl Vm {
         let target = self.events.now().wrapping_add(delta_ms);
         // The clock reads the target while events run.
         self.events.set_now(target);
+        self.flush_unknown_commands(target);
         let EventLimits {
             per_advance,
             per_time,

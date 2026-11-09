@@ -17,6 +17,13 @@
 //! - A variable's name ends at its first NUL byte, for its key and the spelling it keeps alike, and a global pattern
 //!   reads a name the same way (`a_name_is_the_same_variable_up_to_its_nul`,
 //!   `a_globals_effects_come_from_every_pattern_that_names_it`).
+//! - [`vm::Vm::invoke`] prints at most [`vm::MAX_UNKNOWN_COMMAND_LINES`] "Unknown command" lines a second of the simulation's
+//!   time for each source ([`vm::Vm::invoke_from`]: a connection on a server, the server on a client), and the clock prints
+//!   how many each left out once its second is over
+//!   (`a_flood_of_unknown_commands_prints_a_few_lines_a_second_and_how_many_it_left_out`,
+//!   `each_source_has_its_own_unknown_command_lines_and_a_timer_reports_what_it_left_out`).
+//! - [`host::FileHost::read_prefix`] keeps `read`'s refusals; a host over real files reads only the prefix
+//!   (`a_prefix_read_gives_the_first_bytes_of_a_file_or_an_entry_with_the_reads_refusals`, in `torque-resource`).
 //!
 //! **Speed** (`just bench-script` prints the workloads below, for both executors; a change that alters what a script
 //! prints changes a digest it prints):

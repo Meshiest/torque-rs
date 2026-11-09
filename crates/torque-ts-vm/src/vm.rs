@@ -443,6 +443,37 @@ pub struct Vm {
     host_budget: lifecycle::HostBudget,
     /// The script profile while a host has it on ([`Vm::set_profiling`]; boxed, off by default).
     profile: Option<Box<profile::Profiler>>,
+    /// The "Unknown command" warnings of each source's second in progress ([`MAX_UNKNOWN_COMMAND_LINES`]).
+    unknown_commands: std::collections::HashMap<CommandSource, UnknownCommands>,
+}
+
+/// Who asked [`Vm::invoke_from`] for a function: [`CommandSource::LOCAL`] for the host itself, else a number the host gives each
+/// remote party (a server's connection object on the server, the server on a client).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommandSource(pub u64);
+
+impl CommandSource {
+    /// The host's own calls ([`Vm::invoke`]).
+    pub const LOCAL: CommandSource = CommandSource(0);
+    /// Where the sources past [`MAX_COMMAND_SOURCES`] are counted together.
+    const OVERFLOW: CommandSource = CommandSource(u64::MAX);
+}
+
+/// The most `<name>: Unknown command.` warnings one source's calls print in one second of the simulation's time (a server's
+/// remote commands name functions; thousands a tick of ones that do not exist filled the console log in a second). Past it they
+/// are counted, and once the second is over (at the next [`Vm::advance_time`], or the source's next unknown command) one line
+/// says how many were not printed.
+pub const MAX_UNKNOWN_COMMAND_LINES: u32 = 32;
+/// The most sources counted apart; the ones past it share one count.
+pub const MAX_COMMAND_SOURCES: usize = 1024;
+
+/// The second [`MAX_UNKNOWN_COMMAND_LINES`] counts in for one source: when it started (`sim_time`), the lines printed, the ones
+/// left out.
+#[derive(Debug, Clone, Copy)]
+struct UnknownCommands {
+    since: u32,
+    printed: u32,
+    left_out: u64,
 }
 
 impl Default for Vm {
@@ -511,6 +542,7 @@ impl Vm {
             step_limit: None,
             host_budget: Default::default(),
             profile: None,
+            unknown_commands: std::collections::HashMap::new(),
         };
         vm.id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         vm.binding_epoch = vm.id;
@@ -933,9 +965,21 @@ impl Vm {
         name: &[u8],
         args: &[Vec<u8>],
     ) -> Result<Vec<u8>, VmError> {
+        self.invoke_from(CommandSource::LOCAL, namespace, name, args)
+    }
+
+    /// [`invoke`](Self::invoke) for `source` (a remote party's command): its "Unknown command" warnings are limited apart from
+    /// every other source's ([`MAX_UNKNOWN_COMMAND_LINES`]).
+    pub fn invoke_from(
+        &mut self,
+        source: CommandSource,
+        namespace: Option<&[u8]>,
+        name: &[u8],
+        args: &[Vec<u8>],
+    ) -> Result<Vec<u8>, VmError> {
         let Some(entry) = self.namespaces.lookup(namespace.unwrap_or(b""), name) else {
             if namespace.is_none_or(<[u8]>::is_empty) && self.console_rules().unknown_command {
-                self.warn_unknown_command(name);
+                self.warn_unknown_command(source, name);
             }
             return Ok(Vec::new());
         };
@@ -960,7 +1004,7 @@ impl Vm {
         let Some(entry) = self.namespaces.lookup(namespace.unwrap_or(b""), name) else {
             if namespace.is_none_or(<[u8]>::is_empty) && self.console_rules().unknown_command {
                 let name = argv.into_iter().next().unwrap_or_default();
-                self.warn_unknown_command(&name);
+                self.warn_unknown_command(CommandSource::LOCAL, &name);
             }
             return Ok(Vec::new());
         };
@@ -972,10 +1016,62 @@ impl Vm {
     /// `Con::execute`'s line for a global function that does not exist.
     #[cold]
     #[inline(never)]
-    fn warn_unknown_command(&mut self, name: &[u8]) {
+    fn warn_unknown_command(&mut self, source: CommandSource, name: &[u8]) {
+        let now = self.sim_time();
+        self.flush_unknown_commands(now);
+        let source = if self.unknown_commands.contains_key(&source)
+            || self.unknown_commands.len() < MAX_COMMAND_SOURCES
+        {
+            source
+        } else {
+            CommandSource::OVERFLOW
+        };
+        let u = self
+            .unknown_commands
+            .entry(source)
+            .or_insert(UnknownCommands {
+                since: now,
+                printed: 0,
+                left_out: 0,
+            });
+        if u.printed >= MAX_UNKNOWN_COMMAND_LINES {
+            u.left_out = u.left_out.saturating_add(1);
+            return;
+        }
+        u.printed += 1;
         let mut line = until_nul(name).to_vec();
         line.extend_from_slice(b": Unknown command.");
         self.log_bytes(Level::Warning, &line);
+    }
+
+    /// Ends the seconds of the sources whose second is over at `now`: each that left lines out prints how many.
+    pub(crate) fn flush_unknown_commands(&mut self, now: u32) {
+        if self.unknown_commands.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        self.unknown_commands.retain(|source, u| {
+            if now.wrapping_sub(u.since) < 1000 {
+                return true;
+            }
+            if u.left_out > 0 {
+                lines.push((*source, u.left_out));
+            }
+            false
+        });
+        lines.sort_unstable_by_key(|(source, _)| source.0);
+        for (source, n) in lines {
+            let line = match source {
+                CommandSource::LOCAL => format!("{n} more unknown commands were not printed."),
+                CommandSource::OVERFLOW => {
+                    format!("{n} more unknown commands from other sources were not printed.")
+                }
+                CommandSource(s) => {
+                    format!("{n} more unknown commands from source {s} were not printed.")
+                }
+            };
+            self.log_bytes(Level::Warning, line.as_bytes());
+        }
     }
 
     /// Runs the method `name` of an object from Rust, as `Con::executef(object, ...)`:

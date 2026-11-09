@@ -481,6 +481,15 @@ impl ModPackage {
         }
     }
 
+    /// The first `max` bytes of the file at `path`, a zip's entry inflated no further than them.
+    pub(crate) fn read_prefix(&self, path: &[u8], max: usize) -> Option<Vec<u8>> {
+        let slot = self.position(path)?;
+        match &self.backing {
+            Backing::Memory(files) => files.get(slot).map(|f| f[..f.len().min(max)].to_vec()),
+            Backing::Zip { mount, entry } => mount.read_prefix(entry.get(slot)?, max),
+        }
+    }
+
     pub(crate) fn position(&self, path: &[u8]) -> Option<usize> {
         self.index.get(&fold(path)).copied()
     }

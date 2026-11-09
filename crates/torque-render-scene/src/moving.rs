@@ -225,6 +225,10 @@ pub struct ShapeDraws {
     pub transforms: BTreeMap<u32, Mat>,
     /// The ghosts left out because nothing in the frame could show them ([`draws_culled`]).
     pub culled: usize,
+    /// The ghosts the frame's [`ShapeBudget`] drew at a lower detail, the ones it left out, and the shape files it put off.
+    pub lowered: usize,
+    pub over_budget: usize,
+    pub put_off: u64,
     /// With [`ShapeSelect::OnlyControl`]: the nanoseconds the build spent placing, posing, building the bodies and the images,
     /// and filling vertices inline, in that order.
     pub laps: Option<[u64; 5]>,
@@ -347,22 +351,34 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     // Placed, in the ghosts' order.
     let mut entries: Vec<Entry> = Vec::new();
     let mut jobs: Vec<Job<'_, W::Set, H::Live>> = Vec::new();
+    let put_off = crate::shapes::put_off_count();
+    let driven = BUDGET.with(|b| b.get().1);
     for class in world.shape_classes() {
         for (index, ghost) in records.of_class(class) {
             if !select.takes(world, index) {
                 continue;
             }
             let mut here = Vec::new();
-            let job = place(
-                world,
-                assets,
-                &mut models,
-                &mut here,
-                &mut out,
-                cull,
-                (class, index, ghost),
-                (eye, pixels_per_meter, policy),
-            );
+            let mut placing = || {
+                place(
+                    world,
+                    assets,
+                    &mut models,
+                    &mut here,
+                    &mut out,
+                    cull,
+                    (class, index, ghost),
+                    (eye, pixels_per_meter, policy),
+                )
+            };
+            let mut job = if serves_control(world, index, driven) {
+                crate::shapes::with_parse_budget(None, placing)
+            } else {
+                placing()
+            };
+            if let Some(j) = job.as_mut() {
+                j.entry = entries.len();
+            }
             entries.push(Entry {
                 index,
                 notes: here,
@@ -370,6 +386,11 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
             });
             jobs.extend(job);
         }
+    }
+    let max_vertices = BUDGET.with(|b| b.get().0.max_vertices);
+    if max_vertices != usize::MAX {
+        let control = records.control.object;
+        fit_budget(&mut jobs, &mut entries, control, max_vertices, &mut out);
     }
     take_live(world, hooks, &mut jobs);
     laps.lap(Lap::Place);
@@ -420,6 +441,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     }
     laps.lap(Lap::Place);
     out.laps = laps.done();
+    out.put_off = crate::shapes::put_off_count() - put_off;
     out
 }
 
@@ -518,6 +540,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         max_scale,
         dl,
         live_out: false,
+        entry: 0,
         live: None,
         images,
     })
@@ -604,6 +627,146 @@ thread_local! {
     static NODES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Inside [`with_shadow_body`]`(true, ..)`: a first-person body is built to cast shadows only.
     static SHADOW_BODY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Inside [`with_budget`]: the moving shapes' limits.
+    static BUDGET: std::cell::Cell<(ShapeBudget, Option<u32>)> =
+        const { std::cell::Cell::new((ShapeBudget::UNLIMITED, None)) };
+}
+
+/// The vertices a frame's moving shapes build by default ([`ShapeBudget`]).
+pub const DEFAULT_MAX_VERTICES: usize = 4 << 20;
+/// The shape files a frame parses by default ([`ShapeBudget`]).
+pub const DEFAULT_MAX_PARSES: usize = 4;
+
+/// What one frame's moving shapes may cost (a renderer setting; [`with_budget`]). The shapes are given their vertices nearest
+/// first (the control object always): one past what is left drops to its lower detail levels until it fits, else is left out
+/// ([`ShapeDraws::lowered`], [`ShapeDraws::over_budget`]). The shape files past `max_parses` wait for a later frame
+/// ([`crate::shapes::with_parse_budget`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapeBudget {
+    /// The most vertices the frame's moving shapes and their mounted images build.
+    pub max_vertices: usize,
+    /// The most shape files the frame parses (None: no limit).
+    pub max_parses: Option<usize>,
+}
+
+impl ShapeBudget {
+    /// No limit (a build outside [`with_budget`]: a scene drawn once, a test).
+    pub const UNLIMITED: ShapeBudget = ShapeBudget {
+        max_vertices: usize::MAX,
+        max_parses: None,
+    };
+}
+
+impl Default for ShapeBudget {
+    fn default() -> ShapeBudget {
+        ShapeBudget {
+            max_vertices: DEFAULT_MAX_VERTICES,
+            max_parses: Some(DEFAULT_MAX_PARSES),
+        }
+    }
+}
+
+/// Puts the budget back as it was, however the call it was set for ends.
+struct BudgetGuard((ShapeBudget, Option<u32>));
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        BUDGET.with(|b| b.set(self.0));
+    }
+}
+
+/// Runs `f` with its [`draws_culled`] builds under `budget`, `driven` the ghost index of the vehicle the client drives (if it
+/// drives one): the budget in place before comes back when `f` returns.
+pub fn with_budget<T>(budget: ShapeBudget, driven: Option<u32>, f: impl FnOnce() -> T) -> T {
+    let _restore = BudgetGuard(BUDGET.with(|b| b.replace((budget, driven))));
+    crate::shapes::with_parse_budget(budget.max_parses, f)
+}
+
+/// Whether ghost `index` is the control object, the vehicle the client drives (`driven`) or a mount the control object rides:
+/// its shapes and its images' load whatever the frame's parse budget says, so a world of hundreds of new shapes never starves
+/// them. The other vehicles the client runs are not.
+fn serves_control<W: ShapeWorld + ?Sized>(world: &W, index: u32, driven: Option<u32>) -> bool {
+    let r = world.records();
+    let Some(control) = r.control.object else {
+        return false;
+    };
+    if control == index || driven == Some(index) {
+        return true;
+    }
+    let mut at = control;
+    for _ in 0..MAX_MOUNT_DEPTH {
+        let Some((m, _)) = r.mount_of(at) else {
+            return false;
+        };
+        if m == index {
+            return true;
+        }
+        at = m;
+    }
+    false
+}
+
+/// The vertices a job builds at its detail, its mounted images at their most detailed.
+fn job_vertices<S: ClientSet, L>(job: &Job<'_, S, L>) -> usize {
+    let images: usize = job
+        .images
+        .iter()
+        .map(|i| match i {
+            ImageJob::Pose(p) => {
+                highest_detail(&p.loaded.model).map_or(0, |d| p.loaded.vertices_at(d))
+            }
+            ImageJob::NotLoaded(_) => 0,
+        })
+        .fold(0, usize::saturating_add);
+    job.loaded.vertices_at(job.dl).saturating_add(images)
+}
+
+/// Fits the placed jobs to `max` vertices, nearest first (the control object first of all): a job that does not fit drops to
+/// lower details, else is left out (its entry no longer placed).
+fn fit_budget<S: ClientSet, L>(
+    jobs: &mut Vec<Job<'_, S, L>>,
+    entries: &mut [Entry],
+    control: Option<u32>,
+    max: usize,
+    out: &mut ShapeDraws,
+) {
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |j: &Job<'_, S, L>| (control != Some(j.index), j.eye_distance);
+        let (ka, kb) = (key(&jobs[a]), key(&jobs[b]));
+        ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1))
+    });
+    let mut left = max;
+    let mut dropped = vec![false; jobs.len()];
+    for i in order {
+        let job = &mut jobs[i];
+        let first = job.dl;
+        loop {
+            let v = job_vertices(job);
+            if v <= left || control == Some(job.index) {
+                left = left.saturating_sub(v);
+                break;
+            }
+            match job.loaded.lower_detail(job.dl) {
+                Some(dl) => job.dl = dl,
+                None => {
+                    dropped[i] = true;
+                    break;
+                }
+            }
+        }
+        if dropped[i] {
+            out.over_budget += 1;
+            entries[job.entry].placed = false;
+        } else if job.dl != first {
+            out.lowered += 1;
+        }
+    }
+    let mut i = 0;
+    jobs.retain(|_| {
+        i += 1;
+        !dropped[i - 1]
+    });
 }
 
 /// A moving shapes' build timed by part: each lap's time since the last goes to its part, the vertices filled in it to the fill.
@@ -1003,6 +1166,8 @@ struct Job<'w, S: ClientSet, L> {
     dl: usize,
     /// Its live pose was taken out of the host's keeping ([`take_live`]), and the pose taken (none: its first live frame).
     live_out: bool,
+    /// Its place among the frame's entries (the ghosts placed, in order).
+    entry: usize,
     live: Option<L>,
     images: Vec<ImageJob>,
 }

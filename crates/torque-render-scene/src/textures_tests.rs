@@ -173,7 +173,7 @@ fn a_missing_texture_is_searched_once_until_the_files_change() {
     };
     // Other tests bump the process-wide files generation, and each bump rightly searches again: a run counts only when
     // nothing bumped it meanwhile.
-    let (searched, later) = (0..20)
+    let (searched, later, remembered_at) = (0..20)
         .find_map(|_| {
             files_changed();
             let generation = files_generation();
@@ -184,7 +184,7 @@ fn a_missing_texture_is_searched_once_until_the_files_change() {
                 assert_eq!(frame(), (None, 1), "a note each frame, as before");
             }
             let later = assets.reads.get() - before - searched;
-            (files_generation() == generation).then_some((searched, later))
+            (files_generation() == generation).then_some((searched, later, generation))
         })
         .expect("a run with the files unchanged");
     assert!(searched >= 2, "{searched}");
@@ -194,9 +194,9 @@ fn a_missing_texture_is_searched_once_until_the_files_change() {
         .files
         .borrow_mut()
         .insert("packs/rover_paint/skin.png".into(), png(8, 8, 3));
-    let generation = files_generation();
+    // (Only while nothing bumped the generation since the miss was remembered.)
     let got = frame().0;
-    if files_generation() == generation {
+    if files_generation() == remembered_at {
         assert_eq!(got, None, "still remembered as missing");
     }
     files_changed();

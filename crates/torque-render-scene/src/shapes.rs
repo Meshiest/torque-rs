@@ -148,9 +148,23 @@ pub struct Loaded {
     pub spheres: Vec<[f32; 4]>,
     /// Whether a mesh is a skin (its vertices are made from several nodes: a build of it stays in world space).
     pub skinned: bool,
+    /// Per detail level: the most vertices a build of it makes (every triangle of its meshes, three vertices each), what the
+    /// moving shapes' budget counts ([`crate::moving::ShapeBudget`]).
+    pub detail_vertices: Vec<usize>,
 }
 
 impl Loaded {
+    /// The most vertices a build at detail `dl` makes (0 for a level that does not exist).
+    pub fn vertices_at(&self, dl: usize) -> usize {
+        self.detail_vertices.get(dl).copied().unwrap_or(0)
+    }
+
+    /// The next drawn detail level below `dl` (a negative size or sub-shape marks a level that is not drawn), if any.
+    pub fn lower_detail(&self, dl: usize) -> Option<usize> {
+        let details = &self.model.shape.details;
+        (dl + 1..details.len()).find(|&i| details[i].size >= 0.0 && details[i].sub_shape >= 0)
+    }
+
     /// The meshes' spheres when a build of this shape may keep its vertices in their meshes' own space (`on`, and no skin).
     pub fn node_spheres(&self, on: bool) -> Option<&[[f32; 4]]> {
         (on && !self.skinned).then_some(self.spheres.as_slice())
@@ -245,6 +259,56 @@ static READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0
 static MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PARSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+thread_local! {
+    /// The parses the build in progress may still make (None: no limit; [`with_parse_budget`]).
+    static PARSES_LEFT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    /// The shapes this thread's builds put off so far ([`put_off_count`]).
+    static PUT_OFF: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Puts the parse budget back as it was, however the call it was set for ends.
+struct ParseBudgetGuard(Option<usize>);
+
+impl Drop for ParseBudgetGuard {
+    fn drop(&mut self) {
+        PARSES_LEFT.with(|p| p.set(self.0));
+    }
+}
+
+/// Runs `f` with at most `parses` shape files parsed by the loads it makes on this thread (None: no limit, as for the control
+/// object's shapes inside a frame's budget). A shape past it is put off: not loaded this time, noted and counted
+/// ([`put_off_count`]), and loaded by a later build, so a frame that meets hundreds of new or evicted shapes parses a few of
+/// them. The budget in place before comes back when `f` returns.
+pub fn with_parse_budget<T>(parses: Option<usize>, f: impl FnOnce() -> T) -> T {
+    let _restore = ParseBudgetGuard(PARSES_LEFT.with(|p| p.replace(parses)));
+    f()
+}
+
+/// The shapes this thread's builds put off so far ([`with_parse_budget`]).
+pub fn put_off_count() -> u64 {
+    PUT_OFF.with(std::cell::Cell::get)
+}
+
+/// Whether one more parse fits the budget; `take` uses it up.
+fn parse_allowed(take: bool) -> bool {
+    PARSES_LEFT.with(|p| match p.get() {
+        None => true,
+        Some(0) => false,
+        Some(n) => {
+            if take {
+                p.set(Some(n - 1));
+            }
+            true
+        }
+    })
+}
+
+fn put_off(path: &str, notes: &mut Vec<String>) -> Option<Arc<Loaded>> {
+    PUT_OFF.with(|n| n.set(n.get() + 1));
+    notes.push(format!("shape {path}: put off to a later frame"));
+    None
+}
+
 /// The loader's counts so far: (files read, reads that found nothing, files parsed).
 pub fn loader_counts() -> (u64, u64, u64) {
     use std::sync::atomic::Ordering::Relaxed;
@@ -321,6 +385,10 @@ pub fn load(
             if MISSING.with(|m| m.borrow_mut().get(&name).copied()) == Some(generation) {
                 return None;
             }
+            // A file not known yet is parsed (unless its content is kept under another name): not read past the budget.
+            if !parse_allowed(false) {
+                return put_off(path, notes);
+            }
             let Some(bytes) = counted_read(assets, path) else {
                 MISSING.with(|m| m.borrow_mut().insert(name.clone(), generation, 1));
                 return None;
@@ -336,8 +404,12 @@ pub fn load(
     if let Some(found) = LOADED.with(|c| c.borrow_mut().get(&key).cloned()) {
         return found;
     }
+    if !parse_allowed(true) {
+        return put_off(path, notes);
+    }
     let bytes = match fresh {
         Some(b) => b,
+
         None => {
             // Read again for the parse: a file that changed under its name since is loaded as it is now, under its new identity.
             let b = counted_read(assets, path)?;
@@ -388,12 +460,51 @@ fn load_uncached(
         .iter()
         .flatten()
         .any(|r| matches!(r.extra, MeshExtra::Skin(_)));
+    let detail_vertices = (0..model.shape.details.len())
+        .map(|dl| detail_vertices(&model.shape, dl))
+        .collect();
     Some(Loaded {
         model,
         ifls,
         spheres,
         skinned,
+        detail_vertices,
     })
+}
+
+/// The most vertices a build of detail `dl` makes: three for every triangle of each object's mesh at the level.
+fn detail_vertices(s: &shapes::shape::Shape, dl: usize) -> usize {
+    let Some(detail) = s.details.get(dl) else {
+        return 0;
+    };
+    let Some(ss) = usize::try_from(detail.sub_shape)
+        .ok()
+        .and_then(|i| s.sub_shapes.get(i))
+    else {
+        return 0;
+    };
+    let first = ss.first_object.max(0) as usize;
+    let objects = s
+        .objects
+        .iter()
+        .skip(first)
+        .take(ss.num_objects.max(0) as usize);
+    objects
+        .filter(|o| detail.object_detail >= 0 && detail.object_detail < o.num_meshes)
+        .filter_map(|o| {
+            let mi = usize::try_from(o.start_mesh_index.checked_add(detail.object_detail)?).ok()?;
+            s.meshes.get(mi)?.as_ref()
+        })
+        .flat_map(|m| &m.primitives)
+        .map(|p| {
+            let n = usize::from(p.num_elements);
+            if p.material & PRIM_TYPE_MASK == 0 {
+                n
+            } else {
+                3 * n.saturating_sub(2)
+            }
+        })
+        .fold(0usize, usize::saturating_add)
 }
 
 /// Per IFL material of a shape at `path`: its name (`name.ifl`), its material slot and the frames' texture paths.

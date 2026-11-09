@@ -31,6 +31,8 @@ pub(crate) struct TestHost {
     class: Option<Rc<dyn PlayerClass>>,
     /// A water zone the container update finds where its box overlaps the query.
     pub(crate) water: Option<super::host::ZoneView>,
+    /// Every solid a query looks at is charged as a client's world charges a candidate ([`work_units_cost`]).
+    charge_scan: bool,
 }
 
 impl TestHost {
@@ -45,6 +47,7 @@ impl TestHost {
             dismounts: 0,
             class: None,
             water: None,
+            charge_scan: false,
         }
     }
 
@@ -95,6 +98,12 @@ impl World for TestHost {
         limit: usize,
         out: &mut Vec<ObjectId>,
     ) -> Result<(), Exhausted> {
+        if self.charge_scan {
+            let units = torque_collide::work::CANDIDATE * self.solids.len() as u64;
+            if !World::charge(self, units) {
+                return Err(Exhausted);
+            }
+        }
         for b in &self.solids {
             if out.len() >= limit {
                 break;
@@ -948,4 +957,72 @@ fn tges_arm_position_is_the_pitchs() {
     for p in [-0.5, 0.25, 1.5] {
         assert_eq!(TorquePlayer.arm_pos(&s, p), p);
     }
+}
+
+/// The time a work unit takes on this machine, in the worst case a server can set up for the client's prediction: a Player of
+/// the largest box prediction takes (16 units a side) among hundreds of solids, running and jumping until a budget of
+/// `UNITS` is spent. The client's per-tick budget (`torque_client::predict::TICK_WORK`) is sized from what it prints. Run once,
+/// under the timing lock, in release: `cargo test -p torque-sim --release --lib -- --ignored work_units_cost --nocapture`.
+#[test]
+#[ignore = "a timing measurement"]
+fn work_units_cost() {
+    const UNITS: u64 = 200_000_000;
+    let mut db = data();
+    db.bounding_box = [16.0, 16.0, 16.0];
+    db.preload();
+    // A closed room (the floor, four walls and a lid), so the Player meets something on every tick.
+    let mut solids = vec![floor(100)];
+    for (k, (min, max)) in [
+        ([-21.0, -21.0, 0.0], [-20.0, 21.0, 40.0]),
+        ([20.0, -21.0, 0.0], [21.0, 21.0, 40.0]),
+        ([-21.0, -21.0, 0.0], [21.0, -20.0, 40.0]),
+        ([-21.0, 20.0, 0.0], [21.0, 21.0, 40.0]),
+        ([-21.0, -21.0, 40.0], [21.0, 21.0, 41.0]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        solids.push(Solid {
+            id: ObjectId(101 + k as u32),
+            min,
+            max,
+        });
+    }
+    for i in 0..20u32 {
+        for j in 0..20u32 {
+            let (x, y) = (i as f32 * 1.5 - 15.0, j as f32 * 1.5 - 15.0);
+            solids.push(Solid {
+                id: ObjectId(200 + i * 20 + j),
+                min: [x, y, 0.0],
+                max: [x + 0.5, y + 0.5, 0.4 + (i + j) as f32 % 3.0],
+            });
+        }
+    }
+    let mut h = TestHost::new(solids);
+    h.budget = UNITS;
+    h.charge_scan = true;
+    let mut p = player(&db, [0.0, 0.0, 0.0]);
+    let start = std::time::Instant::now();
+    let mut ticks = 0u64;
+    while h.budget > 0 && ticks < 200_000 {
+        let m = Move {
+            x: (ticks as f32 * 0.37).sin(),
+            y: (ticks as f32 * 0.23).cos(),
+            triggers: std::array::from_fn(|k| k == 2 && ticks.is_multiple_of(7)),
+            ..Move::default()
+        };
+        if p.process_tick(&db, Some(&m), &mut h).is_err() {
+            break;
+        }
+        ticks += 1;
+        h.time += 32;
+    }
+    let spent = UNITS - h.budget;
+    let elapsed = start.elapsed();
+    let ns = elapsed.as_nanos() as f64 / spent.max(1) as f64;
+    println!(
+        "{ticks} ticks, {spent} units in {elapsed:?}: {ns:.3} ns a unit, {:.0} units in 8 ms",
+        8_000_000.0 / ns
+    );
+    assert!(spent > 0);
 }

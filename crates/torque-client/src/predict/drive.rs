@@ -58,6 +58,14 @@ pub const MAX_SHAPES: usize = 256;
 pub const MAX_SHAPE_BYTES: usize = 16 << 20;
 /// The work a shape's read is charged per byte (its parse, facts and hulls are charged by their own units).
 pub const SHAPE_WORK_PER_BYTE: u64 = 1;
+/// The work the loads of [`ShapeCache::get`] may take in one tick, all of them together (their reads, imports, parses, facts and
+/// hulls: room for the largest file there can be), counted apart from the tick's budget: a vehicle's or a static object's
+/// collision shape of megabytes loads, once, whatever the tick's moves cost, and the loads past it wait for the next tick
+/// ([`ShapeCache::start_tick`]).
+pub const SHAPE_LOAD_WORK: u64 = 64 << 20;
+/// What a load in [`ShapeCache::get`] takes of the tick's budget: a few begin in one tick, the rest wait for later ticks
+/// without being read.
+pub const SHAPE_LOAD_TICK_WORK: u64 = super::TICK_WORK / 8;
 
 /// A shape the client read from the install: the parsed model, what the preloads find, the node transforms at rest and the
 /// collision hull of each slot (made once, as TGE computes the accelerators at `ShapeBaseData::preload`).
@@ -157,6 +165,10 @@ pub struct ShapeCache {
     /// The rule the collision and line-of-sight details are picked by (the game's, [`PredictGame::shape_slots`]; TGE's when
     /// none).
     slots: Option<SlotRule>,
+    /// What this tick's loads spent of [`ShapeCache::load_budget`].
+    load_spent: u64,
+    /// The work this cache's loads may take in a tick ([`SHAPE_LOAD_WORK`]; 0 takes that, a test lowers it).
+    pub load_budget: u64,
 }
 
 /// What a staged read of a shape ([`ShapeCache::get_staged`]) has come to.
@@ -297,12 +309,28 @@ impl ShapeCache {
         }
     }
 
+    /// A tick starts: its loads have the whole [`load_budget`](Self::load_budget) again.
+    pub fn start_tick(&mut self) {
+        self.load_spent = 0;
+    }
+
+    fn load_room(&self) -> u64 {
+        let budget = if self.load_budget == 0 {
+            SHAPE_LOAD_WORK
+        } else {
+            self.load_budget
+        };
+        budget.saturating_sub(self.load_spent)
+    }
+
     fn slot_rule(&self) -> SlotRule {
         self.slots.unwrap_or(shapes::preload::collision_slots)
     }
 
-    /// The shape at `path` (read through `reader` the first time, everything charged to `work` up to `budget`; at most
-    /// [`MAX_SHAPES`] shapes).
+    /// The shape at `path`, read through `reader` the first time and kept, found or not (at most [`MAX_SHAPES`] shapes). The
+    /// load draws on what this tick's loads have left of [`SHAPE_LOAD_WORK`] and takes [`SHAPE_LOAD_TICK_WORK`] of the tick's
+    /// `work` up to `budget`; a tick without that room reads nothing and answers None, and a load the rest of the tick's load
+    /// budget cut short is not kept (a later tick loads it whole).
     pub fn get(
         &mut self,
         path: &[u8],
@@ -315,26 +343,30 @@ impl ShapeCache {
         if let Some(s) = self.shapes.get(&key) {
             return s.clone();
         }
-        if self.shapes.len() >= MAX_SHAPES || *work >= budget {
+        let start = work.saturating_add(SHAPE_LOAD_TICK_WORK);
+        let room = self.load_room();
+        if self.shapes.len() >= MAX_SHAPES || start > budget || room == 0 {
             return None;
         }
+        *work = start;
+        let mut spent = 0u64;
         let loaded = reader.and_then(|r| r(path)).and_then(|bytes| {
             if bytes.len() > MAX_SHAPE_BYTES {
                 return None;
             }
-            *work = work.saturating_add(SHAPE_WORK_PER_BYTE.saturating_mul(bytes.len() as u64));
-            if *work > budget {
-                return None;
-            }
+            spent = SHAPE_WORK_PER_BYTE.saturating_mul(bytes.len() as u64);
             let mut charge = |units: u64| {
-                *work = work.saturating_add(units);
-                *work <= budget
+                spent = spent.saturating_add(units);
+                spent <= room
             };
             let bytes = torque_import::native::shape_file(path, bytes, &mut charge).ok()?;
-            load(&bytes, slots, work, budget).map(Rc::new)
+            load(&bytes, slots, &mut spent, room).map(Rc::new)
         });
-        // A read the budget cut short is tried again on a later tick; any other answer is kept.
-        if loaded.is_none() && *work > budget {
+        let whole = self.load_spent == 0;
+        self.load_spent = self.load_spent.saturating_add(spent.min(room));
+        // Cut short by what earlier loads of the tick left: tried again whole on a later tick (cut short with the whole budget: for
+        // good).
+        if loaded.is_none() && spent > room && !whole {
             return None;
         }
         self.shapes.insert(key, loaded.clone());

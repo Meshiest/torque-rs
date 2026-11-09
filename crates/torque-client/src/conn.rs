@@ -70,7 +70,7 @@ use torque_game::dbvalues::DbValues;
 use ts_vm::host::{FileHost, FileRead};
 use ts_vm::sim::ObjId;
 use ts_vm::text::until_nul;
-use ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use ts_vm::vm::{CommandSource, Native, NativeCall, Vm, VmError};
 
 use crate::game::{GhostWidths, client_game};
 use crate::hud::HudWorld;
@@ -954,7 +954,10 @@ fn run_events<G: ConnGame>(
                     vm.print(&line);
                     Ok(())
                 }
-                Step::Call(name, args) => vm.invoke(None, &name, &args).map(|_| ()),
+                // The server's commands: their unknown-command lines limited as the server's own.
+                Step::Call(name, args) => vm
+                    .invoke_from(CommandSource(u64::from(obj)), None, &name, &args)
+                    .map(|_| ()),
                 Step::Method(name, args) => {
                     if vm.objects().contains(obj) {
                         vm.call_method(obj, name.as_bytes(), &args).map(|_| ())

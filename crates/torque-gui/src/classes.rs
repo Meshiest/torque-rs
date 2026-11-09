@@ -12,6 +12,7 @@
 //! GarageGames, LLC), `gui/controls/guiMLTextCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC), `gui/core/guiTypes.cpp`
 //! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
+use torque_fonts::FontUse;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
@@ -150,7 +151,9 @@ pub(crate) fn autosize(vm: &mut Vm, gui: &Gui, id: ObjId) {
             torque_ts_vm::host::FileRead::Found(b) => Some(b),
             _ => None,
         };
-        fonts.borrow_mut().font(&face, size, &read)
+        fonts
+            .borrow_mut()
+            .font(&face, size, FontUse::Profile, &read)
     };
     let Some(font) = font else {
         gui.0.borrow_mut().autosize_skipped += 1;
@@ -1772,7 +1775,12 @@ fn register_profile(vm: &mut Vm, gui: &Gui) {
                 };
                 fonts
                     .borrow_mut()
-                    .font(&String::from_utf8_lossy(&face), size, &read)
+                    .font(
+                        &String::from_utf8_lossy(&face),
+                        size,
+                        FontUse::Profile,
+                        &read,
+                    )
                     .is_some()
             };
             if !found {

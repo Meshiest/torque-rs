@@ -43,8 +43,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use torque_ts_vm::host::{
-    DirHost, FileHost, FileRead, FileStat, ResourceRules, collapse_dots, open_found, safe_path,
-    sanitize_component,
+    DirHost, FileHost, FileRead, FileStat, ResourceRules, collapse_dots, open_found, read_up_to,
+    safe_path, sanitize_component,
 };
 use torque_ts_vm::text::fold;
 
@@ -961,6 +961,38 @@ impl GameFolder {
         match self.disk_read(&collapse_dots(path)) {
             Some(bytes) => FileRead::Found(bytes),
             None => FileRead::Missing,
+        }
+    }
+
+    /// [`read`](Self::read) of at most the first `max` bytes: a file of the disk reads only them, and a zip's entry inflates only
+    /// them ([`ZipMount::read_prefix`]).
+    pub fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        if let Some((zip, entry)) = self.entry_at(path)
+            && let Some(bytes) = zip.mount.read_prefix(&entry.name, max)
+        {
+            return FileRead::Found(bytes);
+        }
+        if let Some(bytes) = self.archive(path) {
+            return FileRead::Found(bytes[..bytes.len().min(max)].to_vec());
+        }
+        let path = collapse_dots(path);
+        if let Some(bytes) = self.startup_file(&path) {
+            return FileRead::Found(bytes[..bytes.len().min(max)].to_vec());
+        }
+        if let Some(&at) = self.disk.get(&fold(&path)) {
+            return self
+                .listing
+                .get(at)
+                .and_then(|rel| open_plain(&self.root, rel))
+                .and_then(|(file, _)| read_up_to(file, max))
+                .map_or(FileRead::Missing, FileRead::Found);
+        }
+        if self.authoritative(&path) {
+            return FileRead::Missing;
+        }
+        match self.dir.read_prefix(&path, max) {
+            FileRead::Found(bytes) => FileRead::Found(bytes),
+            _ => FileRead::Missing,
         }
     }
 

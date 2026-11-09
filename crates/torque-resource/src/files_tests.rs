@@ -348,3 +348,62 @@ fn the_files_serve_a_hosts_parts_and_the_stored_folder() {
     assert_eq!(files.real_path(b"mods/sub/a.cs"), None);
     assert_eq!(files.real_path(b"mods/sub/../sub/a.cs"), None);
 }
+
+#[test]
+fn a_prefix_read_gives_the_first_bytes_of_a_file_or_an_entry_with_the_reads_refusals() {
+    let folder = Folder::new();
+    folder.put("mods/pack.zip", &zip_of(&[("a.cs", b"zipped entry")]));
+    folder.put("mods/plain.cs", b"plain file");
+    let files = ResourceFiles::open(&folder.0, policy(None));
+    assert_eq!(
+        found(files.read_prefix(b"mods/plain.cs", 5)),
+        Some(b"plain".to_vec())
+    );
+    assert_eq!(
+        found(files.read_prefix(b"MODS/PLAIN.CS", 64)),
+        Some(b"plain file".to_vec())
+    );
+    assert_eq!(
+        found(files.read_prefix(b"mods/pack/a.cs", 6)),
+        Some(b"zipped".to_vec())
+    );
+    assert_eq!(
+        files.read_prefix(b"mods/../mods/plain.cs", 5),
+        FileRead::Missing
+    );
+    assert_eq!(files.read_prefix(b"mods/none.cs", 5), FileRead::Missing);
+}
+
+#[test]
+fn a_prefix_read_of_a_zip_entry_inflates_only_the_prefix() {
+    let big = vec![b'x'; 4 << 20];
+    let mount = crate::zips::ZipMount::open(zip_of(&[("big.txt", &big)])).unwrap();
+    assert_eq!(mount.read_prefix(b"big.txt", 100), Some(vec![b'x'; 100]));
+    assert_eq!(mount.inflated(), 100);
+    // Shorter than the prefix: the whole entry.
+    let small = crate::zips::ZipMount::open(zip_of(&[("a.cs", b"short")])).unwrap();
+    assert_eq!(small.read_prefix(b"a.cs", 100), Some(b"short".to_vec()));
+    assert_eq!(small.read_prefix(b"none.cs", 100), None);
+}
+
+#[test]
+fn a_prefix_read_to_the_entrys_end_checks_it_whole_and_a_short_stream_is_unreadable() {
+    let text = b"0123456789abcdef".repeat(64);
+    // A max of the whole size or more is a whole read.
+    let mount = crate::zips::ZipMount::open(zip_of(&[("a.txt", &text)])).unwrap();
+    assert_eq!(mount.read_prefix(b"a.txt", text.len()), Some(text.clone()));
+    // An entry whose header says it is longer than its stream: the prefix past the stream's end fails, and the entry is
+    // unreadable from then on, what was inflated counted as wasted.
+    let mut zip = zip_of(&[("a.txt", &text)]);
+    let declared = (text.len() as u32 * 4).to_le_bytes();
+    let central = zip
+        .windows(4)
+        .rposition(|w| w == [0x50, 0x4b, 0x01, 0x02])
+        .unwrap();
+    zip[central + 24..central + 28].copy_from_slice(&declared);
+    zip[22..26].copy_from_slice(&declared);
+    let mount = crate::zips::ZipMount::open(zip).expect("the zip mounts");
+    assert_eq!(mount.read_prefix(b"a.txt", 2 * text.len()), None);
+    assert_eq!(mount.wasted(), text.len() as u64);
+    assert_eq!(mount.read_prefix(b"a.txt", 4), None, "unreadable");
+}

@@ -42,6 +42,81 @@ fn a_missing_global_function_warns_unknown_command_unless_the_rules_silence_it()
 }
 
 #[test]
+fn a_flood_of_unknown_commands_prints_a_few_lines_a_second_and_how_many_it_left_out() {
+    let mut vm = Vm::new();
+    let mut printed = Vec::new();
+    // 16,384 a tick for 10 ticks of 32 ms (a server's packets of remote commands nothing defines).
+    for _ in 0..10 {
+        for i in 0..16_384 {
+            assert_eq!(
+                text(&mut vm, &format!("clientCmdNothing{}", i % 7), &[]),
+                ""
+            );
+        }
+        printed.extend(lines(&mut vm));
+        vm.advance_time(32);
+    }
+    assert_eq!(
+        printed.len(),
+        torque_ts_vm::vm::MAX_UNKNOWN_COMMAND_LINES as usize
+    );
+    // The next second: what was left out, then its own lines.
+    vm.advance_time(1000);
+    text(&mut vm, "clientCmdNothing", &[]);
+    let next = lines(&mut vm);
+    let left_out = 16_384 * 10 - torque_ts_vm::vm::MAX_UNKNOWN_COMMAND_LINES as usize;
+    assert_eq!(
+        next,
+        [
+            (
+                Level::Warning,
+                format!("{left_out} more unknown commands were not printed.")
+            ),
+            (
+                Level::Warning,
+                "clientCmdNothing: Unknown command.".to_string()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn each_source_has_its_own_unknown_command_lines_and_a_timer_reports_what_it_left_out() {
+    use torque_ts_vm::vm::{CommandSource, MAX_UNKNOWN_COMMAND_LINES};
+    let mut vm = Vm::new();
+    let max = MAX_UNKNOWN_COMMAND_LINES as usize;
+    for source in [CommandSource(7), CommandSource(9)] {
+        for _ in 0..max + 10 {
+            vm.invoke_from(source, None, b"clientCmdNothing", &[])
+                .unwrap();
+        }
+    }
+    // A flood from source 7 does not silence source 9.
+    assert_eq!(lines(&mut vm).len(), 2 * max);
+    // The second ends with no other command: the clock alone prints what each left out.
+    vm.advance_time(500);
+    assert!(lines(&mut vm).is_empty());
+    vm.advance_time(500);
+    assert_eq!(
+        lines(&mut vm),
+        [
+            (
+                Level::Warning,
+                "10 more unknown commands from source 7 were not printed.".to_string()
+            ),
+            (
+                Level::Warning,
+                "10 more unknown commands from source 9 were not printed.".to_string()
+            ),
+        ]
+    );
+    // A new second prints again.
+    vm.invoke_from(CommandSource(7), None, b"clientCmdNothing", &[])
+        .unwrap();
+    assert_eq!(lines(&mut vm).len(), 1);
+}
+
+#[test]
 fn strpos_finds_an_empty_needle_at_its_offset() {
     let mut vm = Vm::new();
     assert_eq!(text(&mut vm, "strpos", &["abc", ""]), "0");

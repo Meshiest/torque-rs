@@ -388,6 +388,10 @@ impl<S: ClientSet> GhostIndex<S> {
     }
 }
 
+/// The most ghosts a client's world follows, whatever ghost table the connection's accept allows (an engine server's 24-bit
+/// table names 16.7 million): a ghost created past it is left out (counted in [`ClientWorld::over_cap`]) until room is made.
+pub const MAX_WORLD_GHOSTS: usize = 1 << 18;
+
 /// The engine's half of the client's world: the ghosts and their records, the datablocks, the net strings, the
 /// control object and the eye, the images, threads and effects the records drive. A game's view wraps it.
 #[derive(Debug, Clone, PartialEq)]
@@ -412,6 +416,8 @@ pub struct ClientWorld<S: ClientSet> {
     /// Ghosts the table named that the world could not follow: a change for an index the table no longer held (created and deleted
     /// in one packet), and updates of an index the world did not have.
     pub skipped_changes: usize,
+    /// New ghosts not followed because the world held [`MAX_WORLD_GHOSTS`] already.
+    pub over_cap: usize,
 
     /// Client-to-server net strings, for naming the client's remote commands (the game's client command markers).
     pub client_strings: BTreeMap<u8, Vec<u8>>,
@@ -583,6 +589,7 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             resets: Default::default(),
             last_record: Default::default(),
             skipped_changes: Default::default(),
+            over_cap: Default::default(),
             client_strings: Default::default(),
             birth_order: Default::default(),
             births: Default::default(),
@@ -994,6 +1001,10 @@ impl<S: ClientSet> ClientWorld<S> {
                         self.skipped_changes += 1;
                         continue;
                     };
+                    if self.ghosts.len() >= MAX_WORLD_GHOSTS && !self.ghosts.contains_key(&index) {
+                        self.over_cap += 1;
+                        continue;
+                    }
                     let sent = o.record();
                     let position = sent.and_then(|r| r.point(cp));
                     self.images.remove(&index);

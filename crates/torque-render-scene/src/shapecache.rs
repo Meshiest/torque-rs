@@ -59,6 +59,9 @@ struct Cache {
     entries: HashMap<(u32, u64), Entry>,
     /// Each kept build's entry by its stamp.
     stamps: HashMap<u64, (u32, u64)>,
+    /// Each kept build's stamp by its label (its ghost's number left out) and key ([`content_key`]): a ghost whose call has
+    /// another ghost's label and key draws that build (one set of vertices for every ghost of a shape posed the same).
+    by_content: HashMap<u64, u64>,
     owner: u32,
     /// This run's calls in order.
     calls: Vec<Call>,
@@ -94,12 +97,16 @@ pub fn with_cache<T>(f: impl FnOnce() -> T) -> T {
         c.on = false;
         let epoch = c.epoch;
         let Cache {
-            entries, stamps, ..
+            entries,
+            stamps,
+            by_content,
+            ..
         } = &mut *c;
-        entries.retain(|_, e| {
+        entries.retain(|at, e| {
             let keep = e.used + 1 >= epoch;
             if !keep {
                 stamps.remove(&e.stamp);
+                forget_content(by_content, at.0, e);
             }
             keep
         });
@@ -286,11 +293,24 @@ pub fn lookup(
     CACHE.with(|c| {
         let mut c = c.borrow_mut();
         let epoch = c.epoch;
-        let at = (c.owner, label_key(label));
-        let e = c
+        let own = (c.owner, label_key(label));
+        let at = if c
             .entries
-            .get_mut(&at)
-            .filter(|e| e.label == label && e.key == key)?;
+            .get(&own)
+            .is_some_and(|e| e.label == label && e.key == key)
+        {
+            own
+        } else {
+            // Another ghost's build of the same label and key.
+            let stamp = *c.by_content.get(&content_key(c.owner, label, key))?;
+            let at = *c.stamps.get(&stamp)?;
+            let e = c.entries.get(&at)?;
+            if e.key != key || shared_label(at.0, &e.label) != shared_label(c.owner, label) {
+                return None;
+            }
+            at
+        };
+        let e = c.entries.get_mut(&at)?;
         // Each name asked again, in order; the build's local indices to this set's.
         let mut map: Vec<(usize, usize)> = Vec::new();
         for l in &e.lookups {
@@ -329,6 +349,46 @@ pub fn lookup(
     })
 }
 
+/// `label` of a build of ghost `owner` around the ghost's number (the moving shapes' labels name it once, between spaces:
+/// `StaticShape 7 path`, `image 0 of Player 7 path`): the text before it and the text after, or the whole label and "".
+fn shared_label(owner: u32, label: &str) -> (&str, &str) {
+    use std::io::Write as _;
+    let mut buf = [0u8; 12];
+    let len = {
+        let mut at = &mut buf[..];
+        let _ = write!(at, " {owner} ");
+        12 - at.len()
+    };
+    let number = std::str::from_utf8(&buf[..len]).unwrap_or(" ");
+    match label.find(number) {
+        Some(at) => (&label[..at], &label[at + len..]),
+        None => (label, ""),
+    }
+}
+
+/// A build's label (its ghost's number left out) and key as [`Cache::by_content`] keys it, one hash of both (the entry found is
+/// checked against them).
+fn content_key(owner: u32, label: &str, key: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    shared_label(owner, label).hash(&mut h);
+    key.hash(&mut h);
+    h.finish()
+}
+
+/// Drops the content key of the build `e` of ghost `owner`, when it names `e`'s build.
+fn forget_content(by_content: &mut HashMap<u64, u64>, owner: u32, e: &Entry) {
+    let k = content_key(owner, &e.label, &e.key);
+    if by_content.get(&k) == Some(&e.stamp) {
+        by_content.remove(&k);
+    }
+}
+
+/// How many builds are kept (each its own set of vertices; ghosts posed the same share one).
+pub fn kept_builds() -> usize {
+    CACHE.with(|c| c.borrow().entries.len())
+}
+
 /// A call's label as the entries key it (each entry holds its label too: a key two labels share finds neither's build).
 fn label_key(label: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -354,6 +414,7 @@ pub fn keep(
         let at = (owner, label_key(label));
         if let Some(old) = c.entries.remove(&at) {
             c.stamps.remove(&old.stamp);
+            forget_content(&mut c.by_content, owner, &old);
         }
         if deferred {
             // Not kept: in the world (its call has no places).
@@ -382,6 +443,7 @@ pub fn keep(
             places: None,
         });
         c.stamps.insert(stamp, at);
+        c.by_content.insert(content_key(owner, label, &key), stamp);
         c.entries.insert(
             at,
             Entry {
