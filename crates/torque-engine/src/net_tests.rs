@@ -430,3 +430,29 @@ fn a_server_to_client_channel_may_not_take_the_prefix_the_manifest_keeps_for_the
         .unwrap();
     assert!(engine.net_channels().is_err());
 }
+
+#[test]
+fn a_version_listed_while_building_is_in_the_manifest_once() {
+    let listed = EngineBuilder::new()
+        .add_plugins(plugin::<Arena>(None, |e| {
+            e.net().version(3);
+        }))
+        .build()
+        .unwrap();
+    assert_eq!(listed.net_versions(), [(PluginId::new("example.arena"), 3)]);
+    assert!(listed.is_networked());
+    // Listed both ways: the version listed while building stands, once.
+    let both = EngineBuilder::new()
+        .add_plugins(plugin::<Rope>(Some(1), |e| {
+            e.net().version(2);
+        }))
+        .build()
+        .unwrap();
+    assert_eq!(both.net_versions(), [(PluginId::new("torque.rope"), 2)]);
+    // A plugin that lists nothing says nothing.
+    let quiet = EngineBuilder::new()
+        .add_plugins(plugin::<Local>(None, nothing))
+        .build()
+        .unwrap();
+    assert!(quiet.net_versions().is_empty());
+}

@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use ghosts::audio::AudioEmitter;
+use ghosts::block::{BlockSections, GhostBlock};
 use ghosts::fx::{FxLight, ParticleEmitterNode};
 use ghosts::interior::InteriorInstance;
 use ghosts::light::{ScatterSky, SpotLight, TimeOfDay};
@@ -865,6 +866,8 @@ pub struct TgeGhost {
     pub updates: u32,
     /// The datablock its records named last (a later update need not carry it; a WheeledVehicle's wheel count comes from it).
     pub datablock: Option<u32>,
+    /// The per-ghost block the last record carried, when the connection carries one ([`TgeCodec::blocks`]).
+    pub block: Option<GhostBlock>,
 }
 
 impl SentGhost<TgeClientSet> for TgeGhost {
@@ -882,6 +885,10 @@ impl SentGhost<TgeClientSet> for TgeGhost {
 
     fn updates(&self) -> u32 {
         self.updates
+    }
+
+    fn block(&self) -> Option<&GhostBlock> {
+        self.block.as_ref()
     }
 }
 
@@ -924,6 +931,8 @@ pub struct TgeCodec {
     pub control: Option<u32>,
     /// Records read so far.
     pub serial: usize,
+    /// The sections of the per-ghost block that follows each record ([`ghosts::block`]; none: no block, as with a TGE server).
+    pub blocks: BlockSections,
     /// The work units the records of the datagram being read may still spend ([`TgeCodec::set_budget`]); `None` sets no
     /// bound.
     budget: std::cell::Cell<Option<u64>>,
@@ -956,8 +965,24 @@ impl TgeCodec {
             facts: TgeFacts::default(),
             control: None,
             serial: 0,
+            blocks: BlockSections::default(),
             budget: std::cell::Cell::new(None),
         }
+    }
+
+    /// The codec reading the per-ghost block of `blocks` after each record.
+    #[must_use]
+    pub fn with_blocks(mut self, blocks: BlockSections) -> TgeCodec {
+        self.blocks = blocks;
+        self
+    }
+
+    /// The block after a record, when the connection carries one.
+    fn read_block(&self, r: &mut BitReader) -> Result<Option<GhostBlock>, NetError> {
+        if !self.blocks.any() {
+            return Ok(None);
+        }
+        GhostBlock::read(r, self.blocks, self.widths.ghost_bits, &mut self.charge()).map(Some)
     }
 
     /// The codec with the plugins' ghost classes `plugins` past the table and the engine's own classes.
@@ -1015,6 +1040,7 @@ impl GhostCodec for TgeCodec {
             .class_of_id(id)
             .ok_or(NetError::Invalid("object class"))?;
         let record = self.read(class, true, None, r)?;
+        let block = self.read_block(r)?;
         self.serial += 1;
         Ok(TgeGhost {
             class: Some(class),
@@ -1022,6 +1048,7 @@ impl GhostCodec for TgeCodec {
             datablock: record.datablock(),
             record: Some(record),
             updates: 0,
+            block,
         })
     }
 
@@ -1034,6 +1061,7 @@ impl GhostCodec for TgeCodec {
             .class
             .ok_or(NetError::Invalid("update of a placeholder"))?;
         let record = self.read(class, false, object.datablock, r)?;
+        object.block = self.read_block(r)?;
         self.serial += 1;
         if let Some(d) = record.datablock() {
             object.datablock = Some(d);

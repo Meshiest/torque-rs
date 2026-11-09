@@ -32,8 +32,11 @@ fn attachment(parent: &Pose, node: Option<&Matrix>) -> Matrix {
     }
 }
 
-/// A child's world transform: the parent's world, the node, then the local pose.
-pub(crate) fn compose(parent: &Pose, node: Option<&Matrix>, local: &Local) -> Matrix {
+/// A child's world transform: the parent's world, the node (in the parent's space, no scale), then the local pose, by the mount
+/// rule. What the tree's resolve computes, for a host that composes poses of its own (a client drawing a child at its parent's
+/// drawn pose).
+#[must_use]
+pub fn compose(parent: &Pose, node: Option<&Matrix>, local: &Local) -> Matrix {
     matrix_product(
         &attachment(parent, node),
         &local_matrix(local, parent.scale),

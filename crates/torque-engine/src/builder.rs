@@ -389,6 +389,11 @@ impl EngineBuilder {
                 plugin.net_version().map(|version| (entry.id, version))
             })
             .collect();
+        // A plugin that listed its version while it was built ([`NetRegistry::version`]) is listed at the last one it gave.
+        for listed in this.store.list::<crate::net::NetVersion>() {
+            net_versions.retain(|(id, _)| *id != listed.plugin);
+            net_versions.push((listed.plugin, listed.version));
+        }
         net_versions.sort_unstable();
         Ok(Engine::new(
             plugins,

@@ -14,7 +14,8 @@ use crate::events::{ConnectionMessage, EventCtx, EventIds, PackCtx, WireEvent};
 
 use super::policy::{GhostPolicy, ObjectPolicy, PendingOrder, TableCounts, TorqueGhosts};
 use super::source::{
-    CamInfo, GhostScripts, ObjId, ObjectSource, flags, net_flags, scope_radius_used,
+    CamInfo, ConnectionGhosts, GhostScripts, ObjId, ObjectSource, flags, net_flags,
+    scope_radius_used,
 };
 use super::table::Table;
 
@@ -176,6 +177,24 @@ fn index_in(table: &Table, obj: ObjId) -> Option<u32> {
     (g.flags & 0x78 == 0).then_some(g.index)
 }
 
+/// Whether `table` holds a ghost of `obj` that is not going (`KillGhost | KillingGhost` clear).
+fn holds_in(table: &Table, obj: ObjId) -> bool {
+    table
+        .id_of(obj)
+        .and_then(|id| table.get(id))
+        .is_some_and(|g| g.flags & (flags::KILL_GHOST | flags::KILLING_GHOST) == 0)
+}
+
+impl ConnectionGhosts for Table {
+    fn index(&self, obj: ObjId) -> Option<u32> {
+        index_in(self, obj)
+    }
+
+    fn holds(&self, obj: ObjId) -> bool {
+        holds_in(self, obj)
+    }
+}
+
 impl<S: ObjectSource> PackCtx for GhostPackCtx<'_, S> {
     /// `flag(object exists now)`, then `int(6) classId` (never the implied form) and `packUpdate(conn, 0xFFFFFFFF)`. **Addition:**
     /// an event made for an earlier ghosting sequence (a reset came between) packs the empty form (a standard event carries no sequence
@@ -193,10 +212,7 @@ impl<S: ObjectSource> PackCtx for GhostPackCtx<'_, S> {
             Some(class) => {
                 w.write_flag(true);
                 w.write_bits(class, self.class_bits);
-                let table = self.table;
-                let left = self
-                    .src
-                    .pack_update(obj, 0xFFFF_FFFF, w, &|t| index_in(table, t));
+                let left = self.src.pack_update_on(obj, 0xFFFF_FFFF, w, self.table);
                 if left != 0 {
                     self.left.push((obj, left));
                 }
@@ -612,6 +628,11 @@ impl<P: GhostPolicy> GhostManager<P> {
         index_in(&self.table, obj)
     }
 
+    /// Whether the connection holds a ghost of `obj` that is not going ([`ConnectionGhosts::holds`]).
+    pub fn holds(&self, obj: ObjId) -> bool {
+        holds_in(&self.table, obj)
+    }
+
     /// `resolveObjectFromGhostIndex`: the object behind a wire id, whatever the ghost's state.
     pub fn object_at_index(&self, index: u32) -> Option<ObjId> {
         self.table.get(index).and_then(|g| g.obj)
@@ -939,6 +960,11 @@ impl<P: GhostPolicy> GhostManager<P> {
         match self.table.alloc(obj, f) {
             Some(id) => {
                 self.policy.ghost_made(src, obj, id);
+                let mut marks = Vec::new();
+                src.marks_on_ghost(obj, &mut marks);
+                for (o, bits) in marks {
+                    self.set_mask(o, bits);
+                }
                 Scoped::New
             }
             None => {
@@ -1272,14 +1298,20 @@ impl<P: GhostPolicy> GhostManager<P> {
                     KILL_PRIORITY
                 } else {
                     g.obj.map_or(0.0, |o| {
+                        let first = g.flags & flags::NOT_YET_GHOSTED != 0;
                         let p = src.update_priority(o, &cam, g.mask, g.skip);
-                        if src.packet_share(o).is_none() {
+                        let p = if src.packet_share(o).is_none() {
                             p
-                        } else if g.flags & flags::NOT_YET_GHOSTED != 0 {
+                        } else if first {
                             SHARE_FIRST_PRIORITY
                         } else {
                             share_priority(p)
+                        };
+                        if !first {
+                            return p;
                         }
+                        let bonus = src.first_record_bonus(o);
+                        if bonus == 0.0 { p } else { p + bonus }
                     })
                 };
                 items.push((p, id));
@@ -1379,8 +1411,7 @@ impl<P: GhostPolicy> GhostManager<P> {
                         continue;
                     }
                 }
-                let table = &self.table;
-                let ret = src.pack_update(o, mask, w, &|t| index_in(table, t));
+                let ret = src.pack_update_on(o, mask, w, &self.table);
                 if w.is_overflowed() && !was_overflowed {
                     w.rewind(mark);
                     stats.refused += 1;

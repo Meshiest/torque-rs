@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use collide::math::Matrix;
 use ghosts::{NetStr, Xf};
 use net::control::{ClientBlock, ControlData, ControlSection, ServerHead};
 use net::ghost::GhostChange;
@@ -611,6 +612,10 @@ pub struct ClientWorld<S: ClientSet> {
 
     /// Where the plugin ghosts that are shown between their updates were drawn last ([`ClientWorld::warped_pose`]).
     pub warps: super::warp::PoseWarps,
+
+    /// The scene hierarchy the server's per-ghost blocks carried ([`super::links`]): which ghost hangs on which, and its local
+    /// pose. [`ClientWorld::world_pose`] draws a child through it.
+    pub links: super::links::ClientLinks,
 }
 
 // The derive would ask the set's classes and records for defaults they need not have.
@@ -667,6 +672,7 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             max_view_distance: Default::default(),
             plugin_shapes: Default::default(),
             warps: Default::default(),
+            links: Default::default(),
         }
     }
 }
@@ -1020,11 +1026,13 @@ impl<S: ClientSet> ClientWorld<S> {
                     self.image_fire_counts.clear();
                     self.threads.clear();
                     self.exploded.clear();
+                    self.links.clear();
                     self.resets += 1;
                     hooks.cleared(self);
                 }
                 GhostChange::Deleted(index) => {
                     self.touched.push(index);
+                    self.unlink_gone(index);
                     let gone = self.ghosts.remove(&index);
                     if let Some(gone) = &gone {
                         self.ghost_index.remove(index, gone);
@@ -1076,6 +1084,9 @@ impl<S: ClientSet> ClientWorld<S> {
                         index,
                         birth: self.births,
                     });
+                    if self.ghosts.contains_key(&index) {
+                        self.unlink_gone(index);
+                    }
                     let made = Ghost {
                         class: o.class(),
                         serial: o.serial(),
@@ -1091,6 +1102,10 @@ impl<S: ClientSet> ClientWorld<S> {
                     }
                     if let Some(g) = self.ghosts.get(&index) {
                         self.ghost_index.insert(index, g);
+                    }
+                    self.links.created(index);
+                    if let Some(block) = o.block() {
+                        self.apply_block(index, block);
                     }
                     hooks.created(self, index, o, old.as_ref());
                 }
@@ -1208,9 +1223,104 @@ impl<S: ClientSet> ClientWorld<S> {
                             datablock,
                         });
                     }
+                    if let Some(block) = o.block() {
+                        self.apply_block(index, block);
+                    }
                     hooks.updated(self, index, o);
                 }
             }
+        }
+        let ghosts = &self.ghosts;
+        self.links
+            .settle(&|i| ghosts.contains_key(&i), self.clock_ms.unwrap_or(0));
+    }
+
+    /// Ghost `index`'s per-ghost block.
+    fn apply_block(&mut self, index: u32, block: &ghosts::block::GhostBlock) {
+        let ghosts = &self.ghosts;
+        self.links.apply(
+            index,
+            block,
+            &|i| ghosts.contains_key(&i),
+            self.clock_ms.unwrap_or(0),
+            self.anim_ms,
+        );
+    }
+
+    /// Ghost `index` is going: its children stay where they are drawn now, taken off it.
+    fn unlink_gone(&mut self, index: u32) {
+        let children: Vec<u32> = self.links.children(index).collect();
+        if children.is_empty()
+            && self.links.parent(index).is_none()
+            && !self.links.is_waiting(index)
+            && !self.links.is_awaited(index)
+        {
+            return;
+        }
+        let worlds: Vec<(u32, (Matrix, [f32; 3]))> = children
+            .into_iter()
+            .filter_map(|c| Some((c, self.world_pose(c, &|_, _| None)?)))
+            .collect();
+        let ghosts = &self.ghosts;
+        self.links
+            .deleted(index, worlds, &|i| i != index && ghosts.contains_key(&i));
+    }
+
+    /// Where ghost `index` is in the world, and its scale: a child at its parent's place times the parent's node (`nodes`
+    /// answers a ghost's node in its own space, as its shape is posed; a node it cannot answer counts as the parent's origin)
+    /// times its local pose; any other ghost where the client draws it (its predicted, run or held pose) or its record puts it.
+    /// `None` for a ghost the client does not hold or whose record has no pose.
+    pub fn world_pose(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+    ) -> Option<(Matrix, [f32; 3])> {
+        self.world_pose_at(index, nodes, 0)
+    }
+
+    fn world_pose_at(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        depth: usize,
+    ) -> Option<(Matrix, [f32; 3])> {
+        if let Some(held) = self.links.held(index) {
+            return Some(held);
+        }
+        let g = self.ghosts.get(&index)?;
+        let scale = g.scale().unwrap_or([1.0; 3]);
+        // The tree holds every chain to its hard depth; the bound only stops a walk that would not end.
+        if depth <= hierarchy::HARD_DEPTH
+            && let Some(parent) = self.links.parent(index)
+            && let Some(local) = self.links.local(index, self.anim_ms, self.animate)
+            && let Some((world, parent_scale)) =
+                self.world_pose_at(parent.object.0, nodes, depth + 1)
+        {
+            let node = match parent.node {
+                hierarchy::NodeRef::Origin => None,
+                hierarchy::NodeRef::Node(n) => nodes(parent.object.0, n),
+            };
+            let at = hierarchy::Pose {
+                world,
+                scale: parent_scale,
+            };
+            return Some((hierarchy::compose(&at, node.as_ref(), &local), scale));
+        }
+        Some((super::links::record_matrix(&self.own_pose(index)?), scale))
+    }
+
+    /// Where ghost `index` is drawn when nothing carries it: the client's own pose for what it runs (the control object, a
+    /// vehicle, a watched ghost), else its record's.
+    pub fn own_pose(&self, index: u32) -> Option<Pose> {
+        if let Some(p) = self.vehicle_render.get(&index) {
+            return Some(*p);
+        }
+        if let Some(p) = self.ghost_render.get(&index) {
+            return Some(*p);
+        }
+        match &self.control_render {
+            Some(p) if self.control.object == Some(index) => Some(*p),
+            _ => self.ghosts.get(&index)?.pose(),
         }
     }
 

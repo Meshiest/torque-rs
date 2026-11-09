@@ -4444,7 +4444,9 @@ dependencies = [
 name = "torque-ghost-world"
 version = "0.1.0"
 dependencies = [
+ "torque-collide",
  "torque-ghosts",
+ "torque-hierarchy",
  "torque-net",
 ]
 
@@ -4639,13 +4641,21 @@ dependencies = [
 name = "torque-plugin-hierarchy"
 version = "0.1.0"
 dependencies = [
+ "torque-app",
  "torque-app-server",
+ "torque-client",
  "torque-collide",
  "torque-engine",
  "torque-example-assets",
  "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
  "torque-hierarchy",
+ "torque-net",
  "torque-plugin-props",
+ "torque-render-core",
+ "torque-render-scene",
+ "torque-server",
  "torque-shapes",
  "torque-ts-vm",
 ]
@@ -4775,6 +4785,7 @@ dependencies = [
  "torque-collide",
  "torque-ghost-world",
  "torque-ghosts",
+ "torque-hierarchy",
  "torque-images",
  "torque-import",
  "torque-interior-builder",

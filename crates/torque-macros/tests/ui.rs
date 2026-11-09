@@ -36,6 +36,7 @@ fn ui() {
         "net_message_finite_on_integer",
         "net_message_bad_attribute",
         "net_message_unknown_type",
+        "ghost_record_block_mask",
         "rpc_reply_bearing_to_client",
         "rpc_server_handler_on_client_rpc",
         "rpc_handler_wrong_message",

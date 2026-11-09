@@ -1,7 +1,8 @@
 # torque-plugin-hierarchy
 
-The scene hierarchy on a torque-rs server: any scene object hung on another at a local pose (on the parent's origin or on a
-node of its shape), the server keeping each child's world where its parent puts it.
+The scene hierarchy in torque-rs: any scene object hung on another at a local pose (on the parent's origin or on a node of its
+shape), the server keeping each child's world where its parent puts it and, in the engine's own protocol, its clients drawing
+each child on its parent.
 
 - **Server only.** The `SceneObject` methods `setParent`, `getParent`, `getParentNode`, `getChildCount`, `getChild`, `getRoot`,
   `isAncestorOf`, `getLocalTransform`, `setLocalTransform`, `clearChildren`, `deleteRecursive`, `setDeleteWithParent`,
@@ -14,8 +15,12 @@ node of its shape), the server keeping each child's world where its parent puts 
   `deleteRecursive` takes a whole subtree. An object being removed gains no link.
 - **Mounts** stay their own relation and never close a loop with parents. Props cannot be children yet.
 - **Caps** (`$Pref::Hierarchy::*`): depth 16, children 256, descendants per root 4,096, parented objects 32,768.
+- **On the network** (the engine's own protocol): each child's link and local pose ride its own update in a per-ghost block;
+  a parent's motion costs its children nothing; a link waits until the parent's ghost exists, the child drawn at its own pose
+  meanwhile; the plugin is in the manifest, so a client without it is refused at connect. Clients check every link and pose
+  as a server's tree does.
 
 In the default plugin groups and on in engine mode; Torque's protocol leaves it out (`HierarchyPlugin::always()` turns it on
 there too). The tree is `torque-hierarchy`; the scene's seam is torque-game's `scene::links`. The book's "Scene hierarchy"
 chapter has the model; the crate docs end with a "Maintaining" section. `cargo test -p torque-plugin-hierarchy --test server`
-runs the server's checks.
+runs the server's checks, `--test net` the network's.

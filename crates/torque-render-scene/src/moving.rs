@@ -35,7 +35,9 @@ use shapes::shape::{Model, Shape};
 use crate::images::{HeldMotion, ImageClock, ImageDb, Owner, advance_clock};
 use crate::math::Mat;
 
-use crate::mounts::{MAX_MOUNT_DEPTH, mounted_transform, pose_matrix, render_pose};
+use crate::mounts::{
+    Carried, MAX_MOUNT_DEPTH, carried_transform, mounted_transform, pose_matrix, render_pose,
+};
 use crate::shapes::{
     DetailPolicy, Loaded, MIN_VISIBILITY, Models, ShapeParts, detail_for, highest_detail,
     mat3_scale, shape_draws_keyed, shape_key_bytes, take_inline_fill,
@@ -386,6 +388,8 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     let fov = records.fov_deg().to_radians();
     let pixels_per_meter = REFERENCE_CANVAS_WIDTH / (2.0 * (fov / 2.0).tan());
     let mut models = Models::default();
+    // Where the frame's carried ghosts are, each carrier placed once for all that hang on it.
+    let mut carried = Carried::default();
     let mut out = ShapeDraws::default();
     let keeping = crate::shapecache::on();
     let nodes = keeping && NODES.with(std::cell::Cell::get);
@@ -405,7 +409,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
                 place(
                     world,
                     assets,
-                    &mut models,
+                    (&mut models, &mut carried),
                     &mut here,
                     &mut out,
                     cull,
@@ -493,7 +497,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
 fn place<'w, W: ShapeWorld + ?Sized, L>(
     world: &'w W,
     assets: &dyn Assets,
-    models: &mut Models,
+    (models, carried): (&mut Models, &mut Carried),
     notes: &mut Vec<String>,
     out: &mut ShapeDraws,
     cull: Option<&dyn Cull>,
@@ -504,7 +508,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
     // The control object where the client predicts it (`ClientWorld::control_render`), a vehicle the client runs where it runs
     // it, a mounted ghost at its mount; every other ghost where it was sent.
     let pose = render_pose(world, index);
-    let mounted = mounted_transform(world, assets, models, notes, index, 0);
+    let mounted = carried_transform(world, assets, models, notes, carried, index, 0);
     // The client's own object in its first-person view is not drawn (its ghost stays where the server last ghosted it); its
     // images are.
     let first_person = records.hide_control && records.control.object == Some(index);
@@ -521,10 +525,14 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
     };
     let (path, placed, skin) = if let Some(draw) = drawn {
         // (The scale is the draw's: a transform record's own is TGE's, which a plugin's does not carry.)
-        let placed = pose
-            .as_ref()
-            .and_then(|p| pose_matrix(p, None))
-            .map(|(m, _)| (m, draw.scale));
+        // A plugin ghost the scene hierarchy hangs on another is drawn on it.
+        let placed = match mounted {
+            Some(m) => Some((m, draw.scale)),
+            None => pose
+                .as_ref()
+                .and_then(|p| pose_matrix(p, None))
+                .map(|(m, _)| (m, draw.scale)),
+        };
         (Cow::Owned(draw.shape.replace('\\', "/")), placed, draw.skin)
     } else if world.kind(class) == ShapeKind::Projectile {
         let (m, scale, path) = projectile_placement(world, index, ghost, eye)?;

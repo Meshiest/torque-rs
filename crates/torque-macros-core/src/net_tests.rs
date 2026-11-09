@@ -95,6 +95,8 @@ fn a_ghost_record_becomes_its_layout_its_record_and_its_packer() {
                 "`bits = 6` is more than the field's type takes");
             ::core::assert!(<Option<[f32; 3]> as ::torque_engine::__ghosts::plugin::NetField>::OPTIONAL,
                 "`color` has a `mask`, so it must be an `Option` (none while the mask is clear)");
+            ::core::assert!(((0x2) as u32) & ::torque_engine::__ghosts::block::BLOCK_MASK == 0,
+                "`color`'s `mask` takes a bit of the per-ghost block (bits 30 and 31, `block::BLOCK_MASK`)");
         };
     };
     same(&out, &want);

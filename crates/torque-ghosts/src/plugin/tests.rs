@@ -665,3 +665,58 @@ fn an_empty_shape_name_is_not_drawn_and_a_skin_rides_along() {
     assert!(draw.is_drawable());
     assert_eq!(draw.skin.as_deref(), Some("skin.png"));
 }
+
+/// A hand-written record whose `level` is sent while bit `READ` is dirty and which keeps the bits `KEEP`.
+#[derive(Debug, Clone, PartialEq, Default)]
+struct Glow<const READ: u32, const KEEP: u32> {
+    level: Option<f32>,
+}
+
+impl<const READ: u32, const KEEP: u32> Layout for Glow<READ, KEEP> {
+    fn layout<C: Codec>(&mut self, c: &mut C) -> R {
+        self.level.layout(c, "level", FieldSpec::DEFAULT)
+    }
+}
+
+impl<const READ: u32, const KEEP: u32> NetRecord for Glow<READ, KEEP> {
+    fn merge(&mut self, sent: &Self) {
+        self.level.merge_from(&sent.level);
+    }
+
+    fn datablock(&self) -> Option<u32> {
+        None
+    }
+
+    fn transform(&self) -> Option<crate::codec::Xf> {
+        None
+    }
+
+    fn script_fields(&self) -> Vec<(String, u32, Value)> {
+        Vec::new()
+    }
+}
+
+impl<const READ: u32, const KEEP: u32> GhostRecord for Glow<READ, KEEP> {
+    fn pack(view: &dyn ObjectView, mask: u32, _ctx: &PackCtx) -> (Self, u32) {
+        let level = (mask & READ != 0).then(|| crate::fld(view, "level", 0));
+        (Glow { level }, KEEP)
+    }
+}
+
+#[test]
+fn a_ghost_record_that_uses_the_blocks_mask_bits_is_refused() {
+    let class = |c: PluginClass| PluginClasses::new([c]);
+    let reads = PluginClass::ghost::<Glow<{ 1 << 30 }, 0>>("Glow", Replicate::Interpolated);
+    assert_eq!(
+        class(reads).unwrap_err(),
+        PluginClassError::BlockMask("Glow".into())
+    );
+    let keeps = PluginClass::ghost::<Glow<0, { 1 << 31 }>>("Glow", Replicate::Interpolated);
+    assert_eq!(
+        class(keeps).unwrap_err(),
+        PluginClassError::BlockMask("Glow".into())
+    );
+    // Bits below the block's are the record's own.
+    let own = PluginClass::ghost::<Glow<{ 1 << 29 }, { 1 << 29 }>>("Glow", Replicate::Interpolated);
+    assert!(class(own).is_ok());
+}

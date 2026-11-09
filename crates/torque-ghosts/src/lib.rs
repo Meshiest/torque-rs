@@ -13,6 +13,8 @@
 //!   Vehicle part, WheeledVehicle, FlyingVehicle, HoverVehicle), [`projectile`], [`props`] (TSStatic, VehicleBlocker), [`fx`]
 //!   (ParticleEmitterNode, fxLight), [`zone`] (PhysicalZone), [`weather`] (Lightning, Precipitation), [`sky`] (Sky, Sun),
 //!   [`audio`] (AudioEmitter); and the engine's own, after Torque3D's: [`light`] (SpotLight, TimeOfDay, ScatterSky).
+//! - [`block`]: the per-ghost block the engine's own peers send beside a class record ([`block::GhostBlock`]: the scene
+//!   hierarchy's link and local pose), and the mask bits it owns.
 //! - [`tails`]: the control objects' packet data and their class-directed reader.
 //! - [`tge`]: [`TgeGhosts`], the engine's default [`GhostCodecSet`], and TGE's networked class list.
 //! - [`plugin`]: the classes a plugin adds ([`PluginClass`], [`PluginClasses`]), their records ([`GhostRecord`],
@@ -26,6 +28,7 @@
 //! named cap through `torque_net::cap`.
 
 pub mod audio;
+pub mod block;
 pub mod codec;
 pub mod datablocks;
 pub mod fx;

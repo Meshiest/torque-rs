@@ -48,7 +48,8 @@ impl Kind {
 ///
 /// The struct may take `#[net(crate = path)]` (the engine crate otherwise). Each field takes `#[net(...)]`: `bits = N` (an
 /// integer's width, 1 to the type's), `max_len = N` (a string's bytes or a list's elements), `mask = bits` (an `Option`
-/// sent only when one of the dirty bits is set: every bit is set for a new ghost), `name = ".."` (the console field the
+/// sent only when one of the dirty bits is set: every bit is set for a new ghost; bits 30 and 31 are the per-ghost block's,
+/// refused at compile time), `name = ".."` (the console field the
 /// packer reads: an `#[field(name = "..")]`'s, else the Rust name in camelCase) and `skip` (not sent: the decoder leaves the default).
 pub fn derive_ghost_record(input: TokenStream, engine: &syn::Path) -> TokenStream {
     expand(input, engine, Kind::Ghost).unwrap_or_else(syn::Error::into_compile_error)
@@ -233,6 +234,12 @@ fn expand(input: TokenStream, engine: &syn::Path, kind: Kind) -> syn::Result<Tok
                     "`{field_ident}` has a `mask`, so it must be an `Option` (none while the mask is clear)"
                 );
                 checks.push(quote! { ::core::assert!(<#ty as #field_trait>::OPTIONAL, #message); });
+                let message = format!(
+                    "`{field_ident}`'s `mask` takes a bit of the per-ghost block (bits 30 and 31, `block::BLOCK_MASK`)"
+                );
+                checks.push(
+                    quote! { ::core::assert!(((#mask) as u32) & #g::block::BLOCK_MASK == 0, #message); },
+                );
                 packs.push(quote! {
                     #field_ident: if mask & ((#mask) as u32) != 0 {
                         #read

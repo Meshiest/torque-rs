@@ -114,6 +114,12 @@ enum NameTable {
     Datablock,
 }
 
+/// A network version a plugin listed while it was built ([`NetRegistry::version`]).
+pub(crate) struct NetVersion {
+    pub(crate) plugin: crate::PluginId,
+    pub(crate) version: u32,
+}
+
 /// A name a plugin registered for the manifest.
 struct NetName {
     table: NameTable,
@@ -214,6 +220,16 @@ impl NetRegistry<'_> {
     ) -> &mut Self {
         self.engine
             .push(ChannelEntry::to_server(name, limits, make));
+        self
+    }
+
+    /// Lists the plugin being built (or finished) in the manifest at network version `version`, as
+    /// [`net_version`](crate::Plugin::net_version) does, for a plugin whose network surface depends on what the others
+    /// registered: one that changes the wire in one protocol only calls it from its [`finish`](crate::Plugin::finish) once
+    /// it has read [`EngineBuilder::protocol`]. A plugin listed both ways, or twice, is listed once, at its last version.
+    pub fn version(&mut self, version: u32) -> &mut Self {
+        let plugin = self.engine.current_plugin();
+        self.engine.push(NetVersion { plugin, version });
         self
     }
 

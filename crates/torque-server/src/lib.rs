@@ -25,6 +25,13 @@
 //! added or removed after a pass settled still reach every connection, and a settled pass spends the scan units of an unsettled
 //! one (`tests/ghost_pass.rs`); the bench is `ghost_tick` (64 connections, 1,024 objects: static, 100 and all marked).
 //!
+//! **The per-ghost block never changes a TGE record** ([`net::blocks`]): it follows a record only for a peer of the engine's own
+//! on a server that installed a writer (the hierarchy plugin, in the engine's protocol), the class record never sees the
+//! block's mask bits (`torque_ghosts::block::BLOCK_MASK`) and never keeps them; without a writer `TgeSource` packs, scopes, ranks
+//! and stamps exactly as before (the `tge` lines of `just trace-hash`, the wire goldens). With one, its links' revision moves
+//! the source's `scope_stamp`, so a settled query never misses a relative that was just linked
+//! (torque-plugin-hierarchy's `tests/net.rs`).
+//!
 //! **A flood of info queries runs no script**: the info answer is made from the last second's script output
 //! (`a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_answered`).
 //!

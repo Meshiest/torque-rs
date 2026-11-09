@@ -21,6 +21,9 @@ pub const ROTATION_BITS: u32 = ROT_BITS as u32;
 // 32,766 fits a `u16`.
 pub const MAX_ROTATION_CODE: u16 = (2 * ROT_MID) as u16;
 
+/// The scale code of 1: what a child of its own size carries (the per-ghost block sends no scale for it).
+pub const UNIT_SCALE_CODE: u16 = scale_code(1.0);
+
 /// A scale code's lowest value is the exponent of 2^-14 (the one `MIN_SCALE` falls in), counted in 2^-11 mantissa steps.
 const SCALE_BASE: u32 = 113 << 11;
 
@@ -124,10 +127,19 @@ fn decode_rotation(r: &QuantRotation) -> Quat {
 }
 
 fn encode_scale(s: f32) -> u16 {
-    let s = s.clamp(MIN_SCALE, MAX_SCALE);
+    scale_code(s.clamp(MIN_SCALE, MAX_SCALE))
+}
+
+/// The code of a scale already in range.
+const fn scale_code(s: f32) -> u16 {
     let field = (s.to_bits() + 2_048) >> 12;
+    let code = field.saturating_sub(SCALE_BASE);
     // Held to `u16::MAX` first, so the cast keeps every bit.
-    field.saturating_sub(SCALE_BASE).min(u32::from(u16::MAX)) as u16
+    if code > u16::MAX as u32 {
+        u16::MAX
+    } else {
+        code as u16
+    }
 }
 
 /// The value of scale code `code`, unclamped.

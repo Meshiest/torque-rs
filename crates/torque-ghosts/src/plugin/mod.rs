@@ -34,6 +34,7 @@ use torque_net::bits::{BitReader, BitWriter};
 use torque_net::classes::Kind;
 use torque_net::huffman::Table;
 
+use crate::block::BLOCK_MASK;
 use crate::codec::{Layout, NetWidths, R, ReadCtx, Xf, decode, encode};
 use crate::light::ENGINE_OBJECT_CLASSES;
 use crate::tge::{TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES};
@@ -228,6 +229,15 @@ fn pack_datablock<D: DatablockCodec>(
     (Box::new(D::pack(view, ctx.widths)), 0)
 }
 
+/// A view of an object with no fields: what the block-bit probe packs from.
+struct EmptyView;
+
+impl ObjectView for EmptyView {
+    fn get(&self, _field: &str, _index: usize) -> Value {
+        Value::Null
+    }
+}
+
 /// The classes made so far, so making the same class again (another engine built in the process) shares it.
 fn interned(def: ClassDef) -> &'static ClassDef {
     static DEFS: OnceLock<Mutex<Vec<&'static ClassDef>>> = OnceLock::new();
@@ -265,6 +275,18 @@ impl PluginClass {
             decode: decode_as::<G>,
             pack: pack_ghost::<G>,
         }))
+    }
+
+    /// Whether the class's packer is seen to read or keep a mask bit of the per-ghost block: packed from a view of nothing
+    /// (every field null, as an object that lacks them gives it) with only those bits dirty, it gives another record than with
+    /// none, or keeps one of them. A best-effort check for a hand-written [`GhostRecord`]: it cannot see a packer that uses
+    /// those bits only beside others, only for values that are set, or only by its context. The derive's compile-time check
+    /// is the guard.
+    fn reads_block_bits(self) -> bool {
+        let ctx = PackCtx::default();
+        let (block, kept) = (self.0.pack)(&EmptyView, BLOCK_MASK, &ctx);
+        let (none, _) = (self.0.pack)(&EmptyView, 0, &ctx);
+        kept & BLOCK_MASK != 0 || !block.eq_record(&*none)
     }
 
     /// A datablock class `name` whose records are `D`.
@@ -407,6 +429,11 @@ pub enum PluginClassError {
         count: usize,
         room: usize,
     },
+    /// A ghost class whose packer was seen to read or keep a mask bit of the per-ghost block (bits 30 and 31,
+    /// [`crate::block::BLOCK_MASK`]): packed from a view of nothing, it gave another record, or kept one of those bits, when
+    /// only they were dirty. A best-effort check of hand-written records; `#[derive(GhostRecord)]` refuses such a mask at
+    /// compile time.
+    BlockMask(String),
 }
 
 impl fmt::Display for PluginClassError {
@@ -418,6 +445,10 @@ impl fmt::Display for PluginClassError {
             ),
             PluginClassError::Taken(n) => write!(f, "{n} is a net class of the engine's own"),
             PluginClassError::Duplicate(n) => write!(f, "two plugin net classes are named {n}"),
+            PluginClassError::BlockMask(n) => write!(
+                f,
+                "the records of {n} use mask bits 30 or 31, which belong to the per-ghost block"
+            ),
             PluginClassError::TooMany { kind, count, room } => write!(
                 f,
                 "{count} plugin {} classes, and the class table has ids for {room}",
@@ -474,6 +505,9 @@ impl PluginClasses {
             }
             if set.all().any(|c| c.name() == name) {
                 return Err(PluginClassError::Duplicate(name.to_string()));
+            }
+            if class.kind() == Kind::Object && class.reads_block_bits() {
+                return Err(PluginClassError::BlockMask(name.to_string()));
             }
             match class.kind() {
                 Kind::Object => set.ghosts.push(class),

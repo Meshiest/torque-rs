@@ -19,6 +19,12 @@
 //!   (`the_control_objects_shape_loads_whatever_the_parse_budget_has_left`,
 //!   `only_the_control_object_the_vehicle_it_drives_and_its_mounts_load_past_the_parse_budget`). What the budgets did
 //!   is counted in the frame's [`moving::ShapeDraws`] alone.
+//! - A scene-hierarchy child is drawn at its parent's render transform times the parent's posed node times its blended local
+//!   pose, by `torque_hierarchy::compose` as the server composes it ([`mounts::mounted_transform`]), a chain of links and
+//!   mounts held to [`mounts::MAX_CARRY_DEPTH`] (torque-plugin-hierarchy's
+//!   `the_renderer_draws_each_child_where_the_server_has_it`). A ghost follows one carrier (its link when it has one, else its
+//!   mount), and a frame places each carrier once through one [`mounts::Carried`]: a frame's placements cost each ghost once,
+//!   whatever its chain (`mounts::tests::a_chain_of_unplaceable_links_costs_one_placement_a_ghost`).
 //! - Ghosts of one shape posed the same share one kept build ([`shapecache`]'s content key)
 //!   (`ghosts_of_one_shape_posed_the_same_share_one_kept_build`).
 //! - [`hd::view_cull::ViewCull`] leaves a moving shape out only when no view, no sun shadow's sweep within the shadows' reach,

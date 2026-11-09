@@ -1337,6 +1337,16 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
         self.with(|h| h.reg.entries.contains_key(&obj))
     }
 
+    fn ghosted_everywhere(&self, obj: torque_ts_vm::sim::ObjId) -> bool {
+        self.with(|h| {
+            h.reg.entries.contains_key(&obj)
+                && h.conns
+                    .values()
+                    .filter(|c| c.mgr.is_ghosting())
+                    .all(|c| c.mgr.holds(obj))
+        })
+    }
+
     fn transform_mask(&self, obj: torque_ts_vm::sim::ObjId) -> u32 {
         self.with(|h| {
             h.reg
@@ -1381,5 +1391,17 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn pending_mask(&self, obj: torque_ts_vm::sim::ObjId) -> u32 {
+        self.with(|h| h.reg.pending(obj))
+    }
+
+    fn drop_pending(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        self.0.borrow_mut().reg.clear_pending(obj, bits);
+    }
+
+    fn set_record_mask(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        GhostHub::set_mask(self, obj, bits);
     }
 }

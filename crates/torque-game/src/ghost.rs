@@ -31,6 +31,25 @@ pub trait GhostLink {
     fn release_controlling_connection(&self, vm: &Vm, obj: ObjId);
     /// The layer itself, for its own code.
     fn as_any(&self) -> &dyn Any;
+    /// The record bits marked on the object that no connection has taken yet (`mDirtyMaskBits`, in the record's numbering;
+    /// 0 for a layer that keeps none).
+    fn pending_mask(&self, obj: ObjId) -> u32 {
+        let _ = obj;
+        0
+    }
+    /// Takes `bits` (record numbering) back off the object's pending bits before any connection took them.
+    fn drop_pending(&self, obj: ObjId, bits: u32) {
+        let _ = (obj, bits);
+    }
+    /// Whether every connection that ghosts holds a ghost of the object (in scope, not going): what a client draws on it
+    /// can be drawn on every client. By default, whether the object is registered for ghosting.
+    fn ghosted_everywhere(&self, obj: ObjId) -> bool {
+        self.ghosted(obj)
+    }
+    /// `setMaskBits` in the record's own numbering, for bits no class simulation marks (the per-ghost block's).
+    fn set_record_mask(&self, obj: ObjId, bits: u32) {
+        let _ = (obj, bits);
+    }
 }
 
 impl std::fmt::Debug for dyn GhostLink {

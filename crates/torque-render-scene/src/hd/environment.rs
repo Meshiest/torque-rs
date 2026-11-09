@@ -4,7 +4,7 @@
 //!
 //! - **A spot light** points along its transform's y axis; its `innerAngle` and `outerAngle` are whole cone angles (degrees),
 //!   its color (gamma) times `brightness` the light at half its `range` (the falloff's inverse square undone there), its
-//!   `range` the light's reach. One mounted on a shape rides the shape's `mount<N>` node ([`mounted_transform`]), its own
+//!   `range` the light's reach. One mounted on a shape rides the shape's `mount<N>` node ([`crate::mounts::mounted_transform`]), its own
 //!   transform the offset from the node, and its shape is its carrier (the shape casts no shadow of its own light). A light
 //!   switched off (`isEnabled` 0) gives none.
 //! - **Every number a record brings is held to a finite range** (the server may be hostile): [`spot_of`], [`look_of`] and the
@@ -26,7 +26,7 @@ use crate::Assets;
 use crate::hd::scatter::{ScatterLook, ScatterTable, SkyLight};
 use crate::hd::{HdLight, HdScene, HdSpot, srgb_to_linear};
 use crate::math::Mat;
-use crate::mounts::{mounted_transform, pose_matrix, render_pose};
+use crate::mounts::{Carried, carried_transform, pose_matrix, render_pose};
 use crate::shapes::Models;
 use crate::world::ShapeWorld;
 
@@ -87,6 +87,7 @@ pub fn spot_lights<W: ShapeWorld<Set = TgeClientSet> + ?Sized>(
 ) -> Vec<HdSpot> {
     let world = w.records();
     let mut out = Vec::new();
+    let mut carried = Carried::default();
     for (index, g) in world.of_class(TgeClass::SpotLight) {
         let Some(TgeRecord::SpotLight(r)) = g.record.as_ref() else {
             continue;
@@ -98,10 +99,12 @@ pub fn spot_lights<W: ShapeWorld<Set = TgeClientSet> + ?Sized>(
             .and_then(|p| pose_matrix(&p, None))
             .map_or(Mat::IDENTITY, |(m, _)| m);
         let (transform, carrier) = match world.mount_of(index) {
-            Some((on, _)) => match mounted_transform(w, assets, models, notes, index, 0) {
-                Some(node) => (Mat::mul(&node, &own), Some(on)),
-                None => continue,
-            },
+            Some((on, _)) => {
+                match carried_transform(w, assets, models, notes, &mut carried, index, 0) {
+                    Some(node) => (Mat::mul(&node, &own), Some(on)),
+                    None => continue,
+                }
+            }
             None => (own, None),
         };
         out.extend(spot_of(u, &transform, carrier));

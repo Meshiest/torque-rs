@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use torque_ghosts::block::{BLOCK_MASK, CLASS_MASK};
 use torque_ghosts::codec::{NetStr, NetWidths};
 use torque_ghosts::plugin::{PLUGIN_CODE_BASE, PluginClasses};
 use torque_ghosts::set::GhostCodecSet;
@@ -23,7 +24,7 @@ use torque_ghosts::{Link, ObjectView, PackCtx, Value};
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::events::{ChargeFn, EventCtx, EventIds, WireEvent};
-use torque_net::ghost::{CamInfo, ObjectSource, TorqueGhosts};
+use torque_net::ghost::{CamInfo, ConnectionGhosts, ObjectSource, TorqueGhosts};
 use torque_net::handshake::ConnId;
 use torque_net::huffman::Table;
 use torque_ts_vm::fields::Value as Field;
@@ -146,6 +147,10 @@ impl GhostGame for TgeGhostGame {
                 .vm
                 .extension::<torque_engine::net_classes::GhostShares>(),
             connection: conn.and_then(|c| hub.conns.get(&c)).map(|c| c.obj),
+            blocks: peer
+                .sees_engine_classes()
+                .then(|| super::blocks::of(env.vm))
+                .flatten(),
         };
         f(&mut src, &mut hub.conns)
     }
@@ -194,7 +199,27 @@ pub struct TgeSource<'a> {
     shares: Option<Rc<torque_engine::net_classes::GhostShares>>,
     /// The `GameConnection` object the source packs for, if it is made for one connection.
     connection: Option<ObjId>,
+    /// What fills the per-ghost block after each record, for a peer of the engine's own on a server that has one
+    /// ([`super::blocks`]).
+    blocks: Option<Rc<dyn super::blocks::GhostBlocks>>,
 }
+
+/// A connection's ghosts known by their indices alone: it holds what it acknowledged.
+struct IndexOnly<'a>(&'a dyn Fn(ObjId) -> Option<u32>);
+
+impl ConnectionGhosts for IndexOnly<'_> {
+    fn index(&self, obj: ObjId) -> Option<u32> {
+        (self.0)(obj)
+    }
+
+    fn holds(&self, obj: ObjId) -> bool {
+        (self.0)(obj).is_some()
+    }
+}
+
+/// How much more an object's first record counts for each link below it to its deepest descendant: a parent's first record
+/// goes ahead of its children's when their priorities are otherwise even (a child's link waits for its parent's ghost).
+const PARENT_PRIORITY_STEP: f32 = 0.05;
 
 impl TgeSource<'_> {
     /// The class of a registered object: its entry's code, the place of a TGE class in the set or of a plugin's in its.
@@ -729,7 +754,22 @@ impl ObjectSource for TgeSource<'_> {
     /// The registry's generation and whether the peer sees the engine's classes: all the full query reads (it visits every
     /// registered object that exists and is known).
     fn scope_stamp(&self) -> Option<u64> {
-        Some(self.reg.entries.generation() << 1 | u64::from(self.sees_engine))
+        let stamp = self.reg.entries.generation() << 1 | u64::from(self.sees_engine);
+        // The links change what a first scoping takes in with an object ([`ObjectSource::dependents`]).
+        let links = self.blocks.as_ref().map_or(0, |b| b.revision());
+        Some(stamp ^ links.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17))
+    }
+
+    fn dependents(&self, obj: ObjId, out: &mut Vec<ObjId>) {
+        if let Some(blocks) = &self.blocks {
+            blocks.relatives(obj, out);
+        }
+    }
+
+    fn marks_on_ghost(&self, obj: ObjId, out: &mut Vec<(ObjId, u32)>) {
+        if let Some(blocks) = &self.blocks {
+            blocks.marks_on_ghost(obj, out);
+        }
     }
 
     fn class_id(&self, obj: ObjId) -> Option<u32> {
@@ -751,6 +791,17 @@ impl ObjectSource for TgeSource<'_> {
         w: &mut BitWriter,
         ghost_of: &dyn Fn(ObjId) -> Option<u32>,
     ) -> u32 {
+        self.pack_update_on(obj, mask, w, &IndexOnly(ghost_of))
+    }
+
+    fn pack_update_on(
+        &mut self,
+        obj: ObjId,
+        mask: u32,
+        w: &mut BitWriter,
+        ghosts: &dyn ConnectionGhosts,
+    ) -> u32 {
+        let ghost_of = &|o| ghosts.index(o);
         let class = self
             .reg
             .entries
@@ -768,10 +819,17 @@ impl ObjectSource for TgeSource<'_> {
             ghost_of: Some(ghost_of),
             connection: self.connection,
         };
-        let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
-        // The packers cut every count to its width first, so a record cannot fail to encode.
+        let Some(blocks) = &self.blocks else {
+            let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
+            // The packers cut every count to its width first, so a record cannot fail to encode.
+            let _ = record.encode(w, table, widths);
+            return kept;
+        };
+        // The block owns its mask bits: the class record never sees them, and its kept bits never claim them.
+        let (record, kept) = TgeGhosts::pack(class, &view, mask & CLASS_MASK, &ctx);
         let _ = record.encode(w, table, widths);
-        kept
+        let left = blocks.write(obj, mask & BLOCK_MASK, ghosts, w, self.ghost_bits);
+        (kept & CLASS_MASK) | left
     }
 
     fn update_priority(&self, obj: ObjId, cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
@@ -782,6 +840,13 @@ impl ObjectSource for TgeSource<'_> {
         }
         // `NetObject::getUpdatePriority`: the skip count over ten.
         f32::from(skip) * 0.1
+    }
+
+    /// A parent's first record goes ahead of its children's: a step for each link down to its deepest descendant.
+    fn first_record_bonus(&self, obj: ObjId) -> f32 {
+        self.blocks
+            .as_ref()
+            .map_or(0.0, |b| b.height(obj) as f32 * PARENT_PRIORITY_STEP)
     }
 
     fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {

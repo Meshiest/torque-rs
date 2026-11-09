@@ -84,7 +84,7 @@ struct Planned {
 const LIVE: &str = "a slot in the index or a child list holds a node";
 
 /// A forest of objects with a local pose each. See the crate docs for the data flow and what the host must do.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Hierarchy {
     pub(crate) caps: Caps,
     pub(crate) slots: Vec<Option<Node>>,
@@ -217,6 +217,13 @@ impl Hierarchy {
     pub fn depth(&self, id: ObjId) -> usize {
         self.slot_of(id)
             .map_or(0, |s| usize::from(self.node(s).depth))
+    }
+
+    /// Links from `id` down to its deepest descendant (0 for a leaf or an unknown object).
+    #[must_use]
+    pub fn height(&self, id: ObjId) -> usize {
+        self.slot_of(id)
+            .map_or(0, |s| usize::from(self.node(s).height))
     }
 
     /// Descendants of `id`, all levels.

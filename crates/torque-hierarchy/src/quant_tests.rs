@@ -134,3 +134,10 @@ fn any_code_decodes_to_a_valid_pose_and_check_refuses_the_wild_ones() {
     };
     assert_eq!(quantize(&hostile).validate(), Ok(()));
 }
+
+#[test]
+fn the_unit_scale_code_is_the_code_of_one() {
+    let q = QuantLocal::from_local(&Local::IDENTITY);
+    assert_eq!(q.scale, [UNIT_SCALE_CODE; 3]);
+    assert_eq!(q.to_local().scale, [1.0; 3]);
+}

@@ -2,20 +2,25 @@
 //! natives and Rust callers make.
 
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::rc::Rc;
 
 use torque_collide::math::{Matrix, quat_matrix};
 use torque_engine::{Prefs, VmPrefs};
 use torque_game::scene::access::{matrix_of, object_field, scale_of};
+use torque_game::scene::ghost;
 use torque_game::scene::lights;
 use torque_game::scene::links::{self, NodeLookup, SceneLinks};
 use torque_game::sim::mount;
+use torque_ghosts::block::{BlockSections, GhostBlock, LINK_MASK, LinkField, POSE_MASK, PoseField};
 use torque_hierarchy::{
     Caps, Hierarchy, Host, Keep, Local, NodeRef, ObjId as Node, ParentError, ParentRef, Pose,
-    Violation,
+    QuantLocal, UNIT_SCALE_CODE, Violation,
 };
+use torque_net::bits::BitWriter;
+use torque_net::ghost::ConnectionGhosts;
+use torque_server::net::blocks::GhostBlocks;
 use torque_ts_vm::sim::{ClassId, ObjId};
 use torque_ts_vm::vm::Vm;
 
@@ -108,7 +113,19 @@ pub struct Stats {
     pub refused_moves: u64,
 }
 
-/// How a client shows a new local pose (read by the network work).
+/// What a server's clients are told of its hierarchy ([`ServerHierarchy::install`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Clients {
+    /// Nothing: a child's record carries its world pose, as every record does (Torque's protocol).
+    #[default]
+    Records,
+    /// Each child's link and local pose, in the per-ghost block of its record ([`torque_ghosts::block`]); clients draw it on
+    /// its parent. Every local pose is rounded to the wire's steps, so a client composes the server's world exactly, and a
+    /// parent's motion costs its children no update (the engine's own protocol).
+    Links,
+}
+
+/// How a client shows a new local pose (the pose group's `snap`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Blend {
     /// Blended from where the client drew it.
@@ -172,6 +189,12 @@ struct State {
     stats: Stats,
     /// Scratch for the moved list.
     moved: Vec<Node>,
+    /// The server's clients draw children from their links ([`Clients::Links`]): locals are quantized for the wire, a
+    /// parent's motion marks no child, and links and locals mark the per-ghost block.
+    net: bool,
+    /// The record bits a parent's motion would have marked on each child ([`links::carry_quiet`]), marked again when the
+    /// child's link changes, so the record's own pose is current whenever a client draws the child from it.
+    held: BTreeMap<ObjId, u32>,
 }
 
 impl State {
@@ -187,7 +210,18 @@ impl State {
                 descendants: count(prefs.max_descendants),
                 total: count(prefs.max_total),
             })
+            .quantize_locals(self.net)
         })
+    }
+
+    /// A child's local pose changed: its block's pose group is due.
+    fn pose_changed(&self, vm: &Vm, id: ObjId) {
+        pose_changed(self.net, vm, id);
+    }
+
+    /// A child's link changed (made, moved or taken off): its block's groups are due, and its record's pose too.
+    fn link_changed(&mut self, vm: &Vm, id: ObjId) {
+        link_changed(self.net, &mut self.held, vm, id);
     }
 
     fn queue(&mut self, callback: Callback) {
@@ -196,6 +230,21 @@ impl State {
         } else {
             self.stats.callbacks_dropped += 1;
         }
+    }
+}
+
+/// [`State::pose_changed`], for a caller that holds the tree.
+fn pose_changed(net: bool, vm: &Vm, id: ObjId) {
+    if net {
+        ghost::mark_record(vm, id, POSE_MASK);
+    }
+}
+
+/// [`State::link_changed`], for a caller that holds the tree.
+fn link_changed(net: bool, held: &mut BTreeMap<ObjId, u32>, vm: &Vm, id: ObjId) {
+    if net {
+        let held = held.remove(&id).unwrap_or(0);
+        ghost::mark_record(vm, id, LINK_MASK | POSE_MASK | held);
     }
 }
 
@@ -293,6 +342,15 @@ fn same_pose(a: &Matrix, b: &Matrix) -> bool {
     })
 }
 
+/// A child a resolve writes: where its parent's motion took it, and whether that motion marks no update of its record
+/// ([`links::carry_quiet`]).
+#[derive(Debug, Clone, Copy)]
+struct Carry {
+    id: ObjId,
+    world: Matrix,
+    quiet: bool,
+}
+
 /// The hierarchy of one server's script engine. Cheap to clone; [`ServerHierarchy::of`] finds it.
 ///
 /// Every change goes through the server: no client can parent anything, and a game that lets players attach things does it in
@@ -306,12 +364,14 @@ struct Shared {
     state: RefCell<State>,
     classes: OnceCell<Classes>,
     /// Scratch of a resolve: the children it writes, then the poses their classes kept.
-    writes: RefCell<Vec<(ObjId, Matrix)>>,
+    writes: RefCell<Vec<Carry>>,
     kept: RefCell<Vec<(ObjId, Matrix)>>,
     /// A resolve is writing transforms: the writes it makes are its own.
     resolving: Cell<bool>,
     /// The tree resolved poses no resolve has written yet.
     unapplied: Cell<bool>,
+    /// Moves whenever a link is made or taken off ([`GhostBlocks::revision`]).
+    revision: Cell<u64>,
 }
 
 impl fmt::Debug for ServerHierarchy {
@@ -325,11 +385,16 @@ impl fmt::Debug for ServerHierarchy {
 }
 
 impl ServerHierarchy {
-    /// Makes a hierarchy for `vm` (a server's), plugged into its scene.
-    pub fn install(vm: &mut Vm) -> ServerHierarchy {
+    /// Makes a hierarchy for `vm` (a server's), plugged into its scene, its clients told of it as `clients` says.
+    pub fn install(vm: &mut Vm, clients: Clients) -> ServerHierarchy {
         let hierarchy = ServerHierarchy::default();
+        let net = clients == Clients::Links;
+        hierarchy.state_mut().net = net;
         vm.set_extension(Rc::new(hierarchy.clone()));
         links::install(vm, Rc::clone(&hierarchy.0) as Rc<dyn SceneLinks>);
+        if net {
+            torque_server::net::blocks::install(vm, Rc::clone(&hierarchy.0) as Rc<dyn GhostBlocks>);
+        }
         hierarchy
     }
 
@@ -419,6 +484,7 @@ impl ServerHierarchy {
             let mut state = self.state_mut();
             let tree = state.tree_mut(vm);
             tree.set_parent(Node(child), parent, keep, &VmHost { vm, classes })?;
+            state.link_changed(vm, child);
             let new = parent.map(|p| p.object.0);
             let old = old.map(|p| p.object.0);
             if let Some(old) = old
@@ -433,6 +499,7 @@ impl ServerHierarchy {
                 state.queue(Callback::ChildAdded { parent: new, child });
             }
         }
+        self.0.relinked();
         self.0.unapplied.set(true);
         self.order(vm, child, parent.map(|p| p.object.0));
         self.resolve(vm);
@@ -477,6 +544,7 @@ impl ServerHierarchy {
                     Blend::Snap => state.snaps.insert(child),
                     Blend::Smooth => state.snaps.remove(&child),
                 };
+                state.pose_changed(vm, child);
             }
             result.map_err(LinkError::from)
         };
@@ -534,6 +602,7 @@ impl ServerHierarchy {
                 state.queue(Callback::ChildRemoved { parent, child: id });
             }
         }
+        self.0.relinked();
         self.0.unapplied.set(true);
         delete_all(vm, &out)
     }
@@ -720,7 +789,7 @@ impl Shared {
             }
             self.resolving.set(true);
             kept.clear();
-            for &(id, world) in &writes {
+            for &Carry { id, world, quiet } in &writes {
                 if !vm.objects().contains(id) {
                     continue;
                 }
@@ -730,7 +799,14 @@ impl Shared {
                 if same_pose(&old, &world) {
                     continue;
                 }
-                links::carry(vm, id, &old, &world);
+                if quiet {
+                    let bits = links::carry_quiet(vm, id, &old, &world);
+                    if bits != 0 {
+                        *self.state.borrow_mut().held.entry(id).or_default() |= bits;
+                    }
+                } else {
+                    links::carry(vm, id, &old, &world);
+                }
                 // A class may keep a pose of its own (a Player upright): the tree takes the one it kept.
                 if let Some(now) = matrix_of(vm, id)
                     && !same_pose(&now, &world)
@@ -752,6 +828,8 @@ impl Shared {
                         .is_err()
                     {
                         state.stats.refused_moves += 1;
+                    } else if tree.parent(Node(id)).is_some() {
+                        pose_changed(state.net, vm, id);
                     }
                 }
             }
@@ -762,8 +840,9 @@ impl Shared {
         *self.kept.borrow_mut() = kept;
     }
 
-    /// Flushes the tree and lists in `writes` the children it moved with their new world.
-    fn flush(&self, vm: &Vm, writes: &mut Vec<(ObjId, Matrix)>) {
+    /// Flushes the tree and lists in `writes` the children it moved with their new world, quiet for a child whose clients
+    /// draw it from its parent's ghost.
+    fn flush(&self, vm: &Vm, writes: &mut Vec<Carry>) {
         self.unapplied.set(false);
         writes.clear();
         let classes = self.classes(vm);
@@ -779,13 +858,22 @@ impl Shared {
         }
         state.moved.clear();
         tree.drain_moved(&mut state.moved);
-        writes.extend(
-            state
-                .moved
-                .iter()
-                .filter(|id| tree.parent(**id).is_some())
-                .filter_map(|id| Some((id.0, tree.world(*id)?))),
-        );
+        let net = state.net;
+        writes.extend(state.moved.iter().filter_map(|id| {
+            let parent = tree.parent(*id)?.object.0;
+            // Quiet only when every client can draw it on its parent; else its record goes on carrying its pose.
+            let quiet = net && ghost::ghosted_everywhere(vm, parent);
+            Some(Carry {
+                id: id.0,
+                world: tree.world(*id)?,
+                quiet,
+            })
+        }));
+    }
+
+    /// A link was made or taken off.
+    fn relinked(&self) {
+        self.revision.set(self.revision.get().wrapping_add(1));
     }
 }
 
@@ -832,11 +920,15 @@ impl SceneLinks for Shared {
             && tree.set_world(node, world, &host).is_ok();
         if !moved {
             state.stats.refused_moves += 1;
+        } else if tree.parent(node).is_some() {
+            pose_changed(state.net, vm, id);
         }
         if !moved && let Some(old) = tree.parent(node) {
             // A move the tree cannot hold as a local pose (too far from the parent, not finite) takes the child off its
             // parent where it is.
             if tree.set_parent(node, None, Keep::World, &host).is_ok() {
+                link_changed(state.net, &mut state.held, vm, id);
+                self.relinked();
                 state.stats.dropped += 1;
                 state.queue(Callback::ChildRemoved {
                     parent: old.object.0,
@@ -864,6 +956,7 @@ impl SceneLinks for Shared {
                 // Only its flags to forget.
                 tree.delete(node, &Unheld, &mut Vec::new());
                 state.snaps.remove(&id);
+                state.held.remove(&id);
                 return;
             }
         }
@@ -881,6 +974,7 @@ impl SceneLinks for Shared {
             let children: Vec<Node> = tree.children(node).collect();
             tree.delete(node, &VmHost { vm, classes }, &mut out);
             state.snaps.remove(&id);
+            state.held.remove(&id);
             if let Some(parent) = parent {
                 state.queue(Callback::ChildRemoved { parent, child: id });
             }
@@ -890,6 +984,7 @@ impl SceneLinks for Shared {
                 .map(|c| c.0)
                 .collect();
             for &child in &detached {
+                state.link_changed(vm, child);
                 state.queue(Callback::ParentChanged {
                     child,
                     old: Some(id),
@@ -898,6 +993,7 @@ impl SceneLinks for Shared {
             }
             detached
         };
+        self.relinked();
         for child in detached {
             torque_game::sim::clear_after(vm, child);
         }
@@ -908,5 +1004,119 @@ impl SceneLinks for Shared {
     fn parent(&self, id: ObjId) -> Option<ObjId> {
         let state = self.state.try_borrow().ok()?;
         Some(state.tree.as_ref()?.parent(Node(id))?.object.0)
+    }
+}
+
+impl Shared {
+    /// `obj`'s block for the dirty block bits `mask`, and the bits left for later (a link whose parent has no ghost on the
+    /// connection yet).
+    fn block(&self, obj: ObjId, mask: u32, ghosts: &dyn ConnectionGhosts) -> (GhostBlock, u32) {
+        let Ok(state) = self.state.try_borrow() else {
+            // Never while a pack runs (the hierarchy writes no transform then); sent again with the next record.
+            return (GhostBlock::default(), mask);
+        };
+        let Some(tree) = state.tree.as_ref() else {
+            return (GhostBlock::default(), 0);
+        };
+        let parent = tree.parent(Node(obj));
+        // A client that draws the child from its own record (no parent there, or one it waits for) needs the pose bits its
+        // parent's motion took back.
+        let held = state.held.get(&obj).copied().unwrap_or(0);
+        let mut kept = 0;
+        let link = (mask & LINK_MASK != 0).then(|| match parent {
+            None => LinkField::Root,
+            // A parent this connection does not ghost may never reach its client (a full table, an object its peer is not
+            // sent): no parent there, and the child's record sends the pose bits its parent's motion took back.
+            Some(p) if !ghosts.holds(p.object.0) => {
+                kept |= held;
+                LinkField::Root
+            }
+            Some(p) => match ghosts.index(p.object.0) {
+                Some(ghost) => LinkField::Parent {
+                    ghost,
+                    node: match p.node {
+                        NodeRef::Origin => None,
+                        NodeRef::Node(n) => Some(n),
+                    },
+                },
+                None => {
+                    kept |= LINK_MASK | held;
+                    LinkField::Waiting
+                }
+            },
+        });
+        // A link goes with its pose, so a client never shows a new parent with an old local pose.
+        let pose = (mask & (LINK_MASK | POSE_MASK) != 0)
+            .then(|| tree.local(Node(obj)))
+            .flatten()
+            .map(|local| pose_field(&local, state.snaps.contains(&obj)));
+        (GhostBlock { link, pose }, kept)
+    }
+}
+
+/// A local pose as the block's pose group carries it.
+fn pose_field(local: &Local, snap: bool) -> PoseField {
+    let q = QuantLocal::from_local(local);
+    PoseField {
+        translation: q.translation,
+        dropped: q.rotation.dropped,
+        parts: q.rotation.parts,
+        scale: (q.scale != [UNIT_SCALE_CODE; 3]).then_some(q.scale),
+        snap,
+    }
+}
+
+impl GhostBlocks for Shared {
+    fn sections(&self) -> BlockSections {
+        BlockSections { links: true }
+    }
+
+    fn write(
+        &self,
+        obj: ObjId,
+        mask: u32,
+        ghosts: &dyn ConnectionGhosts,
+        w: &mut BitWriter,
+        ghost_bits: u8,
+    ) -> u32 {
+        let (block, kept) = self.block(obj, mask, ghosts);
+        block.write(w, self.sections(), ghost_bits);
+        kept
+    }
+
+    fn relatives(&self, obj: ObjId, out: &mut Vec<ObjId>) {
+        let Ok(state) = self.state.try_borrow() else {
+            return;
+        };
+        let Some(tree) = state.tree.as_ref() else {
+            return;
+        };
+        out.extend(tree.parent(Node(obj)).map(|p| p.object.0));
+        out.extend(tree.children(Node(obj)).map(|c| c.0));
+    }
+
+    fn marks_on_ghost(&self, obj: ObjId, out: &mut Vec<(ObjId, u32)>) {
+        let Ok(state) = self.state.try_borrow() else {
+            return;
+        };
+        let Some(tree) = state.tree.as_ref() else {
+            return;
+        };
+        out.extend(
+            tree.children(Node(obj))
+                .map(|c| (c.0, LINK_MASK | POSE_MASK)),
+        );
+    }
+
+    fn height(&self, obj: ObjId) -> u32 {
+        self.state
+            .try_borrow()
+            .ok()
+            .and_then(|s| Some(s.tree.as_ref()?.height(Node(obj))))
+            .map_or(0, |h| u32::try_from(h).unwrap_or(u32::MAX))
+    }
+
+    fn revision(&self) -> u64 {
+        self.revision.get()
     }
 }

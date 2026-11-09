@@ -39,6 +39,7 @@ use std::rc::Rc;
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
 use ghost_world::world::TouchedGhosts;
 use ghost_world::{ClientWorld, Ghost};
+use ghosts::block::BlockSections;
 use ghosts::datablocks::DatablockCodecSet;
 use ghosts::plugin::PluginClasses;
 use ghosts::{NetWidths, TgeClass, TgeDatablocks, TgeRecord, Value, tge_reps};
@@ -475,6 +476,16 @@ impl ConnectHello {
         }
     }
 
+    /// The sections of the per-ghost block the client's engine reads (its plugins put them on the engine, and are in its
+    /// manifest, so a server that accepts the client writes the same).
+    #[must_use]
+    pub fn blocks(&self) -> BlockSections {
+        self.engine
+            .resource::<BlockSections>()
+            .map(|b| *b)
+            .unwrap_or_default()
+    }
+
     /// Whether the client's engine speaks the engine's protocol.
     #[must_use]
     pub fn engine_mode(&self) -> bool {
@@ -532,6 +543,8 @@ pub struct TgeFeed {
     channels: Option<Rc<ClientChannels>>,
     /// The plugins' ghost and datablock classes the feed reads past the class table's ids.
     plugins: PluginClasses,
+    /// The sections of the per-ghost block after each record (none: no block, as from a TGE server).
+    blocks: BlockSections,
     /// The engine-mode session that carries the connection in place of TGE's handshake and packet header
     /// ([`TgeFeed::over_engine`]).
     engine: Option<EngineWire>,
@@ -618,6 +631,7 @@ impl TgeFeed {
             control_set: false,
             channels: None,
             plugins: PluginClasses::default(),
+            blocks: BlockSections::default(),
             engine: None,
             rpc_lanes: None,
         })
@@ -638,6 +652,15 @@ impl TgeFeed {
             ghosts.codec_mut().plugins = plugins.clone();
         }
         self.plugins = plugins;
+    }
+
+    /// The sections of the per-ghost block the server writes after each record ([`ghosts::block`]; the client's engine
+    /// has the plugins that fill them, and so has the server, whose manifest matched: [`ConnectHello::blocks`]).
+    pub fn set_blocks(&mut self, blocks: BlockSections) {
+        if let Some(ghosts) = self.ghosts.as_mut() {
+            ghosts.codec_mut().blocks = blocks;
+        }
+        self.blocks = blocks;
     }
 
     /// Adds the block `source` makes (the engine's manifest and a ticket for `server`, the address dialed, and the challenge) to the
@@ -842,7 +865,8 @@ impl TgeFeed {
             .iter()
             .map(|c| c.name.as_str());
         let codec = TgeCodec::new(names, self.widths, self.tables.table.clone())
-            .with_plugins(self.plugins.clone());
+            .with_plugins(self.plugins.clone())
+            .with_blocks(self.blocks);
         let class_bits = self.tables.classes.id_bits(Kind::Object);
         let mut ghosts = GhostClient::new(codec, class_bits, ghost_bits);
         ghosts.codec_mut().facts.wheels = self.wheel_counts.clone();
@@ -1268,6 +1292,9 @@ impl ConnGame for TgeConn {
         feed.set_channels(vm.extension::<ClientChannels>());
         if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
             feed.set_plugins((*plugins).clone());
+        }
+        if let Some(hello) = vm.extension::<ConnectHello>() {
+            feed.set_blocks(hello.blocks());
         }
         // The plugin ghost classes the renderer draws as shapes.
         let mut world = TgeWorld::default();

@@ -77,6 +77,17 @@ pub fn priority_compare(a: f32, b: f32) -> i32 {
     if d < 0.0 { -1 } else { i32::from(d > 0.0) }
 }
 
+/// One connection's ghosts as a packer asks about them ([`ObjectSource::pack_update_on`]).
+pub trait ConnectionGhosts {
+    /// `getGhostIndex`: the wire id of an object whose first record was acknowledged, `None` otherwise.
+    fn index(&self, obj: ObjId) -> Option<u32>;
+
+    /// Whether the connection holds a ghost of the object that is not going: in scope, its first record due, sent or
+    /// acknowledged. An object it does not hold may never reach its client (a full table, a `ScopeLocal` object, a class
+    /// its peer does not know).
+    fn holds(&self, obj: ObjId) -> bool;
+}
+
 /// The world as the ghost manager reads it. Everything but [`ObjectSource::pack_update`] takes `&self`, so a scope walk can hold the
 /// source while it hands objects to the manager.
 pub trait ObjectSource {
@@ -119,9 +130,34 @@ pub trait ObjectSource {
         ghost_of: &dyn Fn(ObjId) -> Option<u32>,
     ) -> u32;
 
+    /// [`ObjectSource::pack_update`] with the connection's ghosts to ask about: the manager packs every record through this
+    /// one. A host whose records name other objects in ways that depend on more than their index overrides it; by default it
+    /// is `pack_update` with [`ConnectionGhosts::index`].
+    fn pack_update_on(
+        &mut self,
+        obj: ObjId,
+        mask: u32,
+        w: &mut BitWriter,
+        ghosts: &dyn ConnectionGhosts,
+    ) -> u32 {
+        self.pack_update(obj, mask, w, &|o| ghosts.index(o))
+    }
+
     /// `getUpdatePriority(&camInfo, mask, skipCount)` (a virtual method). Called when the pending ghosts are sorted by priority
     /// (the policy's [`super::policy::GhostPolicy::pending_order`]).
     fn update_priority(&self, obj: ObjId, cam: &CamInfo, mask: u32, skip: u8) -> f32;
+
+    /// How much more the object's first record counts than [`ObjectSource::update_priority`] (or a share group's first
+    /// record) says: a scene hierarchy's parent goes ahead of its children, whose links wait for its ghost. Its later updates
+    /// get nothing more. 0 (the default) for every object of Torque's.
+    fn first_record_bonus(&self, _obj: ObjId) -> f32 {
+        0.0
+    }
+
+    /// The objects whose ghosts on a connection have bits to send again once `obj` gets its ghost there, with the bits,
+    /// appended to `out`: a scene hierarchy's children, whose links name their parent by its ghost on that connection.
+    /// Asked for every ghost made; the manager marks the bits on the ghosts the connection holds. None by default.
+    fn marks_on_ghost(&self, _obj: ObjId, _out: &mut Vec<(ObjId, u32)>) {}
 
     /// The share of each packet the object's updates belong to: `Some((group, part))` holds the updates (and first records) of
     /// all the objects of `group` in one packet to `part` (0 to 1) of the packet's bits; an update that would take its group

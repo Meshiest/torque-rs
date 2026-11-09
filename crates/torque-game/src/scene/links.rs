@@ -154,6 +154,18 @@ pub fn carry(vm: &mut Vm, id: ObjId, from: &Matrix, to: &Matrix) {
     }
 }
 
+/// [`carry`], with the marks the class's `setTransform` makes on the object's ghost taken back: the client draws a child
+/// from its parent's pose and its local pose, so the parent's motion costs the child no update. Returns the record bits taken
+/// back (bits already marked before stay marked); a hierarchy marks them again when the child's link changes, so its record's
+/// own pose is current whenever a client draws the child from it.
+pub fn carry_quiet(vm: &mut Vm, id: ObjId, from: &Matrix, to: &Matrix) -> u32 {
+    let before = super::ghost::pending_mask(vm, id);
+    carry(vm, id, from, to);
+    let added = super::ghost::pending_mask(vm, id) & !before;
+    super::ghost::drop_pending(vm, id, added);
+    added
+}
+
 /// Turns the velocity a class keeps by `turn`.
 fn turn_velocity(vm: &mut Vm, id: ObjId, turn: &Matrix) {
     if let Some(s) = crate::sim::player::state_mut(vm, id) {

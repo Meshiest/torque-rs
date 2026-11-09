@@ -45,6 +45,9 @@
 //! the quantizer's bounds and that any code decodes to a valid pose (`quant::tests`, `quantized_locals_stay_within_the_wire_step`,
 //! `a_childs_scale_is_rounded_to_the_wire_form_only_when_locals_are_quantized`); the scale rule (`a_parents_scale_scales_the_childs_translation_only`).
 //!
+//! [`compose`] is the resolve's own composition, public so a host that draws children at poses of its own (a client, at its
+//! parent's drawn pose) composes them exactly as the tree does; [`Hierarchy`] is `Clone` for a client world that is.
+//!
 //! Extension points: a new refusal is a [`ParentError`] variant plus a check in [`Hierarchy::check_parent`] (pure, so a client
 //! can run it); a new field of [`Local`] needs `compose`, `quant` and [`Local::validate`] changed together; what a node is
 //! lives in [`Host::node_matrix`]; a new rule the tree keeps gets a [`Violation`] in `audit`. No class rules in the tree, no
@@ -66,9 +69,10 @@ pub use caps::{
     Caps, HARD_CHILDREN, HARD_DEPTH, HARD_DESCENDANTS, HARD_TOTAL, MAX_SCALE, MAX_TRANSLATION,
     MAX_WORLD, MIN_SCALE, ParentError, ROTATION_ROW_LENGTH,
 };
+pub use compose::compose;
 pub use quant::{
     MAX_ROTATION_CODE, MAX_TRANSLATION_CODE, QuantLocal, QuantRotation, ROTATION_BITS,
-    TRANSLATION_STEPS, quantize,
+    TRANSLATION_STEPS, UNIT_SCALE_CODE, quantize,
 };
 pub use tree::{Flush, Hierarchy};
 pub use types::{Host, Keep, Local, NodeRef, ObjId, ParentRef, Pose};

@@ -22,6 +22,7 @@ projectile-props tge 2c764599fdc842d8
 # The fold of the plugin scenarios: props-drop, props-joints, carry and projectile-props.
 plugins tge 6380d50cf8a1e007
 # The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
-# reparents with both keep modes. Its fold has it alone.
-hierarchy engine 653a6f7a547e2f5f
-scene engine 1833dc207872ead7
+# reparents with both keep modes. Its fold has it alone. The engine's protocol sends the links to clients, so every local
+# pose is rounded to the wire's steps on the server (1/1024 units, 15-bit rotation parts) and the worlds move by that much.
+hierarchy engine 8e8372840bef23f1
+scene engine 7d491f9d9a9a2518

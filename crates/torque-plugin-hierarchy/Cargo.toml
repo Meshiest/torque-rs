@@ -21,6 +21,10 @@ torque-engine = { path = "../torque-engine" }
 # The scene's seam, its transforms and the classes' own setTransform.
 torque-game = { path = "../torque-game" }
 torque-hierarchy = { path = "../torque-hierarchy" }
+# The per-ghost block's wire form, and the seam a server's records write it through.
+torque-ghosts = { path = "../torque-ghosts" }
+torque-net = { path = "../torque-net" }
+torque-server = { path = "../torque-server" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [dev-dependencies]
@@ -31,6 +35,12 @@ torque-example-assets = { path = "../../examples/assets" }
 torque-shapes = { path = "../torque-shapes" }
 # A prop, refused as a child.
 torque-plugin-props = { path = "../torque-plugin-props" }
+# The network tests' client and its world, and the picture's renderer.
+torque-app = { path = "../torque-app", features = ["renderer"] }
+torque-client = { path = "../torque-client" }
+torque-ghost-world = { path = "../torque-ghost-world" }
+torque-render-core = { path = "../torque-render-core" }
+torque-render-scene = { path = "../torque-render-scene" }
 
 [lints]
 workspace = true

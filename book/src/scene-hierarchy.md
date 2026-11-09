@@ -18,8 +18,9 @@ let engine = EngineBuilder::new()
     .build()?;
 ```
 
-This chapter covers the server. Sending the links to clients, and a client's own resolve and prediction, come later; until then
-a child's ghost carries its world pose as its class always has.
+In the engine's own protocol the links go to every client and each client draws a child on its parent (see
+[On the network](#on-the-network)). With Torque's protocol and `HierarchyPlugin::always()` the hierarchy stays on the server,
+and a child's ghost carries its world pose as its class always has. Prediction over parented objects comes later.
 
 ## Parenting from a script
 
@@ -46,6 +47,8 @@ slot `0` to `31`; `""` is the parent's origin. A parent with no shape takes chil
 | `deleteRecursive()` | deletes the object and everything below it, children first; how many |
 
 `getTransform` and `setTransform` stay world space for every object: setting a child's transform rewrites its local pose.
+In the engine's own protocol every local pose is rounded to the steps it travels in (1/1024 of a unit, the rotation's 15-bit
+parts), so the server's world of a child is the one its clients compose; a keep-world reparent lands within that step.
 
 The refusals `getParentError()` names: `self`, `cycle` (the parent is below the child), `depth`, `children`, `subtree` and `total`
 (the caps), `notFinite` and `outOfRange` (a pose), `badNode` (no such node), `noShape` (a node named on a parent without a
@@ -126,3 +129,42 @@ the way, so a server gives the same result on every run and every target.
 
 From Rust, `ServerHierarchy::of(vm)` reaches the server's tree: `set_parent`, `set_local`, `parent`, `children`, `root`, `local`,
 `world`, `delete_recursive`, `set_delete_with_parent`, and `audit` for a test.
+
+## On the network
+
+In the engine's own protocol the server sends each child's link and local pose with the child's own update, in a block that
+follows the class record (the per-ghost block of `torque_ghosts::block`). The plugin lists itself in the connection manifest,
+so a client without it is turned away at connect with one line ("server needs plugin torque.hierarchy 1"), before any block is
+sent; Torque's protocol never carries the block, and a TGE client never sees one.
+
+**What travels.** The block has two groups, each sent only when it changed:
+
+- the **link**: the parent's ghost index on the connection and the node (none for the parent's origin), or that the child has
+  no parent, or that it **waits**;
+- the **local pose**: the translation in 1/1024 units, the rotation as three 15-bit parts of its quaternion, the child's scale
+  when it is not 1, and whether the client shows it at once (`setLocalTransform(%xf, 1)`, and every link change) or blends to
+  it over one tick.
+
+A parent's motion sends nothing for its children: the client draws each child at its parent's drawn pose, times the node,
+times the local pose. A moving platform with 64 crates on it costs the platform's own updates only. A child's record keeps the
+world pose it had when it was linked; whenever its link changes (made, moved to another parent, taken off, its parent deleted),
+the server sends its record's pose again with the new link, so a client that draws it from its record draws it where it is.
+
+**Parents first, or the child waits.** A link names the parent by its ghost on that connection, which exists only once the
+parent's first record was acknowledged. Until then the block says the link waits, the server tries again with the next
+update, and the client draws the child where its own record puts it. A parent's first record is ranked a little ahead of its
+children's (5/100 of a skip count for each level below it), so a new tree's parent usually arrives first; its later updates
+rank as any other's. A child that arrived before its parent is drawn at its record pose for a packet or so, then on its parent.
+A parent a connection will never ghost (a full ghost table, an object that client is not sent) is no parent there: that client
+is told the child has none and draws it at its record pose, which follows the parent's motion.
+
+**Scope.** Every object the server ghosts is in scope for an engine client, and an object first scoped takes its parent and its
+children with it, so a resolved link never names a ghost the client lacks. When a parent's ghost goes on the client anyway (a
+kill that overtook the child's update), its children stay where they were drawn until their own next update.
+
+**What a client refuses.** Each link runs through the same checks a server's tree makes (no cycle, no self link, the hard
+depth, children, descendants and total caps), and each pose through the quantizer's range check; a refused link or pose is
+counted and the ghost is drawn at its record pose. A link to a ghost index the client does not hold waits at most 5 seconds,
+and at most 4,096 wait at once; it is dropped when a ghost at that index goes, so it never lands on the next ghost given the
+index. `ClientWorld::links` holds a client's links, `ClientWorld::world_pose(index, nodes)` gives where
+a ghost is, through the hierarchy, and the renderer draws children the same way (`torque_render_scene::mounts`).

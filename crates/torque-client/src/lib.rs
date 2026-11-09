@@ -51,7 +51,11 @@
 //!   trace-hash lines must not move.
 //! - A tick tells the plugin handlers of the ghosts that changed, not of every ghost of their class: the world lists what the
 //!   applied sections created, updated and deleted (`ghost_world::world::TouchedGhosts`) and the walk of the whole class is for a
-//!   list that overflowed (a reset, or more than `MAX_TOUCHED_GHOSTS`); the bench is `ghost_read`.
+//!   list that overflowed (a reset, or more than `MAX_TOUCHED_GHOSTS`); the bench is `ghost_read`. A scene-hierarchy child
+//!   moves with its parent without an update of its own, so a handler that follows where a ghost is drawn asks
+//!   `ClientWorld::world_pose` each frame rather than waiting to be told.
+//! - A connection reads the per-ghost block only when its engine's plugins fill it (`torque_ghosts::block::BlockSections`, a
+//!   resource of the engine, `conn::tge::ConnectHello::blocks`), and the manifest makes the server's plugins the same.
 //! - Nothing a server or an off-path sender can predict or flood is trusted: the TGE connect sequence mixes in the system's
 //!   randomness but under a fixed key (the trace hashes) (`conn::tests::the_connect_sequence_is_random_outside_a_run_that_must_repeat`);
 //!   a received datagram's decoders spend at most its work budget (`torque_ghosts::datagram_budget`); a profile with the

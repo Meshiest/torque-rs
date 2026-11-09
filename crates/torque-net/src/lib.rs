@@ -82,7 +82,12 @@
 //! only counts the objects of a world it found whole the last time: the visits, the budget and the resume cursor are those of
 //! scoping each, nothing else is skipped (`ghost::tests::a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one_that_scopes_them_again`).
 //! A stamp moves whenever anything its query reads changes, and a policy that overrides a question of the walk
-//! (`query_visit`, `admit`, `ghost_made`, `query_started`, `query_ended`) keeps `plain_query` false. The priority sort stays a
+//! (`query_visit`, `admit`, `ghost_made`, `query_started`, `query_ended`) keeps `plain_query` false. What
+//! [`ghost::ObjectSource::dependents`] answers is read by the query too: a source whose dependents change (a scene hierarchy's
+//! links) moves its stamp with them. [`ghost::ObjectSource::first_record_bonus`] raises a ghost's first record only
+//! (`ghost::tests::a_first_record_bonus_counts_for_the_first_record_alone`); it is 0 for every object of Torque's, and is
+//! asked only for first records. [`ghost::ObjectSource::marks_on_ghost`] is asked for every ghost made and marks nothing for
+//! Torque's objects. The priority sort stays a
 //! stable sort of the whole pending list (the tie order is the next packet's), whatever it costs.
 //!
 //! **The bit layer is fast by words, never by changing a byte**: fields and byte runs are written and read a word or a run at a

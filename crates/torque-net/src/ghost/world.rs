@@ -26,6 +26,8 @@ pub struct Obj {
     pub prio: f32,
     /// Its packet share group and part (`ObjectSource::packet_share`).
     pub share: Option<(u32, f32)>,
+    /// What its first record counts for more ([`ObjectSource::first_record_bonus`]).
+    pub first_bonus: f32,
 }
 
 impl Obj {
@@ -42,6 +44,7 @@ impl Obj {
             unsent: 0,
             prio: 0.0,
             share: None,
+            first_bonus: 0.0,
         }
     }
 }
@@ -142,6 +145,10 @@ impl ObjectSource for World {
 
     fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
         self.objs.get(&obj)?.share
+    }
+
+    fn first_record_bonus(&self, obj: ObjId) -> f32 {
+        self.objs.get(&obj).map_or(0.0, |o| o.first_bonus)
     }
 
     fn camera_info(&self, _scope: ObjId) -> Option<CamInfo> {

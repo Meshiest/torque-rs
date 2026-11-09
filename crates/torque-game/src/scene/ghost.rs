@@ -28,6 +28,34 @@ pub fn unmark(vm: &Vm, obj: ObjId, bits: u32) {
     }
 }
 
+/// The record bits marked on the object that no connection has taken yet (0 for an object no layer knows).
+pub fn pending_mask(vm: &Vm, obj: ObjId) -> u32 {
+    link(vm, obj).map_or(0, |l| l.pending_mask(obj))
+}
+
+/// Takes record bits back off the object's pending bits ([`GhostLink::drop_pending`]).
+pub fn drop_pending(vm: &Vm, obj: ObjId, bits: u32) {
+    if bits != 0
+        && let Some(link) = link(vm, obj)
+    {
+        link.drop_pending(obj, bits);
+    }
+}
+
+/// `setMaskBits` in the record's own numbering ([`GhostLink::set_record_mask`]).
+pub fn mark_record(vm: &Vm, obj: ObjId, bits: u32) {
+    if bits != 0
+        && let Some(link) = link(vm, obj)
+    {
+        link.set_record_mask(obj, bits);
+    }
+}
+
+/// Whether every connection that ghosts holds a ghost of the object ([`GhostLink::ghosted_everywhere`]).
+pub fn ghosted_everywhere(vm: &Vm, obj: ObjId) -> bool {
+    link(vm, obj).is_some_and(|l| l.ghosted_everywhere(obj))
+}
+
 /// Whether the object is registered for ghosting.
 pub fn is_ghosted(vm: &Vm, obj: ObjId) -> bool {
     link(vm, obj).is_some_and(|l| l.ghosted(obj))

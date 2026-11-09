@@ -16,6 +16,8 @@ web-time = "1.1"
 ghost_world = { package = "torque-ghost-world", path = "../torque-ghost-world" }
 # The records and datablock values of TGE's own set (`world`).
 ghosts = { package = "torque-ghosts", path = "../torque-ghosts" }
+# The scene hierarchy's mount-rule compose and node references, for the children the client draws on their parents.
+hierarchy = { package = "torque-hierarchy", path = "../torque-hierarchy" }
 # The texture decoders and mip chains (`textures`).
 images = { package = "torque-images", path = "../torque-images" }
 # A map's collision (the replicators' ground) and its files' importers (`map`).

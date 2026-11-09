@@ -1334,6 +1334,46 @@ fn past_the_sort_limit_the_scope_objects_ghost_goes_first_only_in_a_full_query_p
 }
 
 #[test]
+fn a_first_record_bonus_counts_for_the_first_record_alone() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 3);
+    // Object 1 (ghost 0) ranks lowest by its priority but its first record counts for more.
+    for o in 1..=3 {
+        rig.world.objs.get_mut(&o).unwrap().prio = o as f32;
+    }
+    rig.world.objs.get_mut(&1).unwrap().first_bonus = 10.0;
+    let s = rig.send_with(6);
+    assert_eq!(s.stats.records, 1);
+    let rep = rig
+        .client
+        .read_section(&mut BitReader::new(&s.bytes))
+        .unwrap();
+    assert_eq!(
+        rep.first_index,
+        Some(0),
+        "the bonus puts the first record first"
+    );
+    rig.mgr.on_notify(s.seq, true);
+    let rest = rig.send();
+    rig.ack(&rest);
+    // Later updates rank by their priority alone.
+    for o in 1..=3 {
+        rig.mgr.set_mask(o, 1);
+    }
+    let s = rig.send_with(6);
+    let rep = rig
+        .client
+        .read_section(&mut BitReader::new(&s.bytes))
+        .unwrap();
+    assert_eq!(
+        rep.first_index,
+        Some(2),
+        "object 3 has the highest priority"
+    );
+}
+
+#[test]
 fn kill_records_have_the_highest_priority() {
     let mut rig = Rig::new();
     rig.go();

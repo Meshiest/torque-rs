@@ -1,0 +1,10 @@
+[game]
+name = "Scene hierarchy network test"
+server = "server.cs"
+client = "main.cs"
+
+[net]
+protocol = "engine"
+
+[plugins]
+disable = ["torque.audio", "torque.water", "torque.terrain", "torque.server-query"]

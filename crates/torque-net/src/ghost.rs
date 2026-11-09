@@ -42,8 +42,8 @@ pub use manager::{
 pub use policy::{GhostPolicy, ObjectPolicy, PendingOrder, ScopeRadius, TableCounts, TorqueGhosts};
 
 pub use source::{
-    CamInfo, GhostScripts, NoScripts, ObjId, ObjectSource, SCOPE_OVERRIDE, flags, net_flags,
-    priority_compare, scope_radius_used,
+    CamInfo, ConnectionGhosts, GhostScripts, NoScripts, ObjId, ObjectSource, SCOPE_OVERRIDE, flags,
+    net_flags, priority_compare, scope_radius_used,
 };
 
 #[cfg(test)]

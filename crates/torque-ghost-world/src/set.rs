@@ -177,6 +177,10 @@ pub trait SentGhost<S: ClientSet> {
     fn record(&self) -> Option<&S::Record>;
     /// Update records applied after the creating one.
     fn updates(&self) -> u32;
+    /// The per-ghost block the last record carried ([`ghosts::block`]), when the connection carries one.
+    fn block(&self) -> Option<&ghosts::block::GhostBlock> {
+        None
+    }
 }
 
 /// A connection's ghost table.

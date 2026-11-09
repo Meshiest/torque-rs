@@ -808,19 +808,31 @@ fn a_download_that_takes_too_long_ends_the_connection() {
 }
 
 #[test]
-fn a_server_with_no_required_mods_speaks_torques_handshake() {
-    // The default plugins say nothing on the wire: no gate, no channel, no connect block.
+fn requiring_no_mods_puts_nothing_of_the_mods_on_the_wire_and_clients_join() {
+    // The mods plugin with nothing required says nothing on the wire: no channel, and with Torque's protocol no gate and
+    // no connect block. In the engine's own protocol the only plugin listed is the scene hierarchy, whose block rides
+    // every record there.
     let files = game(None);
     let plain = engine(&files, ModsPlugin::new());
-    assert!(plain.connect_gate(&HandshakeProfile::default()).is_none());
-    assert!(!plain.is_networked());
     assert!(plain.net_channels().unwrap().is_empty());
-    let cx = AuthContext {
-        server: SERVER,
-        sequence: 1,
-        challenge: [1, 2, 3, 4],
-    };
-    assert!(plain.connect_block(&cx).unwrap().is_none());
+    let listed: Vec<&str> = plain
+        .net_versions()
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    if plain.protocol() == torque::engine::ProtocolKind::Engine {
+        assert_eq!(listed, ["torque.hierarchy"]);
+    } else {
+        assert!(listed.is_empty());
+        assert!(plain.connect_gate(&HandshakeProfile::default()).is_none());
+        assert!(!plain.is_networked());
+        let cx = AuthContext {
+            server: SERVER,
+            sequence: 1,
+            challenge: [1, 2, 3, 4],
+        };
+        assert!(plain.connect_block(&cx).unwrap().is_none());
+    }
     // Two such engines join as ever.
     let mut p = pair(None, ModsPlugin::new(), None, ModsPlugin::new());
     p.connect();
