@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 
 use torque_app::client::{ClientBuilder, ClientNet, ClientSetup};
 use torque_app::page_bridge;
-use torque_app::plugins::{AudioPlugin, DefaultPlugins, GameClassesPlugin, ServerQueryPlugin};
+use torque_app::plugins::{
+    AudioPlugin, DefaultPlugins, GameClassesPlugin, ServerQueryPlugin, protocol_from_env,
+};
 use torque_app::server::{GameServer, Listen, ServerStart};
-use torque_engine::{EngineBuilder, PluginGroup};
+use torque_engine::{EngineBuilder, PluginGroup, ProtocolKind};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::listing::check_listing;
 use torque_ts_vm::vm::Vm;
@@ -44,6 +46,14 @@ fn the_bare_client_without_audio_has_these_natives() {
     );
 }
 
+/// The server's snapshot for the protocol in use: the engine's has the scene hierarchy's natives too, in `server-engine.txt`.
+fn server_listing() -> PathBuf {
+    listing(match protocol_from_env() {
+        ProtocolKind::Engine => "server-engine.txt",
+        _ => "server.txt",
+    })
+}
+
 #[test]
 fn the_bare_server_has_these_natives() {
     let files = MemFiles::new();
@@ -58,7 +68,7 @@ fn the_bare_server_has_these_natives() {
         },
     )
     .expect("the server starts");
-    check_listing(&listing("server.txt"), &server.vm().native_listing());
+    check_listing(&server_listing(), &server.vm().native_listing());
 }
 
 /// A web build installs these on its client's engine when the window is made; the snapshot is made natively.

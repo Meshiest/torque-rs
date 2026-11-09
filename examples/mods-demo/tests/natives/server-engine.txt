@@ -41,14 +41,27 @@ Player::setActionThread 3..5 (string sequenceName, bool hold, bool fsp)
 Player::setArmThread 3..3 (string sequenceName)
 Player::setControlObject 3..3 (ShapeBase obj)
 ScatterSky::inspectPostApply 2..2 ()
+SceneObject::clearChildren 2..3 sceneObject.clearChildren([keepWorld]) - takes every child off the object (keeping where each is, or with `keepWorld` 0 its local pose); how many
+SceneObject::deleteRecursive 2..2 sceneObject.deleteRecursive() - deletes the object and every object below it, children first; how many objects went
+SceneObject::getChild 3..3 sceneObject.getChild(index) - the object's child number `index` (from 0, in the order they were hung), 0 past the last
+SceneObject::getChildCount 2..2 sceneObject.getChildCount() - how many children the object has
+SceneObject::getDeleteWithParent 2..2 sceneObject.getDeleteWithParent() - whether the object is deleted with its parent
 SceneObject::getForwardVector 2..2 ()
+SceneObject::getLocalTransform 2..2 sceneObject.getLocalTransform() - the object's pose in its parent as "x y z ax ay az angle", "" when it has no parent
 SceneObject::getObjectBox 2..2 ()
+SceneObject::getParent 2..2 sceneObject.getParent() - the parent's id, 0 for none
+SceneObject::getParentNode 2..2 sceneObject.getParentNode() - the parent's node the object hangs on, "" for the parent's origin
 SceneObject::getPosition 2..2 ()
+SceneObject::getRoot 2..2 sceneObject.getRoot() - the top of the object's chain of parents: the object itself when it has none
 SceneObject::getScale 2..2 ()
 SceneObject::getTransform 2..2 ()
 SceneObject::getUpVector 2..2 ()
 SceneObject::getWorldBox 2..2 ()
 SceneObject::getWorldBoxCenter 2..2 ()
+SceneObject::isAncestorOf 3..3 sceneObject.isAncestorOf(other) - whether the object is above `other` in its chain of parents
+SceneObject::setDeleteWithParent 3..3 sceneObject.setDeleteWithParent(flag) - sets whether the object is deleted with its parent (a turret with its tank) instead of being taken off it where it
+SceneObject::setLocalTransform 3..4 sceneObject.setLocalTransform(transform [, snap]) - sets the object's pose in its parent ("x y z ax ay az angle"; the values left out are kept); true, or false with
+SceneObject::setParent 3..5 sceneObject.setParent(parent [, keepWorld [, node]]) - hangs the object on a parent, or takes it off with 0 or ""; true, or false with getParentError() naming why
 SceneObject::setScale 3..3 (Point3F scale)
 SceneObject::setTransform 3..3 (Transform T)
 ShapeBase::applyDamage 3..3 (float amt)
@@ -233,6 +246,7 @@ getModDownloadState 1..1 getModDownloadState() - where a client's download of th
 getModField 3..3 getModField(id, field) - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
 getModList 1..2 getModList([all]) - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with `true`)
 getModStages 1..1 getModStages() - the declared load stages, separated by spaces
+getParentError 1..1 getParentError() - why the last setParent or setLocalTransform was refused: self, cycle, depth, children, subtree, total, notFinite,
 getRandom 1..3 getRandom([a [, b]]) - a random number: in (0, 1], from 0 to a, or from a to b
 getRandomSeed 1..1 getRandomSeed() - the random generator's state
 getRealTime 1..1 getRealTime() - a millisecond counter of the computer

@@ -4,6 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
+use torque::app::plugins::protocol_from_env;
+use torque::engine::ProtocolKind;
 use torque::script::vm::listing::check_listing;
 use torque_example_level_demo::client::LevelDemo;
 use torque_example_level_demo::files::{GameFiles, maps};
@@ -22,12 +24,17 @@ const CLIENT: &str = if cfg!(feature = "rope") {
     "client.txt"
 };
 
-/// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is `server.txt`.
-const SERVER: &str = if cfg!(feature = "rope") {
-    "server-rope.txt"
-} else {
-    "server.txt"
-};
+/// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is
+/// `server.txt`. In the engine's protocol the scene hierarchy's natives are there too: that list is `server-engine.txt` (the rope
+/// list is pinned for Torque's protocol only).
+fn server_listing() -> PathBuf {
+    let name = match (cfg!(feature = "rope"), protocol_from_env()) {
+        (true, _) => "server-rope.txt",
+        (false, ProtocolKind::Engine) => "server-engine.txt",
+        (false, _) => "server.txt",
+    };
+    listing(name)
+}
 
 #[test]
 fn the_client_has_these_natives() {
@@ -41,5 +48,5 @@ fn the_server_has_these_natives() {
     let map = maps(&game.files).into_iter().next().expect("a map");
     let server =
         WorldServer::start(game.engine(), &game.files, &map.path).expect("the server starts");
-    check_listing(&listing(SERVER), &server.vm().native_listing());
+    check_listing(&server_listing(), &server.vm().native_listing());
 }

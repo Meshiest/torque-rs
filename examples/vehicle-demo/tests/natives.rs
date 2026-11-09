@@ -4,6 +4,8 @@
 
 use std::path::{Path, PathBuf};
 
+use torque::app::plugins::protocol_from_env;
+use torque::engine::ProtocolKind;
 use torque::script::vm::listing::check_listing;
 use torque_example_vehicle_demo::client::{ClientOptions, NetMode, VehicleDemo};
 use torque_example_vehicle_demo::files::GameFiles;
@@ -14,6 +16,14 @@ fn listing(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/natives")
         .join(name)
+}
+
+/// The server's list for the protocol in use: the engine's has the scene hierarchy's natives too, in `server-engine.txt`.
+fn server_listing() -> PathBuf {
+    listing(match protocol_from_env() {
+        ProtocolKind::Engine => "server-engine.txt",
+        _ => "server.txt",
+    })
 }
 
 #[test]
@@ -35,5 +45,5 @@ fn the_server_has_these_natives() {
     let files = GameFiles::bundled().unwrap();
     let server = WorldServer::start_alone(&server_engine().unwrap(), &files, "natives")
         .expect("the server starts");
-    check_listing(&listing("server.txt"), &server.vm().native_listing());
+    check_listing(&server_listing(), &server.vm().native_listing());
 }

@@ -6,9 +6,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use torque::app::client::{ClientBuilder, ClientNet};
-use torque::app::plugins::DefaultPlugins;
+use torque::app::plugins::{DefaultPlugins, protocol_from_env};
 use torque::app::server::Listen;
-use torque::engine::{Engine, EngineBuilder};
+use torque::engine::{Engine, EngineBuilder, ProtocolKind};
 use torque::script::vm::listing::check_listing;
 use torque_example_minimal_engine::{ExamplePlugin, builder, client, files, server};
 
@@ -21,6 +21,17 @@ fn listing(folder: &str, name: &str) -> PathBuf {
 
 fn engine() -> Engine {
     builder(&files().unwrap()).unwrap().build().unwrap()
+}
+
+/// The server's snapshot for the protocol in use: the engine's has the scene hierarchy's natives too, in `server-engine.txt`.
+fn server_listing() -> PathBuf {
+    listing(
+        ".",
+        match protocol_from_env() {
+            ProtocolKind::Engine => "server-engine.txt",
+            _ => "server.txt",
+        },
+    )
 }
 
 /// The natives (name and arguments) of the hand-wired example's snapshot `name` that `actual` lacks; a native's usage text may differ.
@@ -39,7 +50,7 @@ fn the_server_has_these_natives() {
     let at = SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000));
     let server = server(&engine(), Listen::Memory(at)).expect("the server starts");
     let actual = server.vm().native_listing();
-    check_listing(&listing(".", "server.txt"), &actual);
+    check_listing(&server_listing(), &actual);
     assert_eq!(missing("server.txt", &actual), Vec::<String>::new());
 }
 
