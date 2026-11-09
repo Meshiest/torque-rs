@@ -696,6 +696,9 @@ impl ServerProps {
                     std::array::from_fn(|k| p[k] + offset[k])
                 }
                 End::Prop { id, .. } => {
+                    if torque_game::scene::links::parent_of(vm, id).is_some() {
+                        return Err(JointCheckError::Joint(JointError::Child));
+                    }
                     let theirs = world
                         .get(id)
                         .and_then(|p| p.owner.as_ref())

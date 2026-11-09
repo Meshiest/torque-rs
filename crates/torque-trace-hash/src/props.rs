@@ -36,7 +36,16 @@ pub(crate) fn props_rig_with(
     datablocks: &str,
     client: &torque_engine::Engine,
 ) -> Result<Rig, String> {
-    let mut rig = Rig::with_client(Mode::Tge, PropsPlugin, Control::Figure, |vm| {
+    props_rig_in(Mode::Tge, datablocks, client)
+}
+
+/// [`props_rig_with`] over the protocol `mode`.
+pub(crate) fn props_rig_in(
+    mode: Mode,
+    datablocks: &str,
+    client: &torque_engine::Engine,
+) -> Result<Rig, String> {
+    let mut rig = Rig::with_client(mode, PropsPlugin, Control::Figure, |vm| {
         for &stage in ClientStage::ALL {
             client.replay(stage, vm).map_err(|e| e.to_string())?;
         }

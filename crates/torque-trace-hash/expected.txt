@@ -25,8 +25,14 @@ projectile-props tge f5be5e5c2ceb0604
 # The fold of the plugin scenarios: props-drop, props-joints, carry and projectile-props.
 plugins tge e45ce4b72b57d624
 # The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
-# reparents with both keep modes. Its fold has it alone. The engine's protocol sends the links to clients, so every local
+# reparents with both keep modes. The engine's protocol sends the links to clients, so every local
 # pose is rounded to the wire's steps on the server (1/1024 units, 15-bit rotation parts) and the worlds move by that much.
 # The client's figure rides a deck hung on a moving lift, the server's figure and the client's prediction hashed each tick.
 hierarchy engine d5bdc4032123d6c1
-scene engine fc6abcc25549f3b7
+# Props in the scene hierarchy (engine mode): four crates driven by a lift that slides, rises and turns with a loose crate on
+# each, three bodies with two parts each under a walking figure, and the changes between (a driven crate let go, a crate hung on a
+# body, a body frozen and thawed, a part's local pose set, a body with parts deleted, a driven crate hung on another). Every
+# prop's state, every part's pose in its body's frame and every local pose are hashed each tick.
+hierarchy-props engine 51b44f0b0b721733
+# The fold of the scene scenarios: hierarchy and hierarchy-props (it moved only because the second joined the first).
+scene engine d8bba205524ceeff

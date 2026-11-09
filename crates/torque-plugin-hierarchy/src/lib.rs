@@ -39,7 +39,9 @@
 //! - **Mounting** stays its own relation: a mounted object (a SpotLight on a shape too) cannot be parented (`mounted`), and
 //!   `mountObject` refuses a parented one. Neither may close a loop with the other: a parent that rides the child through
 //!   mounts and parents is a `cycle`, and `mountObject` refuses a rider that carries its mount.
-//! - **Props** cannot be children yet (`class`): their physics world owns their pose until props join the hierarchy.
+//! - **Props** may be children (torque-plugin-props: a prop on a dynamic prop joins its body, any other parent drives it as a
+//!   kinematic body); a prop that holds a joint is refused (`joints`). A class asks for a refusal through a
+//!   [`ChildRule`](torque_game::scene::links::ChildRule).
 //! - **Objects being removed** (in `onRemove`, or with a delete held until a method returns) are refused as parents and
 //!   children (`removing`), so a dying object never gains a link.
 //! - **Deleting a parent** takes its children off where they are, except those flagged with `setDeleteWithParent`, which go
@@ -67,7 +69,7 @@
 //!
 //! **Invariants**, each with the test that guards it (in `tests/server.rs`):
 //! - Every refusal changes nothing and names its reason: one test per reason (`refused_self`, `refused_cycle`, ...,
-//!   `refused_removing`, `refused_class`).
+//!   `refused_removing`, `refused_class`; a prop is no refusal: `a_prop_may_be_a_child_and_a_parent`).
 //! - Mounts and parents never form a loop between them, SpotLight mounts included: `refused_cycle_through_mounts_both_ways`,
 //!   `refused_cycle_through_a_spotlight_mount_both_ways`; `mountObject` returns 0 for a parented rider (`refused_mounted`).
 //! - Every write of a transform is heard, a script's field write too: `a_scripts_field_write_moves_the_children`; a move the
@@ -136,8 +138,15 @@
 //! within a millimetre of the server's pose at the tick of its latest record; the `hierarchy` line of `just trace-hash`
 //! hashes that ride's prediction.
 //!
-//! **Seams left for later work.** Props as children build on
-//! [`ServerHierarchy::world`], the same resolve and `ClientWorld::world_pose`.
+//! **Following changes.** [`ServerHierarchy::track_changes`] and [`ServerHierarchy::changes_since`] give a plugin the objects whose
+//! link or local pose changed since it last looked (a world move is no change), so it need not walk the tree each tick; the log
+//! records only once asked and forgets past 65,536 entries, which tells a reader far behind to start over.
+//!
+//! **Props.** A prop is a child like any object; what its physics does about it is torque-plugin-props' (`hierarchy.rs` there reads
+//! [`ServerHierarchy::parent`], [`ServerHierarchy::local`] and [`ServerHierarchy::world`] before each step). The one thing this
+//! crate asks of it is a [`ChildRule`](torque_game::scene::links::ChildRule): a prop that holds a joint is refused (`joints`).
+//! A class adds its own rule with `torque_game::scene::links::add_child_rule`; the first refusal is the link's. Tests:
+//! `refused_class` (a rule's two reasons), `a_prop_may_be_a_child_and_a_parent`.
 //!
 //! **Checks.** `cargo test -p torque-plugin-hierarchy`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p
 //! torque-plugin-hierarchy --release --test net_fuzz`; `cargo clippy -p torque-plugin-hierarchy --all-targets -- -D

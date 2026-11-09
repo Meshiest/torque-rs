@@ -442,6 +442,8 @@ pub enum JointError {
     Held,
     /// A frozen prop cannot be held.
     Frozen,
+    /// A prop that is a child in the scene hierarchy has no joints: its body is its parent's or is driven.
+    Child,
     /// An end is not one the kind takes (a prop, a point, a grapple's player first, a weld's or a hinge's world second), a point
     /// or an offset is out of the world, or both ends are one thing or both points.
     Ends,
@@ -465,6 +467,7 @@ impl std::fmt::Display for JointError {
             JointError::Grappled => "the player has a grapple already",
             JointError::Held => "the player holds a prop already, or the prop is held",
             JointError::Frozen => "a frozen prop cannot be held",
+            JointError::Child => "a prop that is a child in the scene hierarchy cannot have joints",
             JointError::Ends => {
                 "the ends must be two things: props, points, or a player and a prop or point"
             }

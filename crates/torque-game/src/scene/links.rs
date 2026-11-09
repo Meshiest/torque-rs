@@ -12,6 +12,7 @@
 //!   object's turn in the process list, after each 32 ms step, and before a script reads a transform or a world box. It is
 //!   one comparison when nothing waits.
 //! - [`removed`]: `SceneObject::onRemove`, so the hierarchy lets go of the object before its id is reused.
+//! - [`child_refusal`]: a class's own say in whether its objects may be hung on a parent (a plugin's [`ChildRule`]).
 //! - [`mount_refused`]: mounting refuses an object that has a parent (an object is mounted or parented, never both) and a
 //!   mount that would close a loop through parents and mounts ([`carries`]).
 //!
@@ -20,6 +21,7 @@
 //! Item or vehicle turned with the parent, so the child's own simulation goes on in its parent's frame. [`node_index`] and
 //! [`node_matrix`] answer a shape's nodes for children hung on them.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use collide::math::{IDENTITY, Matrix, matrix_product, mul_v, transpose};
@@ -57,6 +59,43 @@ struct Installed(Rc<dyn SceneLinks>);
 /// Makes `links` the scene hierarchy of `vm` (a server's), replacing an earlier one.
 pub fn install(vm: &mut Vm, links: Rc<dyn SceneLinks>) {
     vm.set_extension(Rc::new(Installed(links)));
+}
+
+/// Why a [`ChildRule`] keeps an object from being a child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildRefusal {
+    /// Objects of the class cannot be children.
+    Class,
+    /// The object holds joints, which a child cannot.
+    HasJoints,
+}
+
+/// A class's say in whether its objects may be children: asked before the hierarchy links one, with the parent it would hang
+/// on. A leaf: no script runs in it.
+pub trait ChildRule {
+    /// Why `child` may not be hung on `parent` now (none: it may).
+    fn refuse(&self, vm: &Vm, child: ObjId, parent: ObjId) -> Option<ChildRefusal>;
+}
+
+/// The rules of a server, in the order they were added.
+#[derive(Default)]
+struct ChildRules(RefCell<Vec<Rc<dyn ChildRule>>>);
+
+/// Adds `rule` to the rules a link is checked against.
+pub fn add_child_rule(vm: &mut Vm, rule: Rc<dyn ChildRule>) {
+    let rules = vm.extension::<ChildRules>().unwrap_or_else(|| {
+        let rules = Rc::new(ChildRules::default());
+        vm.set_extension(Rc::clone(&rules));
+        rules
+    });
+    rules.0.borrow_mut().push(rule);
+}
+
+/// The first refusal of a rule to hang `child` on `parent` (none without rules).
+pub fn child_refusal(vm: &Vm, child: ObjId, parent: ObjId) -> Option<ChildRefusal> {
+    let rules = vm.extension::<ChildRules>()?;
+    let rules = rules.0.borrow();
+    rules.iter().find_map(|r| r.refuse(vm, child, parent))
 }
 
 /// The scene hierarchy of `vm`, if one is installed.

@@ -235,7 +235,8 @@ different.
 - `torque-hierarchy`: parent and child transforms for any scene object, unlike TGE's one-level mounting: a tree with depth,
   children and size caps, cycle checks, parents-first resolve, keep-world or keep-local reparenting, a recursive delete and
   a per-child flag to go with the parent, and a quantizer for local poses on the wire. `torque-plugin-hierarchy` (on in engine
-  mode, absent with TGE's protocol) puts it on the server: any class but props may be a child, Players and vehicles included,
+  mode, absent with TGE's protocol) puts it on the server: any class may be a child (a prop on a dynamic prop joins its body, on
+  anything else is driven; a prop with a joint is refused), Players and vehicles included,
   moving in their parent's frame, and mounts never close a loop with parents; children resolved before every query, turn and read; `setParent`, `deleteRecursive` and kin, a server
   API with no client entry point. In the engine's protocol each child's link and quantized local pose ride its own update
   in a per-ghost block after the class record (a parent's motion sends nothing for its children; a link waits for its

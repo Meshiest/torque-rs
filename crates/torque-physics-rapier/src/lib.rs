@@ -12,6 +12,11 @@
 //!   words a trace hash folds in ([`World::state_words`]).
 //! - [`Shape`]: what a body collides as: a box, a ball, or a convex hull of points (a shape's collision mesh,
 //!   [`Shape::from_mesh_hull`]), the hull capped in vertices and replaced by its box when it is degenerate.
+//! - [`PartDesc`]: a collider that sits on another body at a pose of its own ([`World::add_part`]): the pair is one rigid body with
+//!   both masses, the part's pose in the body's frame changes only when the caller moves it ([`World::move_part`]), and a part
+//!   leaves as a body's state with the velocity its body gave its point ([`World::detach_part`]). A part has an id of its own and
+//!   is no body ([`World::part`], [`World::part_words`]); removing a body removes its parts, and removing a part wakes its body. Parts are
+//!   indexed by body, with their reaches as a multiset, so adding, moving or removing one costs `log n` whatever their number.
 //! - [`map`]: the map pieces as colliders, built by region on first use ([`map::CELL`] cells): terrain squares as triangles
 //!   cut along the same diagonal as the engine's own terrain collision (not a height field, whose diagonal differs), and
 //!   interior hulls as convex polyhedra.
@@ -49,6 +54,7 @@ pub use limits::{Config, Limits};
 pub use shape::Shape;
 pub use torque_collide::Exhausted;
 pub use world::joint::{Anchor, JointDesc, JointId, JointKind, JointState, Motor, Spring};
+pub use world::part::{PartDesc, PartState};
 pub use world::{BodyDesc, BodyId, BodyState, Error, Motion, StepReport, World};
 
 /// The Rapier this crate is built on, for a caller that needs more than this crate's surface (joints, queries). Values given

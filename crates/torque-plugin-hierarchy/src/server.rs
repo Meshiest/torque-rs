@@ -11,7 +11,7 @@ use torque_engine::{Prefs, VmPrefs};
 use torque_game::scene::access::{matrix_of, object_field, scale_of};
 use torque_game::scene::ghost;
 use torque_game::scene::lights;
-use torque_game::scene::links::{self, NodeLookup, SceneLinks};
+use torque_game::scene::links::{self, ChildRefusal, NodeLookup, SceneLinks};
 use torque_game::sim::mount;
 use torque_ghosts::block::{BlockSections, GhostBlock, LINK_MASK, LinkField, POSE_MASK, PoseField};
 use torque_hierarchy::{
@@ -59,8 +59,10 @@ pub enum LinkError {
     NoShape,
     /// The child or the parent is being removed (an `onRemove` script, a delete held until a method returns).
     Removing,
-    /// The child's class cannot be a child yet: a prop, whose pose its physics world owns, until props join the hierarchy.
+    /// The child's class cannot be a child (a class's [`ChildRule`](torque_game::scene::links::ChildRule) said so).
     Class,
+    /// The child holds joints (a prop with a joint or a hold), which a child cannot.
+    HasJoints,
 }
 
 impl LinkError {
@@ -73,6 +75,7 @@ impl LinkError {
             LinkError::NoShape => "noShape",
             LinkError::Removing => "removing",
             LinkError::Class => "class",
+            LinkError::HasJoints => "joints",
         }
     }
 }
@@ -91,6 +94,7 @@ impl fmt::Display for LinkError {
             LinkError::NoShape => f.write_str("the parent has no shape to name a node of"),
             LinkError::Removing => f.write_str("the object is being removed"),
             LinkError::Class => f.write_str("objects of this class cannot be children"),
+            LinkError::HasJoints => f.write_str("the object holds joints, which a child cannot"),
         }
     }
 }
@@ -134,9 +138,6 @@ pub enum Blend {
     /// Shown at once.
     Snap,
 }
-
-/// The classes that cannot be children yet ([`LinkError::Class`]): props, whose poses their physics world owns.
-const NOT_CHILDREN: &[&[u8]] = &[b"Prop"];
 
 /// A script callback waiting for a point where scripts may run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +196,38 @@ struct State {
     /// The record bits a parent's motion would have marked on each child ([`links::carry_quiet`]), marked again when the
     /// child's link changes, so the record's own pose is current whenever a client draws the child from it.
     held: BTreeMap<ObjId, u32>,
+    /// The links and local poses that changed, for a plugin that follows them ([`ServerHierarchy::track_changes`]).
+    log: ChangeLog,
+}
+
+/// The most changes a [`ChangeLog`] keeps before it forgets them (a reader that was behind then starts over).
+const MAX_CHANGES: usize = 65_536;
+
+/// The objects whose link or local pose changed, in the order they did, counted from the start of the server. It records only once
+/// a reader asked, and keeps at most [`MAX_CHANGES`].
+#[derive(Debug, Default)]
+struct ChangeLog {
+    on: bool,
+    ids: Vec<ObjId>,
+    /// The changes forgotten: `ids[0]` is change number `dropped`.
+    dropped: u64,
+}
+
+impl ChangeLog {
+    fn note(&mut self, id: ObjId) {
+        if !self.on {
+            return;
+        }
+        if self.ids.len() >= MAX_CHANGES {
+            self.dropped += self.ids.len() as u64;
+            self.ids.clear();
+        }
+        self.ids.push(id);
+    }
+
+    fn cursor(&self) -> u64 {
+        self.dropped + self.ids.len() as u64
+    }
 }
 
 impl State {
@@ -253,18 +286,12 @@ fn link_changed(net: bool, held: &mut BTreeMap<ObjId, u32>, vm: &Vm, id: ObjId) 
 #[derive(Debug, Clone, Default)]
 struct Classes {
     scene: Option<ClassId>,
-    not_children: Vec<ClassId>,
 }
 
 impl Classes {
     fn of(vm: &Vm) -> Classes {
-        let classes = &vm.objects().classes;
         Classes {
-            scene: classes.find(b"SceneObject"),
-            not_children: NOT_CHILDREN
-                .iter()
-                .filter_map(|n| classes.find(n))
-                .collect(),
+            scene: vm.objects().classes.find(b"SceneObject"),
         }
     }
 
@@ -277,12 +304,6 @@ impl Classes {
         self.scene
             .zip(Classes::class_of(vm, id))
             .is_some_and(|(scene, class)| classes.is_a(class, scene))
-    }
-
-    fn may_be_child(&self, vm: &Vm, id: ObjId) -> bool {
-        let classes = &vm.objects().classes;
-        Classes::class_of(vm, id)
-            .is_none_or(|class| !self.not_children.iter().any(|&c| classes.is_a(class, c)))
     }
 }
 
@@ -415,6 +436,35 @@ impl ServerHierarchy {
         self.0.classes(vm)
     }
 
+    /// Starts recording the objects whose link or local pose changes, and gives the cursor to read from: nothing before it is
+    /// recorded.
+    pub fn track_changes(&self) -> u64 {
+        let mut state = self.state_mut();
+        state.log.on = true;
+        state.log.cursor()
+    }
+
+    /// Adds to `out` the objects whose link or local pose changed since `cursor` (an object once for each change), and gives the
+    /// cursor to read from next. `Err` with that cursor when changes since `cursor` were forgotten (a reader far behind): the reader
+    /// starts over from the whole tree.
+    ///
+    /// # Errors
+    /// The changes were forgotten; the new cursor is the error.
+    pub fn changes_since(&self, cursor: u64, out: &mut Vec<ObjId>) -> Result<u64, u64> {
+        let state = self.state();
+        let log = &state.log;
+        let now = log.cursor();
+        let Some(at) = cursor
+            .checked_sub(log.dropped)
+            .and_then(|k| usize::try_from(k).ok())
+            .filter(|&k| k <= log.ids.len())
+        else {
+            return Err(now);
+        };
+        out.extend_from_slice(&log.ids[at..]);
+        Ok(now)
+    }
+
     /// The parent node `name` names on `parent`: the origin for an empty name, a mount slot `0..31` or a node's name.
     ///
     /// # Errors
@@ -434,7 +484,7 @@ impl ServerHierarchy {
     /// after its parent; callbacks run at the next point scripts may.
     ///
     /// # Errors
-    /// A [`LinkError`]: `unknown` when either is not a scene object, `removing` when either is going, `class` for a prop,
+    /// A [`LinkError`]: `unknown` when either is not a scene object, `removing` when either is going, `class` or `joints` when a class's rule says so (a prop with a joint),
     /// `mounted` for a mounted child (a SpotLight's mount too), `cycle` when the parent rides the child through any chain of
     /// mounts and parents, and the tree's refusals. Nothing changes then.
     pub fn set_parent(
@@ -465,8 +515,10 @@ impl ServerHierarchy {
             return Err(LinkError::Removing);
         }
         if let Some(parent) = parent.map(|p| p.object.0) {
-            if !classes.may_be_child(vm, child) {
-                return Err(LinkError::Class);
+            match links::child_refusal(vm, child, parent) {
+                Some(ChildRefusal::Class) => return Err(LinkError::Class),
+                Some(ChildRefusal::HasJoints) => return Err(LinkError::HasJoints),
+                None => {}
             }
             if mount::mount_of(vm, child).is_some() || lights::spot_mount(vm, child).is_some() {
                 return Err(LinkError::Mounted);
@@ -485,6 +537,7 @@ impl ServerHierarchy {
             let tree = state.tree_mut(vm);
             tree.set_parent(Node(child), parent, keep, &VmHost { vm, classes })?;
             state.link_changed(vm, child);
+            state.log.note(child);
             let new = parent.map(|p| p.object.0);
             let old = old.map(|p| p.object.0);
             if let Some(old) = old
@@ -545,6 +598,7 @@ impl ServerHierarchy {
                     Blend::Smooth => state.snaps.remove(&child),
                 };
                 state.pose_changed(vm, child);
+                state.log.note(child);
             }
             result.map_err(LinkError::from)
         };
@@ -830,6 +884,7 @@ impl Shared {
                         state.stats.refused_moves += 1;
                     } else if tree.parent(Node(id)).is_some() {
                         pose_changed(state.net, vm, id);
+                        state.log.note(id);
                     }
                 }
             }
@@ -922,12 +977,14 @@ impl SceneLinks for Shared {
             state.stats.refused_moves += 1;
         } else if tree.parent(node).is_some() {
             pose_changed(state.net, vm, id);
+            state.log.note(id);
         }
         if !moved && let Some(old) = tree.parent(node) {
             // A move the tree cannot hold as a local pose (too far from the parent, not finite) takes the child off its
             // parent where it is.
             if tree.set_parent(node, None, Keep::World, &host).is_ok() {
                 link_changed(state.net, &mut state.held, vm, id);
+                state.log.note(id);
                 self.relinked();
                 state.stats.dropped += 1;
                 state.queue(Callback::ChildRemoved {
@@ -985,6 +1042,7 @@ impl SceneLinks for Shared {
                 .collect();
             for &child in &detached {
                 state.link_changed(vm, child);
+                state.log.note(child);
                 state.queue(Callback::ParentChanged {
                     child,
                     old: Some(id),

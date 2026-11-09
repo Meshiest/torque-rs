@@ -14,6 +14,8 @@
 //!   client's figure riding a deck hung on a moving lift while the client predicts it, in engine mode, where the hierarchy
 //!   is on), printed among [`scenarios::scene`] and folded into the `scene` line; [`hierarchy::ride`] runs the ride alone
 //!   for torque-plugin-hierarchy's `tests/ride.rs`.
+//! - [`hierarchy_props`]: props in the scene hierarchy (driven children on a moving lift, compound bodies loaded with crates, and
+//!   the changes between the two), a server and a predicting client in engine mode, printed after [`hierarchy`]'s.
 //! - [`scenarios`]: the scenarios ([`scenarios::all`]) and [`scenarios::trace_hash`], the per-plugin entry point
 //!   (`trace_hash::<MyPlugin>()`).
 //!
@@ -26,6 +28,7 @@
 
 pub mod hash;
 pub mod hierarchy;
+pub mod hierarchy_props;
 pub mod joints;
 pub mod props;
 pub mod props_predict;

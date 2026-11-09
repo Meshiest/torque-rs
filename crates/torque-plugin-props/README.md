@@ -52,6 +52,18 @@ propApplyImpulse(%crate, "0 40 0");
   class and each client's book (`ClientJoints`). With feature `rope`, `jointRope` makes a networked rope that follows a joint
   and pulls on nothing.
 
+## In the scene hierarchy
+
+With the scene hierarchy on (the engine's own protocol), a prop may be a child of any object, and any object a child of a prop
+(`%prop.setParent(%parent)`; the hierarchy's chapter has the calls). A prop hung on a **dynamic prop** joins its body: its
+collider sits on the root's body at its local pose, the masses add, and nothing ever drifts between the two (a weld joint would).
+A prop hung on **anything else** (a platform, a door, a Player, a frozen prop, a prop's non-prop child) is a kinematic body taken
+to where the tree puts it each tick: it pushes the props it meets and does not push back. An unparented prop is a dynamic body
+again, leaving at the speed its place gave it. A prop that holds a joint or a hold cannot be hung on anything (`getParentError()`
+says `joints`; nothing changes), and a child takes no joint. A child cannot be frozen, put to sleep or given a speed, a push on a
+part moves its root, and a child is never drawn as resting. The client's prediction leaves children, and the props that carry
+children, to the server.
+
 ## Prediction
 
 `PropPredictionPlugin` on a client predicts the props its own Player holds, stands on or pushes (with the props jointed to them, at
@@ -95,7 +107,11 @@ protocol (`tests/tge_client.rs`); hostile servers and hostile clients (`tests/fu
 kind's hold, the joint caps and what a joint follows (`tests/joints.rs`), joints over the network (`tests/joints_net.rs`), and
 with `--features rope` the ropes that follow them (`tests/joint_rope.rs`). The bench: `cargo bench -p torque-plugin-props --bench
 step`. The `props-drop` and `props-joints` scenarios of `just trace-hash` hash a server and a predicting client with 64 props, and
-with a grappled figure among tethers, a winch, a weld and a hinge (0 corrections), native and wasm32. Prediction: `tests/predict.rs`
+with a grappled figure among tethers, a winch, a weld and a hinge (0 corrections), native and wasm32. Props in the hierarchy:
+`tests/hierarchy.rs` (a driven child within 1 mm of its resolved pose every tick of 600, a part's local pose bit for bit over 600
+ticks under load, the speed of an unparented prop within 1% of its place's, the joint refusals, freeze, delete and a world made
+again) and `tests/hierarchy_net.rs` (a client's view of a child), and the `hierarchy-props` scenario of `just trace-hash`.
+Prediction: `tests/predict.rs`
 (about 100 ms there and back, 2% lost: a carry, a ride and a push, predicted impulses, projectiles' pushes and the client's own
 shots), the `carry` and `projectile-props` scenarios of `just trace-hash`, and the replay's cost (`cargo run --release -p
 torque-trace-hash --bin replay-bench`).

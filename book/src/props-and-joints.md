@@ -302,6 +302,22 @@ at their ends; a client's book (`ClientJoints`) gives the props a joint ties to 
 them in with it. A client holds at most 4,096 joints and holds every value it is sent to its range; the fuzzers feed it hostile
 records.
 
+## In the scene hierarchy
+
+With the [scene hierarchy](scene-hierarchy.md#props) on, a prop may hang on any object and any object on a prop. A prop on a
+dynamic prop joins its body (a collider at a fixed pose in the root's frame, the masses added); a prop on anything else is a
+kinematic body taken each tick to where the hierarchy puts it, pushing the props it meets. Unparented, it is dynamic again and
+leaves at the speed its place gave it. A prop with a joint cannot be hung on anything (`getParentError()` says `joints`), and a
+child takes no joint, so no joint or hold is ever broken by parenting.
+
+The server does it before each step: the hierarchy resolves, then each prop with a parent (or that was a child) is made to fit,
+parents first. A part is placed from the chain of local poses between it and its root, composed as the hierarchy composes them, and
+moved only when a link or a local pose in the chain changed, so it never drifts. A child's record is kept current without marking
+its ghost (a client draws it from its parent), its flags never say asleep or frozen (so it is never drawn as a still copy), and
+a client's prediction finds it where its parent's latest record and its local pose put it and leaves it, and the props that
+carry children, to the server. Over 600 ticks under load a driven child stays within 1 mm of its resolved pose, a part's local pose
+stays bit for bit, and an unparented prop leaves within 1% of its parent's point velocity.
+
 ## Prediction
 
 `PropPredictionPlugin` (a client-side plugin, which needs `PropsPlugin`) draws the props a client's own Player is playing with
@@ -403,6 +419,12 @@ grapple's tether bit for bit on the client), `--features rope --test joint_rope`
 one hanging, a rope that follows its joint over the network and goes with it). The `props-joints` scenario of `just trace-hash`
 (a figure running and jumping on a grapple, with a hard and a soft tether, a winch, a weld and a motored hinge around it) prints
 the same hash native and wasm32, with 0 corrections of the figure's prediction.
+
+Hierarchy: `--test hierarchy` (a driven child within 1 mm of its resolved pose every tick of 600, a part's local pose bit for bit
+over 600 ticks under load, an unparented prop within 1% of its parent's point velocity, a prop with a joint refused, freezing,
+deleting and a world made again with children) and `--test hierarchy_net` (a client finds a child where its parent puts it and never
+draws it as resting); the `hierarchy-props` scenario of `just trace-hash` hashes a lift with driven children and bodies with parts
+under a walking figure, native and wasm32.
 
 Prediction: `--test predict` (the carry, the ride and the push, a predicted push the server makes too and one it never makes, the
 caps, a projectile's push held to its cap, the shooter's own shot and its explosion). The `carry` and `projectile-props`

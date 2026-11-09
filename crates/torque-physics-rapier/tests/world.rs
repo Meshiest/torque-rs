@@ -429,3 +429,213 @@ fn a_kinematic_body_reaches_its_target_in_one_tick_and_stops() {
     w.step(&mut free).unwrap();
     assert!((w.body(BodyId(1)).unwrap().position[0] - 1.0).abs() < 1e-4);
 }
+
+fn floor() -> BodyDesc {
+    BodyDesc {
+        motion: torque_physics_rapier::Motion::Fixed,
+        shape: Shape::Box {
+            half: [50.0, 50.0, 0.5],
+        },
+        position: [0.0, 0.0, -0.5],
+        ..BodyDesc::default()
+    }
+}
+
+fn crate_at(at: [f32; 3]) -> BodyDesc {
+    BodyDesc {
+        shape: Shape::Box { half: [0.5; 3] },
+        position: at,
+        ..BodyDesc::default()
+    }
+}
+
+#[test]
+fn a_part_adds_its_mass_to_its_body_and_goes_with_it() {
+    use torque_physics_rapier::PartDesc;
+    let mut w = World::new(Config::default());
+    w.add_body(BodyId(1), &crate_at([0.0, 0.0, 5.0]), &mut free)
+        .unwrap();
+    let alone = w.mass_of(BodyId(1)).unwrap();
+    let part = PartDesc::new(
+        Shape::Box { half: [0.5; 3] },
+        [2.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    );
+    w.add_part(BodyId(2), BodyId(1), &part, &mut free).unwrap();
+    assert!((w.mass_of(BodyId(1)).unwrap() - 2.0 * alone).abs() < 1e-4);
+    assert_eq!(w.body_count(), 1);
+    assert_eq!(w.collider_count(), 2);
+    assert!(w.body(BodyId(2)).is_none());
+    assert_eq!(
+        w.add_part(BodyId(2), BodyId(1), &part, &mut free),
+        Err(Error::Duplicate(BodyId(2)))
+    );
+    assert_eq!(
+        w.add_part(BodyId(3), BodyId(9), &part, &mut free),
+        Err(Error::Unknown(BodyId(9)))
+    );
+    assert_eq!(
+        w.add_body(BodyId(2), &crate_at([0.0; 3]), &mut free),
+        Err(Error::Duplicate(BodyId(2)))
+    );
+    w.remove_part(BodyId(2)).unwrap();
+    w.step(&mut free).unwrap();
+    assert!((w.mass_of(BodyId(1)).unwrap() - alone).abs() < 1e-4);
+    w.add_part(BodyId(2), BodyId(1), &part, &mut free).unwrap();
+    w.remove_body(BodyId(1)).unwrap();
+    assert_eq!(w.part_ids().count(), 0);
+    assert_eq!(w.collider_count(), 0);
+}
+
+#[test]
+fn a_parts_pose_in_its_bodys_frame_never_changes_under_load() {
+    use torque_physics_rapier::PartDesc;
+    let mut w = World::new(Config::default());
+    w.add_body(BodyId(1), &floor(), &mut free).unwrap();
+    w.add_body(BodyId(2), &crate_at([0.0, 0.0, 3.0]), &mut free)
+        .unwrap();
+    let turn = [0.0, 0.0, 0.3826834, 0.9238795];
+    let part = PartDesc::new(Shape::Box { half: [0.4; 3] }, [1.3, 0.2, 0.1], turn);
+    w.add_part(BodyId(3), BodyId(2), &part, &mut free).unwrap();
+    let first = w.part(BodyId(3)).unwrap();
+    let raw = |w: &World| {
+        let (_, c) = w
+            .rapier()
+            .colliders
+            .iter()
+            .find(|(_, c)| {
+                c.position_wrt_parent()
+                    .is_some_and(|p| p.translation.x > 1.0)
+            })
+            .expect("the part's collider");
+        let p = *c.position_wrt_parent().unwrap();
+        (p.translation.to_array(), p.rotation.to_array())
+    };
+    let raw_first = raw(&w);
+    // Dropped onto the floor, then hit by a stream of balls: the body tumbles and rests, the part never shifts in its frame.
+    for tick in 0..600 {
+        if tick % 40 == 20 {
+            let id = BodyId(100 + tick);
+            let mut d = ball([3.0, 0.2, 2.0]);
+            d.linvel = [-14.0, 0.0, 2.0];
+            d.density = 4.0;
+            w.add_body(id, &d, &mut free).unwrap();
+        }
+        w.step(&mut free).unwrap();
+        let now = w.part(BodyId(3)).unwrap();
+        assert_eq!(
+            now.position.map(f32::to_bits),
+            first.position.map(f32::to_bits)
+        );
+        assert_eq!(
+            now.rotation.map(f32::to_bits),
+            first.rotation.map(f32::to_bits)
+        );
+        let r = raw(&w);
+        assert_eq!(r.0.map(f32::to_bits), raw_first.0.map(f32::to_bits));
+        assert_eq!(r.1.map(f32::to_bits), raw_first.1.map(f32::to_bits));
+    }
+    let s = w.body(BodyId(2)).unwrap();
+    assert!(s.position[2] < 1.5, "the body came down: {s:?}");
+}
+
+#[test]
+fn a_detached_part_leaves_at_the_speed_its_body_gave_its_point() {
+    use torque_physics_rapier::PartDesc;
+    let mut w = World::new(Config {
+        gravity: [0.0; 3],
+        ..Config::default()
+    });
+    let mut d = crate_at([0.0; 3]);
+    d.linvel = [3.0, 0.0, 1.0];
+    d.angvel = [0.0, 0.0, 2.0];
+    w.add_body(BodyId(1), &d, &mut free).unwrap();
+    let part = PartDesc::new(
+        Shape::Box { half: [0.25; 3] },
+        [2.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    );
+    w.add_part(BodyId(2), BodyId(1), &part, &mut free).unwrap();
+    for _ in 0..30 {
+        w.step(&mut free).unwrap();
+    }
+    let at = w.part_world(BodyId(2)).unwrap();
+    let body = w.body(BodyId(1)).unwrap();
+    let expect = w.velocity_at(BodyId(1), at.position).unwrap();
+    let out = w.detach_part(BodyId(2)).unwrap();
+    let speed = |v: [f32; 3]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((speed(out.linvel) - speed(expect)).abs() <= 0.01 * speed(expect));
+    let extra: [f32; 3] = std::array::from_fn(|k| out.linvel[k] - body.linvel[k]);
+    assert!(speed(extra) > 1.0, "the spin adds to the speed: {out:?}");
+    assert!(w.part(BodyId(2)).is_none());
+}
+
+#[test]
+fn removing_a_part_wakes_its_sleeping_body() {
+    use torque_physics_rapier::PartDesc;
+    let mut w = World::new(Config::default());
+    w.add_body(BodyId(1), &crate_at([0.0, 0.0, 5.0]), &mut free)
+        .unwrap();
+    let part = PartDesc::new(
+        Shape::Box { half: [0.5; 3] },
+        [2.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    );
+    w.add_part(BodyId(2), BodyId(1), &part, &mut free).unwrap();
+    let mut state = w.body(BodyId(1)).unwrap();
+    state.sleeping = true;
+    w.set_body(BodyId(1), &state).unwrap();
+    assert!(w.body(BodyId(1)).unwrap().sleeping);
+    w.remove_part(BodyId(2)).unwrap();
+    assert!(
+        !w.body(BodyId(1)).unwrap().sleeping,
+        "the body that lost mass is awake"
+    );
+}
+
+#[test]
+fn a_bodys_parts_come_and_go_in_proportion_to_their_number() {
+    use torque_physics_rapier::PartDesc;
+    // `n` parts added, moved and removed: each call costs `log n`, not a look at every part.
+    fn run(n: u32) -> std::time::Duration {
+        let mut w = World::new(Config {
+            limits: Limits {
+                max_colliders: 100_000,
+                ..Limits::default()
+            },
+            ..Config::default()
+        });
+        w.add_body(BodyId(1), &crate_at([0.0, 0.0, 5.0]), &mut free)
+            .unwrap();
+        let started = std::time::Instant::now();
+        for k in 0..n {
+            let part = PartDesc::new(
+                Shape::Box { half: [0.1; 3] },
+                [k as f32 * 0.01, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            );
+            w.add_part(BodyId(10 + k), BodyId(1), &part, &mut free)
+                .unwrap();
+        }
+        for k in 0..n {
+            w.move_part(
+                BodyId(10 + k),
+                [0.0, k as f32 * 0.01, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            )
+            .unwrap();
+        }
+        for k in 0..n {
+            w.remove_part(BodyId(10 + k)).unwrap();
+        }
+        assert_eq!(w.parts_on(BodyId(1)).count(), 0);
+        started.elapsed()
+    }
+    let best = |n: u32| (0..3).map(|_| run(n)).min().unwrap();
+    let (small, large) = (best(500), best(2000));
+    let ratio = large.as_secs_f64() / small.as_secs_f64();
+    assert!(
+        ratio < 9.0,
+        "the time grew {ratio} times for 4 times the parts"
+    );
+}

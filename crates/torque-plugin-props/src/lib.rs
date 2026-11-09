@@ -20,6 +20,9 @@
 //!   class ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own
 //!   tick ([`torque_game::player_tether`]), so a client's prediction replays it exactly; with feature `rope`, networked ropes
 //!   that follow joints ([`joints::rope`]);
+//! - props in the scene hierarchy ([`hierarchy`], [`world::Link`]): a prop hung on a dynamic prop joins its body, a prop hung on
+//!   anything else is driven to where the tree puts it, an unparented prop leaves at its place's speed, and a prop with a joint
+//!   cannot be hung on anything (`getParentError()` says `joints`);
 //! - projectiles that push the props they hit, and explosions that push the props around them ([`hits`]);
 //! - with [`predict::PropPredictionPlugin`] on a client, the props its own Player holds, stands on or pushes predicted and drawn
 //!   through a smoothed correction ([`predict`]), predicted impulses and spawns, and the Player's own shots followed ahead.
@@ -74,7 +77,9 @@
 //! tethers (`server.rs`), the console functions (`natives.rs`), the record (`records.rs`), a client's book and tethers
 //! (`client.rs`), and the ropes (`rope.rs`, feature `rope`). [`hits`]: the impulses of a projectile's hit and of an explosion,
 //! on both sides. [`predict`]: a client's prediction (`mod.rs`: the config, the shared state, the client functions;
-//! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots).
+//! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots). [`hierarchy`]: what the server reads of
+//! the scene hierarchy before each step ([`hierarchy::reconcile`]) and the rule that refuses a prop with joints as a child
+//! ([`hierarchy::PropRule`]); the world's side of a child is `world/children.rs` ([`world::Link`], `impl PropWorld`).
 //!
 //! **One tick.** During the process list each grappled Player's own step asks the server's tether source
 //! ([`joints::server::ServerTethers`]) for its tether and reports the pull back. After the process list, the hook writes the
@@ -89,6 +94,27 @@
 //! `onPropWake`, `onBreak` and the hit props' `onCollision`. Before the step, the projectiles' hits the server's collision
 //! source was told of during the process list push their props, and each explosion seen for the first time pushes the props in
 //! its reach.
+//!
+//! **Props in the hierarchy.** Before each step the hook has the hierarchy resolve, then [`hierarchy::reconcile`] walks the props
+//! that changed, parents first (the objects the hierarchy logged as changing a link or a local pose with what hangs below them,
+//! the roots frozen, thawed or removed, and the driven props for their targets; the first fit and one after the log overflowed
+//! look at every prop), and makes each fit its place. The world indexes its children by kind and root (`world/children.rs`,
+//! `PropWorld::set_link` keeps it), a root's parts are settled only when the root moved, and a driven prop still at its target
+//! costs a comparison, so a stable tree costs what changed ([`hierarchy::LinkStats`]). The bodies and colliders a fit makes are
+//! charged to the step's budget, and a tick past it fits no more (a script that re-parents props every tick is bounded); what was
+//! refused is tried again at the next tick (`fits_refused_for_the_budget_land_on_later_ticks`). The changes of a tick are gathered into one
+//! set and walked once, a walk past the number of props is a full fit (`a_script_changing_a_large_tree_many_times_in_a_tick_costs_one_bounded_look`),
+//! and a change made while the physics world is stopped waits for its rebuild (`a_parent_set_while_the_physics_world_is_stopped_lands_after_its_rebuild`). A prop
+//! the world will not put back after a failed change is deleted ([`world::TickReport::dropped`]); a stopped world waits for its
+//! rebuild. Each prop: a prop whose parent is a dynamic prop (or a part of
+//! one) is attached to that root's body at the chain of local poses from the root down, composed by the tree's own rule, and
+//! moved only when a link or a local pose in the chain changed; a prop under anything else is driven (a kinematic body given the
+//! resolved world pose as its target, which it reaches inside the step; it pushes dynamic props and is pushed by none); a prop
+//! whose parent went is a dynamic body again, at the speed its body gave its point (a part) or its last drive (a driven one).
+//! Freezing a root drives its parts where they are; thawing it takes them back at the next tick. After the step each child's
+//! state is written to its record **without marking its ghost** (a client draws a child from its parent, so a parent's motion costs
+//! the child no update; a new ghost's record carries the pose it has now), and a child's scene transform is the hierarchy's,
+//! never written back. A child is never asleep or frozen on the wire, so a client never draws it as resting.
 //!
 //! **A client tick** (with [`predict::PropPredictionPlugin`]), after the predictor's: the Player's push for the move recorded,
 //! the predicted set chosen and the client's world brought to it, the pushes of the tick taken (the game's, the Player's shots),
@@ -122,6 +148,35 @@
 //!   inside one, fallen on one) stays inside a player: `a_held_prop_shoves_a_free_one_into_no_players_box`. The
 //!   holder's client predicts the held prop from each move's box and facing ([`world::PlayerAt::of_box`], read the same way as
 //!   the server's): the level demo's `a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_click_drops_it`.
+//! - A prop hung on a non-prop or a frozen prop is a kinematic body within a millimeter of the pose the tree resolved, every tick of
+//!   600 under a parent that slides and turns, and a prop resting on it is carried:
+//!   `a_kinematic_child_is_within_a_millimeter_of_its_resolved_pose_every_tick`,
+//!   `a_kinematic_child_pushes_a_dynamic_prop_and_a_prop_resting_on_it_is_carried` (`tests/hierarchy.rs`).
+//! - A stable tree costs no fit and one change costs one (900 parts: 0 props fitted in 30 ticks, 1 for a local pose set), and a
+//!   large body's parts come and go in proportion to their number:
+//!   `a_stable_tree_of_nine_hundred_parts_costs_no_fit_a_tick_and_one_change_costs_one`,
+//!   `deleting_the_parts_of_a_large_body_and_then_the_body_costs_in_proportion`.
+//! - What is hung on a body that is then hung on, frozen or removed leaves with it: `a_body_hung_on_something_takes_its_parts_with_it_as_driven_props`.
+//!   A prop frozen when it was hung is frozen again when let go: `a_prop_that_was_frozen_when_it_was_hung_is_frozen_again_when_let_go`.
+//!   A body that loses a part is woken: `a_part_moved_to_another_root_wakes_the_root_it_left_as_well_as_the_new_one`.
+//! - A part's pose in its root's frame is bit for bit what it was at the join, in the tree and in the physics world, over 600 ticks of
+//!   crates dropped on the body and shoves; its mass is the body's: `a_compound_childs_local_pose_never_drifts_under_load`.
+//!   Parts and driven props are placed by their own parent's kind (chains, non-prop parents):
+//!   `a_chain_of_props_and_other_objects_places_each_prop_by_its_own_parent`.
+//! - An unparented prop leaves within 1% of its parent's point velocity (a part: the body's speed at its point, a driven one: its
+//!   last move): `an_unparented_prop_leaves_at_its_parents_point_velocity`,
+//!   `a_prop_unparented_from_a_turning_parent_leaves_at_the_speed_its_place_had`,
+//!   `a_part_unparented_leaves_at_the_speed_its_roots_body_gave_its_point`.
+//! - A prop with a joint or a hold is refused as a child (`joints`, nothing changes, its joint stays whole), and a child takes no
+//!   joint (an existing hold or joint is never broken by a parent: the parent is refused first):
+//!   `a_prop_with_a_joint_is_refused_as_a_child_and_a_child_takes_no_joint`.
+//! - Freezing, deleting and a world made again keep every child whole: `freezing_a_root_turns_its_parts_into_driven_props_and_thawing_it_takes_them_back`,
+//!   `deleting_a_root_sets_its_parts_free_where_they_are_and_a_deleted_part_leaves_its_root_whole`,
+//!   `a_stopped_physics_world_is_made_again_with_its_parts_and_driven_props`.
+//! - A child is never drawn as resting, and a client finds it where its parent's latest record and its local pose put it (the
+//!   prediction leaves it and the props that carry others to the server): `a_child_of_a_sleeping_root_is_never_drawn_as_resting_and_the_root_is`,
+//!   `a_client_finds_a_child_prop_where_its_parent_puts_it_and_never_draws_it_resting` (`tests/hierarchy_net.rs`); the
+//!   `hierarchy-props` line of `just trace-hash` (engine mode) is equal native and wasm32.
 //! - A poisoned world is made again: `a_stopped_world_is_made_again_from_the_props_states`,
 //!   `a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere`.
 //! - This crate has no client entry point: `a_client_sending_the_old_spawn_command_gets_nothing`, and for joints
@@ -226,12 +281,13 @@
 //! and [`predict::PropPrediction`], a game's predicted impulses, blasts and spawns.
 //!
 //! **Checks.** `cargo test -p torque-plugin-props` and `cargo test -p torque-plugin-props --features rope --test joint_rope`;
-//! the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the `props-drop`, `props-joints`, `carry` and
-//! `projectile-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
+//! the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the `props-drop`, `props-joints`, `carry`,
+//! `projectile-props` and `hierarchy-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
 //! --bench step` and the `replay-bench` of torque-trace-hash (native and wasm32) under the bench lock.
 
 pub mod client;
 pub mod data;
+pub mod hierarchy;
 pub mod hits;
 pub mod joints;
 pub mod natives;
@@ -246,7 +302,7 @@ use std::rc::Rc;
 
 use torque_collide::source::PluginCollision;
 use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginId, Replicate, ServerStage, ServerTick,
+    ClientStage, ClientTick, EngineBuilder, Plugin, PluginId, Replicate, ServerStage, ServerTick,
 };
 
 pub use client::{ClientProps, PropBook};
@@ -255,7 +311,7 @@ pub use joints::client::{ClientJoints, JointBook};
 pub use joints::records::JointGhost;
 pub use records::PropGhost;
 pub use server::{PropPrefs, ServerProps};
-pub use world::{PropLimits, PropWorld};
+pub use world::{Link, PropLimits, PropWorld};
 
 /// The network version of the props plugin: a client and a server must run the same.
 pub const NET_VERSION: u32 = 3;
@@ -301,6 +357,10 @@ impl Plugin for PropsPlugin {
                 Rc::new(server::Blasts(tethers.clone())),
             );
             torque_game::player_tether::add(vm, joints::server::tethers(&tethers));
+            torque_game::scene::links::add_child_rule(
+                vm,
+                Rc::new(hierarchy::PropRule(tethers.clone())),
+            );
             Ok(())
         });
         let client_tethers = joints::client::ClientTethers {
@@ -334,6 +394,11 @@ impl Plugin for PropsPlugin {
             .on_ghost::<PropGhost>(GHOST_CLASS, move |vm, event| {
                 client::heard(vm, &heard, event)
             });
+        // Where each prop is in the scene hierarchy, found after the client's other work each tick.
+        let placed = book.clone();
+        engine.push(ClientTick::new(move |vm| {
+            client::refresh_places(vm, &placed)
+        }));
         engine.push(PluginCollision::server(
             COLLISION_NAME,
             Rc::new(server::ServerSource(server.clone())),

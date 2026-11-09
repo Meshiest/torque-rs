@@ -1383,6 +1383,30 @@ impl ClientGhosts for GhostPlaces {
         let records = &st.conn.conn.as_ref()?.world.records;
         records.world_pose(index, &|_, _| None).map(|(m, _)| m)
     }
+
+    fn tick_pose(&self, index: u32) -> Option<collide::math::Matrix> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        records
+            .tick_pose(index, &|_, _| None, &|_| None)
+            .map(|(m, _)| m)
+    }
+
+    fn parent(&self, index: u32) -> Option<u32> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        Some(records.links.parent(index)?.object.0)
+    }
+
+    fn has_children(&self, index: u32) -> bool {
+        let Ok(st) = self.0.try_borrow() else {
+            return false;
+        };
+        st.conn
+            .conn
+            .as_ref()
+            .is_some_and(|c| c.world.records.links.children(index).next().is_some())
+    }
 }
 
 /// What the client keeps of the plugin ghosts of a connection that is over, until its handlers have heard that they are gone.

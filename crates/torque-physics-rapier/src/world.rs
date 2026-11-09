@@ -18,8 +18,10 @@ use crate::shape::{self, Shape};
 use crate::{TICK, work};
 
 pub mod joint;
+pub mod part;
 
 use joint::{JointEntry, JointId};
+use part::PartEntry;
 
 /// The friction of every map collider (the other body's is combined with it by Rapier's average rule).
 pub const MAP_FRICTION: f32 = 0.8;
@@ -185,8 +187,10 @@ struct Entry {
     handle: RigidBodyHandle,
     /// The state after the last step that kept it in range.
     good: BodyState,
-    /// How far the body's colliders reach from its origin.
+    /// How far the body's colliders reach from its origin: its own and its parts'.
     radius: f32,
+    /// The same for the body's own collider alone.
+    base_radius: f32,
     /// A kinematic body given a target this tick: it stops when the step reaches it.
     arriving: bool,
 }
@@ -208,6 +212,10 @@ pub struct World {
     rapier: PhysicsWorld,
     bodies: BTreeMap<BodyId, Entry>,
     joints: BTreeMap<JointId, JointEntry>,
+    /// The parts, by their own ids ([`part`]).
+    parts: BTreeMap<BodyId, PartEntry>,
+    /// The parts on each body that has any.
+    part_index: BTreeMap<BodyId, part::BodyParts>,
     /// The fixed body without a collider that joints to world points hang from, made on first use.
     ground: Option<RigidBodyHandle>,
     maps: Maps,
@@ -221,6 +229,7 @@ impl std::fmt::Debug for World {
             .field("config", &self.config)
             .field("bodies", &self.bodies.len())
             .field("joints", &self.joints.len())
+            .field("parts", &self.parts.len())
             .field("colliders", &self.rapier.colliders.len())
             .field("maps", &self.maps.stats)
             .field("poisoned", &self.poisoned)
@@ -319,6 +328,8 @@ impl World {
             rapier,
             bodies: BTreeMap::new(),
             joints: BTreeMap::new(),
+            parts: BTreeMap::new(),
+            part_index: BTreeMap::new(),
             ground: None,
             maps,
             poisoned: false,
@@ -456,7 +467,7 @@ impl World {
         charge: &mut dyn FnMut(u64) -> bool,
     ) -> Result<(), Error> {
         self.live()?;
-        if self.bodies.contains_key(&id) {
+        if self.bodies.contains_key(&id) || self.parts.contains_key(&id) {
             return Err(Error::Duplicate(id));
         }
         let l = self.config.limits;
@@ -524,6 +535,7 @@ impl World {
                 handle,
                 good,
                 radius,
+                base_radius: radius,
                 arriving: false,
             },
         );
@@ -548,6 +560,7 @@ impl World {
         self.live()?;
         let e = self.bodies.remove(&id).ok_or(Error::Unknown(id))?;
         self.forget_joints_of(id);
+        self.forget_parts_of(id);
         self.guarded(|r| {
             r.remove_body(e.handle);
         })

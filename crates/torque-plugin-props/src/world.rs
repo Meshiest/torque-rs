@@ -31,6 +31,7 @@ use crate::data::{PropParams, PropShape};
 use crate::joints::{Joint, JointEvent, JointLimits};
 use crate::quant::{self, Quantized};
 use crate::records::{MASK_FLAGS, MASK_INIT, MASK_STATE};
+pub use children::Link;
 
 /// Ticks a prop must stay under its sleep thresholds before it falls asleep (half a second).
 pub const SLEEP_TICKS: u16 = 16;
@@ -49,6 +50,8 @@ pub const PUSH_MARGIN: f32 = 0.08;
 pub const PUSH_SHARE: f32 = 0.5;
 /// The fewest awake bodies a budget overrun lowers the cap to.
 pub const MIN_AWAKE_CUT: u32 = 16;
+
+mod children;
 
 /// The caps a server holds its props to (its prefs, each held to its range).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +149,8 @@ pub struct Prop {
     pub q: Quantized,
     /// The pushers that touched it this tick.
     pub touched: Vec<u32>,
+    /// How the scene hierarchy holds it ([`Link`]).
+    pub link: Link,
 }
 
 /// Whether a prop moves.
@@ -349,6 +354,11 @@ pub struct TickReport {
     pub rebuilt: bool,
     /// Props the world made again did not take, taken out (their objects are for the caller to delete).
     pub lost: Vec<u32>,
+    /// Props taken out because the world would not put them back after a change (their objects are for the caller to delete).
+    pub dropped: Vec<u32>,
+    /// The children whose state changed, in id order: written to their records without marking them, as a child is drawn from
+    /// its parent.
+    pub moved: Vec<u32>,
     /// The joints whose ghost groups changed, in id order, with the mask bits to mark.
     pub joints: Vec<(u32, u32)>,
     /// Joints that broke, in id order.
@@ -367,6 +377,16 @@ pub struct PropWorld {
     statics: BTreeMap<u32, StaticPiece>,
     /// The joints by object id ([`crate::joints`]).
     pub(crate) joints: BTreeMap<u32, Joint>,
+    /// The children by kind ([`children::Kids`]).
+    kids: children::Kids,
+    /// Roots whose bodies changed in a way their children must follow, for the hierarchy's next fit.
+    dirty_roots: Vec<u32>,
+    /// Work spent this tick on bodies made for the hierarchy, against the step's budget.
+    build_spent: u64,
+    /// Props the world could not put back after a change that failed, taken out for the tick to report.
+    dropped: Vec<u32>,
+    /// Props whose ghost groups change for a reason of the hierarchy (made a child, freed), for the next tick to report.
+    changed: Vec<(u32, u32)>,
     /// The joints taken out because a body at an end went, with their ropes, for the caller to delete their objects.
     pub(crate) gone_joints: Vec<(u32, u32)>,
     /// Where each player at a grapple's or a hold's end is, given before each tick.
@@ -481,6 +501,11 @@ impl PropWorld {
             by_slot: BTreeMap::new(),
             statics: BTreeMap::new(),
             joints: BTreeMap::new(),
+            kids: children::Kids::default(),
+            dirty_roots: Vec::new(),
+            build_spent: 0,
+            dropped: Vec::new(),
+            changed: Vec::new(),
             gone_joints: Vec::new(),
             players: BTreeMap::new(),
             reflag: Vec::new(),
@@ -552,7 +577,10 @@ impl PropWorld {
 
     /// Props awake now.
     pub fn awake(&self) -> u32 {
-        self.props.values().filter(|p| p.rest.is_awake()).count() as u32
+        self.props
+            .values()
+            .filter(|p| p.rest.is_awake() && p.link == Link::Free)
+            .count() as u32
     }
 
     /// The props `key` owns.
@@ -667,6 +695,7 @@ impl PropWorld {
                 quiet: 0,
                 q: start,
                 touched: Vec::new(),
+                link: Link::Free,
             },
         );
         Ok(())
@@ -674,13 +703,23 @@ impl PropWorld {
 
     /// Takes a prop away; true when it was one.
     pub fn remove(&mut self, id: u32) -> bool {
+        if !self.props.contains_key(&id) {
+            return false;
+        }
+        // What is a part of this prop's body leaves it as a body of its own, where it is, at the speed its point had.
+        self.free_parts(id, false);
+        self.dirty_roots.push(id);
         let Some(p) = self.props.remove(&id) else {
             return false;
         };
+        self.unindex(id, p.link);
         self.revision = next_revision();
         self.slots.insert(p.slot);
         self.by_slot.remove(&p.slot);
-        let removed = self.world.remove_body(BodyId(id));
+        let removed = match p.link {
+            Link::Part { .. } => self.world.remove_part(BodyId(id)),
+            _ => self.world.remove_body(BodyId(id)),
+        };
         self.note(&format!("prop {id}'s body"), removed);
         self.drop_joints_of(id);
         true
@@ -688,6 +727,12 @@ impl PropWorld {
 
     /// The body again, as `motion`, at the prop's state (frozen: a fixed body; thawed: a dynamic one at rest).
     fn rebuild(&mut self, id: u32, motion: Motion) -> bool {
+        if self.props.get(&id).is_none_or(|p| p.link.is_child()) {
+            return false;
+        }
+        // Frozen, a prop is no body a part can sit on: what hung on it is driven where it is.
+        self.free_parts(id, motion == Motion::Fixed);
+        self.dirty_roots.push(id);
         let Some(p) = self.props.get(&id) else {
             return false;
         };
@@ -740,7 +785,7 @@ impl PropWorld {
     /// The mask bits to send are returned with `true`.
     pub fn freeze(&mut self, id: u32) -> Option<u32> {
         let p = self.props.get(&id)?;
-        if p.rest.is_frozen() || !p.params.can_freeze {
+        if p.rest.is_frozen() || !p.params.can_freeze || p.link.is_child() {
             return None;
         }
         if !self.rebuild(id, Motion::Fixed) {
@@ -776,7 +821,8 @@ impl PropWorld {
     /// and ignores `can_freeze` (a sleeper is not pinned). A push, an impulse, a joint or a prop that moves into it wakes it
     /// as it wakes any sleeper.
     pub fn sleep(&mut self, id: u32) -> Option<u32> {
-        if !self.props.get(&id)?.rest.is_awake() {
+        let p = self.props.get(&id)?;
+        if !p.rest.is_awake() || p.link.is_child() {
             return None;
         }
         self.put_to_sleep(id);
@@ -785,16 +831,31 @@ impl PropWorld {
 
     /// Adds an impulse to a prop (held to the world's limits); wakes it. False for a frozen prop or one that is not there.
     pub fn impulse(&mut self, id: u32, impulse: [f32; 3]) -> bool {
-        if self.props.get(&id).is_none_or(|p| p.rest.is_frozen()) {
+        let Some(body) = self.pushable(id) else {
             return false;
+        };
+        self.world.apply_impulse(BodyId(body), impulse).is_ok()
+    }
+
+    /// The body an impulse on prop `id` is given to: its own, or its root's for a part of it. None for a prop that is not there,
+    /// is frozen, or is driven.
+    fn pushable(&self, id: u32) -> Option<u32> {
+        let p = self.props.get(&id)?;
+        match p.link {
+            Link::Free if !p.rest.is_frozen() => Some(id),
+            Link::Part { root, .. } => Some(root),
+            Link::Free | Link::Driven { .. } => None,
         }
-        self.world.apply_impulse(BodyId(id), impulse).is_ok()
     }
 
     /// Puts a prop back to the state `q` (a client restoring a server's state), awake or asleep as `rest` says, its quiet count
     /// started over; false for a frozen prop, one that is not there, or a `rest` of [`Rest::Frozen`].
     pub fn restore(&mut self, id: u32, q: Quantized, rest: Rest) -> bool {
-        let Some(p) = self.props.get_mut(&id).filter(|p| !p.rest.is_frozen()) else {
+        let Some(p) = self
+            .props
+            .get_mut(&id)
+            .filter(|p| !p.rest.is_frozen() && !p.link.is_child())
+        else {
             return false;
         };
         if rest.is_frozen() {
@@ -811,11 +872,11 @@ impl PropWorld {
 
     /// [`PropWorld::impulse`] at the world point `point` (off its center it turns the prop too).
     pub fn impulse_at(&mut self, id: u32, impulse: [f32; 3], point: [f32; 3]) -> bool {
-        if self.props.get(&id).is_none_or(|p| p.rest.is_frozen()) {
+        let Some(body) = self.pushable(id) else {
             return false;
-        }
+        };
         self.world
-            .apply_impulse_at(BodyId(id), impulse, point)
+            .apply_impulse_at(BodyId(body), impulse, point)
             .is_ok()
     }
 
@@ -824,7 +885,10 @@ impl PropWorld {
         let Some(p) = self.props.get(&id) else {
             return false;
         };
-        if p.rest.is_frozen() || !linvel.iter().chain(&angvel).all(|v| v.is_finite()) {
+        if p.rest.is_frozen()
+            || p.link.is_child()
+            || !linvel.iter().chain(&angvel).all(|v| v.is_finite())
+        {
             return false;
         }
         let max = p.params.max_speed;
@@ -926,10 +990,12 @@ impl PropWorld {
             let Some(p) = self.props.get(&id) else {
                 continue;
             };
-            let motion = if p.rest.is_frozen() {
-                Motion::Fixed
-            } else {
-                Motion::Dynamic
+            // A part is put on its root once every body is there.
+            let motion = match p.link {
+                Link::Part { .. } => continue,
+                Link::Driven { .. } => Motion::Kinematic,
+                Link::Free if p.rest.is_frozen() => Motion::Fixed,
+                Link::Free => Motion::Dynamic,
             };
             let s = p.q.state();
             let desc = BodyDesc {
@@ -959,6 +1025,20 @@ impl PropWorld {
                 let _ = self.world.set_body(BodyId(id), &st);
             }
         }
+        let parts: Vec<(u32, u32, children::Pose)> = self
+            .props
+            .iter()
+            .filter_map(|(&id, p)| match p.link {
+                Link::Part { root, local } => Some((id, root, local)),
+                _ => None,
+            })
+            .collect();
+        for (id, root, local) in parts {
+            if !self.put_part(id, root, local, false) {
+                self.remove(id);
+                lost.push(id);
+            }
+        }
         self.reinsert_all_joints();
         self.rebuilds += 1;
         Some(lost)
@@ -976,6 +1056,20 @@ impl PropWorld {
         }
         let mut impulses: Vec<(u32, [f32; 3])> = Vec::new();
         let held: BTreeSet<u32> = self.held_props().collect();
+        // What a push on a part moves is its root: that body's mass, speed and top speed.
+        let roots: BTreeMap<u32, (f32, [f32; 3], f32)> = self
+            .props
+            .values()
+            .filter_map(|p| match p.link {
+                Link::Part { root, .. } => Some(root),
+                _ => None,
+            })
+            .filter_map(|root| {
+                let r = self.props.get(&root)?;
+                let mass = self.world.mass_of(BodyId(root))?;
+                Some((root, (mass, r.q.state().linvel, r.params.max_speed)))
+            })
+            .collect();
         for (&id, prop) in self.props.iter_mut() {
             // A held prop goes where its hold drives it.
             if held.contains(&id) {
@@ -992,7 +1086,7 @@ impl PropWorld {
                     continue;
                 }
                 prop.touched.push(pusher.id);
-                if prop.rest.is_frozen() {
+                if prop.rest.is_frozen() || matches!(prop.link, Link::Driven { .. }) {
                     continue;
                 }
                 let c = pusher.center();
@@ -1008,19 +1102,27 @@ impl PropWorld {
                 if dir[0] * to[0] / reach + dir[1] * to[1] / reach < 0.2 {
                     continue;
                 }
-                let speed = speed.min(prop.params.max_speed);
-                let along = {
-                    let now = prop.q.state().linvel;
-                    now[0] * dir[0] + now[1] * dir[1]
+                // A part is pushed as the body it is on.
+                let (target, mass, now, max_speed) = match prop.link {
+                    Link::Part { root, .. } => match roots.get(&root) {
+                        Some(&(mass, now, max)) => (root, mass, now, max),
+                        None => continue,
+                    },
+                    _ => (
+                        id,
+                        prop.params.mass(),
+                        prop.q.state().linvel,
+                        prop.params.max_speed,
+                    ),
                 };
-                let short = speed - along;
+                let speed = speed.min(max_speed);
+                let short = speed - (now[0] * dir[0] + now[1] * dir[1]);
                 if short <= 0.0 {
                     continue;
                 }
-                let mass = prop.params.mass();
                 let share = (pusher.mass.max(0.0) * PUSH_SHARE / mass.max(1.0e-3)).min(1.0);
                 let j = mass * short * share;
-                impulses.push((id, dir.map(|d| d * j)));
+                impulses.push((target, dir.map(|d| d * j)));
             }
         }
         for (id, j) in impulses {
@@ -1041,6 +1143,7 @@ impl PropWorld {
         self.place_pushers(pushers);
         self.push(pushers);
         self.joints_before_step(&mut report);
+        report.dirty.append(&mut self.changed);
         for id in std::mem::take(&mut self.reflag) {
             if self.props.contains_key(&id) {
                 report.dirty.push((id, MASK_FLAGS));
@@ -1089,12 +1192,13 @@ impl PropWorld {
         for id in ids {
             self.settle(id, held.contains(&id), &mut report);
         }
+        self.settle_children(&mut report);
         // The cap: the farthest awake props from every player sleep first.
         let cap = self.cut.unwrap_or(cap).min(cap);
         let mut awake: Vec<(f32, u32)> = self
             .props
             .iter()
-            .filter(|(_, p)| p.rest.is_awake())
+            .filter(|(_, p)| p.rest.is_awake() && p.link == Link::Free)
             .map(|(&id, p)| (near(p.q.position()), id))
             .collect();
         if awake.len() as u32 > cap {
@@ -1125,6 +1229,8 @@ impl PropWorld {
         report.events.sort_by_key(|&(id, _)| id);
         self.joints_after_step(&mut report);
         report.awake = self.awake();
+        report.dropped = std::mem::take(&mut self.dropped);
+        self.build_spent = 0;
         report
     }
 
@@ -1264,7 +1370,7 @@ impl PropWorld {
         let Some(p) = self.props.get_mut(&id) else {
             return;
         };
-        if p.rest.is_frozen() {
+        if p.rest.is_frozen() || p.link.is_child() {
             return;
         }
         if p.rest.is_asleep() {
@@ -1335,7 +1441,14 @@ impl PropWorld {
         for (&id, p) in &self.props {
             out.push(id);
             out.extend(p.q.words().map(|w| w as u32));
-            out.push(u32::from(p.rest.is_asleep()) | u32::from(p.rest.is_frozen()) << 1);
+            let link = match p.link {
+                Link::Free => 0,
+                Link::Driven { .. } => 1,
+                Link::Part { .. } => 2,
+            };
+            out.push(
+                u32::from(p.rest.is_asleep()) | u32::from(p.rest.is_frozen()) << 1 | link << 2,
+            );
         }
         out
     }

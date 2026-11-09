@@ -2,12 +2,14 @@
 //! deletes, and a Player child that moves in its parent's frame.
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::rc::Rc;
 
 use torque_app_server::plugins::{MinimalPlugins, set_protocol};
 use torque_app_server::server::{GameServer, Listen, ServerStart};
 use torque_collide::math::{Matrix, matrix_product, mul_p, quat_matrix};
 use torque_engine::{ClientStage, EngineBuilder, ProtocolKind, ServerStage};
 use torque_game::scene::access::matrix_of;
+use torque_game::scene::links::{self, ChildRefusal, ChildRule};
 use torque_plugin_hierarchy::{HierarchyPlugin, ServerHierarchy};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::sim::ObjId;
@@ -472,8 +474,46 @@ fn refused_removing() {
     h.audit().expect("no dangling link");
 }
 
+/// A rule that refuses the objects it is given as children, each for the reason it is given.
+struct Refuses(Vec<(ObjId, ChildRefusal)>);
+
+impl ChildRule for Refuses {
+    fn refuse(&self, _vm: &Vm, child: ObjId, _parent: ObjId) -> Option<ChildRefusal> {
+        self.0.iter().find(|(c, _)| *c == child).map(|&(_, r)| r)
+    }
+}
+
 #[test]
 fn refused_class() {
+    let mut s = server(&[]);
+    let kid = id(&mut s, "return cube(\"0 0 4\");");
+    let other = id(&mut s, "return cube(\"1 0 4\");");
+    let base = id(&mut s, "return cube(\"2 0 5\");");
+    links::add_child_rule(
+        s.vm_mut(),
+        Rc::new(Refuses(vec![
+            (kid, ChildRefusal::Class),
+            (other, ChildRefusal::HasJoints),
+        ])),
+    );
+    assert_eq!(
+        refusal(&mut s, &format!("{kid}.setParent({base})")),
+        "class"
+    );
+    assert_eq!(
+        refusal(&mut s, &format!("{other}.setParent({base})")),
+        "joints"
+    );
+    // The rule is asked of the child only, and only when it is to be hung on something.
+    assert_eq!(
+        eval(&mut s, &format!("return {base}.setParent({kid});")),
+        "1"
+    );
+    assert_eq!(eval(&mut s, &format!("return {other}.setParent(0);")), "1");
+}
+
+#[test]
+fn a_prop_may_be_a_child_and_a_parent() {
     let mut s = server_with(ProtocolKind::Engine, &[], |b| {
         b.add_plugins(torque_plugin_props::PropsPlugin);
     });
@@ -484,10 +524,10 @@ fn refused_class() {
     let prop = id(&mut s, "return propSpawn(TestCrate, \"0 0 4\");");
     let base = id(&mut s, "return cube(\"2 0 5\");");
     assert_eq!(
-        refusal(&mut s, &format!("{prop}.setParent({base})")),
-        "class"
+        eval(&mut s, &format!("return {prop}.setParent({base});")),
+        "1"
     );
-    // A prop may carry children of other classes.
+    assert_eq!(eval(&mut s, &format!("return {prop}.setParent(0);")), "1");
     assert_eq!(
         eval(&mut s, &format!("return {base}.setParent({prop});")),
         "1"

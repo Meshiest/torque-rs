@@ -545,7 +545,7 @@ impl Cx<'_> {
                 || self
                     .book
                     .get(g)
-                    .is_none_or(|p| p.frozen || p.params.is_none())
+                    .is_none_or(|p| p.frozen || p.params.is_none() || p.is_linked())
             {
                 continue;
             }
@@ -743,11 +743,11 @@ impl Cx<'_> {
                 !self.s.members.contains_key(g)
                     && p.params.is_some()
                     && (0..3).all(|k| {
-                        let c = p.q.position()[k];
+                        let c = p.now().position()[k];
                         c >= lo[k] - REACH && c <= hi[k] + REACH
                     })
             })
-            .map(|(&g, p)| (length(sub(p.q.position(), center)), g, p.q))
+            .map(|(&g, p)| (length(sub(p.now().position(), center)), g, *p.now()))
             .collect();
         near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         let near: BTreeMap<u32, Quantized> = near
@@ -1381,6 +1381,7 @@ mod tests {
             held: false,
             updates: 0,
             predicted: None,
+            place: crate::client::Placed::default(),
         };
         assert_eq!(
             segment_hits(&prop, [0.0, -5.0, 0.0], [0.0, 5.0, 0.0]).map(|t| t > 0.0),

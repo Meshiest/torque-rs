@@ -262,6 +262,24 @@ pub trait ClientGhosts {
     fn pose(&self, _index: u32) -> Option<Matrix> {
         None
     }
+
+    /// Where ghost `index` is for a prediction tick: a scene-hierarchy child where its parents' latest records and its last local
+    /// pose put it (not where a frame draws it), any other ghost where its record puts it. None when the client has no such
+    /// ghost or it has no pose (the default).
+    fn tick_pose(&self, _index: u32) -> Option<Matrix> {
+        None
+    }
+
+    /// Ghost `index`'s parent in the scene hierarchy, once the client has resolved the link (a ghost whose parent is still
+    /// awaited has none). None by default.
+    fn parent(&self, _index: u32) -> Option<u32> {
+        None
+    }
+
+    /// Whether ghost `index` has children in the scene hierarchy. False by default.
+    fn has_children(&self, _index: u32) -> bool {
+        false
+    }
 }
 
 /// The client's [`ClientGhosts`], a script-engine extension of a client that is connected to a server.

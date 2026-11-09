@@ -54,7 +54,8 @@ parts), so the server's world of a child is the one its clients compose; a keep-
 The refusals `getParentError()` names: `self`, `cycle` (the parent is below the child), `depth`, `children`, `subtree` and `total`
 (the caps), `notFinite` and `outOfRange` (a pose), `badNode` (no such node), `noShape` (a node named on a parent without a
 shape), `unknown` (not a scene object), `notParented` (a local pose for an object with no parent), `mounted`, `removing` (either
-object is being deleted, so an `onRemove` script cannot link a dying object) and `class` (a prop: see below). A refused call
+object is being deleted, so an `onRemove` script cannot link a dying object), `joints` (a prop that holds a joint or a hold:
+see [Props](#props)) and `class` (a class's own rule refuses it; the engine's classes have none). A refused call
 changes nothing.
 
 The datablocks hear each change: `onParentChanged(%data, %obj, %old, %new)` on the child's, `onChildAdded(%data, %obj, %child)`
@@ -80,8 +81,27 @@ An object is mounted or parented, never both: a mounted object (a SpotLight ridi
 rides the child, through any chain of mounts and parents, is refused as a `cycle`, and `mountObject` returns 0 for a rider that
 carries its mount. Seats stay mounts, with what mounting carries (control, `onMount`, the eye and camera rules).
 
-Props cannot be children yet (`class`): their pose belongs to the props' physics world, and parenting them (a prop on a moving
-platform, a prop joined to a dynamic parent's body) comes with its own work. A prop may be a parent.
+## Props
+
+A prop may be a child, and a parent. What the physics does about it depends on the parent:
+
+| Parent | The child prop is | Why |
+|--------|-------------------|-----|
+| a dynamic prop (or a part of one) | **part of its body**: its collider sits on the root's body at the local pose, and the masses add | rigidly attached with no drift and a real mass, as an assembly in other engines; a weld joint would drift and cost a constraint each |
+| anything else: a platform, a door, a Player, a frozen prop, a non-prop that hangs on a prop | **driven**: a kinematic body taken to where the hierarchy puts it each tick | the parent is no body of the props' world to attach to; a prop on a moving platform works |
+
+A part's pose in its root's frame never changes by itself: it is bit for bit what it was when the prop joined, however hard the
+body is hit, and moves only when a script sets the child's local pose. A driven prop pushes the dynamic props it meets and is
+pushed by none, and is within a millimeter of its resolved pose every tick. Unparented (`setParent(0)`, or its parent deleted), a
+prop is a dynamic body again where it is, leaving at the speed its place gave it (the body's speed at its point, or the speed of
+its last move). Freezing a body takes its parts to driven props where they are, and thawing it takes them back.
+
+A prop that holds a **joint or a hold** cannot be hung on anything: `setParent` returns 0 and `getParentError()` says `joints`,
+and nothing changes (its joint stays whole). A child cannot take a joint either, so a hold or a joint is never broken by
+parenting. A child cannot be frozen, put to sleep or given a speed (`propFreeze`, `propSleep` and `propSetVelocity` return 0); a
+push on a part moves its root. A child is never drawn as resting, whatever its parent does, and costs its clients no update for
+its parent's motion (a client draws it on its parent). The props plugin's prediction leaves children, and the props that carry
+children, to the server.
 
 ## Scale and nodes
 

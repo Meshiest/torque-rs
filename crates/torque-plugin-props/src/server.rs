@@ -139,6 +139,8 @@ pub struct PropServer {
     pub(crate) hits: Vec<Hit>,
     /// The explosions since the last step, in the order they went off (at most [`MAX_PENDING_HITS`]).
     pub(crate) blasts: Vec<Blast>,
+    /// How each part was placed on its root's body ([`crate::hierarchy`]).
+    pub(crate) links: crate::hierarchy::Links,
 }
 
 impl Default for PropServer {
@@ -151,6 +153,7 @@ impl Default for PropServer {
             controls: BTreeMap::new(),
             hits: Vec::new(),
             blasts: Vec::new(),
+            links: crate::hierarchy::Links::default(),
         }
     }
 }
@@ -158,12 +161,21 @@ impl Default for PropServer {
 impl PropServer {
     /// The world, made now if it is not yet.
     pub fn world_mut(&mut self, vm: &Vm) -> &mut PropWorld {
-        self.world.get_or_insert_with(|| {
+        self.world_and_links(vm).0
+    }
+
+    /// The world (made now if it is not yet) and how its parts were placed, borrowed together.
+    pub(crate) fn world_and_links(
+        &mut self,
+        vm: &Vm,
+    ) -> (&mut PropWorld, &mut crate::hierarchy::Links) {
+        let world = self.world.get_or_insert_with(|| {
             let prefs = vm.prefs::<PropPrefs>();
             let mut world = PropWorld::new(prefs.substeps as u8, limits_of(&prefs));
             world.joint_limits = joint_limits_of(&prefs);
             world
-        })
+        });
+        (world, &mut self.links)
     }
 }
 
@@ -199,6 +211,12 @@ impl ServerProps {
     /// A fresh state (a new server).
     pub fn reset(&self) {
         *self.0.borrow_mut() = PropServer::default();
+    }
+
+    /// What fitting props to the scene hierarchy has cost so far.
+    #[must_use]
+    pub fn link_stats(&self) -> Option<crate::hierarchy::LinkStats> {
+        self.with(|s| s.links.stats())
     }
 
     /// Reads the state, if no one is changing it.
@@ -344,8 +362,11 @@ pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
                 ),
             ],
         );
-        let m = quant::matrix(p.q.position(), p.q.rotation());
-        torque_game::scene::object::set_plain_transform(vm, id, &m);
+        // A child's transform is the hierarchy's, resolved from its parent's.
+        if !p.link.is_child() {
+            let m = quant::matrix(p.q.position(), p.q.rotation());
+            torque_game::scene::object::set_plain_transform(vm, id, &m);
+        }
     }
     if mask & MASK_INIT != 0 {
         let conn = p
@@ -358,6 +379,18 @@ pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
         set_field(vm, id, b"predict", Field::Int(i32::from(p.predict)));
     }
     torque_game::scene::ghost::mark(vm, id, mask);
+}
+
+/// Writes a child prop's state fields from the world without marking its ghost: a client draws a child from its parent, and a new
+/// ghost's record then carries the pose the child has now.
+pub(crate) fn write_record(vm: &mut Vm, world: &PropWorld, id: u32) {
+    let Some(p) = world.get(id) else {
+        return;
+    };
+    let words = p.q.words();
+    let state: [(&'static [u8], Field); 13] =
+        std::array::from_fn(|k| (STATE_FIELDS[k].as_bytes(), Field::Int(words[k])));
+    torque_game::scene::access::set_fields(vm, id, state);
 }
 
 /// Spawns a prop for a script or a client's command: the caps checked, the object made (natively, with no script text: the

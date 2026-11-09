@@ -47,7 +47,7 @@ const BOARD: &str = "TraceFigure.setTransform(\"-4 -8 1.05 0 0 1 0\");";
 const BOARDING: u32 = 30;
 
 /// Whole steps up to `period` and back down over `2 * period` ticks: a triangle wave.
-fn triangle(tick: u32, period: u32) -> u32 {
+pub(crate) fn triangle(tick: u32, period: u32) -> u32 {
     let phase = tick % (2 * period);
     if phase < period {
         phase
@@ -67,7 +67,7 @@ fn lift_pose(tick: u32) -> String {
 
 /// Moves `obj` and marks its record's position, as a class whose own `setTransform` sends its pose does (TGE's StaticShape
 /// marks nothing, so a client would never see it move).
-fn move_shape(rig: &mut Rig, obj: ObjId, pose: &str) -> Result<(), String> {
+pub(crate) fn move_shape(rig: &mut Rig, obj: ObjId, pose: &str) -> Result<(), String> {
     eval(rig, &format!("{obj}.setTransform(\"{pose}\");"))?;
     mark_position(rig, obj);
     Ok(())
@@ -231,7 +231,7 @@ fn change(tick: u32) -> Option<&'static str> {
     }
 }
 
-fn eval(rig: &mut Rig, script: &str) -> Result<String, String> {
+pub(crate) fn eval(rig: &mut Rig, script: &str) -> Result<String, String> {
     let out = rig
         .server
         .vm_mut()
@@ -240,7 +240,7 @@ fn eval(rig: &mut Rig, script: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-fn object(rig: &mut Rig, global: &str) -> Result<ObjId, String> {
+pub(crate) fn object(rig: &mut Rig, global: &str) -> Result<ObjId, String> {
     let text = eval(rig, &format!("return {global};"))?;
     text.parse()
         .map_err(|_| format!("{global} is {text:?}, not an object"))

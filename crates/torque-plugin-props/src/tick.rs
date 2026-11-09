@@ -13,7 +13,7 @@ use crate::joints::server as joint_server;
 use crate::natives::control_of;
 use crate::server::{
     CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
-    owner_key, shot_push, write_back,
+    owner_key, shot_push, write_back, write_record,
 };
 use crate::world::{Owner, OwnerKey, PlayerAt, PropEvent, PropWorld, Pusher, StaticPiece};
 
@@ -31,7 +31,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         srv.tick += 1;
         srv.net_share = prefs.net_share;
         let tick = srv.tick;
-        let world = srv.world_mut(vm);
+        let (world, links) = srv.world_and_links(vm);
         world.limits = limits_of(&prefs);
         world.joint_limits = joint_limits_of(&prefs);
         // Joints whose objects a script deleted, and where the players at grapples' ends are.
@@ -57,6 +57,8 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             world.remove(id);
         }
         let expired = tend_owners(vm, world, tick);
+        // The hierarchy's places for props are made before the step: parts join their roots, driven props are given their targets.
+        crate::hierarchy::reconcile(vm, links, world);
         if tick == 1 || tick.is_multiple_of(STATICS_EVERY) {
             world.sync_statics(statics_of(vm));
         }
@@ -77,6 +79,9 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         for &(id, mask) in &report.dirty {
             write_back(vm, world, id, mask);
         }
+        for &id in &report.moved {
+            write_record(vm, world, id);
+        }
         for &(id, mask) in &report.joints {
             joint_server::write_back(vm, world, id, mask);
         }
@@ -87,13 +92,20 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             .iter()
             .filter_map(|&(id, e)| world.get(id).map(|p| (id, p.data, e)))
             .collect();
+        // A prop the world would not put back after a change is deleted, as one that expired.
+        let mut problems = world.take_problems();
+        problems.extend(report.dropped.iter().map(|id| {
+            format!("props: prop {id} could not be put back in the physics world; it is deleted")
+        }));
+        let mut expired = expired;
+        expired.extend(&report.dropped);
         (
             events,
             expired,
             report.rebuilt.then_some(report.lost),
             broke,
             gone_joints,
-            world.take_problems(),
+            problems,
             hit,
         )
     };

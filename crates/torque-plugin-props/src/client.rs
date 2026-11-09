@@ -45,12 +45,36 @@ pub struct ClientProp {
     /// Where the client's prediction has it while it predicts it ([`crate::predict`]): what the client's own Player meets and a
     /// grapple's tether hangs from. None while it is shown as the server sent it.
     pub predicted: Option<Quantized>,
+    /// Its place in the scene hierarchy ([`Placed`]), as the client last found it.
+    pub place: Placed,
+}
+
+/// Where a prop is in the scene hierarchy, as a client's ghosts have it (found once a tick, [`PropBook::set_place`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Placed {
+    /// It hangs on a parent: its record's pose is its world pose when it was sent, and `pose` is where the parent and its last local
+    /// pose put it.
+    pub child: bool,
+    /// Other ghosts hang on it.
+    pub carries: bool,
+    /// A child's pose for a prediction tick: its parents' latest poses times its local pose.
+    pub pose: Option<Quantized>,
 }
 
 impl ClientProp {
-    /// The state the client's own movers meet: the predicted one while it is predicted, else the server's.
+    /// The state the client's own movers meet: the predicted one while it is predicted, a child's where its parent puts it, else
+    /// the server's.
     pub fn now(&self) -> &Quantized {
-        self.predicted.as_ref().unwrap_or(&self.q)
+        self.predicted
+            .as_ref()
+            .or(self.place.pose.as_ref())
+            .unwrap_or(&self.q)
+    }
+
+    /// Whether the prop is in the hierarchy (a child or a parent): the client's prediction does not simulate it, as its body is not
+    /// the one its record says.
+    pub fn is_linked(&self) -> bool {
+        self.place.child || self.place.carries
     }
 }
 
@@ -124,6 +148,7 @@ impl PropBook {
                     held: false,
                     updates: 0,
                     predicted: None,
+                    place: Placed::default(),
                 })
             }
         };
@@ -158,6 +183,18 @@ impl PropBook {
         if let Some(p) = self.props.remove(&index) {
             self.by_slot.remove(&(p.slot, index));
         }
+    }
+
+    /// Sets where prop `index` is in the hierarchy; false when the book has no such prop.
+    pub fn set_place(&mut self, index: u32, place: Placed) -> bool {
+        let Some(p) = self.props.get_mut(&index) else {
+            return false;
+        };
+        if p.place != place {
+            p.place = place;
+            self.revision = next_revision();
+        }
+        true
     }
 
     /// Sets where the prediction has prop `index` (none: shown as the server sent it); false when the book has no such prop.
@@ -236,6 +273,46 @@ pub fn params_of(vm: &Vm, id: u32) -> Option<PropParams> {
         max_per_player: 0,
     };
     Some(numbers.held())
+}
+
+/// Finds where each prop of the book is in the scene hierarchy: a child's pose for a prediction tick, from its parents' latest
+/// records and its last local pose, and whether it carries others. Once a tick, after the client's other work (the client's
+/// state is not being changed then, so the lookup answers).
+pub fn refresh_places(vm: &Vm, book: &ClientProps) {
+    let Some(lookup) = torque_engine::net_classes::ClientGhostLookup::of(vm) else {
+        return;
+    };
+    let Ok(mut book) = book.0.try_borrow_mut() else {
+        return;
+    };
+    let indexes: Vec<u32> = book.props().keys().copied().collect();
+    for index in indexes {
+        let child = lookup.0.parent(index).is_some();
+        let carries = lookup.0.has_children(index);
+        let pose = if child {
+            lookup
+                .0
+                .tick_pose(index)
+                .and_then(|m| crate::quant::pose_of(&m))
+                .map(|(position, rotation)| {
+                    Quantized::of(&torque_physics_rapier::BodyState {
+                        position,
+                        rotation,
+                        ..Default::default()
+                    })
+                })
+        } else {
+            None
+        };
+        book.set_place(
+            index,
+            Placed {
+                child,
+                carries,
+                pose,
+            },
+        );
+    }
 }
 
 /// The client's handler of `Prop` ghosts.

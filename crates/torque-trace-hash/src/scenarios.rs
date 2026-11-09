@@ -122,11 +122,18 @@ pub fn plugins() -> Vec<Scenario> {
 
 /// The scenarios of the scene's own parts that only the engine's protocol has on, in the order they print after `plugins`.
 pub fn scene() -> Vec<Scenario> {
-    vec![Scenario {
-        name: "hierarchy",
-        mode: Some(Mode::Engine),
-        run: crate::hierarchy::hierarchy,
-    }]
+    vec![
+        Scenario {
+            name: "hierarchy",
+            mode: Some(Mode::Engine),
+            run: crate::hierarchy::hierarchy,
+        },
+        Scenario {
+            name: "hierarchy-props",
+            mode: Some(Mode::Engine),
+            run: crate::hierarchy_props::run,
+        },
+    ]
 }
 
 /// What a run came to: the hash, and numbers a caller can check the run was not an empty one.

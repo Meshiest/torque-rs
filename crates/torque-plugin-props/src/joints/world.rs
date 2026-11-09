@@ -115,6 +115,13 @@ impl PropWorld {
         if !first_ok || !end_ok(a, true) || !end_ok(b, false) || same {
             return Err(JointError::Ends);
         }
+        if [a, b]
+            .iter()
+            .filter_map(|e| e.prop())
+            .any(|p| self.is_child(p))
+        {
+            return Err(JointError::Child);
+        }
         if let End::Player { id, .. } = *a
             && kind == KindId::Grapple
             && self.grapple_on(id).is_some()

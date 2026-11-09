@@ -24,6 +24,9 @@ torque-ghost-world = { path = "../torque-ghost-world" }
 # Marking a server object's ghost groups dirty, reading players and map pieces.
 torque-game = { path = "../torque-game" }
 torque-ghosts = { path = "../torque-ghosts" }
+# The tree a prop hung on another is placed from, and the server's view of it.
+torque-hierarchy = { path = "../torque-hierarchy" }
+torque-plugin-hierarchy = { path = "../torque-plugin-hierarchy" }
 torque-net = { path = "../torque-net" }
 torque-physics-rapier = { path = "../torque-physics-rapier" }
 torque-ts-text = { path = "../torque-ts-text" }

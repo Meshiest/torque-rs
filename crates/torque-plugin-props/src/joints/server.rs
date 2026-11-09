@@ -115,6 +115,13 @@ pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
 /// Makes joint `joint` as a `Joint` object (natively, with no script text), adds it to the world, writes its record and puts it
 /// in `MissionCleanup` when there is one; its object id.
 pub(crate) fn make(vm: &mut Vm, props: &ServerProps, joint: Joint) -> Result<u32, String> {
+    // A prop hung on a parent has no joints, even before the tick makes it a child of the physics world.
+    if joint
+        .props()
+        .any(|p| torque_game::scene::links::parent_of(vm, p).is_some())
+    {
+        return Err(super::JointError::Child.to_string());
+    }
     // The caps and the ends are checked before the object is made, and again by the world.
     {
         let mut srv = props.0.borrow_mut();

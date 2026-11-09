@@ -198,7 +198,7 @@ impl ParentMethods {
 }
 
 /// why the last setParent or setLocalTransform was refused: self, cycle, depth, children, subtree, total, notFinite,
-/// outOfRange, badNode, unknown, notParented, mounted, noShape, removing or class; "" after a success
+/// outOfRange, badNode, unknown, notParented, mounted, noShape, removing, class or joints; "" after a success
 #[function(name = "getParentError")]
 fn get_parent_error(vm: VmRef) -> String {
     ServerHierarchy::of(&vm)

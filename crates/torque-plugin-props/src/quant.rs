@@ -206,6 +206,20 @@ pub fn matrix(position: [f32; 3], q: [f32; 4]) -> [f32; 16] {
     out
 }
 
+/// The position and the unit quaternion of the physics world that a transform `m` (row-major, as [`matrix`] makes one) puts a prop
+/// at: the inverse of [`matrix`] up to the rounding of the turn. None when the turn is not a number.
+pub fn pose_of(m: &[f32; 16]) -> Option<([f32; 3], [f32; 4])> {
+    let rows: torque_ts_vm::geometry::Mat4 =
+        std::array::from_fn(|r| std::array::from_fn(|c| m[r * 4 + c]));
+    let rotation = conjugate(torque_ts_vm::geometry::quat_from_matrix(&rows));
+    let position = [m[3], m[7], m[11]];
+    position
+        .iter()
+        .chain(&rotation)
+        .all(|v| v.is_finite())
+        .then_some((position, rotation))
+}
+
 #[cfg(test)]
 #[path = "quant_tests.rs"]
 mod tests;
