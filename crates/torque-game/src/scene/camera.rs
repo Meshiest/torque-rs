@@ -167,11 +167,23 @@ pub fn set_transform(vm: &mut Vm, id: ObjId, matrix: &Matrix) {
 pub trait ControlChain {
     /// `getControlObject()` of `id`: TGE's `Player::getControlObject` (the object the Player controls, a vehicle it drives);
     /// every other class has none (`ShapeBase`'s; TGE's `Camera` controls nothing).
+    ///
+    /// A host that overrides this must override [`Self::controller`] to match: the server finds a connection by walking up
+    /// through `controller` to a control object, so a chain whose links `controller` does not mirror is not found (the lookup
+    /// returns `None`; it never names another connection).
     fn control_object(&self, vm: &Vm, id: ObjId) -> Option<ObjId> {
         crate::sim::player::state(vm, id)
             .and_then(|s| s.control_object)
             .map(|o| o.0)
             .filter(|o| vm.objects().contains(*o))
+    }
+
+    /// The object whose control object `id` is, the inverse of [`Self::control_object`]: what a connection's chain is walked
+    /// back through to find the control object it starts at. The default is the object's controlling link
+    /// ([`controlling_object`](crate::sim::mount::controlling_object)), which every class that holds a control object sets; a
+    /// chain whose links are stored some other way answers for itself.
+    fn controller(&self, vm: &Vm, id: ObjId) -> Option<ObjId> {
+        crate::sim::mount::controlling_object(vm, id)
     }
 
     /// The object of `chain` (a control object's, [`chain`]) that `setControlCameraFov` and `getControlCameraFov` talk to:
