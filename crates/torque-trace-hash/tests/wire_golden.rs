@@ -24,9 +24,12 @@ use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
 use torque::mods::CacheChoice;
 use torque::net::connect::SharedSecret;
+use torque_app_server::plugins::set_protocol;
 use torque_client::conn::engine_wire::EngineNonceKey;
+use torque_engine::ProtocolKind;
 use torque_example_minimal_engine::{ExamplePlugin, files, server};
 use torque_plugin_rope::RopePlugin;
+use torque_server::net::engine::ensure_host;
 use torque_trace_hash::rig::{CHALLENGE_KEY, Control, Rig};
 use torque_trace_hash::scenarios::Baseline;
 
@@ -88,6 +91,8 @@ fn engine(files: &GameFiles, extra: &Extra) -> Engine {
         }
         _ => builder.add_plugins((DefaultPlugins, ExamplePlugin(files.clone()))),
     };
+    // Torque's protocol whatever `TORQUE_NET_PROTOCOL` says: the goldens pin this one.
+    set_protocol(&mut builder, ProtocolKind::Tge);
     match extra {
         Extra::Rope => {
             builder.add_plugins(RopePlugin::default());
@@ -160,6 +165,10 @@ impl Pair {
         let mut server = server(&server_engine, Listen::Memory(SERVER)).expect("the server starts");
         // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs.
         server.shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
+        // Likewise the engine host's session table, if the server speaks the engine's protocol.
+        if let Some(host) = ensure_host(server.vm(), &mut server.shared.borrow_mut()) {
+            host.table.rekey(CHALLENGE_KEY);
+        }
         if matches!(server_extra, Extra::Rope) {
             server
                 .vm_mut()
