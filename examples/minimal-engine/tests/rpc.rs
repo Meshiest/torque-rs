@@ -9,7 +9,7 @@ use std::rc::Rc;
 use torque::app::client::{ClientNet, GameClient};
 use torque::app::server::Listen;
 use torque::engine::rpc::{Allow, RpcCx, RpcError};
-use torque::engine::{EngineBuilder, NetMessage, Plugin, PluginId};
+use torque::engine::{EngineBuilder, NetMessage, Plugin, PluginId, ProtocolKind};
 use torque::server::net::channels::{ChunkChannel, ClientChannels};
 use torque::server::net::rpc::{ClientRpc, ServerRpc};
 use torque_example_minimal_engine::{builder, client, files, server};
@@ -140,7 +140,13 @@ fn start(seen: &Seen) -> Rig {
     let mut b = builder(&files).unwrap();
     b.add_plugins(Chat(seen.clone()));
     let engine = b.build().unwrap();
-    assert_eq!(engine.net_rpcs().unwrap().len(), 6);
+    // The chat plugin's six, and in the engine's protocol the two that carry the script commands.
+    let builtin = if engine.protocol() == ProtocolKind::Engine {
+        2
+    } else {
+        0
+    };
+    assert_eq!(engine.net_rpcs().unwrap().len(), 6 + builtin);
     let server = server(&engine, Listen::Memory(SERVER)).expect("the server starts");
     let server_rpc = server
         .vm()

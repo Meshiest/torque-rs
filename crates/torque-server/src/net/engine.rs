@@ -1124,6 +1124,8 @@ pub(super) fn finish<G: NetGame>(
     };
     let accept = Accept {
         session: session_id,
+        // The link's: the accept's limit is the server's own sends too, so it is not cut to the 1,500 bytes this host reads. A client
+        // of this engine keeps its sends to NET_MAX_DATAGRAM (`WireLink`), and a datagram above it is dropped as it is read.
         max_packet: u16::try_from(peer.kind.max_datagram).unwrap_or(u16::MAX),
         packet_interval_ms: PACKET_INTERVAL_MS,
         byte_rate,

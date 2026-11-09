@@ -351,6 +351,10 @@ impl ClientRpcHost for RpcHost {
     fn drop_malformed(&self, reason: &str) {
         self.0.borrow_mut().drop_request = Some(reason.to_string());
     }
+
+    fn run_commands(&self, vm: &mut Vm, bodies: Vec<Vec<u8>>) {
+        torque_client::conn::receive_commands(vm, &self.0, bodies);
+    }
 }
 
 /// The engine's pass with the plugins' per-tick work ([`ClientTick`]) after it, in the order the plugins pushed it.

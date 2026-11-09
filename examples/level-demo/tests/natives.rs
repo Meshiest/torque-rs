@@ -15,12 +15,15 @@ fn listing(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// The client's list: the rope plugin's natives are in `client-rope.txt` (the `rope` feature), the default list is `client.txt`.
-const CLIENT: &str = if cfg!(feature = "rope") {
-    "client-rope.txt"
-} else {
-    "client.txt"
-};
+/// The client's list: the rope plugin's natives are in `client-rope.txt` (the `rope` feature), the default list is `client.txt`. The
+/// demo speaks the engine's protocol whatever `TORQUE_NET_PROTOCOL` says, so both have the RPC natives.
+fn client_listing() -> PathBuf {
+    listing(if cfg!(feature = "rope") {
+        "client-rope.txt"
+    } else {
+        "client.txt"
+    })
+}
 
 /// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is
 /// `server.txt`. The demo speaks the engine's protocol whatever `TORQUE_NET_PROTOCOL` says, so both have the scene hierarchy's
@@ -36,7 +39,7 @@ fn server_listing() -> PathBuf {
 #[test]
 fn the_client_has_these_natives() {
     let game = LevelDemo::new(GameFiles::bundled().unwrap()).unwrap();
-    check_listing(&listing(CLIENT), &game.vm().native_listing());
+    check_listing(&client_listing(), &game.vm().native_listing());
 }
 
 #[test]

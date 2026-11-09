@@ -814,7 +814,13 @@ fn requiring_no_mods_puts_nothing_of_the_mods_on_the_wire_and_clients_join() {
     // every record there.
     let files = game(None);
     let plain = engine(&files, ModsPlugin::new());
-    assert!(plain.net_channels().unwrap().is_empty());
+    // (The engine's protocol has the reserved RPC channel the script commands ride.)
+    let channels = plain.net_channels().unwrap();
+    if plain.protocol() == torque::engine::ProtocolKind::Engine {
+        assert_eq!(channels.names(), ["torque.rpc"]);
+    } else {
+        assert!(channels.is_empty());
+    }
     let listed: Vec<&str> = plain
         .net_versions()
         .iter()

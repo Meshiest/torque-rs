@@ -6,7 +6,8 @@
 //! TorqueScript or Lua). The server's network host holds each call a client sends to its spec before the function runs:
 //! a call over the connection's [`TokenBucket`] for that command, with too many or too few arguments, an argument longer
 //! than [`max_arg_bytes`](CommandSpec::max_arg_bytes) or one that is not of its [`ArgType`] is refused, counted and never
-//! reaches the function. Commands no plugin declared keep TGE's behavior (no limits of this kind).
+//! reaches the function. Commands no plugin declared keep TGE's behavior (no limits of this kind) in Torque's protocol; in the
+//! engine's protocol they share default limits ([`CommandSpec::check_unlisted`], one bucket for the connection).
 
 use std::fmt;
 
@@ -18,6 +19,9 @@ use crate::{BuildError, EngineBuilder, IntoNative, PluginId};
 
 /// The prefix of a server command's function.
 pub const SERVER_COMMAND_PREFIX: &str = "serverCmd";
+
+/// The most arguments a command call has in the engine's protocol (what TGE's sender allows).
+pub const MAX_COMMAND_ARGS: usize = 20;
 
 /// How long a server tick is in milliseconds: the unit a [`TokenBucket`] counts in.
 const TICK_MS: u64 = 32;
@@ -330,6 +334,29 @@ impl CommandSpec {
                 return Err(CommandRefusal::BadArgument {
                     number: i + 1,
                     expected: arg.ty,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `args` (after the client) are a call this spec's limits allow for a command no plugin declared a list of
+    /// arguments for: any count up to [`MAX_COMMAND_ARGS`], each at most [`max_arg_bytes`](Self::max_arg_bytes) and of any
+    /// type; a tag argument, which arrives expanded (up to 1,023 bytes), is not held to the size. The first problem is returned.
+    pub fn check_unlisted(&self, args: &[Vec<u8>]) -> Result<(), CommandRefusal> {
+        if args.len() > MAX_COMMAND_ARGS {
+            return Err(CommandRefusal::TooManyArguments {
+                given: args.len(),
+                max: MAX_COMMAND_ARGS,
+            });
+        }
+        for (i, given) in args.iter().enumerate() {
+            let len = until_nul(given).len();
+            if len > self.max_arg_bytes && given.first() != Some(&1) {
+                return Err(CommandRefusal::ArgumentTooLong {
+                    number: i + 1,
+                    len,
+                    max: self.max_arg_bytes,
                 });
             }
         }

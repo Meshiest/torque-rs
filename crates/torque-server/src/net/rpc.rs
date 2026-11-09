@@ -19,6 +19,11 @@
 //! over its rate. A server script's `onRpcCheck(%client, %name)` denies a call unless it returns true. A handler
 //! that is a script's is `rpcServer_<name>(%client, ..)` or `rpcClient_<name>(..)` ([`script_function`](torque_engine::rpc::script_function)).
 //!
+//! **Script commands** (engine mode) ride two built-in RPCs of this link ([`command_rpc`](super::command_rpc)): the handlers keep the
+//! bodies, the pumps hand them to the host right after the link's work (`RpcServerHost::run_commands`, `ClientRpcHost::run_commands`), and a
+//! script's `commandToServer` waits in [`ClientRpc::queue_command`] for the next pump, so a command sent in the tick the connection is
+//! accepted is not lost.
+//!
 //! **Prefs.** `$Pref::Server::RpcKickDrops` (default 0: off) drops a client that has more than that many calls dropped in a
 //! second; `$Pref::Net::RpcTimeout` (seconds, default 10) is how long a call waits for its reply.
 //!
@@ -62,9 +67,14 @@ use torque_ts_vm::vm::{Native, Vm};
 use super::NetGame;
 use super::NetShared;
 use super::channels::{ChannelHub, ClientChannels};
+use super::command_rpc::{COMMAND_RPC, COMMAND_TO_CLIENT_RPC, CommandMessage, take_bodies};
 use super::commands::{arg, find_net_connection};
 use super::conn::{DeleteMode, connection_of, delete_connection};
 use super::permissions::subject_key_of_conn;
+
+/// The most script commands a client holds for the link of its connection (the link may not exist in the tick the connection is
+/// accepted, and a full send queue holds the rest back); past it a command is dropped.
+pub const MAX_QUEUED_COMMANDS: usize = 2_048;
 
 /// What the RPC host needs of the network host under it, whatever the game's parts are.
 pub trait RpcServerHost {
@@ -82,6 +92,11 @@ pub trait RpcServerHost {
     fn subject_key(&self, conn: ConnId) -> SubjectKey;
     /// Drops `conn` with `reason`.
     fn drop_conn(&self, vm: &mut Vm, conn: ConnId, reason: &[u8]);
+    /// Runs the script commands `conn`'s client sent as RPC bodies (engine mode), as it runs the commands of a packet. The default
+    /// runs none.
+    fn run_commands(&self, vm: &mut Vm, conn: ConnId, bodies: Vec<Vec<u8>>) {
+        let _ = (vm, conn, bodies);
+    }
 }
 
 /// The network host's [`RpcServerHost`].
@@ -132,6 +147,12 @@ impl<G: NetGame> RpcServerHost for SharedHost<G> {
             let _ = delete_connection(vm, &shared, obj, Some(reason), DeleteMode::Immediate);
         }
     }
+
+    fn run_commands(&self, vm: &mut Vm, conn: ConnId, bodies: Vec<Vec<u8>>) {
+        if let Some(shared) = self.0.upgrade() {
+            super::pump::run_command_bodies(vm, &shared, conn, bodies);
+        }
+    }
 }
 
 /// The ghosts a server sent each connection, as a call is checked against them.
@@ -158,6 +179,10 @@ impl RpcHooks for ScriptHooks<'_> {
     /// A call the script cannot name the caller of is refused, and so is one `onRpcCheck` does not answer true to (an empty
     /// answer, `0`, `false` and a function that fails all deny). A game that defines no `onRpcCheck` has no say in it.
     fn allow(&mut self, vm: &mut Vm, caller: Option<ConnId>, rpc: &str) -> bool {
+        // A command has the game's own gates (`command_allowed`, its permission), and `onRpcCheck` is for the game's RPCs.
+        if rpc == COMMAND_RPC {
+            return true;
+        }
         let Some(obj) = caller.and_then(|c| self.0.object_of(c)) else {
             return false;
         };
@@ -388,6 +413,8 @@ pub struct ServerRpc {
     links: RefCell<HashMap<ConnId, RpcLink>>,
     /// Engine mode's carrier, in place of the reserved channel.
     lanes: Option<Rc<RpcLanes>>,
+    /// The tick of the last pump: what a link made between two pumps starts its buckets at.
+    tick: Cell<u64>,
 }
 
 impl ServerRpc {
@@ -405,6 +432,7 @@ impl ServerRpc {
             perms,
             links: RefCell::new(HashMap::new()),
             lanes: None,
+            tick: Cell::new(0),
         }
     }
 
@@ -488,6 +516,26 @@ impl ServerRpc {
         self.with_link(conn, |link| link.drops(rpc)).unwrap_or(0)
     }
 
+    /// Whether script commands ride these RPCs (the engine's protocol): `commandToClient` then sends through
+    /// [`send_command`](Self::send_command).
+    pub fn carries_commands(&self) -> bool {
+        self.lanes.is_some()
+    }
+
+    /// Sends `conn` the script command whose body is `body` ([`command_rpc`](super::command_rpc)). The connection gets its link if
+    /// the pump has not made one yet, so a command sent while the connection is being accepted is not lost.
+    ///
+    /// # Errors
+    /// [`RpcError::Busy`] when the connection's send queue is full, [`RpcError::RateLimited`] over the RPC's own rate.
+    pub fn send_command(&self, conn: ConnId, body: Vec<u8>) -> Result<(), RpcError> {
+        self.ensure_link(conn, self.tick.get());
+        self.with_link(conn, |link| {
+            let rpc = link.rpc::<CommandMessage, ()>(COMMAND_TO_CLIENT_RPC)?;
+            link.notify(&rpc, CommandMessage { body })
+        })
+        .unwrap_or(Err(RpcError::Disconnected))
+    }
+
     /// Gives `conn` a link if it has none.
     fn ensure_link(&self, conn: ConnId, tick: u64) {
         self.links.borrow_mut().entry(conn).or_insert_with(|| {
@@ -514,6 +562,7 @@ impl ServerRpc {
 
     /// One tick: reads what clients sent, runs the calls, answers, and ends what must end. See the module docs.
     pub fn pump(&self, vm: &mut Vm, tick: u64) {
+        self.tick.set(tick);
         let clients = self.hub.clients();
         let gone: Vec<ConnId> = self
             .links
@@ -621,6 +670,11 @@ impl ServerRpc {
                 link.complete(done);
             }
         }
+        // The commands the calls brought run as a packet's do; what they send goes out with this tick's flush.
+        let bodies = take_bodies(vm, Some(conn));
+        if !bodies.is_empty() {
+            self.host.run_commands(vm, conn, bodies);
+        }
         let lines = {
             let mut links = self.links.borrow_mut();
             let Some(link) = links.get_mut(&conn) else {
@@ -713,6 +767,11 @@ pub trait ClientRpcHost {
     fn ghost_index(&self, object: ObjId) -> Option<u32>;
     /// Ends the connection because the server sent what no server of this engine sends, with `reason`.
     fn drop_malformed(&self, reason: &str);
+    /// Runs the script commands the server sent as RPC bodies (engine mode), as it runs the commands of a packet. The default
+    /// runs none.
+    fn run_commands(&self, vm: &mut Vm, bodies: Vec<Vec<u8>>) {
+        let _ = (vm, bodies);
+    }
 }
 
 /// The ghosts of a client's world, as a call is checked against them.
@@ -742,6 +801,8 @@ pub struct ClientRpc {
     host: RefCell<Option<Rc<dyn ClientRpcHost>>>,
     /// Engine mode's carrier, in place of the reserved channel.
     lanes: Option<Rc<RpcLanes>>,
+    /// Commands a script sent that wait for the link: each with the connection (channels epoch) it was sent on.
+    commands: RefCell<VecDeque<(u64, Vec<u8>)>>,
 }
 
 impl ClientRpc {
@@ -756,6 +817,7 @@ impl ClientRpc {
             broken: Cell::new(false),
             host: RefCell::new(None),
             lanes: None,
+            commands: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -797,6 +859,44 @@ impl ClientRpc {
     /// Whether the connection has a link that takes calls.
     pub fn is_ready(&self) -> bool {
         self.link.borrow().is_some()
+    }
+
+    /// Whether script commands ride these RPCs (the engine's protocol).
+    pub fn carries_commands(&self) -> bool {
+        self.lanes.is_some()
+    }
+
+    /// Keeps the script command whose body is `body` for the current connection until the next pump sends it (the link may not
+    /// exist yet in the tick the connection is accepted, and a full send queue holds the rest back). False when [`MAX_QUEUED_COMMANDS`]
+    /// already wait: the command is dropped.
+    pub fn queue_command(&self, body: Vec<u8>) -> bool {
+        let mut queue = self.commands.borrow_mut();
+        if queue.len() >= MAX_QUEUED_COMMANDS {
+            return false;
+        }
+        queue.push_back((self.channels.epoch(), body));
+        true
+    }
+
+    /// Hands the link the commands that wait for it, oldest first, until its send queue is full.
+    fn send_queued_commands(&self) {
+        let epoch = self.channels.epoch();
+        let mut queue = self.commands.borrow_mut();
+        queue.retain(|(sent_on, _)| *sent_on == epoch);
+        let mut link = self.link.borrow_mut();
+        let Some(link) = link.as_mut() else { return };
+        let Ok(rpc) = link.rpc::<CommandMessage, ()>(COMMAND_RPC) else {
+            queue.clear();
+            return;
+        };
+        while let Some((sent_on, body)) = queue.pop_front() {
+            let message = CommandMessage { body };
+            let sent = link.notify_ref(&rpc, &message);
+            if matches!(sent, Err(RpcError::Busy | RpcError::RateLimited)) {
+                queue.push_front((sent_on, message.body));
+                break;
+            }
+        }
     }
 
     /// One client tick (at `tick`, a count of 32 ms ticks): follows the connection (a link for each, closed when it ends),
@@ -875,6 +975,9 @@ impl ClientRpc {
                 ),
             }
         }
+        if !self.broken.get() {
+            self.send_queued_commands();
+        }
         self.run(vm, tick);
     }
 
@@ -903,6 +1006,12 @@ impl ClientRpc {
             if let Some(link) = self.link.borrow_mut().as_mut() {
                 link.complete(done);
             }
+        }
+        let bodies = take_bodies(vm, None);
+        if !bodies.is_empty()
+            && let Some(host) = host.as_deref()
+        {
+            host.run_commands(vm, bodies);
         }
         let lines = {
             let mut cell = self.link.borrow_mut();

@@ -4868,6 +4868,8 @@ dependencies = [
  "rustls",
  "sha1",
  "str0m",
+ "torque-app",
+ "torque-client",
  "torque-collide",
  "torque-engine",
  "torque-game",

@@ -115,6 +115,12 @@ pub const NET_WORK_PER_TICK: u32 = 4_096;
 /// The share of a tick's work one source address may use: a source over it is skipped for the rest of the tick, so one client
 /// cannot hold the tick's budget.
 pub const NET_WORK_PER_SOURCE: u32 = NET_WORK_PER_TICK / 2;
+// A game packet of the largest datagram must fit a source's share, or it would be skipped for good: a reliable lane would send it
+// again for ever.
+const _: () = assert!(
+    reserve_for(torque_net::cap::NET_MAX_DATAGRAM) <= NET_WORK_PER_SOURCE,
+    "the largest datagram does not fit a source's share of a tick's work"
+);
 /// How often the timeout sweep acts (only when more than 1,500 ms passed since the last).
 pub const NET_TIMEOUT_SWEEP_MS: u32 = 1_500;
 /// The longest reason a drop keeps (the connection's 256-byte buffer less the NUL).
@@ -153,8 +159,12 @@ pub const NET_CONN_SCRIPT_SHARE_STEPS: u64 = NET_SCRIPT_WINDOW_STEPS / 4;
 /// The most work a game datagram of `len` bytes can cost, reserved before it is handled (a datagram the tick's budget cannot
 /// cover waits in the queue): the datagram's own cost, a unit per event (an event takes 11 bits at least, and a tag argument 7
 /// more bits and a unit of its own, so one unit per 7 bits bounds both), and a unit per 64 bytes of event.
-pub fn reserve_for(len: usize) -> u32 {
-    let len = u32::try_from(len).unwrap_or(u32::MAX);
+pub const fn reserve_for(len: usize) -> u32 {
+    let len = if len > u32::MAX as usize {
+        u32::MAX
+    } else {
+        len as u32
+    };
     super::pump::cost(len as usize)
         .saturating_add(len.saturating_mul(8) / 7)
         .saturating_add(len / 64)
@@ -194,6 +204,9 @@ pub struct Counters {
     /// Strangers' datagrams read and dropped past their pool ([`NET_STRANGER_WORK_PER_TICK`],
     /// [`NET_STRANGER_DATAGRAMS_PER_PASS`]).
     pub strangers_dropped: u64,
+    /// Datagrams over [`NET_MAX_DATAGRAM`](torque_net::cap::NET_MAX_DATAGRAM) dropped as they were read, in the engine's protocol (its
+    /// clients send no more; Torque's protocol counts them in `ignored`).
+    pub oversize: u64,
     /// Remote commands that named no function ([`NET_UNKNOWN_COMMAND_STEPS`] charged each); their warnings are the script
     /// engine's, limited per connection (`Vm::invoke_from`).
     pub unknown_commands: u64,

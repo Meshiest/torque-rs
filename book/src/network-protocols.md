@@ -35,7 +35,7 @@ is compiled.
 - **The connect is one message.** The client's first message carries the game id, the framing versions it speaks, the manifest
   (always: a mismatch is refused with one line before any ghost), the auth ticket, the mods section, the password and the connect
   arguments. The server checks them in TGE mode's order (game, versions, password, player count, manifest and mods, ticket), then
-  `onConnectRequest` decides. The accept carries the packet size, the packet interval, the byte rate, the id widths and the
+  `onConnectRequest` decides. The accept carries the packet size (`max_packet`: the most the *server* sends; a client never sends a datagram over `NET_MAX_DATAGRAM`, 1,500 bytes, whatever it says, see *Datagram size* below), the packet interval, the byte rate, the id widths and the
   digests of the channel and RPC tables.
 - **Links bring their security.** The same engine bytes run over every link; a link says what it already guarantees (whether it
   proved the peer's address, whether it encrypts, whether it runs congestion control) and how large a datagram it takes, and the
@@ -61,7 +61,41 @@ is compiled.
 | WebRTC data channel (rooms, the relay) | ICE | DTLS | SCTP | 1,200 |
 | WebSocket (a game socket) | TCP | `wss` only | TCP | 1,200 |
 
-**Tickets are bound to the server's challenge.** A server with an auth provider answers every connect with a challenge, a
+**Script commands are two RPCs.** `commandToServer` and `commandToClient` keep their natives, their callbacks (`serverCmd<Name>(%client, ..)`,
+`clientCmd<Name>(..)`), their tag expansion and their errors; only the carrier differs. Torque's protocol queues a command
+and the NetString events of its new tags in order; the engine's protocol has no such queue, so a command is one call of the
+built-in RPC `torque.command` (a client's) or `torque.command.client` (a server's), whose single field is the command with the
+texts of its tags. A tag's text travels with every command that names it, so a command that is dropped at a limit leaves no
+later one with a slot that means nothing. A script sees the same argument count, the same tagged strings (`detag` gives the
+same text), the same order and the same `%client` in both protocols (`cargo test -p torque-server --test commands_modes` runs
+one script suite in both and compares what the callbacks logged). What differs:
+
+- **Limits.** A command is a client's input, so the server holds it twice. The RPC's own bucket (1,024 a second, burst 1,024,
+  outside the connection's bucket for plugin RPCs) only bounds what a body costs to read; a call over it is dropped and counted
+  (`rpcDrops(%client, "torque.command")`). Then each command meets its `CommandSpec` as in Torque's protocol: the command a
+  plugin declared (`engine.server_command(..)`) is held to its own rate, arguments and permission, and every other command shares
+  the default limits, one bucket for the connection: 32 a second, burst 64, at most 20 arguments of at most 255 bytes (a
+  tag argument arrives expanded and is not held to the size). Refusals are counted for script: `commandDrops(%client, "Name")`
+  for a name (the first 32 undeclared names a connection used), `commandDrops(%client, "*")` for every undeclared command
+  together. Torque's protocol keeps its old behavior: an undeclared command has no limit.
+- **Size.** A command is at most 20 arguments of 255 bytes each, as before, and its body, the texts of its tags included, must fit
+  1,000 bytes; one that does not is not sent and the sender's console says so.
+- **Permissions.** A command's `CommandSpec::requires` permission is checked by the server as in Torque's protocol (the caller's
+  `torque-permissions` grants). The RPC itself is open to any connected client and `onRpcCheck` is not asked about it: the game's
+  gates for commands (`command_allowed`, a held connection) and the spec's permission are the commands' own.
+- **Before the accept.** Nothing is sent before the connection is accepted: `commandToServer` does nothing until then, and a
+  server's calls ride the link of an accepted connection. A body the receiver cannot read ends the connection with `Packet Error.`,
+  as a malformed packet does.
+- **Datagram size.** A rule of the protocol for every client implementation: `max_packet` in the accept is the most the server
+  sends, and a client never sends a datagram over `NET_MAX_DATAGRAM` (`torque_net::cap`, 1,500 bytes) whatever `max_packet` says,
+  so its send limit is `min(max_packet, NET_MAX_DATAGRAM)` (the engine's client makes it in `engine_wire.rs`, `WireLink::max_datagram`).
+  A server reads at most that (a source's share of a tick's work cannot take more) and drops a longer datagram as it is read,
+  counting it in `Counters::oversize`. A body also carries exactly the tags its arguments name, each slot once.
+- **Console.** The `Mapping string:` lines of Torque's NetString events are not printed: there is no NetString event.
+- A local connection (`connectLocal`) keeps its commands as events in both protocols.
+
+**Tickets are bound to the server's challenge.**
+ A server with an auth provider answers every connect with a challenge, a
 nonce it draws for that session; the client's auth provider makes the ticket then, for the server's address, the challenge
 and the server identity the link verified, and the server checks it against the same. A ticket in the connect itself counts
 for nothing, so a ticket captured on one connection fails on any other whatever the thief's own nonce. A ticket whose
@@ -101,6 +135,11 @@ lines. The `tge` lines never move.
 - `torque-server/src/net/engine.rs`: the server's host wiring (`EngineHost`), called from `pump.rs` (receive, `handle_request`,
   the send pass) and `conn.rs` (the drop). `rpc.rs`: `RpcLanes`, the RPC lanes' carrier. `transport.rs`: `Transport::link_kind`
   and `check_plain_engine_bind`.
+- `torque-server/src/net/command_rpc.rs`: the two command RPCs and the inbox their handlers fill; `events.rs` (`EventLayer::encode_command`,
+  `decode_command`) makes and reads a body against the connection's own tables of command tags; `pump.rs` (`run_command_bodies`) runs
+  the commands as a packet's run; `rpc.rs` (`ServerRpc::send_command`, `ClientRpc::queue_command`) moves them; `cmdlimit.rs` holds the
+  default limits. `torque-net/src/remote/body.rs`: the body's bytes and their hostile-input rules. `torque-client/src/conn.rs`:
+  `command_to_server_rpc`, `receive_commands`.
 - `torque-client/src/conn/engine_wire.rs`: the client's session under `TgeFeed` (`tge.rs`: `over_engine`, `engine_pump`,
   `engine_send`); `net.rs`: `Datagrams::link_kind`.
 - `torque-app-server/src/plugins.rs`: `EngineProtocolPlugin`, `ProtocolPlugins`, `set_protocol`; `server.rs`: the gate, the
@@ -112,6 +151,8 @@ becomes a `PendingRequest` for `handle_request`, the move lane goes to `handle_g
 lane's writer. The client mirrors it: `EngineWire` events become the feed's.
 
 **Invariants and their tests.**
+- The accept's `max_packet` is the server's own send limit; a client's is `min(max_packet, NET_MAX_DATAGRAM)`, made in
+  `WireLink::max_datagram`, and the server drops a longer datagram as it is read (`commands_modes::a_datagram_over_the_limit_is_dropped_as_it_is_read_and_counted`).
 - Fates reach the layers above in send order, and a packet not sent is lost at once
   (`engine::order::tests::fates_come_back_in_send_order_whatever_order_they_resolve_in`, `a_packet_built_again_after_no_room_gets_a_new_number`).
 - Sessions per address, per network and pending are capped; an evicted one is dropped by the host
@@ -125,6 +166,18 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
 - A ticket counts only for the challenge of its own session, once (`engine_tickets_tests` in `torque-app-server`:
   `over_a_validated_link_a_ticket_captured_on_one_connection_fails_on_another`, `..._presented_again_within_the_window_is_refused`,
   `over_plain_udp_a_captured_ticket_fails_and_a_replay_is_refused`; `sources_that_never_answer_their_challenge_keep_the_waiting_connects_bounded`; `net::engine::tests::a_flood_of_valid_tickets_from_one_network_locks_out_only_that_network`).
+- A command body is read with every count and length checked against its caps and the bytes left, and a body with bytes left is refused
+  (`remote::body::tests::a_body_that_is_not_one_is_an_error_and_never_a_panic`); a client that sends one is dropped
+  (`a_command_body_the_server_cannot_read_ends_the_connection_in_the_engines_protocol`).
+- A source's share of work holds the largest datagram (a const assert in `net::host`), and a client on a link that takes big datagrams
+  still sends a command burst without stalling (`commands_modes::a_command_burst_over_a_link_that_takes_big_datagrams_never_stalls`,
+  `a_datagram_over_the_limit_is_dropped_as_it_is_read_and_counted`).
+- Both protocols give a script the same commands (`commands_modes::both_protocols_give_the_scripts_the_same_commands`), and the engine's
+  default limits hold: 1,000 undeclared commands in a tick run at most 64 and are counted
+  (`a_command_no_plugin_declared_is_held_to_the_default_limits_in_the_engines_protocol_only`). Nothing is sent before the accept
+  (`nothing_is_sent_before_the_connection_is_accepted_in_either_protocol`).
+- The command RPCs' tag tables are the connection's own, apart from the ghost records' (`EventLayer`'s `command_send` and `command_remote`):
+  a command re-keying a slot never changes what a ghost record's string means.
 - TGE mode's bytes do not move (`cargo test -p torque-net --test tge_golden`, `cargo test -p torque-trace-hash --test wire_golden`).
 
 - Speed is measured, not guessed: `cargo bench -p torque-net --bench ghost_section|bits|engine_session`, `-p torque-server --bench ghost_tick`, `-p torque-client --bench ghost_read` (what each guards is in the crates' Maintaining sections); the speed-ups change no byte, so the goldens and `just trace-hash` stay as they are.

@@ -242,7 +242,8 @@ impl Plugin for TgeProtocolPlugin {
 /// The network protocol slot, set to the engine's own protocol: its own framing over a link contract (QUIC and the web's links
 /// later, plain UDP on private addresses, WebRTC, WebSockets, the memory link), every peer the engine's own, the manifest
 /// always sent, RPCs in their own lanes ([`torque_server::net::engine`]). A game turns [`TgeProtocolPlugin`] off and this on
-/// to speak it, or names it in `game.toml` (`[net] protocol = "engine"`).
+/// to speak it, or names it in `game.toml` (`[net] protocol = "engine"`). It also registers the two RPCs the script commands
+/// (`commandToServer`, `commandToClient`) are sent as ([`torque_server::net::command_rpc`]).
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.net.engine")]
 pub struct EngineProtocolPlugin;
@@ -250,6 +251,8 @@ pub struct EngineProtocolPlugin;
 impl Plugin for EngineProtocolPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.net().protocol(ProtocolKind::Engine);
+        // Script commands ride two RPCs of their own in this protocol (Torque's puts them on its event queue).
+        torque_server::net::command_rpc::register(engine);
     }
 }
 

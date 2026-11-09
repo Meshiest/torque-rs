@@ -78,6 +78,9 @@ torque-interior-builder = { path = "../torque-interior-builder" }
 # The plugin class tests: an engine whose plugin adds a ghost class, and the client's ghost codec that reads it.
 torque-engine = { path = "../torque-engine" }
 torque-ghost-world = { path = "../torque-ghost-world" }
+# The script command tests: a real client and a real server in both network protocols.
+torque-app = { path = "../torque-app" }
+torque-client = { path = "../torque-client" }
 
 [[bench]]
 name = "ghost_tick"

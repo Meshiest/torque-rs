@@ -85,6 +85,8 @@
 //!   (`rpc_two_rpcs_that_share_a_script_handler_do_not_register`).
 //! - Two RPCs may not ask for the same default permission: the plugin's id is one segment (`.` becomes `_`), and a clash after
 //!   that cleaning is refused at registration (`rpc_two_rpcs_that_share_a_default_permission_do_not_register`).
+//! - An RPC that is the engine's own traffic and not a plugin's call (the script commands) is left out of the connection's bucket for
+//!   all RPCs and keeps its own (`RpcBuilder::outside_connection_rate`; `rpc_an_rpc_outside_the_connection_rate_keeps_only_its_own`).
 //! - What a side sends is held to the same buckets the receiver applies, and a refused batch stays queued in order
 //!   (`rpc_what_a_side_sends_is_held_to_the_same_rates`, `rpc_a_refused_batch_stays_queued_in_order_and_replies_count_against_the_queue`).
 //!
@@ -537,6 +539,9 @@ pub struct RpcEntry {
     /// Whether a client script's realm may call it (`to_server`) or hear it (`to_client`): [`RpcBuilder::realm`]. A client-side
     /// rule; it is not in the manifest's digest, so the wire is what it was.
     pub realm: bool,
+    /// Whether its calls also spend the connection's bucket for all RPCs (the default; see
+    /// [`RpcBuilder::outside_connection_rate`]).
+    pub shares_connection_rate: bool,
     digest: u64,
     request: MessageCodec,
     response: MessageCodec,
@@ -750,6 +755,7 @@ pub struct RpcBuilder<'a, Req, Resp, D> {
     allow: Allow,
     default_permission: bool,
     realm: bool,
+    shares_connection_rate: bool,
     types: PhantomData<fn(Req, Resp, D)>,
 }
 
@@ -773,6 +779,7 @@ impl NetRegistry<'_> {
             allow: Allow::Anyone,
             default_permission: false,
             realm: false,
+            shares_connection_rate: true,
             types: PhantomData,
         }
     }
@@ -805,6 +812,7 @@ impl<'a, Req, Resp, D> RpcBuilder<'a, Req, Resp, D> {
             allow: self.allow,
             default_permission: self.default_permission,
             realm: self.realm,
+            shares_connection_rate: self.shares_connection_rate,
             types: PhantomData,
         }
     }
@@ -839,6 +847,15 @@ impl<'a, Req, Resp, D> RpcBuilder<'a, Req, Resp, D> {
     #[must_use]
     pub fn max_bytes(mut self, bytes: usize) -> Self {
         self.max_bytes = bytes;
+        self
+    }
+
+    /// Leaves this RPC's calls out of the connection's bucket for all RPCs ([`DEFAULT_CONN_RATE`]), so its own rate is the only
+    /// one they are held to: for traffic that is not a plugin's call but the engine's own, which that bucket would starve
+    /// the plugins' RPCs of or cut short (the script commands).
+    #[must_use]
+    pub fn outside_connection_rate(mut self) -> Self {
+        self.shares_connection_rate = false;
         self
     }
 }
@@ -1066,6 +1083,7 @@ impl<Req: NetMessage, Resp: NetMessage, D> RpcBuilder<'_, Req, Resp, D> {
             reply: !response.unit,
             allow: self.allow,
             realm: self.realm,
+            shares_connection_rate: self.shares_connection_rate,
             digest,
             request,
             response,

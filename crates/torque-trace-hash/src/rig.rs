@@ -17,7 +17,9 @@ use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_client::predict::FileReader;
 use torque_client::state::ClientState;
 use torque_engine::{Engine, EngineBuilder, Plugins, ProtocolKind};
+use torque_server::net::channels::ClientChannels;
 use torque_server::net::engine::ensure_host;
+use torque_server::net::rpc::{ClientRpc, RpcLanes, register_client_natives};
 use torque_ts_vm::host::{FileHost, FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
@@ -205,6 +207,7 @@ impl Rig {
         // What the engine's plugins say in a connect request (their manifest), as a client of the same engine says it: nothing
         // for an engine that says nothing on the wire.
         torque_client::conn::tge::ConnectHello::install(&mut vm, &engine);
+        install_rpcs(&mut vm, &engine)?;
         // The client's nonces, as the server's keys, are fixed so that a run's datagrams repeat.
         vm.set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
         vm.set_step_limit(Some(50_000_000));
@@ -293,6 +296,7 @@ impl Rig {
     pub fn step_client(&mut self) {
         self.client_vm.advance_time(TICK_MS);
         EnginePass.net(&mut self.client_vm, &self.client);
+        self.pump_rpcs();
         self.carry();
         self.ticks += 1;
     }
@@ -313,6 +317,7 @@ impl Rig {
             since = to;
             let before = self.client_ticks();
             EnginePass.net(&mut self.client_vm, &self.client);
+            self.pump_rpcs();
             self.carry();
             if self.client_ticks() != before {
                 since = 0;
@@ -320,6 +325,14 @@ impl Rig {
             frame(self, 1.0 - since as f32 / TICK_MS as f32);
         }
         self.ticks += 1;
+    }
+
+    /// The client's RPCs, as a window client's tick pumps them after its network pass.
+    fn pump_rpcs(&mut self) {
+        if let Some(rpc) = self.client_vm.extension::<ClientRpc>() {
+            let tick = u64::from(self.client_vm.sim_time()) / u64::from(TICK_MS);
+            rpc.pump(&mut self.client_vm, tick);
+        }
     }
 
     /// The client's ticks so far (its last tick's time).
@@ -358,4 +371,26 @@ impl Rig {
         self.client_vm
             .set_global_float(name.as_bytes(), f64::from(value));
     }
+}
+
+/// What a window client installs for the engine's channels and RPCs in the engine's protocol: the channels the connection reads
+/// and writes, and the RPCs over the session's lanes (the script commands ride two of them). Torque's protocol installs nothing
+/// here: its runs keep the channels they had.
+fn install_rpcs(vm: &mut Vm, engine: &Engine) -> Result<(), String> {
+    if engine.protocol() != ProtocolKind::Engine {
+        return Ok(());
+    }
+    let channels = engine.net_channels().map_err(|e| e.to_string())?;
+    let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+    if channels.is_empty() || rpcs.is_empty() {
+        return Ok(());
+    }
+    let channels = Rc::new(ClientChannels::new(&channels));
+    vm.set_extension(Rc::clone(&channels));
+    let lanes = Rc::new(RpcLanes::default());
+    vm.set_extension(Rc::clone(&lanes));
+    let rpc = Rc::new(ClientRpc::over_lanes(rpcs, channels, lanes));
+    register_client_natives(vm, &rpc);
+    vm.set_extension(rpc);
+    Ok(())
 }

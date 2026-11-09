@@ -24,7 +24,7 @@
 //!   and their caps; [`client`] is the other half of both (the test client, the datagram decoder, the client-to-server head);
 //!   [`serverquery`]: the info packets of the server query (the LAN list's ping and info requests and their answers).
 //! - [`events`]: the event layer (queues, the packet section, the receiver's wait list), [`netstring`]: the 32-slot string table and `NetStringEvent`,
-//!   [`remote`]: `RemoteCommandEvent`, the sender and the tag expansion; [`decode`] runs a list of datagrams through all of it.
+//!   [`remote`]: `RemoteCommandEvent`, the sender and the tag expansion (and [`remote::body`], a command as the byte body the engine's protocol sends as an RPC); [`decode`] runs a list of datagrams through all of it.
 //! - [`ghost`]: the NetObject model and the ghost manager: the three-region id table, scope, priorities, the ghost section of a
 //!   data packet, `GhostRef` notify chains, `activateGhosting` / `resetGhosting`, a reference ghost client; the host implements `ObjectSource`.
 //! - [`control`], [`moves`], [`gameevents`]: the server head and the control section (`Camera::writePacketData`, the checksum, the

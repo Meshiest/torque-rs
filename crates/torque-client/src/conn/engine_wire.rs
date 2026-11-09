@@ -12,6 +12,7 @@
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::net::SocketAddr;
 
+use net::cap::NET_MAX_DATAGRAM;
 use net::connect::{BlockSource, ConnectBlock, reason};
 use net::engine::bridge::{connect_of, ticket_context};
 use net::engine::{
@@ -95,8 +96,12 @@ struct WireLink<'a> {
 }
 
 impl EngineLink for WireLink<'_> {
+    /// The one place the client's send limit is made: the session sends at most the accept's `max_packet` and at most this, so
+    /// `min(max_packet, NET_MAX_DATAGRAM)`. A client never sends over [`NET_MAX_DATAGRAM`] whatever the accept says (a rule of the
+    /// engine's protocol, `book/src/network-protocols.md`): a server drops a longer datagram as it is read, and a reliable lane
+    /// would send it again for ever.
     fn max_datagram(&self) -> usize {
-        self.kind.max_datagram
+        self.kind.max_datagram.min(NET_MAX_DATAGRAM)
     }
 
     fn send(&mut self, datagram: &[u8]) -> Result<(), NoRoom> {

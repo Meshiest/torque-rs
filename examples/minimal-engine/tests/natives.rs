@@ -34,6 +34,17 @@ fn server_listing() -> PathBuf {
     )
 }
 
+/// The window client's snapshot for the protocol in use: the engine's has the RPC natives, in `client-engine.txt`.
+fn client_listing() -> PathBuf {
+    listing(
+        ".",
+        match protocol_from_env() {
+            ProtocolKind::Engine => "client-engine.txt",
+            _ => "client.txt",
+        },
+    )
+}
+
 /// The natives (name and arguments) of the hand-wired example's snapshot `name` that `actual` lacks; a native's usage text may differ.
 fn missing(name: &str, actual: &str) -> Vec<String> {
     let key = |line: &str| line.split(' ').take(2).collect::<Vec<_>>().join(" ");
@@ -58,7 +69,7 @@ fn the_server_has_these_natives() {
 fn the_window_client_has_these_natives() {
     let client = client(&engine(), ClientNet::None).expect("the client");
     let actual = client.vm().native_listing();
-    check_listing(&listing(".", "client.txt"), &actual);
+    check_listing(&client_listing(), &actual);
     assert_eq!(missing("client.txt", &actual), Vec::<String>::new());
 }
 

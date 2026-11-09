@@ -22,7 +22,7 @@ use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use web_time::{Duration, Instant};
 
-use torque_engine::command::ServerCommand;
+use torque_engine::command::{CommandSpec, ServerCommand};
 use torque_engine::{
     Engine, EngineBuilder, ProtocolKind, ServerStage, ServerTick, TickInfo, TickPhase,
 };
@@ -378,7 +378,11 @@ impl GameServer {
             server.vm.set_extension(Rc::new(hub));
         }
         // The server commands plugins declared are held to their limits, and scripts can read the refusals.
-        let commands = CommandTable::new(engine.list::<ServerCommand>());
+        let mut commands = CommandTable::new(engine.list::<ServerCommand>());
+        if engine_mode {
+            // No event queue bounds the commands of this protocol, so the ones no plugin declared share default limits.
+            commands = commands.with_default_limits(CommandSpec::new());
+        }
         if !commands.is_empty() {
             shared.borrow_mut().set_commands(commands);
             register_command_drops(&mut server.vm, &shared);

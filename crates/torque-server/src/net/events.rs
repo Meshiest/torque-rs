@@ -57,6 +57,7 @@ use torque_net::ghost::manager::SECTION_MIN_BITS;
 use torque_net::handshake::ConnId;
 use torque_net::netstring::{RemoteStrings, SendStrings, mapping_line};
 use torque_net::protocol::{Header, Notify, RatePrefix, Received, Role};
+use torque_net::remote::body::{BodyError, CommandBody, encode_command};
 use torque_net::remote::{SendError, Sent, TagLookup, function_name, resolve, send_command_with};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -107,6 +108,10 @@ struct ConnEvents<H: GameEvents> {
     receiver: EventReceiver<HostEvent<H::Event>>,
     send: SendStrings,
     remote: RemoteStrings,
+    /// The tags of the commands that ride the engine protocol's RPCs: their own tables, so a command never changes what a ghost
+    /// record's strings mean ([`EventLayer::encode_command`], [`EventLayer::decode_command`]).
+    command_send: SendStrings,
+    command_remote: RemoteStrings,
     /// The control state of the `GameConnection`: the move list and its ack, the move credit, the client's checksum, the field
     /// of view.
     control: ControlState,
@@ -353,6 +358,71 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
         Ok(sent)
     }
 
+    /// The body of `sendRemoteCommand` for one connection, for the engine protocol, where a command is an RPC and no event is
+    /// queued: the same checks, the same slots in the connection's own table of command tags, and the tags' texts inside the
+    /// body ([`CommandBody`]). The tables hold no reference on the tags: a text is read as it is sent.
+    ///
+    /// # Errors
+    /// [`BodyError::Send`] for a command `sendRemoteCommand` refuses or a connection that is closing, [`BodyError::TooLarge`] for
+    /// one whose body would not fit an RPC.
+    pub fn encode_command(
+        &self,
+        vm: &Vm,
+        conn: ConnId,
+        secure: bool,
+        args: &[Vec<u8>],
+    ) -> Result<Vec<u8>, BodyError> {
+        let mut st = self.state.borrow_mut();
+        let variant = st.codecs.command_variant(secure);
+        let c = st
+            .conns
+            .get_mut(&conn)
+            .filter(|c| !c.queue.is_closed())
+            .ok_or(BodyError::Send(SendError::Closed))?;
+        let mut trial = c.command_send.clone();
+        let body = encode_command(&mut trial, &VmTags(vm), variant, args)?;
+        c.command_send = trial;
+        Ok(body)
+    }
+
+    /// A client's remote command that arrived as a body (`RemoteCommandEvent::process` and the NetString events before it): the
+    /// tags it names are mapped into the connection's table of command tags, and the command, expanded, comes back as the
+    /// followup that calls `serverCmd<name>`. `None` when the command is not a tag (nothing happens, silently) or the connection
+    /// is gone.
+    ///
+    /// # Errors
+    /// A [`NetError`] when the body is not one a sender of this engine makes, or the tag table is full: the host drops the client.
+    pub fn decode_command(
+        &self,
+        vm: &mut Vm,
+        conn: ConnId,
+        body: &[u8],
+    ) -> Result<Option<Followup>, NetError> {
+        let command = CommandBody::decode(body)?;
+        let mut guard = self.state.borrow_mut();
+        let st = &mut *guard;
+        let Some(c) = st.conns.get_mut(&conn) else {
+            return Ok(None);
+        };
+        for (slot, text) in &command.strings {
+            let id = vm
+                .tags_mut()
+                .add_string(text)
+                .ok_or(NetError::Invalid("tag table full"))?;
+            if let Some(old) = c.command_remote.set(*slot, id, text) {
+                release(vm, old);
+            }
+        }
+        let prefix = st.codecs.command_prefix(command.variant, true);
+        Ok(
+            resolve(&command.script_args(), &c.command_remote).map(|r| Followup::ServerCmd {
+                obj: c.obj,
+                name: function_name(prefix, &r.name),
+                args: r.args,
+            }),
+        )
+    }
+
     /// The sender table comes back from a packet's packs (`packNetStringHandleU`): the NetString events its misses made go on
     /// the ordered queue in order (each rides a later packet than the record that sent the text), and the references the
     /// re-keyed entries took and let go of are applied to the tag table as [`EventLayer::post_command`] applies a command's. An
@@ -588,6 +658,8 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
                 receiver: EventReceiver::new(),
                 send: SendStrings::new(),
                 remote: RemoteStrings::new(),
+                command_send: SendStrings::new(),
+                command_remote: RemoteStrings::new(),
                 control,
                 spoke: false,
                 game: H::Conn::default(),
@@ -1022,7 +1094,12 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
         for tag in c.send.release_all() {
             release(vm, tag);
         }
-        for id in c.remote.release_all() {
+        for id in c
+            .remote
+            .release_all()
+            .into_iter()
+            .chain(c.command_remote.release_all())
+        {
             release(vm, id);
         }
     }

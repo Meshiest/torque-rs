@@ -413,7 +413,8 @@ pub struct TableDigests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Accept {
     pub session: u64,
-    /// The largest packet either side sends (the link's own limit may be lower, tick by tick).
+    /// The most the server sends (the link's own limit may be lower, tick by tick). A client never sends a datagram over
+    /// [`NET_MAX_DATAGRAM`](crate::cap::NET_MAX_DATAGRAM) (1,500 bytes) whatever this says: a server drops a longer one as it is read.
     pub max_packet: u16,
     /// Milliseconds between packets each way.
     pub packet_interval_ms: u16,

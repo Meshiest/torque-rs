@@ -54,6 +54,16 @@ impl Plugin for TerrainPlugin {
     }
 }
 
+/// The channel an engine always has besides its plugins': in the engine's protocol the reserved RPC channel (the script commands are
+/// RPCs there), in Torque's none.
+fn command_channel(engine: &torque::engine::Engine) -> Vec<&'static str> {
+    if engine.protocol() == ProtocolKind::Engine {
+        vec!["torque.rpc"]
+    } else {
+        Vec::new()
+    }
+}
+
 fn gem_positions(client: &torque::app::client::GameClient, into: &mut BTreeSet<[i32; 3]>) {
     if let Some((_, at)) = ghosts(client).into_iter().find(|(c, _)| *c == "Item") {
         into.insert(at.map(|f| (f * 1000.0) as i32));
@@ -70,7 +80,10 @@ fn the_handshake_turns_a_plugin_channel_on_and_each_connection_gets_the_data() {
     let mut b = builder(&files).unwrap();
     b.add_plugins(TerrainPlugin(terrain.clone()));
     let engine = b.build().unwrap();
-    assert_eq!(engine.net_channels().unwrap().names(), ["terrain"]);
+    // The reserved RPC channel is there too in the engine's protocol, whose script commands are RPCs.
+    let mut channels = vec!["terrain"];
+    channels.extend(command_channel(&engine));
+    assert_eq!(engine.net_channels().unwrap().names(), channels);
     let server = server(&engine, Listen::Memory(SERVER)).expect("the server starts");
     let hub = server
         .vm()
@@ -264,8 +277,10 @@ fn a_plugin_receives_what_a_client_sends_on_its_client_to_server_channel() {
     b.add_plugins(UploadPlugin(uploads.clone()));
     let engine = b.build().unwrap();
     let registry = engine.net_channels().unwrap();
-    assert!(registry.names().is_empty());
-    assert_eq!(registry.up_names(), ["uploads"]);
+    assert_eq!(registry.names(), command_channel(&engine));
+    let mut up = command_channel(&engine);
+    up.push("uploads");
+    assert_eq!(registry.up_names(), up);
     let server = server(&engine, Listen::Memory(SERVER)).expect("the server starts");
     let mut client = client(
         &engine,

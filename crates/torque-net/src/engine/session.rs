@@ -26,7 +26,8 @@
 //! never takes room a higher lane wanted, and a higher lane at its budget leaves the rest of the packet to the lanes below it.
 //! The unreliable lane saves its unused share from packet to packet, up to one whole message, so a message larger than one
 //! packet's share still leaves, at the lane's budget on average. Before the accept a packet is at most
-//! [`DEFAULT_MAX_PACKET`] bytes, after it at most the accept's limit, and always at most the link's
+//! [`DEFAULT_MAX_PACKET`] bytes, after it at most the accept's limit (the server's sends; a client's are also at most
+//! [`NET_MAX_DATAGRAM`](crate::cap::NET_MAX_DATAGRAM), whatever the accept says), and always at most the link's
 //! [`Link::max_datagram`] of that tick; a received datagram past the limit is dropped unread.
 //!
 //! **Memory.** What a peer can make a session hold is bounded: reassembly by [`LaneLimits`], events between two drains by

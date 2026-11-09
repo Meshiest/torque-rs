@@ -21,7 +21,9 @@
 //! ([`ConnGame::local_error`]).
 //!
 //! **Scripts call** `commandToServer(tag, ...)` (only once the connection to the server is established; the tag test and
-//! `Remote Command Error - command must be a tag.`; `net::remote::send_command` over the connection's own string table), and the
+//! `Remote Command Error - command must be a tag.`; `net::remote::send_command` over the connection's own string table; in
+//! the engine's protocol the command is an RPC body that waits for the connection's RPC link, and a command the server sends
+//! arrives the same way, [`receive_commands`]), and the
 //! connection's methods: `isConnected` (accepted), `isLocalConnection` (0), `getAddress`, `getPort`, `getPing` (the running
 //! round trip, ms), `delete` (a disconnect with the reason, empty by default, when connected), `getGhostsActive`,
 //! `getControlObject` and `resolveGhostID` (the ghosts' script objects, [`crate::ghost_objects`]). Every other `GameConnection`
@@ -65,8 +67,10 @@ use net::control::{ClientBlock, ControlData, ControlSection};
 use net::events::{EventQueue, NetEvent};
 use net::moves::MoveQueue;
 use net::netstring::{RemoteStrings, SendStrings, mapping_line};
+use net::remote::body::{BodyError, CommandBody, encode_command};
 use net::remote::{RemoteCommandEvent, SendError, TagLookup, function_name, resolve, send_command};
 use torque_game::dbvalues::DbValues;
+use torque_server::net::rpc::ClientRpc;
 use ts_vm::host::{FileHost, FileRead};
 use ts_vm::sim::ObjId;
 use ts_vm::text::until_nul;
@@ -118,6 +122,11 @@ pub struct ClientConn<G: ConnGame> {
     pub remote: RemoteStrings,
     /// The client's own (`commandToServer`'s tags).
     pub send: SendStrings,
+    /// The server's tags as the client's tag ids for the commands that ride the engine protocol's RPCs: a table of its own, so
+    /// a command never changes what a ghost record's string means.
+    pub command_remote: RemoteStrings,
+    /// The client's own tags of those commands.
+    pub command_send: SendStrings,
     pub moves: MoveQueue,
     pub triggers: crate::net::moves::TriggerMemory,
     pub last_tick: Option<u32>,
@@ -364,6 +373,9 @@ pub enum FeedEvent<E> {
     TimedOut,
     /// A net string the server mapped (`NetStringEvent::process`).
     NetString { slot: u8, text: Vec<u8> },
+    /// A command the server sent as an RPC body in the engine's protocol: its tags' texts and the command, in one
+    /// ([`CommandBody`]).
+    EngineCommand(Vec<u8>),
     /// A remote command (its arguments as the wire carried them: the connection expands the tags).
     Remote(RemoteCommandEvent),
     /// `onDataBlockObjectReceived(index, total)`, then the datablock the event carried (the game's unpack reads it:
@@ -443,6 +455,12 @@ pub trait Feed: 'static {
 
     /// Posts ordered net events (a remote command and its net strings).
     fn post_net(&mut self, events: Vec<NetEvent>);
+
+    /// Whether the feed rides an engine-mode session, whose RPC lanes carry the script commands (a local connection, and
+    /// a connection in Torque's protocol, carry them as events).
+    fn engine_session(&self) -> bool {
+        false
+    }
 
     /// Sends the tick's packet: the client's control block, the events that wait.
     fn send_tick(&mut self, world: &mut Self::World, block: &ClientBlock);
@@ -1018,6 +1036,24 @@ fn run_events<G: ConnGame>(
     }
 }
 
+/// Runs the script commands the server sent in the engine's protocol, each a body ([`CommandBody`]), as the commands of a
+/// packet run in Torque's: tags mapped, the command expanded, `clientCmd<name>` called with the server as its source. Bodies
+/// that arrive with no connection are dropped.
+pub fn receive_commands<G: ConnGame>(
+    vm: &mut Vm,
+    client: &Rc<RefCell<ClientState<G>>>,
+    bodies: Vec<Vec<u8>>,
+) {
+    let obj = client.borrow().conn.conn.as_ref().map(|c| c.obj);
+    let Some(obj) = obj else { return };
+    run_events(
+        vm,
+        client,
+        obj,
+        bodies.into_iter().map(FeedEvent::EngineCommand).collect(),
+    );
+}
+
 pub fn num(n: u32) -> Vec<u8> {
     n.to_string().into_bytes()
 }
@@ -1108,6 +1144,47 @@ fn event_steps<G: ConnGame>(
             };
             let name = function_name(
                 client_game(vm).codecs().command_prefix(cmd.variant, false),
+                &r.name,
+            );
+            vec![Step::Call(name, r.args)]
+        }
+        FeedEvent::EngineCommand(body) => {
+            let Ok(command) = CommandBody::decode(&body) else {
+                // A server of this engine never sends a body it cannot read: the connection ends.
+                client
+                    .borrow_mut()
+                    .drop_request
+                    .get_or_insert_with(|| "the server sent a malformed command".to_string());
+                return Vec::new();
+            };
+            // A tag table that is full drops the command. The tags mapped before the one that failed stay mapped: each is a handle in
+            // one of the connection's 32 slots, released when a later command takes the slot, as the NetString events of Torque's
+            // protocol before a failing one stay.
+            for (slot, text) in &command.strings {
+                let Some(id) = vm.tags_mut().add_string(text) else {
+                    return Vec::new();
+                };
+                let old = client
+                    .borrow_mut()
+                    .conn
+                    .conn
+                    .as_mut()
+                    .and_then(|c| c.command_remote.set(*slot, id, text));
+                if let Some(old) = old {
+                    release(vm, old);
+                }
+            }
+            let st = client.borrow();
+            let Some(c) = st.conn.conn.as_ref() else {
+                return Vec::new();
+            };
+            let Some(r) = resolve(&command.script_args(), &c.command_remote) else {
+                return Vec::new();
+            };
+            let name = function_name(
+                client_game(vm)
+                    .codecs()
+                    .command_prefix(command.variant, false),
                 &r.name,
             );
             vec![Step::Call(name, r.args)]
@@ -1528,6 +1605,26 @@ fn command_to_server<G: ConnGame>(
     client: &Rc<RefCell<ClientState<G>>>,
     args: &[Vec<u8>],
 ) -> Native {
+    // An engine-mode session carries the commands as RPCs; Torque's protocol, and a local connection, as events.
+    let session = client
+        .borrow()
+        .conn
+        .conn
+        .as_ref()
+        .is_some_and(|c| c.local.is_none() && c.feed.engine_session());
+    match vm.extension::<ClientRpc>() {
+        Some(rpc) if session && rpc.carries_commands() => {
+            command_to_server_rpc(vm, client, &rpc, args)
+        }
+        _ => command_to_server_events(vm, client, args),
+    }
+}
+
+fn command_to_server_events<G: ConnGame>(
+    vm: &mut Vm,
+    client: &Rc<RefCell<ClientState<G>>>,
+    args: &[Vec<u8>],
+) -> Native {
     let result = {
         let mut st = client.borrow_mut();
         let Some(conn) = st.conn.conn.as_mut().filter(|c| c.accepted) else {
@@ -1565,6 +1662,46 @@ fn command_to_server<G: ConnGame>(
             vm.error("Remote Command Error - command must be a tag.".to_string());
         }
         Err(_) => {}
+    }
+    Native::Void
+}
+
+/// `commandToServer` over an engine-mode connection: the command, with the texts of its tags, is one RPC body
+/// ([`CommandBody`]) that waits for the link and goes out with the next tick's RPCs. The same checks as the event form; a
+/// connection that is not accepted yet, or that carries its commands as events (a local one), sends nothing here.
+fn command_to_server_rpc<G: ConnGame>(
+    vm: &mut Vm,
+    client: &Rc<RefCell<ClientState<G>>>,
+    rpc: &ClientRpc,
+    args: &[Vec<u8>],
+) -> Native {
+    let body = {
+        let mut st = client.borrow_mut();
+        let Some(conn) = st.conn.conn.as_mut().filter(|c| c.accepted) else {
+            return Native::Void;
+        };
+        let mut trial = conn.command_send.clone();
+        let made = encode_command(&mut trial, &VmTags(vm), 0, args);
+        if made.is_ok() {
+            conn.command_send = trial;
+        }
+        made
+    };
+    match body {
+        Ok(body) => {
+            if !rpc.queue_command(body) {
+                vm.print(
+                    b"engine: a command was not sent: too many commands are waiting to be sent",
+                );
+            }
+        }
+        Err(BodyError::Send(SendError::NotATag)) => {
+            vm.error("Remote Command Error - command must be a tag.".to_string());
+        }
+        Err(error @ (BodyError::TooLarge | BodyError::UnknownTag)) => {
+            vm.print(format!("engine: a command was not sent: {error}").as_bytes());
+        }
+        Err(BodyError::Send(_)) => {}
     }
     Native::Void
 }
@@ -1703,6 +1840,8 @@ pub fn connect<G: ConnGame>(
                 accepted: false,
                 remote: RemoteStrings::new(),
                 send: SendStrings::new(),
+                command_remote: RemoteStrings::new(),
+                command_send: SendStrings::new(),
                 moves: MoveQueue::new(),
                 triggers: Default::default(),
                 last_tick: None,
@@ -1840,6 +1979,8 @@ fn connect_local<G: ConnGame>(
                 accepted: true,
                 remote: RemoteStrings::new(),
                 send: SendStrings::new(),
+                command_remote: RemoteStrings::new(),
+                command_send: SendStrings::new(),
                 moves: MoveQueue::new(),
                 triggers: Default::default(),
                 last_tick: None,

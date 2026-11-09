@@ -20,11 +20,16 @@
 //! [`NET_EXPAND_BYTES`] - 1 bytes; an unmapped handle expands to `<NULL>`; a command that is not a tag is silent. A plain string
 //! argument that begins with byte 1 is read as a tag, as Torque does, but its index is checked: outside 0..31 it is unmapped.
 //!
+//! **As an RPC body** ([`body`]): the same command and the texts of its tags in one byte string, for the engine protocol, which
+//! has no ordered event queue to put NetString events on.
+//!
 //! **Hostile input.** A count the bits left cannot hold is an error, not an allocation (argc is the 5-bit field, so at most
 //! [`NET_MAX_ARGC`] = 31 arguments are read, as in Torque).
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `app/net/net.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
+
+pub mod body;
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};

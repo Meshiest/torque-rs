@@ -449,6 +449,7 @@ removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
 removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
+rpcToServer 2..* rpcToServer(name, fields..) - calls the client-to-server RPC `name`, its arguments the message's fields; answers the reason it was not queued, or nothing
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

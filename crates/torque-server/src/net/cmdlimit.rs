@@ -8,14 +8,18 @@
 //! the connection and the command ([`commandDrops`](register_command_drops)). While calls keep being refused the host prints one
 //! console line a second.
 //!
-//! A command no plugin declared is not in the table: its calls are [`Admission::Unlimited`] and run as TGE's do.
+//! A command no plugin declared is not in the table. In Torque's protocol its calls are [`Admission::Unlimited`] and run as
+//! TGE's do. In the engine's protocol the table has default limits ([`CommandTable::with_default_limits`]) that every such
+//! command shares: one bucket for the connection, so a client gets no more calls by changing the name, and a check of the
+//! arguments' count and size that needs no list of them. Its refusals are counted for the connection (`commandDrops(client, "*")`) and, for the first
+//! [`UNLISTED_NAMES`] names a connection used, for the name.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use torque_engine::command::{
-    CommandRefusal, DropCounter, ServerCommand, TokenBucket, command_function,
+    CommandRefusal, CommandSpec, DropCounter, ServerCommand, TokenBucket, command_function,
 };
 use torque_engine::permissions::{NoPermissions, PermissionView};
 use torque_ts_vm::sim::ObjId;
@@ -26,10 +30,18 @@ use super::NetShared;
 
 pub use torque_engine::command::REPORT_TICKS;
 
+/// The count of drops a connection keeps for the names of commands no plugin declared, past which a name is counted in the
+/// connection's total only (a client chooses the names).
+pub const UNLISTED_NAMES: usize = 32;
+
+/// The name `commandDrops` reads the drops of every command no plugin declared with.
+pub const ALL_UNLISTED: &str = "*";
+
 /// The server commands plugins declared, by function name (without case).
 #[derive(Debug, Default)]
 pub struct CommandTable {
     by_name: HashMap<String, ServerCommand>,
+    unlisted: Option<CommandSpec>,
 }
 
 impl CommandTable {
@@ -40,12 +52,21 @@ impl CommandTable {
                 .iter()
                 .map(|c| (c.function.to_ascii_lowercase(), c.clone()))
                 .collect(),
+            unlisted: None,
         }
     }
 
-    /// No command is declared.
+    /// Holds the commands no plugin declared to `spec`'s rate and argument size too ([`CommandSpec::check_unlisted`]): what the
+    /// engine's protocol does, since it has no event queue of its own to bound them.
+    #[must_use]
+    pub fn with_default_limits(mut self, spec: CommandSpec) -> CommandTable {
+        self.unlisted = Some(spec);
+        self
+    }
+
+    /// Nothing is declared and no default limits are set: the table changes nothing.
     pub fn is_empty(&self) -> bool {
-        self.by_name.is_empty()
+        self.by_name.is_empty() && self.unlisted.is_none()
     }
 
     /// The command whose function is `function`, if one was declared.
@@ -77,10 +98,12 @@ struct CommandState {
     drops: DropCounter,
 }
 
-/// One connection's standing with the declared commands.
+/// One connection's standing with the declared commands, and with the others under the default limits.
 #[derive(Clone, Debug, Default)]
 pub struct ConnCommands {
     states: HashMap<String, CommandState>,
+    unlisted: Option<CommandState>,
+    unlisted_by_name: HashMap<String, u64>,
 }
 
 impl ConnCommands {
@@ -108,7 +131,7 @@ impl ConnCommands {
         perms: &dyn PermissionView,
     ) -> Admission {
         let Some(command) = table.get(function) else {
-            return Admission::Unlimited;
+            return self.admit_unlisted(table, obj, function, args, tick);
         };
         let state = self
             .states
@@ -142,11 +165,59 @@ impl ConnCommands {
         Admission::Refused { reason, report }
     }
 
-    /// How many calls of `command` (its name with or without `serverCmd`) were refused.
+    /// How many calls of `command` (its name with or without `serverCmd`) were refused; of every command no plugin declared, for
+    /// [`ALL_UNLISTED`]. A name beyond a connection's first [`UNLISTED_NAMES`] unlisted ones reads 0 (it is in the total).
     pub fn drops(&self, command: &str) -> u64 {
+        if command == ALL_UNLISTED {
+            return self
+                .unlisted
+                .as_ref()
+                .map_or(0, |state| state.drops.total());
+        }
+        let key = command_function(command).to_ascii_lowercase();
         self.states
-            .get(&command_function(command).to_ascii_lowercase())
-            .map_or(0, |state| state.drops.total())
+            .get(&key)
+            .map(|state| state.drops.total())
+            .or_else(|| self.unlisted_by_name.get(&key).copied())
+            .unwrap_or(0)
+    }
+
+    /// Judges a call of a command no plugin declared: [`Admission::Unlimited`] unless the table has default limits.
+    fn admit_unlisted(
+        &mut self,
+        table: &CommandTable,
+        obj: ObjId,
+        function: &[u8],
+        args: &[Vec<u8>],
+        tick: u64,
+    ) -> Admission {
+        let Some(spec) = table.unlisted.as_ref() else {
+            return Admission::Unlimited;
+        };
+        let state = self.unlisted.get_or_insert_with(|| CommandState {
+            bucket: spec.bucket(tick),
+            drops: DropCounter::default(),
+        });
+        let verdict = if state.bucket.take(tick) {
+            spec.check_unlisted(args)
+        } else {
+            Err(CommandRefusal::RateLimited)
+        };
+        let Err(reason) = verdict else {
+            return Admission::Run;
+        };
+        state.drops.note();
+        let name: String = String::from_utf8_lossy(function).chars().take(48).collect();
+        let key = name.to_ascii_lowercase();
+        if self.unlisted_by_name.len() < UNLISTED_NAMES || self.unlisted_by_name.contains_key(&key)
+        {
+            *self.unlisted_by_name.entry(key).or_default() += 1;
+        }
+        let report = state
+            .drops
+            .report(tick)
+            .map(|count| format!("Client {obj} {name}: {count} call(s) refused ({reason})."));
+        Admission::Refused { reason, report }
     }
 }
 

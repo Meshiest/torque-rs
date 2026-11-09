@@ -1187,6 +1187,10 @@ impl Feed for TgeFeed {
         }
     }
 
+    fn engine_session(&self) -> bool {
+        self.engine.is_some()
+    }
+
     fn send_tick(&mut self, world: &mut TgeWorld, block: &ClientBlock) {
         if self.gone || !self.connected() {
             return;

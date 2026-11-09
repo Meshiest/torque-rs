@@ -2133,3 +2133,69 @@ fn rpc_a_reply_past_the_clients_size_for_the_rpc_is_a_protocol_error() {
         "and the client refuses it"
     );
 }
+
+#[derive(PluginId)]
+#[plugin(id = "test.rpc.outside")]
+struct Outside {
+    own: Rc<Cell<u32>>,
+    shared: Rc<Cell<u32>>,
+}
+
+impl Plugin for Outside {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let own = Rc::clone(&self.own);
+        engine
+            .net()
+            .rpc::<Echo, ()>("own")
+            .to_server()
+            .rate(1000, 1000)
+            .outside_connection_rate()
+            .server(move |_cx: &mut RpcCx, _req: Echo| {
+                own.set(own.get() + 1);
+                Ok(())
+            });
+        let shared = Rc::clone(&self.shared);
+        engine
+            .net()
+            .rpc::<Echo, ()>("shared")
+            .to_server()
+            .rate(1000, 1000)
+            .server(move |_cx: &mut RpcCx, _req: Echo| {
+                shared.set(shared.get() + 1);
+                Ok(())
+            });
+    }
+}
+
+#[test]
+fn rpc_an_rpc_outside_the_connection_rate_keeps_only_its_own() {
+    let own = Rc::new(Cell::new(0));
+    let shared = Rc::new(Cell::new(0));
+    let engine = EngineBuilder::new()
+        .add_plugins(Outside {
+            own: Rc::clone(&own),
+            shared: Rc::clone(&shared),
+        })
+        .build()
+        .expect("the engine builds");
+    let mut pair = Pair::new(&engine);
+    // The connection's bucket for all RPCs holds 10 calls.
+    pair.server.set_connection_rate(10, 10);
+    let own_rpc = pair.client.rpc::<Echo, ()>("own").expect("the rpc");
+    let shared_rpc = pair.client.rpc::<Echo, ()>("shared").expect("the rpc");
+    for _ in 0..200 {
+        pair.client
+            .notify(&own_rpc, Echo::default())
+            .expect("queued");
+    }
+    for _ in 0..200 {
+        pair.client
+            .notify(&shared_rpc, Echo::default())
+            .expect("queued");
+    }
+    pair.round();
+    assert_eq!(own.get(), 200, "its own rate is the only one it meets");
+    assert_eq!(shared.get(), 10, "the others share the connection's bucket");
+    assert_eq!(pair.server.drops("own"), 0);
+    assert_eq!(pair.server.drops("shared"), 190);
+}

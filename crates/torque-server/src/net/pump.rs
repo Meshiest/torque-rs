@@ -145,8 +145,14 @@ fn delete_running<G: NetGame>(
 }
 
 /// The work a datagram or packet of `len` bytes costs.
-pub fn cost(len: usize) -> u32 {
-    1u32.saturating_add(u32::try_from(len / 64).unwrap_or(u32::MAX))
+pub const fn cost(len: usize) -> u32 {
+    let units = len / 64;
+    let units = if units > u32::MAX as usize {
+        u32::MAX
+    } else {
+        units as u32
+    };
+    1u32.saturating_add(units)
 }
 
 pub fn global_text(vm: &Vm, name: &str) -> Option<Vec<u8>> {
@@ -268,6 +274,7 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
         super::engine::forget(vm, shared, addr);
     }
     let local = transport.borrow().local_addr();
+    let engine_mode = super::peer::ProtocolMode::of(vm) == torque_engine::ProtocolKind::Engine;
     let mut buf = vec![0u8; RECV_BUFFER_BYTES];
     let (mut reads, mut players, mut strangers) = (0usize, 0usize, 0usize);
     while reads < NET_READS_PER_PASS
@@ -295,6 +302,13 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
                 (from, Cow::Borrowed(buf.get(..len).unwrap_or_default()))
             }
         };
+        // A client of the engine's protocol sends no datagram above what a source's share of work can take, so a longer one is no
+        // honest peer's (the reserved work of one above about 1,700 bytes could never fit, and a reliable lane would send it again
+        // for ever).
+        if engine_mode && data.len() > NET_MAX_DATAGRAM {
+            shared.borrow_mut().counters.oversize += 1;
+            continue;
+        }
         // A connection's game packet (a player's) reserves its worst case before it is handled; what the tick cannot pay
         // waits (and ends the pass). Every other datagram is a stranger's: it costs its bytes, from the strangers' pool, and one
         // past the pool is read and dropped at no cost, so a flood cannot take the players' work. Any datagram counts against
@@ -879,11 +893,26 @@ pub(super) fn handle_game<G: NetGame>(
     if let Some(ack) = answer {
         send(shared, addr, &ack);
     }
-    // What was read before an error has happened (each unordered event is processed as it is read). A script's `delete()` of
-    // this connection waits until the packet's followups are done: the later commands run with a live `%client`, then the drop
-    // happens.
+    // What was read before an error has happened (each unordered event is processed as it is read).
+    run_packet_followups(vm, shared, obj, outcome.followups);
+    if let Some(error) = outcome.error {
+        let why = shared.borrow().game.error_text(&error);
+        packet_error(vm, shared, conn, &why);
+    }
+    used
+}
+
+/// Runs what a packet (or a batch of script commands in the engine's protocol) of connection `obj` asked for. A script's
+/// `delete()` of the connection waits until the followups are done: the later commands run with a live `%client`, then the drop
+/// happens.
+fn run_packet_followups<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    obj: Option<ObjId>,
+    followups: Vec<Followup>,
+) {
     shared.borrow_mut().packet_obj = obj;
-    run_followups(vm, shared, obj, outcome.followups);
+    run_followups(vm, shared, obj, followups);
     let deferred = {
         let mut sh = shared.borrow_mut();
         sh.packet_obj = None;
@@ -896,11 +925,51 @@ pub(super) fn handle_game<G: NetGame>(
     if let Some(obj) = deferred {
         delete_running(vm, shared, obj, None, DeleteMode::Scheduled, false);
     }
-    if let Some(error) = outcome.error {
+}
+
+/// The steps a tag argument of a script command costs its connection's share of the script window: the expansion copies up to
+/// 1,023 bytes, and a command of the engine's protocol is not paid for from a datagram's reservation as a packet's is.
+const COMMAND_TAG_STEPS: u64 = 64;
+
+/// Runs the script commands `conn`'s client sent in the engine's protocol, each a body ([`command_rpc`](super::command_rpc)),
+/// as the commands of a packet run: the same gates and limits ([`run_followups`]). A body that is not one a sender of this
+/// engine makes ends the connection with `Packet Error.`, after the commands before it ran.
+pub(super) fn run_command_bodies<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    conn: ConnId,
+    bodies: Vec<Vec<u8>>,
+) {
+    let (events, obj) = {
+        let sh = shared.borrow();
+        (sh.events.clone(), sh.by_conn.get(&conn).copied())
+    };
+    let Some(obj) = obj else { return };
+    let mut followups = Vec::with_capacity(bodies.len());
+    let mut failed = None;
+    for body in &bodies {
+        match events.decode_command(vm, conn, body) {
+            Ok(Some(followup)) => {
+                if let Followup::ServerCmd { args, .. } = &followup {
+                    let tags = args.iter().filter(|a| a.first() == Some(&1)).count();
+                    shared
+                        .borrow_mut()
+                        .charge_share(obj, COMMAND_TAG_STEPS.saturating_mul(tags as u64));
+                }
+                followups.push(followup);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                failed = Some(error);
+                break;
+            }
+        }
+    }
+    run_packet_followups(vm, shared, Some(obj), followups);
+    if let Some(error) = failed {
         let why = shared.borrow().game.error_text(&error);
         packet_error(vm, shared, conn, &why);
     }
-    used
 }
 
 /// Whether a client's remote command may run ([`NetGame::command_allowed`]). Read when the command is about to run, so an

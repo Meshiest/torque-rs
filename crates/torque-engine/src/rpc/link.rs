@@ -669,10 +669,10 @@ impl RpcLink {
         let Some(entry) = self.table.get(id) else {
             return false;
         };
-        let (rate, burst) = (entry.rate, entry.burst);
+        let (rate, burst, shared) = (entry.rate, entry.burst, entry.shares_connection_rate);
         let bucket =
             self.send_buckets[id].get_or_insert_with(|| TokenBucket::new(rate, burst, now));
-        bucket.take(now) && self.send_conn_bucket.take(now)
+        bucket.take(now) && (!shared || self.send_conn_bucket.take(now))
     }
 
     /// Frames `message` for RPC `id` and queues it, with `done` waiting for the reply when `entry` has one.
@@ -788,8 +788,21 @@ impl RpcLink {
         rpc: &RpcRef<Req, ()>,
         request: Req,
     ) -> Result<(), RpcError> {
+        self.notify_ref(rpc, &request)
+    }
+
+    /// [`notify`](Self::notify) with the message borrowed, for a caller that keeps it when the call fails (a full queue, a rate
+    /// that is spent) and tries again.
+    ///
+    /// # Errors
+    /// As [`call`](Self::call).
+    pub fn notify_ref<Req: NetMessage>(
+        &mut self,
+        rpc: &RpcRef<Req, ()>,
+        request: &Req,
+    ) -> Result<(), RpcError> {
         let id = self.table.id(rpc.name()).ok_or(RpcError::Unsupported)?;
-        self.send_erased(id, &request, None)
+        self.send_erased(id, request, None)
     }
 
     /// Calls or notifies the RPC `name` with a script's arguments (one for each field of the request); a reply a script call
@@ -925,9 +938,9 @@ impl RpcLink {
         let Some(entry) = self.table.get(id) else {
             return false;
         };
-        let (rate, burst) = (entry.rate, entry.burst);
+        let (rate, burst, shared) = (entry.rate, entry.burst, entry.shares_connection_rate);
         let bucket = self.buckets[id].get_or_insert_with(|| TokenBucket::new(rate, burst, now));
-        bucket.take(now) && self.conn_bucket.take(now)
+        bucket.take(now) && (!shared || self.conn_bucket.take(now))
     }
 
     fn note_drop(&mut self, id: usize) {

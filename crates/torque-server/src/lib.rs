@@ -32,6 +32,11 @@
 //! the source's `scope_stamp`, so a settled query never misses a relative that was just linked
 //! (torque-plugin-hierarchy's `tests/net.rs`).
 //!
+//! **A command in the engine's protocol costs what a packet's costs** (`net::command_rpc`): the RPC's bucket bounds what a body costs to
+//! read, a body that is not one ends the connection, every command goes through the same gates and limits as a packet's
+//! (`run_followups`), and a command no plugin declared shares the default limits
+//! (`commands_modes::a_command_no_plugin_declared_is_held_to_the_default_limits_in_the_engines_protocol_only`).
+//!
 //! **A flood of info queries runs no script**: the info answer is made from the last second's script output
 //! (`a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_answered`).
 //!

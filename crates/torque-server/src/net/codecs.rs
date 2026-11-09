@@ -320,7 +320,9 @@ pub trait NetCodecs: Debug {
     }
 
     /// The prefix of the function a received command of `variant` calls (`on_server`: a client's command on a server
-    /// connection).
+    /// connection). On a server `variant` is whatever byte the client sent (in the engine's protocol it is a field of the command's
+    /// body, not a class id the event reader checked), so it is untrusted: an implementation answers for any value and never
+    /// indexes with it.
     fn command_prefix(&self, variant: u8, on_server: bool) -> &'static [u8] {
         let _ = variant;
         torque_net::remote::function_prefix(on_server)

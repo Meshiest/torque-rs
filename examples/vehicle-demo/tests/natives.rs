@@ -26,6 +26,14 @@ fn server_listing() -> PathBuf {
     })
 }
 
+/// The client's list for the protocol in use: the engine's has the RPC natives too, in `client-engine.txt`.
+fn client_listing() -> PathBuf {
+    listing(match protocol_from_env() {
+        ProtocolKind::Engine => "client-engine.txt",
+        _ => "client.txt",
+    })
+}
+
 #[test]
 fn the_client_has_these_natives() {
     let game = VehicleDemo::new(
@@ -37,7 +45,7 @@ fn the_client_has_these_natives() {
         },
     )
     .unwrap();
-    check_listing(&listing("client.txt"), &game.vm().native_listing());
+    check_listing(&client_listing(), &game.vm().native_listing());
 }
 
 #[test]

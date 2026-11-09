@@ -224,6 +224,11 @@ different.
   `serverCmd*` with typed arguments, a per-client token bucket counted in ticks, and an argument size cap: a call past the limit or
   with a wrong argument is refused before the function runs, counted (`commandDrops(%client, name)`) and reported once a
   second; `server_command_limits` holds a command a script defines. TGE's commands and bytes are unchanged.
+- In the engine's protocol `commandToServer` and `commandToClient` are carried as two built-in RPCs (`torque.command`,
+  `torque.command.client`) instead of events; scripts see the same callbacks, arguments, tags and order. A command no plugin
+  declared is held to default limits there (32 a second, burst 64, at most 20 arguments of 255 bytes, one bucket for the
+  connection), and `commandDrops(%client, "*")` counts what was refused. Torque's protocol has no limit on such a command and
+  its bytes are unchanged. `RpcBuilder::outside_connection_rate` leaves an RPC out of the connection's bucket for all RPCs.
 
 #### Gameplay
 

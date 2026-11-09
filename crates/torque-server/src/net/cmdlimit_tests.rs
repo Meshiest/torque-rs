@@ -288,3 +288,105 @@ fn a_command_with_a_permission_runs_only_for_a_caller_who_holds_it() {
     // The refusal is counted like any other.
     assert_eq!(conn.drops("Mute"), 3);
 }
+
+fn with_default_limits(commands: &[(&str, CommandSpec)]) -> CommandTable {
+    table(commands).with_default_limits(CommandSpec::new())
+}
+
+#[test]
+fn a_thousand_undeclared_calls_in_one_tick_run_at_most_64_whatever_their_names() {
+    let table = with_default_limits(&[]);
+    let mut conn = ConnCommands::default();
+    let ran = (0..1000)
+        .filter(|n| {
+            // Every call a different name: a client gets no more calls by changing it.
+            let name = format!("serverCmdName{n}");
+            runs(&conn.admit(&table, 5, name.as_bytes(), &args(&["1"]), 40))
+        })
+        .count();
+    assert_eq!(ran, 64);
+    assert_eq!(conn.drops("*"), 936);
+    // The names kept are the first 32 of the connection; the rest are in the total only.
+    assert_eq!(conn.drops("Name64"), 1, "a name that came after the burst");
+    assert_eq!(conn.drops("Name999"), 0, "past the names kept");
+    // Another connection has its own bucket.
+    let mut other = ConnCommands::default();
+    assert!(runs(&other.admit(&table, 6, b"serverCmdX", &args(&[]), 40)));
+}
+
+#[test]
+fn undeclared_calls_refill_at_32_a_second_and_a_declared_command_keeps_its_own_spec() {
+    let table =
+        with_default_limits(&[("Ping", CommandSpec::new().arg("n", ArgType::Int).rate(1, 2))]);
+    let mut conn = ConnCommands::default();
+    for _ in 0..64 {
+        assert!(runs(&conn.admit(
+            &table,
+            5,
+            b"serverCmdLoose",
+            &args(&[]),
+            0
+        )));
+    }
+    assert!(!runs(&conn.admit(
+        &table,
+        5,
+        b"serverCmdLoose",
+        &args(&[]),
+        0
+    )));
+    // 600 ticks of 32 ms are 19.2 seconds: 614 tokens, held to the burst of 64.
+    let ran = (0..1000)
+        .filter(|_| runs(&conn.admit(&table, 5, b"serverCmdLoose", &args(&[]), 600)))
+        .count();
+    assert_eq!(ran, 64);
+    // The declared command is not drawn from the shared bucket and is held to its own.
+    let ping = (0..10)
+        .filter(|_| runs(&conn.admit(&table, 5, b"serverCmdPing", &args(&["1"]), 600)))
+        .count();
+    assert_eq!(ping, 2);
+    assert_eq!(conn.drops("Ping"), 8);
+}
+
+#[test]
+fn undeclared_calls_are_held_to_twenty_arguments_of_255_bytes_and_tags_are_not_held_to_the_size() {
+    let table = with_default_limits(&[]);
+    let mut conn = ConnCommands::default();
+    let many: Vec<Vec<u8>> = (0..21).map(|n| n.to_string().into_bytes()).collect();
+    let verdict = |conn: &mut ConnCommands, args: &[Vec<u8>]| match conn.admit(
+        &table,
+        5,
+        b"serverCmdX",
+        args,
+        0,
+    ) {
+        Admission::Refused { reason, .. } => Some(reason),
+        _ => None,
+    };
+    assert!(matches!(
+        verdict(&mut conn, &many),
+        Some(CommandRefusal::TooManyArguments { given: 21, max: 20 })
+    ));
+    assert_eq!(verdict(&mut conn, &many[..20]), None);
+    assert!(matches!(
+        verdict(&mut conn, &[vec![b'x'; 256]]),
+        Some(CommandRefusal::ArgumentTooLong { number: 1, .. })
+    ));
+    assert_eq!(verdict(&mut conn, &[vec![b'x'; 255]]), None);
+    let mut tag = vec![1u8];
+    tag.extend_from_slice(&[b'y'; 900]);
+    assert_eq!(verdict(&mut conn, &[tag]), None);
+}
+
+#[test]
+fn a_table_without_default_limits_leaves_undeclared_calls_unlimited() {
+    let table = table(&[]);
+    let mut conn = ConnCommands::default();
+    for _ in 0..1000 {
+        assert_eq!(
+            conn.admit(&table, 5, b"serverCmdAny", &args(&["1"]), 0),
+            Admission::Unlimited
+        );
+    }
+    assert_eq!(conn.drops("*"), 0);
+}

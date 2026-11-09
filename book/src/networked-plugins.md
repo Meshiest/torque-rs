@@ -364,6 +364,11 @@ that names a ghost from the same packet finds it. The framing and the checks are
 (`RpcLanes`): reliable batches ride it, unreliable ones that fit ride the unreliable lane and are dropped when lost, and the
 session's unacknowledged bytes are the backpressure.
 
+**The engine's own RPCs.** In the engine's protocol two RPCs are always registered, `torque.command` and `torque.command.client`: they
+carry `commandToServer` and `commandToClient` (see [Network protocols](network-protocols.md)), so those names are taken, and they
+are in every manifest of that protocol. They are outside the connection's bucket for all RPCs and have their own, so a plugin's
+calls and the game's commands do not starve each other; `onRpcCheck` is not asked about them.
+
 (`examples/minimal-engine/tests/rpc.rs` runs a call with a reply, a notification each way, the script natives, a script
 handler, a flood, and the permission checks through the engine's own server and client over the memory transport.)
 

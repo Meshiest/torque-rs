@@ -197,6 +197,7 @@ call 2..* call(function, args...) - calls a global function by name
 cancel 2..2 cancel(scheduleId) - drops a scheduled call
 clearModDownloadCache 1..1 clearModDownloadCache() - deletes the mod content kept from servers; returns the bytes freed
 collapseEscape 2..2 collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for
+commandDrops 3..3 commandDrops(client, command) - how many calls of a server command the client sent that were refused
 commandToClient 3..22
 commandToServer 2..21
 compile 2..2 compile(file) - compiles a script without running it

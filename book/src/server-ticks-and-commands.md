@@ -80,4 +80,11 @@ client had refused, and while calls keep being refused the server prints one con
 command, how many were refused and why. Neither a refusal nor a flood drops the client. A call made from a script
 (`serverCmdWave(%client, 3)`) is the server's own and is never limited.
 
+In the engine's protocol the commands travel as RPCs (see *Network protocols*) and the same specs hold. A command no plugin declared
+is held to the default limits there: 32 calls a second after a burst of 64 for the connection as a whole (changing the command's
+name buys no more), at most 20 arguments of at most 255 bytes. `commandDrops(%client, "*")` is the count of every such refusal
+and `commandDrops(%client, "Name")` the count of one name (the first 32 a connection used). In Torque's protocol an undeclared
+command has no limit, as in TGE.
+
 Two plugins that declare one command name (without regard to case) fail the engine's build, and the error names both plugins.
+

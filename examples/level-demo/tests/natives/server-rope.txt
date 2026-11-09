@@ -362,6 +362,8 @@ ropeNetSetLifetime 3..4 ropeNetSetLifetime(rope, seconds [, fade]) - makes a net
 ropeNetSetTexture 3..3 ropeNetSetTexture(rope, file) - sets the texture one networked rope is drawn with (a .png or .jpg, at most 96 bytes of name); an empty string puts the
 ropeNetSetTextureScroll 3..3 ropeNetSetTextureScroll(rope, speed) - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
 ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its driver on every client
+rpcDrops 3..3 rpcDrops(client, name) - how many calls of an RPC the client sent that were dropped for going over its rate
+rpcToClient 3..* rpcToClient(client, name, fields..) - sends a client the server-to-client RPC `name`, its arguments the message's fields; answers the reason it was not queued, or nothing
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
