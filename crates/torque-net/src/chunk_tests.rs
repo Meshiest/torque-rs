@@ -419,3 +419,38 @@ fn a_receiver_holds_what_an_honest_sender_can_queue_priority_channels_included()
     );
     assert_eq!(rx.hold_cap, shared_hold_cap(&limits) + 65_536);
 }
+
+#[test]
+fn bytes_sent_again_are_not_fresh() {
+    let (mut tx, mut rx) = (ChunkSender::new(&limits()), ChunkReceiver::new(&limits()));
+    tx.enqueue(0, Kind::Snapshot, vec![7u8; 6_000]).unwrap();
+    // One packet's section, written once and read again and again: its bytes are fresh the first time only.
+    let mut w = BitWriter::new();
+    tx.write(&mut w, 1, 1_600);
+    let packet = w.into_bytes();
+    let mut out = Vec::new();
+    rx.read(&mut BitReader::new(&packet), &mut out).unwrap();
+    let fresh = rx.fresh_bytes();
+    assert!(fresh > 0 && fresh == rx.received_bytes());
+    for _ in 0..10 {
+        rx.read(&mut BitReader::new(&packet), &mut out).unwrap();
+    }
+    assert_eq!(rx.fresh_bytes(), fresh, "a replay adds nothing");
+    assert_eq!(
+        rx.received_bytes(),
+        11 * fresh,
+        "the cap's count still sees it all"
+    );
+    // The rest of the message is fresh, and when it is whole a replay of any chunk of it is not.
+    tx.on_notify(1, true);
+    let mut seq = 1;
+    while !tx.is_idle() {
+        seq += 1;
+        out.extend(hop(&mut tx, &mut rx, seq, 1_600));
+    }
+    assert_eq!(out.len(), 1);
+    assert_eq!(rx.fresh_bytes(), 6_000);
+    rx.read(&mut BitReader::new(&packet), &mut Vec::new())
+        .unwrap();
+    assert_eq!(rx.fresh_bytes(), 6_000);
+}

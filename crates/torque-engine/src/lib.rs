@@ -90,6 +90,7 @@ pub mod rpc;
 mod run;
 pub mod script;
 mod slots;
+pub mod upload;
 
 #[cfg(test)]
 mod command_tests;

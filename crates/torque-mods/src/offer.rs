@@ -19,14 +19,12 @@ use crate::content::{Cursor, Hash, MAGIC, MessageError};
 use crate::files::is_script_path;
 use crate::package::{MAX_PATH_LEN, ModLimits, check_path};
 
-/// The size of a block.
-pub const BLOCK_BYTES: usize = 64 << 10;
-
-/// The bytes of a block's hash.
-pub const BLOCK_HASH_LEN: usize = 16;
+pub use torque_transfer::{
+    BLOCK_BYTES, BLOCK_HASH_LEN, BlockHash, block_count, block_hash, run_bytes,
+};
 
 /// The most blocks one request asks for.
-pub const MAX_REQUEST_BLOCKS: u32 = 4;
+pub const MAX_REQUEST_BLOCKS: u32 = torque_transfer::MAX_RUN_BLOCKS;
 
 /// The most bytes of the offer message.
 pub const MAX_OFFER_BYTES: usize = 1 << 20;
@@ -37,36 +35,9 @@ pub const MAX_OFFER_MODS: usize = torque_net::modsync::MAX_REQUIRED;
 const KIND_OFFER: u8 = 1;
 const KIND_DATA: u8 = 3;
 
-/// A block's hash.
-pub type BlockHash = [u8; BLOCK_HASH_LEN];
-
-/// The hash of a block: SHA-256 cut short.
-pub fn block_hash(data: &[u8]) -> BlockHash {
-    let full: [u8; 32] = Sha256::digest(data).into();
-    let mut out = [0u8; BLOCK_HASH_LEN];
-    out.copy_from_slice(&full[..BLOCK_HASH_LEN]);
-    out
-}
-
 /// The SHA-256 of a file.
 pub fn file_hash(data: &[u8]) -> Hash {
     Sha256::digest(data).into()
-}
-
-/// How many blocks a file of `size` bytes has.
-pub fn block_count(size: u64) -> u64 {
-    size.div_ceil(BLOCK_BYTES as u64)
-}
-
-/// The bytes of blocks `start..start + count` of a file of `size` bytes: from the first block's start to the run's end or the
-/// file's, whichever is first.
-pub fn run_bytes(size: u64, start: u64, count: u64) -> (u64, u64) {
-    let from = start.saturating_mul(BLOCK_BYTES as u64).min(size);
-    let to = start
-        .saturating_add(count)
-        .saturating_mul(BLOCK_BYTES as u64)
-        .min(size);
-    (from, to)
 }
 
 /// One file of an offered mod.

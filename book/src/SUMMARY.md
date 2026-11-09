@@ -17,6 +17,7 @@
 [Server tick hooks and commands](server-ticks-and-commands.md)
 [Networked plugins](networked-plugins.md)
 [Network protocols](network-protocols.md)
+[Uploads](uploads.md)
 [Props and joints](props-and-joints.md)
 [Scene hierarchy](scene-hierarchy.md)
 [Mods](mods.md)

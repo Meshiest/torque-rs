@@ -1,0 +1,28 @@
+[package]
+name = "torque-transfer"
+description = "Client-to-server file transfers for torque-rs: a server that pulls what a client offers, block by block, under quotas, caps and hostile-input rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "upload", "networking", "gamedev"]
+categories = ["network-programming", "game-development"]
+
+# The upload protocol's state machines: the server's policy (size, quota, concurrency and in-flight limits), its scheduler of
+# block requests, its staging and resume, and the client's half. No sockets and no clock: the host passes the time and moves the
+# messages. The engine crate wires it to RPCs and a client-to-server channel; the mods download shares its block hashing.
+
+[dependencies]
+# The connection id, the channel caps and the size text.
+torque-net = { path = "../torque-net" }
+# The block hashes and the whole-content hash.
+sha2 = "0.10"
+
+[dev-dependencies]
+# The counting allocator of the memory test (the workspace forbids the `unsafe` a hand-written one needs).
+peak_alloc = "0.3.0"
+
+[lints]
+workspace = true

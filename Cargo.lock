@@ -2849,6 +2849,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "peak_alloc"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccc90935a8dd139fdf341762773687a1e361d3f54b396a55d9dd1f7001e484bb"
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4231,6 +4237,7 @@ dependencies = [
  "torque-net",
  "torque-permissions",
  "torque-resource",
+ "torque-transfer",
  "torque-ts-vm",
 ]
 
@@ -4559,6 +4566,7 @@ dependencies = [
  "torque-net",
  "torque-resource",
  "torque-server",
+ "torque-transfer",
  "torque-ts-vm",
  "zip",
 ]
@@ -4893,6 +4901,15 @@ dependencies = [
  "torque-shapes",
  "torque-ts-vm",
  "torque-vehicle",
+]
+
+[[package]]
+name = "torque-transfer"
+version = "0.1.0"
+dependencies = [
+ "peak_alloc",
+ "sha2",
+ "torque-net",
 ]
 
 [[package]]

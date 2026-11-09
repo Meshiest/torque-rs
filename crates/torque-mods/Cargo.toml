@@ -19,6 +19,8 @@ torque-engine = { path = "../torque-engine" }
 # The wire: the required-mods section of the handshake, the bulk channel and the server's hold on a joining client.
 torque-net = { path = "../torque-net" }
 torque-server = { path = "../torque-server" }
+# The blocks content is cut into, and their hashes (shared with client-to-server transfers).
+torque-transfer = { path = "../torque-transfer" }
 # The hardened zip reader and its path rules.
 torque-resource = { path = "../torque-resource" }
 torque-ts-vm = { path = "../torque-ts-vm" }

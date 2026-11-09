@@ -171,6 +171,36 @@ pub(crate) fn sign_in_address_warning(address: Option<SocketAddr>, memory: bool)
     ))
 }
 
+/// Gives the server's uploads a staging folder of their own (a lock holds it for the run) with a cap, or says why they have none.
+fn claim_staging(vm: &mut Vm) {
+    let claimed = crate::uploads::data_dir().map(|data| {
+        let parent = crate::uploads::staging_parent(&data);
+        crate::uploads::remove_dead_runs(&parent);
+        crate::uploads::claim_run_folder(&parent, &crate::uploads::run_name())
+    });
+    let folder = match claimed {
+        Some(Ok(folder)) => Some(folder),
+        Some(Err(e)) => {
+            vm.warn(format!(
+                "uploads: no staging folder ({e}): only uploads that fit in memory are taken"
+            ));
+            None
+        }
+        None => {
+            vm.warn(
+                "uploads: no data folder for staging: only uploads that fit in memory are taken"
+                    .to_string(),
+            );
+            None
+        }
+    };
+    let config = crate::uploads::staging_config(folder.as_ref().map(|f| f.path().to_path_buf()));
+    vm.set_extension(Rc::new(torque_engine::upload::HostStaging(config)));
+    if let Some(folder) = folder {
+        vm.set_extension(Rc::new(folder));
+    }
+}
+
 impl GameServer {
     /// A server over `files`, listening as `start` says, that has run `server.cs` (or the entry script `game.toml` names) and the start function and takes
     /// connections.
@@ -251,6 +281,13 @@ impl GameServer {
         server
             .vm
             .set_extension(Rc::new(ProtocolMode(engine.protocol())));
+        // Uploads too large for memory are staged in a folder of this run's own, under the user's data folder.
+        if !engine
+            .list::<torque_engine::upload::UploadEntry>()
+            .is_empty()
+        {
+            claim_staging(&mut server.vm);
+        }
         replay(engine, ServerStage::Net, &mut server.vm)?;
         let net = wiring
             .take_net()
@@ -333,6 +370,8 @@ impl GameServer {
                 Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms))
             };
             register_server_natives(&mut server.vm, &rpc);
+            // What the engine's uploads need of the connections (a game with no upload kind never asks).
+            torque_server::net::uploads::install_server(&mut server.vm, &rpc, hub);
             server.vm.set_extension(rpc);
         }
         if let Some(hub) = hub {

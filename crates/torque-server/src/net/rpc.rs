@@ -434,6 +434,17 @@ impl ServerRpc {
         self.links.borrow_mut().get_mut(&conn).map(f)
     }
 
+    /// What `conn`'s player holds now.
+    pub fn permissions_of(&self, conn: ConnId) -> torque_engine::permissions::KeyView<'_> {
+        self.perms.view(self.host.subject_key(conn))
+    }
+
+    /// Drops `conn` with `reason`, as a malformed batch does.
+    pub fn drop_conn(&self, vm: &mut Vm, conn: ConnId, reason: &[u8]) {
+        self.links.borrow_mut().remove(&conn);
+        self.host.drop_conn(vm, conn, reason);
+    }
+
     /// Sends the notification `rpc` to `conn`.
     pub fn notify<Req: torque_ghosts::plugin::NetMessage>(
         &self,

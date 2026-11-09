@@ -230,6 +230,17 @@ impl UpstreamReader {
         verdict
     }
 
+    /// The chunk bytes this connection has sent that no earlier chunk had carried (bytes sent again do not count): a count that
+    /// only grows, for a host that wants to know a connection is still delivering.
+    pub fn fresh_bytes(&self) -> u64 {
+        self.receiver.fresh_bytes()
+    }
+
+    /// [`fresh_bytes`](Self::fresh_bytes) of the channel with this id (the order of the limits the reader was made with).
+    pub fn fresh_bytes_of(&self, channel: usize) -> u64 {
+        self.receiver.fresh_bytes_of(channel)
+    }
+
     /// The bytes this connection holds for half-received messages.
     pub fn held_bytes(&self) -> usize {
         self.receiver.held_bytes()

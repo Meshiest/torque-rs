@@ -587,8 +587,14 @@ impl Partial {
         matches!(self.ranges.as_slice(), [(0, end)] if *end == self.total)
     }
 
-    fn insert(&mut self, offset: usize, bytes: &[u8]) -> Result<(), NetError> {
+    /// Keeps `bytes` at `offset`; returns how many of them no earlier chunk had covered.
+    fn insert(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, NetError> {
         let end = offset + bytes.len();
+        let covered: usize = self
+            .ranges
+            .iter()
+            .map(|&(s, e)| e.min(end).saturating_sub(s.max(offset)))
+            .sum();
         if self.buf.len() < end {
             self.buf.resize(end, 0);
         }
@@ -613,7 +619,7 @@ impl Partial {
                 cap: MAX_RANGES as u64,
             });
         }
-        Ok(())
+        Ok(bytes.len() - covered)
     }
 }
 
@@ -621,6 +627,8 @@ impl Partial {
 struct RecvChan {
     next: u16,
     window: VecDeque<Option<Partial>>,
+    /// The chunk bytes of this channel that no earlier chunk had carried.
+    fresh: u64,
 }
 
 /// One connection's receive side of every channel.
@@ -897,6 +905,17 @@ impl ChunkReceiver {
         self.received
     }
 
+    /// The chunk bytes read so far that no earlier chunk had carried: what is sent again (a chunk of a message already whole, or
+    /// bytes a half-received message has) does not count. A count that only grows.
+    pub fn fresh_bytes(&self) -> u64 {
+        self.chans.iter().map(|c| c.fresh).sum()
+    }
+
+    /// [`fresh_bytes`](Self::fresh_bytes) of one channel (0 for a channel there is not).
+    pub fn fresh_bytes_of(&self, channel: usize) -> u64 {
+        self.chans.get(channel).map_or(0, |c| c.fresh)
+    }
+
     /// The same receiver holding at most `bytes` for half-received messages across all its channels
     /// ([`default_hold_cap`] otherwise). A chunk that would take it past that is refused. A channel whose `max_message` is
     /// above it can never deliver a whole message.
@@ -1066,7 +1085,8 @@ impl ChunkReceiver {
             buf: Vec::with_capacity(total),
             ranges: Vec::new(),
         });
-        partial.insert(offset, &bytes)?;
+        let new = partial.insert(offset, &bytes)?;
+        chan.fresh = chan.fresh.saturating_add(new as u64);
         while chan
             .window
             .front()

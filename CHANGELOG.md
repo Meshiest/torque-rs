@@ -127,6 +127,11 @@ different.
 
 #### Web and networking
 
+- `torque-transfer` and `NetRegistry::upload`: files a client sends a server, taken by a plugin's sink under limits the server
+  sets (size, quota per player, uploads at once, staged bytes, rate, a permission). The server pulls the file in 64 KiB blocks,
+  asks for each run and checks every block and the whole content against hashes before the sink sees it as read-only untrusted
+  bytes; data nobody asked for or a bad block drops the connection. Larger uploads stage in a server-private folder, and a cut-off
+  upload resumes with only the missing blocks. The mods download shares the block hashing.
 - `torque-client`: the client's prediction is a slot (`predict::slot`): one predictor at a time sees the server's heads, the ticks
   and the views and decides what is drawn; TGE's scheme is the default and is unchanged. Plugins register predictors with
   `engine.net().prediction` and `add_prediction`, and scripts swap with `setPredictor`. The client's vehicles step with the body

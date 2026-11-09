@@ -208,6 +208,12 @@ impl Engine {
 pub trait PermissionView {
     /// Whether the player holds `permission` (by a direct grant or one of their roles' grants).
     fn has_permission(&self, permission: &str) -> bool;
+
+    /// Who the view is of: the key the player's permissions and quotas are kept under (an auth identity, else the
+    /// connection). `None` for a view of no one in particular.
+    fn subject(&self) -> Option<SubjectKey> {
+        None
+    }
 }
 
 /// A view of a player who holds nothing (a client's: clients have no permissions of their own).
@@ -447,6 +453,10 @@ pub struct KeyView<'a> {
 impl PermissionView for KeyView<'_> {
     fn has_permission(&self, permission: &str) -> bool {
         self.perms.check(&self.key, permission)
+    }
+
+    fn subject(&self) -> Option<SubjectKey> {
+        Some(self.key.clone())
     }
 }
 

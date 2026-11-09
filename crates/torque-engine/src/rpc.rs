@@ -277,6 +277,17 @@ impl<'a> RpcCx<'a> {
         self.perms.has_permission(permission)
     }
 
+    /// Who the caller is: the key their permissions and quotas are kept under (an auth identity, else the connection). `None`
+    /// on a client.
+    pub fn subject(&self) -> Option<crate::permissions::SubjectKey> {
+        self.perms.subject()
+    }
+
+    /// The caller's permission view, which outlives the borrow of the context (for code that also needs `vm`).
+    pub fn permission_view(&self) -> &'a dyn PermissionView {
+        self.perms
+    }
+
     /// The tick the call is handled in.
     pub fn tick(&self) -> u64 {
         self.tick

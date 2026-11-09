@@ -178,12 +178,14 @@ impl ClientBuilder {
             let rpc = if engine.protocol() == torque_engine::ProtocolKind::Engine {
                 let lanes = Rc::new(torque_server::net::rpc::RpcLanes::default());
                 vm.set_extension(Rc::clone(&lanes));
-                Rc::new(ClientRpc::over_lanes(rpcs, channels, lanes))
+                Rc::new(ClientRpc::over_lanes(rpcs, Rc::clone(&channels), lanes))
             } else {
-                Rc::new(ClientRpc::new(rpcs, channels))
+                Rc::new(ClientRpc::new(rpcs, Rc::clone(&channels)))
             };
             rpc.set_host(Rc::new(RpcHost(Rc::clone(&state))));
             register_client_natives(&mut vm, &rpc);
+            // What the engine's uploads need of the connection (a game with no upload kind never asks).
+            torque_server::net::uploads::install_client(&mut vm, &rpc, &channels);
             vm.set_extension(rpc);
         }
         replay(engine, ClientStage::Classes, &mut vm)?;

@@ -136,6 +136,18 @@ impl ChannelHub {
             .map_or(0, UpstreamReader::held_bytes)
     }
 
+    /// The chunk bytes `client` has sent on its client-to-server channel `channel` so far that no earlier chunk had carried (a count
+    /// that only grows; bytes sent again, and bytes of other channels, are not in it). 0 for a channel there is not.
+    pub fn upstream_fresh(&self, client: ConnId, channel: &str) -> u64 {
+        let st = self.state.borrow();
+        let Some(id) = st.registry.up_id(channel) else {
+            return 0;
+        };
+        st.up_conns
+            .get(&client)
+            .map_or(0, |reader| reader.fresh_bytes_of(id))
+    }
+
     /// The bytes all clients hold together for half-received upstream messages.
     pub fn upstream_held_total(&self) -> usize {
         self.state

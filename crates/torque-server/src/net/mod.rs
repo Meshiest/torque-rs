@@ -35,6 +35,7 @@ pub mod room;
 pub mod rpc;
 pub mod torque;
 pub mod transport;
+pub mod uploads;
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
 pub mod web;
 

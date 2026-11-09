@@ -25,6 +25,8 @@ torque-ghosts = { path = "../torque-ghosts" }
 torque-collide = { path = "../torque-collide" }
 # The permissions model a server checks (dotted names, wildcard grants, flat roles). Std only.
 torque-permissions = { path = "../torque-permissions" }
+# Client-to-server file transfers (`net().upload`): the server's and the client's state machines. Std and `sha2` only.
+torque-transfer = { path = "../torque-transfer" }
 
 [dev-dependencies]
 # The resource layer's files, read by an asset loader in a test.

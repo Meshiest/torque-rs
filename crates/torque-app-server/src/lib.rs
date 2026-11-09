@@ -31,6 +31,7 @@ pub mod serve;
 pub mod server;
 pub mod terrain;
 pub mod transports;
+pub mod uploads;
 pub mod water;
 
 #[cfg(test)]
