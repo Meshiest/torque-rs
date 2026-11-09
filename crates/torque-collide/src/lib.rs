@@ -51,6 +51,7 @@ pub mod map;
 pub mod math;
 pub mod mesh;
 pub mod poly;
+pub mod rotation_code;
 pub mod sat;
 pub mod source;
 pub mod types;

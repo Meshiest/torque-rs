@@ -9,6 +9,7 @@
 //! **Stable.** A quantized state quantizes back to the same position and speeds, and to the same turn (two rotation components of
 //! nearly one size are settled on one before a state is given out), so a writeback never drifts.
 
+use torque_collide::rotation_code;
 use torque_physics_rapier::BodyState;
 
 /// Steps a unit of position.
@@ -21,15 +22,7 @@ pub const MAX_COORD: f32 = 100_000.0;
 pub const MAX_SPEED: f32 = 500.0;
 /// The fastest it may spin, radians a second.
 pub const MAX_SPIN: f32 = 200.0;
-/// The middle of a rotation component's range: the quantized value of 0.
-pub const ROT_MID: i32 = 16_383;
-/// The bits of a rotation component.
-pub const ROT_BITS: u8 = 15;
-
-/// How near the largest a component counts as tied with it.
-const ROT_TIE: f64 = 5.0e-3;
-/// The largest a component that is left in may be: a little past 1/sqrt 2, for the one a near tie keeps.
-const ROT_RANGE: f64 = 0.7125;
+pub use torque_collide::rotation_code::{ROT_BITS, ROT_MID};
 
 const POS_MAX: i32 = (MAX_COORD as f64 * POS_SCALE) as i32;
 const LIN_MAX: i32 = (MAX_SPEED as f64 * VEL_SCALE) as i32;
@@ -70,78 +63,13 @@ fn round(v: f64, scale: f64, max: i32) -> i32 {
     (x.round() as i64).clamp(-i64::from(max), i64::from(max)) as i32
 }
 
-/// The largest component of `q` (the lowest index of a tie), made positive by turning the whole quaternion, and the other three
-/// quantized. A quaternion that is not finite or is zero is the identity.
-fn rot_of(q: [f32; 4]) -> (u8, [u16; 3]) {
-    let mut v = q.map(f64::from);
-    let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
-    if !(len.is_finite() && len > 1.0e-12) {
-        return (3, [ROT_MID as u16; 3]);
-    }
-    for c in &mut v {
-        *c /= len;
-    }
-    // The lowest index of the components within a tolerance of the largest: a near tie keeps one choice from round to round
-    // (two components that close are both below `ROT_RANGE`, so either may be left out).
-    let most = v.iter().fold(0.0f64, |m, c| m.max(c.abs()));
-    let big = v
-        .iter()
-        .position(|c| c.abs() >= most - ROT_TIE)
-        .unwrap_or(3);
-    if v[big] < 0.0 {
-        for c in &mut v {
-            *c = -*c;
-        }
-    }
-    let mut out = [0u16; 3];
-    let mut j = 0;
-    for (k, c) in v.iter().enumerate() {
-        if k == big {
-            continue;
-        }
-        let x = (c / ROT_RANGE * f64::from(ROT_MID)).round() as i64 + i64::from(ROT_MID);
-        out[j] = x.clamp(0, 2 * i64::from(ROT_MID)) as u16;
-        j += 1;
-    }
-    (big as u8, out)
-}
-
-/// The quaternion `x, y, z, w` of a quantized rotation. A value past its range (a hostile record's) is held to it.
-fn rot_from(index: u8, rot: [u16; 3]) -> [f32; 4] {
-    let small = rot.map(|r| {
-        let r = i64::from(r).min(2 * i64::from(ROT_MID));
-        (r - i64::from(ROT_MID)) as f64 / f64::from(ROT_MID) * ROT_RANGE
-    });
-    let rest = small.iter().map(|c| c * c).sum::<f64>();
-    let big = (1.0 - rest).max(0.0).sqrt();
-    let index = usize::from(index.min(3));
-    let mut q = [0.0f64; 4];
-    let mut j = 0;
-    for (k, c) in q.iter_mut().enumerate() {
-        if k == index {
-            *c = big;
-        } else {
-            *c = small[j];
-            j += 1;
-        }
-    }
-    // Normalized in doubles before the floats are taken: the three small components were rounded to 15 bits.
-    let len = q.iter().map(|c| c * c).sum::<f64>().sqrt();
-    if len > 0.0 {
-        for c in &mut q {
-            *c /= len;
-        }
-    }
-    q.map(|c| c as f32)
-}
-
 impl Quantized {
     /// The state at the wire's precision (each value held to the world's reach and speeds). The rotation is taken round again
     /// until it quantizes to itself (a near tie of two components settles on one in a round or two).
     pub fn of(s: &BodyState) -> Quantized {
         let mut q = Quantized::once(s);
         for _ in 0..4 {
-            let (rot_index, rot) = rot_of(q.rotation());
+            let (rot_index, rot) = rotation_code::pack(q.rotation());
             if (rot_index, rot) == (q.rot_index, q.rot) {
                 break;
             }
@@ -151,7 +79,7 @@ impl Quantized {
     }
 
     fn once(s: &BodyState) -> Quantized {
-        let (rot_index, rot) = rot_of(s.rotation);
+        let (rot_index, rot) = rotation_code::pack(s.rotation);
         Quantized {
             pos: s.position.map(|v| round(f64::from(v), POS_SCALE, POS_MAX)),
             rot_index,
@@ -165,7 +93,7 @@ impl Quantized {
     pub fn state(&self) -> BodyState {
         BodyState {
             position: self.position(),
-            rotation: rot_from(self.rot_index, self.rot),
+            rotation: rotation_code::unpack(self.rot_index, self.rot),
             linvel: self.lin.map(|v| (f64::from(v) / VEL_SCALE) as f32),
             angvel: self.ang.map(|v| (f64::from(v) / VEL_SCALE) as f32),
             sleeping: false,
@@ -179,7 +107,7 @@ impl Quantized {
 
     /// The rotation, `x, y, z, w`.
     pub fn rotation(&self) -> [f32; 4] {
-        rot_from(self.rot_index, self.rot)
+        rotation_code::unpack(self.rot_index, self.rot)
     }
 
     /// Whether it moves or turns at all.

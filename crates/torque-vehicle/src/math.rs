@@ -1,6 +1,8 @@
 //! The math the vehicle code calls: `QuatF` (`inverse`, `normalize`, `mul`, `mulP`, `set(MatrixF)`), `MatrixF::fullInverse`,
 //! `Point3F::len` with its zero test and the quaternion-moved test of `processTick`. `QuatF::setMatrix` is
-//! [`torque_collide::math::quat_matrix`]; the matrix product is [`torque_collide::math::matrix_product`].
+//! [`torque_collide::math::quat_matrix`]; `QuatF::set(MatrixF)` and `normalize` are [`plain_quat_from_matrix`] and
+//! [`plain_quat_normalize`], re-exported from `torque_collide::math`; the matrix product is
+//! [`torque_collide::math::matrix_product`].
 //!
 //! The routines go through the [`library`] table; the `plain_*` functions are this crate's own, plain `f32`
 //! arithmetic in the order Torque's source writes it.
@@ -9,14 +11,9 @@
 //! `math/mMatrix.cpp` (each Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
 use torque_collide::math::{F3, Matrix};
+pub use torque_collide::math::{QUAT_IDENTITY, Quat, plain_quat_from_matrix, plain_quat_normalize};
 
 use crate::library;
-
-/// A quaternion `(x, y, z, w)` as `QuatF` stores it.
-pub type Quat = [f32; 4];
-
-/// The identity quaternion.
-pub const QUAT_IDENTITY: Quat = [0.0, 0.0, 0.0, 1.0];
 
 /// `QuatIsZero`'s epsilon.
 const QUAT_EPSILON: f32 = 0.0001;
@@ -123,44 +120,6 @@ pub fn plain_quat_inverse(q: &Quat) -> Quat {
         1.0 / magnitude
     };
     [x * -inv, y * -inv, z * -inv, w * inv]
-}
-
-/// `QuatF::normalize()`: a zero quaternion becomes the identity.
-pub fn plain_quat_normalize(q: &Quat) -> Quat {
-    let [x, y, z, w] = *q;
-    let l = (x * x + y * y + z * z + w * w).sqrt();
-    if l == 0.0 {
-        return QUAT_IDENTITY;
-    }
-    [x / l, y / l, z / l, w / l]
-}
-
-/// `QuatF::set(const MatrixF&)`: from the trace when it is positive, else from the largest diagonal element.
-pub fn plain_quat_from_matrix(m: &Matrix) -> Quat {
-    let trace = m[0] + m[5] + m[10];
-    if trace > 0.0 {
-        let s = (trace + 1.0).sqrt();
-        let w = s * 0.5;
-        let s = 0.5 / s;
-        return [(m[6] - m[9]) * s, (m[8] - m[2]) * s, (m[1] - m[4]) * s, w];
-    }
-    let mut i = 0usize;
-    if m[5] > m[0] {
-        i = 1;
-    }
-    if m[10] > m[5 * i] {
-        i = 2;
-    }
-    let j = (i + 1) % 3;
-    let k = (j + 1) % 3;
-    let s = ((m[5 * i] - (m[5 * j] + m[5 * k])) + 1.0).sqrt();
-    let mut q = [0.0f32; 4];
-    q[i] = s * 0.5;
-    let s = 0.5 / s;
-    q[j] = (m[4 * i + j] + m[4 * j + i]) * s;
-    q[k] = (m[4 * i + k] + m[4 * k + i]) * s;
-    q[3] = (m[4 * j + k] - m[4 * k + j]) * s;
-    q
 }
 
 /// `QuatF::isEqual`-style test of `processTick`: both normalised, `a *= inverse(b)`, and true unless each of x, y and z is

@@ -38,6 +38,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-sim` | the process list, Player, AIPlayer, Item, Projectile, ShapeBase images |
 | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
 | `torque-scene` | the scene container: bins, searches, a scene object's transform math |
+| `torque-hierarchy` | parent and child transforms for scene objects: the tree, caps, resolve order, keep-world reparenting, local-pose quantizer |
 | `torque-resource` | the resource layer: a game folder, its zips mounted as folders, the scripts' writes in memory |
 | `torque-game` | the TGE game classes as console classes: scene objects and their container, shapes, players, items, vehicles |
 | `torque-server` | a dedicated server's main-loop pacing, platform values and transports (UDP, WebSocket, WebRTC data channels) |

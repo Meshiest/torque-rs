@@ -1,0 +1,29 @@
+[package]
+name = "torque-hierarchy"
+description = "Parent and child transforms for any scene object: the tree, its caps, resolve order and local-pose quantizer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "scene-graph", "transform", "hierarchy", "gamedev"]
+categories = ["game-development", "data-structures"]
+
+# The scene hierarchy's core: a forest of objects with a local pose each, caps, cycle and depth checks, dirty roots and a
+# parents-first resolve, keep-world and keep-local reparenting, the wire quantizer for local poses and the checks a client
+# runs on links a server sent. Std only; the host answers the poses and node matrices of its objects through a trait.
+
+[dependencies]
+# The row-major matrix type and its product, the quaternion helpers and the 15-bit rotation code.
+torque-collide = { path = "../torque-collide" }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "flush"
+harness = false
+
+[lints]
+workspace = true

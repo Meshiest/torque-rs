@@ -4455,6 +4455,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-hierarchy"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "torque-collide",
+]
+
+[[package]]
 name = "torque-images"
 version = "0.1.0"
 dependencies = [
