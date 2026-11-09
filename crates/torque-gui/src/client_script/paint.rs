@@ -15,6 +15,11 @@ const EDGE: [u8; 4] = [120, 126, 138, 255];
 const TEXT: [u8; 4] = [235, 238, 242, 255];
 /// The caret's blink period, in milliseconds.
 const CARET_MS: u32 = 500;
+/// Whether the caret of a focused field shows at the clock `now`.
+pub(crate) fn caret_on(now: u32) -> bool {
+    (now / CARET_MS).is_multiple_of(2)
+}
+
 /// The font size of a tooltip.
 const TOOLTIP_SIZE: i32 = 12;
 
@@ -329,7 +334,7 @@ fn text_field(st: &NodeState, d: &mut DrawCtx<'_, '_>, at: &Place, rect: [i32; 4
     // The value is drawn in the host's own color on the host's own fill, whatever the realm set: what the player types is
     // always seen.
     d.text(&face.name, face.size, (x, y), value.as_bytes(), TEXT);
-    if focused && (d.now() / CARET_MS).is_multiple_of(2) {
+    if focused && caret_on(d.now()) {
         d.fill([x + caret_x, y, 1, lh], TEXT);
     }
 }
@@ -400,7 +405,7 @@ fn progress(st: &NodeState, d: &mut DrawCtx<'_, '_>, rect: [i32; 4]) {
 }
 
 /// The tooltip of the control the pointer is over, if it has one and the layer is drawn.
-pub(super) fn tooltip_text(gui: &crate::Gui) -> Option<String> {
+pub(crate) fn tooltip_text(gui: &crate::Gui) -> Option<String> {
     let hover = gui.0.borrow().client_script.hover?;
     gui.with_custom_state::<NodeState, _>(hover, |s| {
         let text = s.props.text(Prop::Tooltip);

@@ -4626,10 +4626,13 @@ dependencies = [
  "torque-client-script-host",
  "torque-engine",
  "torque-example-minimal-engine",
+ "torque-fonts",
  "torque-ghosts",
  "torque-gui",
+ "torque-images",
  "torque-mods",
  "torque-net",
+ "torque-plugin-gui-layout",
  "torque-server",
  "torque-ts-vm",
 ]

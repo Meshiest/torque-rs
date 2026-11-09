@@ -330,20 +330,32 @@ impl World {
     /// A client over the lanes with `Realms` in the given setting, offering all of `offerable`, and the grants unreviewed so
     /// that `ui` and `net` run.
     pub fn new(setting: Setting, offerable: Grants, choices: Choices) -> World {
+        World::with_layout(setting, offerable, choices, false)
+    }
+
+    /// [`World::new`], with the layout plugin that lays a realm's containers out when `layout`.
+    pub fn with_layout(
+        setting: Setting,
+        offerable: Grants,
+        choices: Choices,
+        layout: bool,
+    ) -> World {
         let spawns = Rc::new(RefCell::new(Vec::new()));
         let got = Rc::new(RefCell::new(Vec::new()));
         let sink = Rc::clone(&got);
-        let engine = EngineBuilder::new()
-            .add_plugins((
-                ClientScriptsPlugin::new().on_message(move |_vm, conn, value| {
-                    sink.borrow_mut().push((conn, value.clone()));
-                }),
-                Game {
-                    spawns: Rc::clone(&spawns),
-                },
-            ))
-            .build()
-            .expect("the engine builds");
+        let mut builder = EngineBuilder::new();
+        builder.add_plugins((
+            ClientScriptsPlugin::new().on_message(move |_vm, conn, value| {
+                sink.borrow_mut().push((conn, value.clone()));
+            }),
+            Game {
+                spawns: Rc::clone(&spawns),
+            },
+        ));
+        if layout {
+            builder.add_plugins(torque_plugin_gui_layout::GuiLayoutPlugin);
+        }
+        let engine = builder.build().expect("the engine builds");
         let table = engine.net_rpcs().expect("the table");
         let registry = engine.net_channels().expect("the channels");
         let channels = Rc::new(ClientChannels::new(&registry));
@@ -358,6 +370,7 @@ impl World {
         let mut vm = Vm::new();
         let gui = torque_gui::register(&mut vm);
         gui.add_controls(engine.list::<torque_gui::custom::ControlEntry>());
+        gui.add_realm_layouts(engine.list::<torque_gui::client_script::RealmLayoutEntry>());
         engine
             .replay(torque_engine::script::CLIENT_SCRIPT_STAGE, &mut vm)
             .expect("the classes register");

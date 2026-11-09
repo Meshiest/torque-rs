@@ -1019,6 +1019,7 @@ name = "torque-resource"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "rustix",
  "torque-ts-vm",
  "zip",
 ]

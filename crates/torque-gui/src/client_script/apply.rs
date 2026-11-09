@@ -313,6 +313,7 @@ impl Realm {
         let mut applied = Applied::default();
         // Whatever this flush does, the layers work out again what the tree shows.
         invalidate(gui);
+        gui.touch_custom();
         for record in Records::new(flush, MAX_OPS, MAX_FLUSH_BYTES)? {
             let record = record?;
             let tier = Tier::from_id(record.tier).ok_or(Violation("an op of an unknown tier"))?;

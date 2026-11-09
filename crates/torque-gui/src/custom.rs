@@ -66,8 +66,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use torque_engine::{ClassInfo, EngineBuilder, ScriptClass};
+use torque_ts_vm::idhash::IdMap;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -121,7 +123,8 @@ pub trait GuiControlClass: ScriptClass {
     /// Once a frame while the control is awake and shown, after the canvas laid its children out and before the frame is
     /// drawn, parents before their children: a control that keeps something in step with its children or fields checks it
     /// here. A control in one of the host's overlays ([`Gui::set_overlay`]) is not updated. An error is printed and the
-    /// other controls still update. The default does nothing.
+    /// other controls still update. The default does nothing. What it changes through the context ([`ControlCx`]: bounds set,
+    /// children resized) is known to the GUI; a change made through [`ControlCx::vm`] is told with [`ControlCx::changed`].
     fn update(&self, state: &mut Self::State, cx: &mut ControlCx<'_>) -> Result<(), VmError> {
         let _ = (state, cx);
         Ok(())
@@ -286,16 +289,29 @@ impl ControlCx<'_> {
         screen_position(self.vm, self.id)
     }
 
+    /// Says that this control, or one it places, now draws differently from what a draw already made of it saw. Everything the
+    /// methods below change is said already; a control that changes something else through [`vm`](Self::vm) (a field a draw
+    /// reads) says so here. A client-script layer is drawn again, not kept, after it ([`Gui::custom_stamp`]).
+    pub fn changed(&self) {
+        self.gui.touch_custom();
+    }
+
     /// `GuiControl::resize`: the extent clamped to `minExtent`, the children told, then the bounds set.
     pub fn base_resize(&mut self, position: (i32, i32), extent: (i32, i32)) {
         control::base_resize(self.vm, self.gui, self.id, position, extent, self.depth);
+        self.changed();
     }
 
     /// Sets the position and extent of the control `id` (this control or another) and nothing else: its children are not
     /// told and no `minExtent` applies. A control that lays its children out itself uses it for itself and for the
     /// controls it places directly.
     pub fn set_bounds_of(&mut self, id: ObjId, position: (i32, i32), extent: (i32, i32)) {
+        // Only a bounds that differ change a draw: a layout that places what is already placed leaves kept draws as they are.
+        let same = control::bounds(self.vm, id) == (position, extent);
         control::set_bounds(self.vm, id, position, extent);
+        if !same {
+            self.changed();
+        }
     }
 
     /// Runs the `resize` of the control `id` (its class's own: a `GuiControl`'s clamps to `minExtent` and tells its
@@ -308,6 +324,7 @@ impl ControlCx<'_> {
         below: usize,
     ) {
         control::resize_at(self.vm, self.gui, id, position, extent, self.depth + below);
+        self.changed();
     }
 
     /// Runs the `parentResized` of the control `id` (by its `horizSizing` and `vertSizing`) for a parent whose extent went
@@ -320,6 +337,7 @@ impl ControlCx<'_> {
         below: usize,
     ) {
         control::parent_resized_at(self.vm, self.gui, id, old, new, self.depth + below);
+        self.changed();
     }
 
     /// Takes the mouse: every move and release goes to the control until [`unlock_mouse`](Self::unlock_mouse).
@@ -335,6 +353,8 @@ impl ControlCx<'_> {
     /// Calls the script method `name` of the control with `args` (nothing happens when it has none), and returns what it
     /// returned.
     pub fn call(&mut self, name: &str, args: &[Vec<u8>]) -> Result<Vec<u8>, VmError> {
+        // A script method may change any field of any control.
+        self.changed();
         self.vm.call_method(self.id, name.as_bytes(), args)
     }
 }
@@ -595,15 +615,34 @@ fn is_engine_class(name: &str) -> bool {
 }
 
 /// The control classes of a GUI, and the controls of them that exist.
-#[derive(Default)]
 pub(crate) struct Custom {
     /// By lower case class name.
     classes: HashMap<String, Rc<dyn ControlBehavior>>,
-    objects: HashMap<ObjId, Slot>,
+    objects: IdMap<ObjId, Slot>,
     /// What plugins keep on any control ([`Gui::control_data`]), by control and type.
-    data: HashMap<ObjId, HashMap<TypeId, Box<dyn Any>>>,
+    data: IdMap<ObjId, HashMap<TypeId, Box<dyn Any>>>,
     /// The layout a client-script realm's containers use ([`Gui::add_realm_layouts`]).
     realm_layout: Option<&'static RealmLayout>,
+    /// Names the state of the controls as it was last changed: no two values are ever the same, in one GUI or across them.
+    stamp: u64,
+}
+
+impl Default for Custom {
+    fn default() -> Custom {
+        Custom {
+            classes: HashMap::new(),
+            objects: IdMap::default(),
+            data: IdMap::default(),
+            realm_layout: None,
+            stamp: fresh_stamp(),
+        }
+    }
+}
+
+/// A value no earlier call returned.
+fn fresh_stamp() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
 /// A control of a plugin's class. Its state is out of the slot (`None`) while one of the control's methods runs, so that a
@@ -674,6 +713,8 @@ impl Gui {
         if !state.controls.contains_key(&id) {
             return None;
         }
+        // `f` may change what a control is drawn from: a client-script layer is drawn again, not kept ([`Gui::custom_stamp`]).
+        state.custom.stamp = fresh_stamp();
         let slot = state
             .custom
             .data
@@ -698,6 +739,18 @@ impl Gui {
             .and_then(|kept| kept.get(&TypeId::of::<T>()))
             .and_then(|slot| slot.downcast_ref::<T>())
             .map(f)
+    }
+
+    /// The stamp of the plugin controls' state: it differs after every [`touch_custom`](Self::touch_custom), and after any
+    /// change a plugin control's own methods make through input or a resize, a new control or a removed one. A draw made at one
+    /// stamp is the same draw at that stamp again (given the same canvas, clock and extension).
+    pub(crate) fn custom_stamp(&self) -> u64 {
+        self.0.borrow().custom.stamp
+    }
+
+    /// Something a plugin control draws from changed without one of its methods running (a host that sets its state).
+    pub(crate) fn touch_custom(&self) {
+        self.0.borrow_mut().custom.stamp = fresh_stamp();
     }
 
     /// Whether `id` is a control of a class a plugin added.
@@ -735,6 +788,7 @@ pub(crate) fn made(vm: &Vm, gui: &Gui, id: ObjId) -> Option<bool> {
         behavior,
     };
     state.custom.objects.insert(id, slot);
+    state.custom.stamp = fresh_stamp();
     Some(active)
 }
 
@@ -743,6 +797,7 @@ pub(crate) fn removed(gui: &Gui, id: ObjId) {
     let mut state = gui.0.borrow_mut();
     state.custom.objects.remove(&id);
     state.custom.data.remove(&id);
+    state.custom.stamp = fresh_stamp();
 }
 
 /// `f` with the behavior and state of the control `id` and the script engine, when the control is a plugin's and not busy;
@@ -773,10 +828,14 @@ pub(crate) fn resize(
     extent: (i32, i32),
     depth: usize,
 ) -> bool {
-    with(vm, gui, id, depth, |b, state, cx| {
+    let done = with(vm, gui, id, depth, |b, state, cx| {
         b.resize(state, cx, position, extent);
     })
-    .is_some()
+    .is_some();
+    if done {
+        gui.touch_custom();
+    }
+    done
 }
 
 /// The control's frame update.
@@ -822,6 +881,10 @@ pub(crate) fn pointer_at(
         modifier: ev.modifier,
         clicks: ev.clicks,
     };
+    // A move changes nothing by itself: the control that is entered or left, pressed or dragged is what draws differently.
+    if which != Pointer::Move {
+        gui.touch_custom();
+    }
     with(vm, gui, id, 0, |b, state, cx| {
         b.pointer(which, state, cx, &ev)
     })
@@ -839,5 +902,6 @@ pub(crate) fn key_down(
         ascii: ev.ascii,
         modifier: ev.modifier,
     };
+    gui.touch_custom();
     with(vm, gui, id, 0, |b, state, cx| b.key_down(state, cx, &ev))
 }

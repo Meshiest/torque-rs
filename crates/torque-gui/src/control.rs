@@ -66,6 +66,9 @@ pub fn parent(vm: &Vm, id: ObjId) -> Option<ObjId> {
 
 /// Two integers of a `Point2I` field.
 pub fn point(vm: &Vm, id: ObjId, field: &[u8]) -> (i32, i32) {
+    if let Some(Value::Ints2([x, y])) = vm.objects().static_value(id, field) {
+        return (*x, *y);
+    }
     let text = vm.objects().field(id, field, b"").unwrap_or_default();
     let mut words = text
         .split(|b| *b == b' ')
@@ -95,6 +98,9 @@ fn field_text(vm: &Vm, id: ObjId, field: &[u8]) -> Vec<u8> {
 
 /// A Bool field.
 pub fn flag(vm: &Vm, id: ObjId, field: &[u8]) -> bool {
+    if let Some(Value::Bool(on)) = vm.objects().static_value(id, field) {
+        return *on;
+    }
     atob(&field_text(vm, id, field))
 }
 
@@ -808,3 +814,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         },
     );
 }
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod tests;

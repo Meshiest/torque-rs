@@ -230,8 +230,8 @@ client-script-fuzz:
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script hostile_lua -- --nocapture
 
 # The time a realm costs a frame (crates/torque-plugin-client-script/tests/bench.rs): the real guest under Wasmtime in a client's
-# GUI, a hostile realm at its caps within 3 ms of the scene alone at p99, an idle realm with 1,024 controls within 0.3 ms at p50.
-# `tiers` are the tiers granted (`ui`, `net`). A timing run: run it with nothing else loading the machine. Needs what `lua-web` needs
+# GUI, counting the canvas's drawing of the realm's controls, with a font and without one: a hostile realm at its caps within 3 ms of
+# the scene alone at p99, an idle realm with 1,024 controls within 0.3 ms at p50. `tiers` are the tiers granted (`ui`, `net`). A timing run: run it with nothing else loading the machine. Needs what `lua-web` needs
 client-script-bench tiers="ui,net":
     node web/lua-build.mjs --client
     $env:TORQUE_CLIENT_SCRIPT_BENCH_TIERS = "{{tiers}}"; $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test --profile client-script-check -p torque-plugin-client-script --test bench -- --ignored --nocapture

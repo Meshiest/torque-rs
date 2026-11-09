@@ -44,7 +44,8 @@
 //! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `prompt` the consent prompt; `events` the events for the
 //! realm and their encoding; `layout` the hook a layout plugin fills (`RealmLayout`); `props`, `rich` small helpers. The rest of the crate calls in at these places:
 //! - drawing (`draw.rs`): `draw_canvas` takes `DrawPlan::of`; `Walk::server_layer` draws the layer, `focus_on_top`'s field
-//!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed;
+//!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed, and keeps what
+//!   it pushed (`LayerMemo`, in `DrawCache`) to push again in a frame whose `LayerKey` is the same (see **Kept draws**);
 //!   `Walk::engine_layer` draws the prompts and the chip; each layer is recorded as a `LayerMark`; realm images are drawn by
 //!   `DrawCtx::realm_image` from `RealmImage` bytes in `DrawCache`'s own realm textures; `Walk::custom_control` runs no
 //!   `onRender` for a realm control (`is_realm`);
@@ -60,6 +61,24 @@
 //! with its props, and every control's item props, written as the words of CSS to the fields the layout names
 //! (`apply::layout_fields`); it keeps its props in the applier's node, not in a `NodeState`. The player's input travels back: `route` finds the control, the class's
 //! handler changes its state and queues a `UiEvent`, and the host takes the batch with `Gui::take_client_script_batch`.
+//!
+//! **Kept draws.** A realm that is not changing costs the canvas next to nothing: the server layer's batches are kept from the
+//! frame that drew them and pushed again while the layer's key (`LayerKey`: `Gui::custom_stamp`, the extension's `layer_stamp`,
+//! the canvas size, the chip's column, hover and focus, the caret's blink phase, the pointer while a tooltip shows, the fonts'
+//! revision and the saved glyph color) is the same. The stamp is the one thing this module must keep: it changes with every
+//! change to what a realm control draws from. Today those are `Realm::apply_flush`, a pointer event other than a move, a key, a
+//! wheel notch, a plugin control's resize, a control made or removed (`custom.rs`), and `set_client_script_faces`. A new way to
+//! change a control's state, layout, props or children (an input handler that writes a `NodeState`, a host call) must call
+//! `Gui::touch_custom`, or a frame is drawn from what the control used to be. The control context does it for a behavior: a
+//! bounds that `ControlCx::set_bounds_of` changes, a `resize_control`, `parent_resized_control`, `base_resize` or `call`, and
+//! `Gui::control_data` all touch the stamp, so a container that lays its children out in `update` or `wake` invalidates the kept
+//! draw by moving them, and only when it moves them (a layout pass that finds nothing to change leaves it). A behavior that
+//! changes a field a draw reads through `ControlCx::vm` says so with `ControlCx::changed`. A layer is not kept when it drew what a later
+//! frame may draw differently (a texture that did not load, a class not modelled, a view or world, text a frame's font quota
+//! cut), or when the extension gives no `layer_stamp`. The layer's controls are otherwise drawn from the tree each frame, with
+//! what a walk of a thousand controls costs: the extent a parent read is handed to the child, a control with no children is
+//! not read for them, `control::point` and `control::flag` read the stored numbers, a control's props are a short list, and a
+//! font is looked up once a frame for each face and size.
 //!
 //! **Order.** Drawing: content, server layer, dialogs, engine layer, chip (`LayerMark` records it). Input: every Escape to the
 //! Escape filter first; other keys to the top prompt's key responder while a prompt is up, else to the focused field, else the
@@ -105,6 +124,16 @@
 //!   `client_script_without_a_layout_a_container_is_a_plain_group`, `client_script_a_container_is_transparent_to_input_and_adds_no_look`.
 //!   The layout plugin's own tests drive the real classes (`torque-plugin-gui-layout`, `tests/realm.rs`).
 //! - The caps hold, per control and in all: `client_script_the_caps_hold`, `client_script_images_and_text_are_counted_across_the_realm`.
+//! - The realm's controls look as they did, and a frame drawn from kept draws is the list a cache that drew nothing draws, after
+//!   every kind of change: `the_realm_controls_look_as_pinned` and `the_realm_containers_look_as_pinned` (a pinned hash of a software
+//!   raster, one of each kind of control and a scene of laid-out containers; a change to how a control looks changes it on
+//!   purpose, and its constant is then pinned again),
+//!   `kept_draws_never_differ_from_drawing_from_nothing`, `kept_draws_of_text_with_no_font_say_so_again`,
+//!   `kept_draws_of_laid_out_containers_never_differ_from_drawing_from_nothing`,
+//!   `a_layout_that_moves_children_leaves_no_stale_kept_draws` (`tests/laid.rs`: a test layout that places children as a plugin's
+//!   does), the fonts' and the extension's parts of the key (`picture::keys`), and the fuzzes
+//!   `client_script_kept_draws_fuzz_never_differs_from_drawing_from_nothing` and its laid-out containers' twin (`tests/fuzz.rs`).
+//!   A layer is let go when it is not drawn (`a_layer_that_is_not_drawn_keeps_nothing`).
 //!
 //! **Extending.** A new kind needs the format's kind and props first, then a class in `controls`, its name in `class_name` and
 //! `add_controls`, a draw in `paint`, and its cases in the refusal and canary tests. A layout prop is a prop of the format first
@@ -119,7 +148,9 @@
 //! writes by name, no `Vm::eval`, no script method calls.
 //!
 //! **Checking.** `cargo test -p torque-gui client_script`, `cargo clippy -p torque-gui --all-targets -- -D warnings` and
-//! `cargo fmt -p torque-gui -- --check`; the applier fuzz is 100,000 sequences and runs in seconds.
+//! `cargo fmt -p torque-gui -- --check`; the applier fuzz is 100,000 sequences and runs in seconds. The cost of the frame, the
+//! canvas's drawing of 1,024 controls included, is the justfile's `client-script-bench` (`TORQUE_PICTURE_DIR` makes the picture test write
+//! its raster as a PNG there).
 
 mod apply;
 mod chip;
@@ -147,7 +178,7 @@ pub use layers::{
 };
 pub(crate) use layers::{focus_on_top, forget, frame};
 pub use layout::{RealmLayout, RealmLayoutEntry};
-pub(crate) use paint::draw_tooltip;
+pub(crate) use paint::{caret_on, draw_tooltip, tooltip_text};
 pub use prompt::{
     IGNORE_MS, MAX_LINE, MAX_ROWS, PromptAnswer, PromptRow, PromptSpec, PromptSpot, RowLock,
     prompt_spots,

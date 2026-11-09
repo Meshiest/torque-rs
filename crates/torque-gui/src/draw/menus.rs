@@ -72,7 +72,7 @@ impl Walk<'_> {
             Some(f) => Some((f, face.to_string(), size)),
             None => {
                 self.out.draws.report.no_font += 1;
-                if self.out.draws.report.missing_fonts.len() < 64 {
+                if self.out.draws.report.missing_fonts.len() < super::MAX_MISSING_FONTS {
                     self.out
                         .draws
                         .report

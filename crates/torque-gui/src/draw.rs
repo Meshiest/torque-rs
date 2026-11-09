@@ -23,6 +23,12 @@
 //!   (`renderRegion`): see each function below. Other classes draw as `GuiControl` (counted in
 //!   [`DrawReport::unmodelled`]: the later menus' classes are for a later step).
 //!
+//! **A client-script layer is drawn once while it stays the same.** The server layer's batches are kept in the cache
+//! ([`DrawCache`]) with the key they were drawn under (the stamp of the plugin controls' state, the extension's
+//! [`crate::GuiExtension::layer_stamp`], the canvas, the chip's column, hover, focus, the caret's blink, the pointer under a
+//! tooltip, the fonts' revision), and a frame with the same key pushes them again, with the counts they added to the report; see
+//! [`crate::client_script`], **Kept draws**.
+//!
 //! **No script runs while the list is made.** The callback that runs from inside a draw (a control's first `onRender`) is returned
 //! (a fade's `onWait` and `onDone` are [`crate::Gui::frame`]'s) ([`Frame::callbacks`]) and run afterwards by [`run_callbacks`], with no borrow held. The walk is bounded by
 //! [`crate::MAX_TREE_DEPTH`], [`crate::MAX_CHILDREN_WALKED`], [`MAX_CONTROLS`] and [`MAX_QUADS`]; the textures by the cache's caps
@@ -39,7 +45,7 @@
 //! 2012 GarageGames, LLC), `gui/3d/guiTSControl.cpp` (Copyright (c) 2012 GarageGames, LLC), `T3D/gameTSCtrl.cpp` (Copyright (c)
 //! 2012 GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -62,6 +68,10 @@ pub use rounded::{BOX_RADIUS, BoxState, DEFAULT_FILL, PRESSED_SHADE, box_colors,
 
 /// The most quads one frame draws (a hostile GUI with a million controls draws to here).
 pub const MAX_QUADS: usize = 1 << 20;
+/// The most faces and sizes a report names as having no font.
+pub const MAX_MISSING_FONTS: usize = 64;
+/// The most quads of the server layer a cache keeps to draw again.
+pub const MAX_KEPT_QUADS: usize = 1 << 16;
 /// The most controls one frame visits.
 pub const MAX_CONTROLS: u32 = 1 << 18;
 /// The most GameTSCtrls one frame keeps the projection of.
@@ -202,6 +212,33 @@ pub struct GuiDraws {
 }
 
 impl GuiDraws {
+    /// Pushes a batch that was drawn before, as its quads would have been pushed one by one: into the last batch when it has the
+    /// same state, else as a batch of its own. `counted` is what the budget counts for it ([`GuiDraws::pushed`]).
+    fn push_again(&mut self, batch: &GuiBatch, counted: usize) {
+        self.pushed += counted;
+        if !self.after_view()
+            && let Some(last) = self.batches.last_mut()
+            && last.clip == batch.clip
+            && last.blend == batch.blend
+            && last.texture.as_ref().map(|t| t.id) == batch.texture.as_ref().map(|t| t.id)
+        {
+            last.quads.extend_from_slice(&batch.quads);
+            return;
+        }
+        self.batches.push(batch.clone());
+    }
+
+    /// Whether a view's or a world's frame goes between the last batch and the next quad: that quad starts a batch of its own.
+    fn after_view(&self) -> bool {
+        self.extras
+            .last()
+            .is_some_and(|v| v.at_batch == self.batches.len())
+            || self
+                .worlds
+                .last()
+                .is_some_and(|w| w.at_batch == self.batches.len())
+    }
+
     pub fn quads(&self) -> usize {
         self.batches.iter().map(|b| b.quads.len()).sum()
     }
@@ -224,15 +261,7 @@ impl GuiDraws {
         }
         self.pushed += 1;
         // A view's or a world's frame goes between two batches: the next quad starts a batch of its own.
-        let after_view = self
-            .extras
-            .last()
-            .is_some_and(|v| v.at_batch == self.batches.len())
-            || self
-                .worlds
-                .last()
-                .is_some_and(|w| w.at_batch == self.batches.len());
-        if !after_view
+        if !self.after_view()
             && let Some(last) = self.batches.last_mut()
             && last.clip == clip
             && last.blend == blend
@@ -362,6 +391,167 @@ pub struct DrawCache {
     /// GuiChunkedBitmapCtrl's bitmaps.
     pub chunked: ChunkCache,
     saved_color: [u8; 4],
+    /// What the server layer drew last, kept while nothing it draws from changes ([`LayerMemo`]).
+    layer: Option<LayerMemo>,
+    /// How many frames drew the server layer from what it drew before.
+    pub layer_replays: u64,
+    /// The sheet texture the last glyph of the last run was drawn from.
+    sheet_hint: Option<SheetHint>,
+}
+
+/// A font sheet's texture and what names it ([`DrawCache::sheets`] has the same under its key).
+struct SheetHint {
+    /// Lower case.
+    face: String,
+    size: i32,
+    sheet: usize,
+    texture: Arc<GuiTexture>,
+}
+
+/// What the server layer drew in a frame, drawn again from here in a frame whose [`LayerKey`] is the same: the batches it pushed
+/// (the first only with the quads it added), what the quad budget counted for them, the counts it added to the report, and the
+/// glyph color it left saved.
+struct LayerMemo {
+    key: LayerKey,
+    batches: Vec<GuiBatch>,
+    pushed: usize,
+    counts: ReportCounts,
+    /// The faces and sizes no font was found for that the layer's draw added to the report.
+    missing_fonts: Vec<String>,
+    saved_color: [u8; 4],
+}
+
+/// Everything the server layer's draw reads that is not in the layer's own controls, and a stamp of those
+/// ([`Gui::custom_stamp`]): a frame with the same key draws the same list.
+#[derive(Clone, Debug, PartialEq)]
+struct LayerKey {
+    root: ObjId,
+    stamp: u64,
+    /// The extension's stamp ([`crate::GuiExtension::layer_stamp`]).
+    ext: u64,
+    viewport: [i32; 4],
+    column: Option<[i32; 4]>,
+    hover: Option<ObjId>,
+    focus: Option<ObjId>,
+    /// The caret's blink phase, while a field has the focus.
+    caret: Option<bool>,
+    /// Where the pointer is, while a tooltip shows.
+    pointer: Option<(i32, i32)>,
+    /// The fonts' revision ([`torque_fonts::FontCache::revision`]).
+    fonts: u64,
+    /// The glyph color saved when the layer starts.
+    saved_color: [u8; 4],
+}
+
+/// The counts of a [`DrawReport`] a draw adds and a kept one adds again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ReportCounts {
+    controls: u32,
+    realm_controls: u32,
+    text_measures: u32,
+    no_font: u32,
+    invalid_glyphs: u32,
+    border_styles: u32,
+    covered: u32,
+}
+
+impl ReportCounts {
+    /// The counts of `r`. Every field of a report is named, so a counter added to it does not compile until it is counted here or
+    /// said to be kept some other way.
+    fn of(r: &DrawReport) -> ReportCounts {
+        let DrawReport {
+            controls,
+            realm_controls,
+            text_measures,
+            no_font,
+            invalid_glyphs,
+            border_styles,
+            covered,
+            // Not counts a kept layer adds again: a draw that changes these is not kept ([`DrawMarks`]), or they are the frame's
+            // own (the layers and the chip are marked after the server layer), or they are added by name ([`LayerMemo`]).
+            unmodelled: _,
+            no_texture: _,
+            missing_fonts: _,
+            truncated: _,
+            extension: _,
+            chip: _,
+            layers: _,
+        } = r;
+        ReportCounts {
+            controls: *controls,
+            realm_controls: *realm_controls,
+            text_measures: *text_measures,
+            no_font: *no_font,
+            invalid_glyphs: *invalid_glyphs,
+            border_styles: *border_styles,
+            covered: *covered,
+        }
+    }
+
+    /// What was added from `before` to `self`.
+    fn since(self, before: ReportCounts) -> ReportCounts {
+        let ReportCounts {
+            controls,
+            realm_controls,
+            text_measures,
+            no_font,
+            invalid_glyphs,
+            border_styles,
+            covered,
+        } = self;
+        ReportCounts {
+            controls: controls - before.controls,
+            realm_controls: realm_controls - before.realm_controls,
+            text_measures: text_measures - before.text_measures,
+            no_font: no_font - before.no_font,
+            invalid_glyphs: invalid_glyphs - before.invalid_glyphs,
+            border_styles: border_styles - before.border_styles,
+            covered: covered - before.covered,
+        }
+    }
+
+    fn add_to(self, r: &mut DrawReport) {
+        let ReportCounts {
+            controls,
+            realm_controls,
+            text_measures,
+            no_font,
+            invalid_glyphs,
+            border_styles,
+            covered,
+        } = self;
+        r.controls += controls;
+        r.realm_controls += realm_controls;
+        r.text_measures += text_measures;
+        r.no_font += no_font;
+        r.invalid_glyphs += invalid_glyphs;
+        r.border_styles += border_styles;
+        r.covered += covered;
+    }
+}
+
+/// What a draw must leave as it was for it to be kept: nothing it could not be drawn again from (a missing texture, a class not
+/// modelled, a view or a world, a script callback, the quad cap).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DrawMarks {
+    no_texture: u32,
+    unmodelled: u32,
+    extension: u32,
+    truncated: bool,
+    extras: usize,
+    worlds: usize,
+    callbacks: usize,
+    ts_rects: usize,
+}
+
+/// Where a layer's draw started.
+struct LayerStart {
+    key: Option<LayerKey>,
+    mark: QuadMark,
+    pushed: usize,
+    counts: ReportCounts,
+    missing_fonts: BTreeSet<String>,
+    marks: DrawMarks,
 }
 
 /// GuiChunkedBitmapCtrl's bitmaps: each name resolved once to the file the texture search found (names that differ only
@@ -481,6 +671,11 @@ impl ChunkCache {
 }
 
 impl DrawCache {
+    /// Whether the server layer's draw is kept to be drawn again.
+    pub fn keeps_layer(&self) -> bool {
+        self.layer.is_some()
+    }
+
     pub fn new(fonts: Box<dyn crate::FontSource>) -> DrawCache {
         DrawCache {
             textures: GuiTextures::default(),
@@ -490,6 +685,9 @@ impl DrawCache {
             sheet_bytes: 0,
             chunked: ChunkCache::default(),
             saved_color: [0; 4],
+            layer: None,
+            layer_replays: 0,
+            sheet_hint: None,
         }
     }
 }
@@ -590,6 +788,51 @@ impl DrawCache {
         }
     }
 
+    /// The texture of sheet `sheet` of `font` (the face `face` at `size`), made on first use: None when a cap on the sheets cuts
+    /// it (marked in `draws.report.truncated`) or it cannot be made.
+    fn sheet_texture(
+        &mut self,
+        draws: &mut GuiDraws,
+        font: &torque_fonts::Font,
+        face: &str,
+        size: i32,
+        sheet: usize,
+    ) -> Option<Arc<GuiTexture>> {
+        if let Some(h) = &self.sheet_hint
+            && h.sheet == sheet
+            && h.size == size
+            && h.face.eq_ignore_ascii_case(face)
+        {
+            return Some(Arc::clone(&h.texture));
+        }
+        let key = (face.to_ascii_lowercase(), size, sheet);
+        let texture = match self.sheets.get(&key) {
+            Some(t) => Arc::clone(t),
+            None => {
+                if self.sheets.len() >= MAX_SHEET_TEXTURES || self.sheet_bytes >= MAX_SHEET_BYTES {
+                    draws.report.truncated = true;
+                    return None;
+                }
+                let t = texture_of(
+                    &format!("font:{face}_{size}#{sheet}"),
+                    font.sheets.get(sheet)?,
+                    true,
+                    false,
+                )?;
+                self.sheet_bytes += t.rgba.len();
+                self.sheets.insert(key.clone(), Arc::clone(&t));
+                t
+            }
+        };
+        self.sheet_hint = Some(SheetHint {
+            face: key.0,
+            size,
+            sheet,
+            texture: Arc::clone(&texture),
+        });
+        Some(texture)
+    }
+
     /// Pushes the glyph quads `quads` of `run` moved by `offset` to `draws`, each sheet a nearest-filtered texture: false when the
     /// quad budget ran out (marked in `draws.report.truncated`).
     fn push_glyphs(
@@ -606,9 +849,8 @@ impl DrawCache {
             face,
             size,
         } = run;
-        // The sheet of the last glyph (most runs are of one sheet), and the sheets' key of the face (made once).
+        // The sheet of the last glyph: most runs are of one sheet.
         let mut last: Option<(usize, Arc<GuiTexture>)> = None;
-        let mut face_key: Option<String> = None;
         for q in quads {
             if draws.full() {
                 draws.report.truncated = true;
@@ -617,31 +859,8 @@ impl DrawCache {
             let tex = match &last {
                 Some((sheet, t)) if *sheet == q.sheet => Arc::clone(t),
                 _ => {
-                    let lower = face_key.get_or_insert_with(|| face.to_ascii_lowercase());
-                    let key = (lower.clone(), size, q.sheet);
-                    let t = match self.sheets.get(&key) {
-                        Some(t) => t.clone(),
-                        None => {
-                            if self.sheets.len() >= MAX_SHEET_TEXTURES
-                                || self.sheet_bytes >= MAX_SHEET_BYTES
-                            {
-                                draws.report.truncated = true;
-                                continue;
-                            }
-                            let Some(t) = font.sheets.get(q.sheet).and_then(|s| {
-                                texture_of(
-                                    &format!("font:{face}_{size}#{}", q.sheet),
-                                    s,
-                                    true,
-                                    false,
-                                )
-                            }) else {
-                                continue;
-                            };
-                            self.sheet_bytes += t.rgba.len();
-                            self.sheets.insert(key, t.clone());
-                            t
-                        }
+                    let Some(t) = self.sheet_texture(draws, font, face, size, q.sheet) else {
+                        continue;
                     };
                     last = Some((q.sheet, Arc::clone(&t)));
                     t
@@ -693,7 +912,7 @@ impl DrawCache {
         } = *look;
         let Some(font) = self.fonts.font(face, size, FontUse::Profile, &|_| None) else {
             draws.report.no_font += 1;
-            if draws.report.missing_fonts.len() < 64 {
+            if draws.report.missing_fonts.len() < MAX_MISSING_FONTS {
                 draws.report.missing_fonts.insert(format!("{face}_{size}"));
             }
             return None;
@@ -761,6 +980,11 @@ fn intersect(u: [i32; 4], c: [i32; 4]) -> [i32; 4] {
 
 /// The profile a control draws with (its `profile` field's object), if it exists.
 fn profile_of(vm: &Vm, id: ObjId) -> Option<ObjId> {
+    if let Some(torque_ts_vm::fields::Value::Object(None)) =
+        vm.objects().static_value(id, b"profile")
+    {
+        return None;
+    }
     let name = text_field(vm, id, b"profile");
     if name.is_empty() {
         return None;
@@ -795,6 +1019,22 @@ struct Walk<'a> {
     font_use: FontUse,
     /// The markup fonts this frame may still load ([`MAX_FRAME_MARKUP_LOADS`]).
     markup_loads: u32,
+    /// The class `GuiControl`, looked up once a frame.
+    gui_control: Option<torque_ts_vm::sim::ClassId>,
+    /// The extent a parent has just read for the control it draws next, so that the control does not read it again.
+    known_extent: Option<(ObjId, (i32, i32))>,
+    /// The font the last lookup found, for the next lookup of it.
+    font_memo: Option<FontMemo>,
+}
+
+/// A font a frame's draw looked up, and the fonts' revision it was found at: a lookup of the same face, size and use at that
+/// revision finds it again without asking the cache (and without its recency stamp, which a lookup earlier in the frame set).
+struct FontMemo {
+    face: String,
+    size: i32,
+    user: FontUse,
+    revision: u64,
+    font: Arc<torque_fonts::Font>,
 }
 
 /// The most markup fonts ([`FontUse::Markup`], [`FontUse::Server`]) one frame's drawing loads: past it a markup font not loaded
@@ -811,6 +1051,15 @@ impl Walk<'_> {
         size: i32,
         user: FontUse,
     ) -> Option<Arc<torque_fonts::Font>> {
+        let revision = self.cache.fonts.cache().revision();
+        if let Some(m) = &self.font_memo
+            && m.revision == revision
+            && m.size == size
+            && m.user == user
+            && m.face == face
+        {
+            return Some(Arc::clone(&m.font));
+        }
         if user != FontUse::Profile && !self.cache.fonts.cache().contains(face, size) {
             if self.markup_loads == 0 {
                 return None;
@@ -822,7 +1071,26 @@ impl Walk<'_> {
             FileRead::Found(b) => Some(b),
             _ => None,
         };
-        self.cache.fonts.font(face, size, user, &read)
+        let font = self.cache.fonts.font(face, size, user, &read);
+        if let Some(font) = &font {
+            self.font_memo = Some(FontMemo {
+                face: face.to_string(),
+                size,
+                user,
+                revision: self.cache.fonts.cache().revision(),
+                font: Arc::clone(font),
+            });
+        }
+        font
+    }
+
+    /// Whether `id` exists and is a `GuiControl`.
+    fn is_gui_control(&self, id: ObjId) -> bool {
+        let objects = self.vm.objects();
+        match (objects.get(id), self.gui_control) {
+            (Some(object), Some(ancestor)) => objects.classes.is_a(object.class(), ancestor),
+            _ => false,
+        }
     }
 
     /// A colour drawn at the subtree's opacity (unchanged at 1).
@@ -1005,7 +1273,7 @@ impl Walk<'_> {
         let font = self.font_for(face, size, self.font_use);
         if font.is_none() {
             self.out.draws.report.no_font += 1;
-            if self.out.draws.report.missing_fonts.len() < 64 {
+            if self.out.draws.report.missing_fonts.len() < MAX_MISSING_FONTS {
                 self.out
                     .draws
                     .report
@@ -1021,6 +1289,12 @@ impl Walk<'_> {
         if depth >= MAX_TREE_DEPTH {
             return;
         }
+        let kids = children(self.vm, id);
+        // A control with no children has nothing to place; the extension is still asked for its displacement.
+        if kids.is_empty() {
+            self.ext.shift(self.gui, id, self.now);
+            return;
+        }
         let update = if self.ext.clip_to_parent(self.vm, id) {
             update
         } else {
@@ -1033,17 +1307,12 @@ impl Walk<'_> {
         } else {
             (offset.0.wrapping_add(d.0), offset.1.wrapping_add(d.1))
         };
-        let kids = children(self.vm, id);
         // Which children are shown, read once: no script runs during the walk, so it holds for the whole loop. The shown ones
         // whose fill the extension replaces are then the only siblings a child is checked against (one pass, not a pass a child);
         // the first shown child has no shown sibling before it to cover.
         let shown: Vec<bool> = kids
             .iter()
-            .map(|&c| {
-                self.vm.objects().contains(c)
-                    && is_a(self.vm, c, "GuiControl")
-                    && flag(self.vm, c, b"visible")
-            })
+            .map(|&c| self.is_gui_control(c) && flag(self.vm, c, b"visible"))
             .collect();
         let frost: Vec<(usize, [i64; 4])> = kids
             .iter()
@@ -1075,6 +1344,7 @@ impl Walk<'_> {
                 if let Some(o) = self.ext.opacity(self.vm, child) {
                     self.alpha = alpha * o;
                 }
+                self.known_extent = Some((child, ext));
                 self.control(child, at, clip, depth + 1);
                 self.alpha = alpha;
             }
@@ -1088,15 +1358,18 @@ impl Walk<'_> {
             return;
         }
         self.out.draws.report.controls += 1;
+        let known = self.known_extent.take().filter(|k| k.0 == id).map(|k| k.1);
         let ext = std::rc::Rc::clone(&self.ext);
         ext.before_control(&mut DrawCtx(self), id, offset, update);
+        if self.custom_control(id, offset, update, depth, known) {
+            return;
+        }
         let vm = self.vm;
         let objects = vm.objects();
         let class = objects.get(id).map_or(std::borrow::Cow::Borrowed(""), |o| {
             String::from_utf8_lossy(objects.classes.name(o.class()))
         });
         match class.as_ref() {
-            _ if self.custom_control(id, offset, update, depth) => {}
             // The deprecated seam, for a class no plugin control handles.
             #[allow(deprecated)]
             _ if ext.draw_control(&mut DrawCtx(self), &class, id, offset, update, depth) => {}
@@ -1192,6 +1465,7 @@ impl Walk<'_> {
         offset: (i32, i32),
         update: [i32; 4],
         depth: usize,
+        known_extent: Option<(i32, i32)>,
     ) -> bool {
         let Some((behavior, mut state)) = self.gui.take_custom(id) else {
             return false;
@@ -1207,7 +1481,7 @@ impl Walk<'_> {
         let place = crate::custom::Place {
             id,
             offset,
-            extent: point(self.vm, id, b"extent"),
+            extent: known_extent.unwrap_or_else(|| point(self.vm, id, b"extent")),
             update,
             depth,
         };
@@ -1661,7 +1935,7 @@ impl Walk<'_> {
         let size = int_field(vm, profile, b"fontSize");
         let Some(font) = self.font_for(&face, size, self.font_use) else {
             self.out.draws.report.no_font += 1;
-            if self.out.draws.report.missing_fonts.len() < 64 {
+            if self.out.draws.report.missing_fonts.len() < MAX_MISSING_FONTS {
                 self.out
                     .draws
                     .report
@@ -1789,7 +2063,7 @@ impl Walk<'_> {
 
     /// Draws one control of a client-script layer at the screen's origin.
     fn layer_control(&mut self, id: ObjId) {
-        if !self.vm.objects().contains(id) || !is_a(self.vm, id, "GuiControl") {
+        if !self.is_gui_control(id) {
             return;
         }
         let viewport = self.viewport;
@@ -1800,12 +2074,19 @@ impl Walk<'_> {
         self.alpha = alpha;
     }
 
-    /// The server layer, when the plan has it ([`crate::client_script`]).
+    /// The server layer, when the plan has it ([`crate::client_script`]): drawn again from what it drew last when nothing it
+    /// draws from changed since ([`LayerMemo`]).
     fn server_layer(&mut self, plan: &crate::client_script::DrawPlan) {
         let Some(root) = plan.server else {
             return;
         };
-        let start = self.quad_mark();
+        let start = self.begin_layer(root);
+        if let Some(key) = &start.key
+            && self.replay_layer(key)
+        {
+            self.mark(crate::client_script::LayerMark::Server);
+            return;
+        }
         let user = std::mem::replace(&mut self.font_use, FontUse::Server);
         self.layer_control(root);
         // A focused text field (a leaf) is drawn again over everything else of the layer.
@@ -1821,9 +2102,153 @@ impl Walk<'_> {
         // Nothing of the layer shows in the chip's column.
         let column = self.gui.0.borrow().client_script.column;
         if let Some(column) = column {
-            self.cut_since(start, column);
+            self.cut_since(start.mark, column);
         }
+        self.keep_layer(start);
         self.mark(crate::client_script::LayerMark::Server);
+    }
+
+    /// What a layer's draw leaves out of the draw list or the report, other than the counts a kept layer adds again.
+    fn draw_marks(&self) -> DrawMarks {
+        let draws = &self.out.draws;
+        let r = &draws.report;
+        DrawMarks {
+            no_texture: r.no_texture,
+            unmodelled: r.unmodelled.values().sum(),
+            extension: r.extension.values().sum(),
+            truncated: r.truncated,
+            extras: draws.extras.len(),
+            worlds: draws.worlds.len(),
+            callbacks: self.out.callbacks.len(),
+            ts_rects: self.ts_rects.len(),
+        }
+    }
+
+    /// The key a draw of the server layer made now would be kept under (none: it cannot be kept).
+    fn layer_key(&self, root: ObjId) -> Option<LayerKey> {
+        let ext = self.ext.layer_stamp(self.gui, self.now)?;
+        let stamp = self.gui.custom_stamp();
+        let tooltip = crate::client_script::tooltip_text(self.gui).is_some();
+        let s = self.gui.0.borrow();
+        let l = &s.client_script;
+        Some(LayerKey {
+            root,
+            stamp,
+            ext,
+            viewport: self.viewport,
+            column: l.column,
+            hover: l.hover,
+            focus: l.focus,
+            caret: l.focus.map(|_| crate::client_script::caret_on(self.now)),
+            pointer: tooltip.then_some(s.cursor_pos),
+            fonts: self.cache.fonts.cache().revision(),
+            saved_color: self.cache.saved_color,
+        })
+    }
+
+    fn begin_layer(&self, root: ObjId) -> LayerStart {
+        LayerStart {
+            key: self.layer_key(root),
+            mark: self.quad_mark(),
+            pushed: self.out.draws.pushed,
+            counts: ReportCounts::of(&self.out.draws.report),
+            missing_fonts: self.out.draws.report.missing_fonts.clone(),
+            marks: self.draw_marks(),
+        }
+    }
+
+    /// Pushes what the layer drew under `key`, if that is what is kept and the budgets hold it: whether it did.
+    fn replay_layer(&mut self, key: &LayerKey) -> bool {
+        let Some(memo) = self.cache.layer.as_ref().filter(|m| m.key == *key) else {
+            return false;
+        };
+        let draws = &mut self.out.draws;
+        if draws.report.truncated
+            || draws.pushed.saturating_add(memo.pushed) > MAX_QUADS
+            || draws.report.controls.saturating_add(memo.counts.controls) > MAX_CONTROLS
+        {
+            return false;
+        }
+        let mut left = memo.pushed;
+        for batch in &memo.batches {
+            let counted = batch.quads.len().min(left);
+            left -= counted;
+            draws.push_again(batch, counted);
+        }
+        draws.pushed += left;
+        memo.counts.add_to(&mut draws.report);
+        draws.report.missing_fonts.extend(
+            memo.missing_fonts
+                .iter()
+                .take(MAX_MISSING_FONTS.saturating_sub(draws.report.missing_fonts.len()))
+                .cloned(),
+        );
+        self.cache.saved_color = memo.saved_color;
+        self.cache.layer_replays += 1;
+        let viewport = self.viewport;
+        self.set_clip(viewport);
+        true
+    }
+
+    /// Keeps what the layer drew since `start`, under the key it started with, unless it drew what cannot be drawn again from
+    /// the key alone.
+    fn keep_layer(&mut self, start: LayerStart) {
+        let LayerStart {
+            key,
+            mark,
+            pushed,
+            counts,
+            missing_fonts,
+            marks,
+        } = start;
+        self.cache.layer = None;
+        let Some(mut key) = key else {
+            return;
+        };
+        let counted = ReportCounts::of(&self.out.draws.report).since(counts);
+        // A font the frame's cap on loads kept from the layer is loaded by a later frame, which then draws the text: only a
+        // font nothing can make is the same every frame.
+        let waiting = counted.no_font > 0 && self.markup_loads == 0;
+        if waiting || self.out.draws.pushed - pushed > MAX_KEPT_QUADS || self.draw_marks() != marks
+        {
+            return;
+        }
+        key.fonts = self.cache.fonts.cache().revision();
+        let draws = &self.out.draws;
+        let from = mark.batches.saturating_sub(1);
+        let batches = draws
+            .batches
+            .iter()
+            .enumerate()
+            .skip(from)
+            .filter_map(|(i, b)| {
+                // The batch the layer started in keeps what came before it; a batch the cut left empty is still a batch.
+                let first = i + 1 == mark.batches;
+                let quads = b.quads.get(if first { mark.quads } else { 0 }..)?;
+                if first && quads.is_empty() {
+                    return None;
+                }
+                Some(GuiBatch {
+                    clip: b.clip,
+                    texture: b.texture.clone(),
+                    blend: b.blend,
+                    quads: quads.to_vec(),
+                })
+            })
+            .collect();
+        self.cache.layer = Some(LayerMemo {
+            key,
+            batches,
+            pushed: draws.pushed - pushed,
+            counts: counted,
+            missing_fonts: draws
+                .report
+                .missing_fonts
+                .difference(&missing_fonts)
+                .cloned()
+                .collect(),
+            saved_color: self.cache.saved_color,
+        });
     }
 
     /// The engine layer's controls and the chip, over every dialog.
@@ -1883,6 +2308,10 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     let (w, h) = (size.0.max(0), size.1.max(0));
     let viewport = [0, 0, w, h];
     let layers = crate::client_script::DrawPlan::of(vm, gui);
+    // A layer that is not drawn (the realm is gone or hidden, or another screen is up) keeps none of its textures alive.
+    if layers.server.is_none() {
+        cache.layer = None;
+    }
     let ext = gui.ext();
     cache.fonts.next_frame();
     ext.begin_draw(gui, cache.fonts.as_mut());
@@ -1900,11 +2329,14 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
         blurred: Default::default(),
         font_use: FontUse::Profile,
         markup_loads: MAX_FRAME_MARKUP_LOADS,
+        gui_control: vm.objects().classes.find(b"GuiControl"),
+        known_extent: None,
+        font_memo: None,
     };
     walk.out.draws.size = (w as u32, h as u32);
     if let Some(canvas) = canvas.filter(|c| vm.objects().contains(*c)) {
         for (i, child) in children(vm, canvas).into_iter().enumerate() {
-            if vm.objects().contains(child) && is_a(vm, child, "GuiControl") {
+            if walk.is_gui_control(child) {
                 walk.set_clip(viewport);
                 let pos = point(vm, child, b"position");
                 walk.control(child, pos, viewport, 1);
@@ -1921,7 +2353,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
         }
         // The host's overlays, over the canvas's children and under the cursor.
         for o in gui.overlays(vm) {
-            if !is_a(vm, o, "GuiControl") || !gui.is_awake(o) {
+            if !walk.is_gui_control(o) || !gui.is_awake(o) {
                 continue;
             }
             walk.set_clip(viewport);

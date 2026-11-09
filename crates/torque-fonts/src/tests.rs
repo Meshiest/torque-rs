@@ -617,3 +617,35 @@ fn a_refusal_asked_again_in_its_frame_is_answered_at_once_until_something_change
     cache.next_frame();
     assert!(cache.get_for("b0", 8, FontUse::Markup, &none).is_some());
 }
+
+#[test]
+fn the_revision_changes_with_every_change_to_the_fonts_a_face_gives() {
+    let (mut cache, _made) = counting_cache();
+    let none = |_: &str| None;
+    let start = cache.revision();
+    cache.get_for("a", 8, FontUse::Profile, &none).expect("a");
+    let loaded = cache.revision();
+    assert_ne!(loaded, start, "a font loaded");
+    // A font looked up again, and one that was kept, change nothing.
+    cache.get_for("a", 8, FontUse::Profile, &none).expect("a");
+    cache.next_frame();
+    assert_eq!(cache.revision(), loaded);
+    // A face forgotten, even one nothing was kept for, may give another font next time.
+    cache.remove_face("nothing kept");
+    assert_ne!(cache.revision(), loaded);
+    let forgotten = cache.revision();
+    cache.remove_face("a");
+    assert_ne!(cache.revision(), forgotten);
+    // A markup font dropped to make room.
+    let (mut cache, _made) = counting_cache();
+    cache.markup_pixel_cap = 8 * 8 * 64;
+    cache.get_for("a", 8, FontUse::Markup, &none).expect("a");
+    cache.next_frame();
+    let before = cache.revision();
+    cache.get_for("b", 8, FontUse::Markup, &none).expect("b");
+    assert!(cache.evicted > 0);
+    assert!(
+        cache.revision() >= before + 2,
+        "the font dropped and the one loaded"
+    );
+}

@@ -677,3 +677,106 @@ fn client_script_spoof_fuzz_draws_the_realm_only_in_its_place_and_never_without_
     );
     assert!(shown > 100 && with_dialog > 10 && off_screen > 100);
 }
+
+/// How many random steps the kept-draw fuzz runs.
+const DRAW_STEPS: usize = 20_000;
+
+/// Random ops, input, time, screen changes and canvas sizes against a cache that keeps the server layer: after every step the
+/// frame it draws, and the frame it draws again, are the list a cache that has drawn nothing draws.
+#[test]
+fn client_script_kept_draws_fuzz_never_differs_from_drawing_from_nothing() {
+    kept_draws_fuzz(
+        Rig::new(&[Tier::Ui, Tier::Net]),
+        0x51ED_270B_3C1A_F9E7,
+        false,
+    );
+}
+
+/// The same with containers that lay their children out: a layout that moves them moves what the layer draws.
+#[test]
+fn client_script_kept_draws_fuzz_of_laid_out_containers_never_differs_from_drawing_from_nothing() {
+    kept_draws_fuzz(
+        super::laid::laid_rig(&[Tier::Ui, Tier::Net]),
+        0x7A3D_55C1_09B2_E4F1,
+        true,
+    );
+}
+
+fn kept_draws_fuzz(mut rig: Rig, seed: u64, containers: bool) {
+    rig.realm.set_content_check(store("mods/m/"));
+    let mut rng = Rng(seed);
+    let mut start = Ops::default();
+    start.root(1, "mod").interactive(true);
+    rig.apply_ok(&start);
+    let mut live = Vec::new();
+    let games = [
+        "Canvas.pushDialog(DialogOne);",
+        "Canvas.popLayer(0);",
+        "Canvas.setContent(MenuGui);",
+        "Canvas.setContent(PlayGui);",
+    ];
+    let (mut replays, mut shown) = (0, 0);
+    for step in 0..DRAW_STEPS {
+        match rng.below(12) {
+            0..=4 => {
+                for _ in 0..=rng.below(3) {
+                    let ops = random_op(&mut rng, &live, rig.realm.next_handle(), containers);
+                    if rng.percent(50) {
+                        let _ = rig.apply(&ops);
+                    } else {
+                        // A frame is drawn between the flush and the frame that lays its containers out.
+                        rig.clock += 1000;
+                        let _ =
+                            rig.realm
+                                .apply_flush(&mut rig.vm, &rig.gui, ops.bytes(), rig.clock);
+                        let _ = draw_canvas(&rig.vm, &rig.gui, &mut rig.cache);
+                        rig.frame();
+                    }
+                }
+                live = rig.realm.handles();
+            }
+            5 => {
+                rig.vm.advance_time(rng.below(900) as u32);
+            }
+            6 | 7 => rig.move_to(rng.below(640) as i32, rng.below(480) as i32),
+            8 => {
+                rig.button(if rng.percent(50) { SI_MAKE } else { SI_BREAK });
+            }
+            9 => {
+                rig.key(
+                    0x30 + rng.below(40) as u16,
+                    32 + rng.below(90) as u16,
+                    SI_MAKE,
+                    0,
+                );
+            }
+            10 => rig.wheel(rng.percent(50)),
+            _ if rng.percent(60) => rig.game(rng.pick(&games)),
+            _ => {
+                let size = (320 + rng.below(480) as i32, 240 + rng.below(360) as i32);
+                rig.gui.set_canvas_size(size);
+                rig.frame();
+            }
+        }
+        let first = draw_canvas(&rig.vm, &rig.gui, &mut rig.cache).draws;
+        let before = rig.cache.layer_replays;
+        let again = draw_canvas(&rig.vm, &rig.gui, &mut rig.cache).draws;
+        replays += rig.cache.layer_replays - before;
+        shown += u64::from(first.report.realm_controls > 0);
+        let mut cold = DrawCache::for_gui(&rig.gui);
+        let fresh = draw_canvas(&rig.vm, &rig.gui, &mut cold).draws;
+        assert_eq!(
+            picture::drawn(&first),
+            picture::drawn(&fresh),
+            "step {step}"
+        );
+        assert_eq!(
+            picture::drawn(&again),
+            picture::drawn(&fresh),
+            "step {step}: again"
+        );
+    }
+    let least = if containers { 100 } else { 1_000 };
+    assert!(shown > least, "{shown} frames with the realm on screen");
+    assert!(replays > least, "{replays} frames drawn from kept draws");
+}

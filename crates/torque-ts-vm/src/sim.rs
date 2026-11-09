@@ -1664,6 +1664,15 @@ impl Objects {
         }
     }
 
+    /// The stored value of the static field `name` of a registered object, its first element: None when the object or the
+    /// field does not exist (a dynamic field is text). A host's hot read of a number or a flag, which [`field`](Self::field)
+    /// would format as text for the host to parse again.
+    pub fn static_value(&self, id: ObjId, name: &[u8]) -> Option<&Value> {
+        let object = self.live.get(&id)?;
+        let field = self.classes.static_field(object.class(), name)?;
+        SimObject::read_slot(field, b"").and_then(|slot| object.slot(slot))
+    }
+
     /// A field of a registered object (None when the object does not exist). Not charged to the step budget: a
     /// host's read; the interpreter's reads go through [`SimObject::data_field_charged`].
     pub fn field(&self, id: ObjId, name: &[u8], array: &[u8]) -> Option<Vec<u8>> {

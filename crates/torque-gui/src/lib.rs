@@ -63,13 +63,18 @@
 //!   alone (`a_reflow_of_sixty_five_thousand_tags_is_linear`, `a_duplicate_tag_id_is_still_counted_once`).
 //!
 //! Costs a frame must not grow back (bench `gui draw 300 controls`, timed under the bench lock): a control's class is matched
-//! by its borrowed name (no copy a control), a run of glyphs finds its font sheet once a sheet (no key a glyph), and an outline
-//! is laid out once and pushed at each of its offsets when its passes are the same.
+//! by its borrowed name (no copy a control, and none for a plugin's control), a run of glyphs finds its font sheet once a sheet
+//! (no key a glyph, no copy of the face's name for a face drawn last), a font is looked up once a frame for each face and size, a
+//! position or a flag is read as the number it is stored as (no text made and read back), a control with no children does not
+//! read its parent's clip, and an outline is laid out once and pushed at each of its offsets when its passes are the same. The
+//! client-script layer is kept from frame to frame while nothing it draws from changes (`client_script`, **Kept draws**), so an
+//! idle realm costs the canvas next to nothing; the justfile's `client-script-bench` holds the whole frame to its budgets.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use torque_ts_vm::idhash::IdMap;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
@@ -254,7 +259,7 @@ pub struct GuiState {
     /// system's cursor while the canvas's is on and none was drawn, so a game without a GuiCursor still has a pointer.
     pub cursor_drawn: bool,
     pub render_front: bool,
-    pub controls: HashMap<ObjId, Control>,
+    pub controls: IdMap<ObjId, Control>,
     /// Frames drawn ([`Gui::frame`]).
     pub frames: u64,
     /// Text controls whose profile asked for an automatic size that could not be computed (no font for the profile's face and
@@ -303,7 +308,7 @@ impl Default for GuiState {
             cursor_pos: (0, 0),
             cursor_drawn: false,
             render_front: false,
-            controls: HashMap::new(),
+            controls: IdMap::default(),
             frames: 0,
             autosize_skipped: 0,
             fonts: SharedFonts::default(),

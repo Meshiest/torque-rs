@@ -44,6 +44,10 @@
 //!   (`a_markup_font_looked_up_this_frame_or_held_is_not_dropped`).
 //! - A server's GUI ([`FontUse::Server`]) keeps at most [`MAX_SERVER_FONTS`] and drops only its own, so the game's ML text
 //!   always has the rest of the markup quota (`a_servers_gui_takes_only_its_share_and_the_games_ml_text_still_loads`).
+//! - [`FontCache::revision`] changes whenever the font a face and size gives may: a font loaded or refused, dropped to make room,
+//!   or a face forgotten (`remove_face`, which a registration calls, even with nothing kept for it). The GUI keeps what it drew
+//!   from fonts (a client-script layer, a font looked up in a frame) only while it is the same
+//!   (`the_revision_changes_with_every_change_to_the_fonts_a_face_gives`).
 //! - A refusal asked again in its frame with nothing changed costs no pass over the fonts
 //!   (`a_refusal_asked_again_in_its_frame_is_answered_at_once_until_something_changes`).
 
@@ -873,6 +877,7 @@ pub struct FontCache {
     refused: Option<Refusal>,
     clock: u64,
     frame: u64,
+    revision: u64,
     /// The cap on every kept font's sheet pixels (a test lowers it).
     pub pixel_cap: u64,
     /// The caps on the markup fonts' sheet pixels and on a server's GUI's share of them (a test lowers them).
@@ -912,6 +917,7 @@ impl FontCache {
             refused: None,
             clock: 0,
             frame: 0,
+            revision: 0,
             pixel_cap: MAX_FONT_SHEET_PIXELS,
             markup_pixel_cap: MAX_MARKUP_SHEET_PIXELS,
             server_pixel_cap: MAX_SERVER_SHEET_PIXELS,
@@ -999,6 +1005,7 @@ impl FontCache {
             frame: self.frame,
         };
         self.fonts.insert(key, entry);
+        self.revision += 1;
     }
 
     /// Whether one more font of `pixels` fits `tier`'s caps at `usage`.
@@ -1071,6 +1078,7 @@ impl FontCache {
             if let Some(e) = self.fonts.remove(&key) {
                 self.forget(&key.0, e);
                 self.evicted += 1;
+                self.revision += 1;
             }
         }
         true
@@ -1097,6 +1105,12 @@ impl FontCache {
         self.frame += 1;
     }
 
+    /// Counts the changes to which font each face and size gives: a font loaded, refused, dropped to make room or forgotten. A
+    /// draw made while it stood at one value is made again by the same fonts.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Whether `face` at `size` was looked up and is still kept (found or not): a lookup of it loads nothing.
     pub fn contains(&self, face: &str, size: i32) -> bool {
         self.fonts.contains_key(&(face.to_ascii_lowercase(), size))
@@ -1121,6 +1135,8 @@ impl FontCache {
     /// sheet pixels of the dropped fonts go back to the budget; the fonts that were kept are returned.
     pub fn remove_face(&mut self, face: &str) -> Vec<Found> {
         let key = face.to_ascii_lowercase();
+        // Even with nothing kept for it, the next lookup of the face may find what the last did not.
+        self.revision += 1;
         let keys: Vec<(String, i32)> = self.fonts.keys().filter(|k| k.0 == key).cloned().collect();
         let mut dropped = Vec::new();
         for k in keys {

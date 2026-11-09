@@ -684,6 +684,7 @@ impl Gui {
     /// Sets the font faces of the roles `sans`, `mono` and `title`.
     pub fn set_client_script_faces(&self, faces: [&str; 3]) {
         self.0.borrow_mut().client_script.faces = faces.map(str::to_string);
+        self.touch_custom();
     }
 
     /// Sets the realm's clock, in microseconds since it started (the same value its entry calls carry).

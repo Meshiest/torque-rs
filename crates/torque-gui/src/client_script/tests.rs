@@ -2,7 +2,9 @@
 //! the eval-path canary.
 
 mod fuzz;
+mod laid;
 mod layout;
+mod picture;
 mod prompt;
 
 use std::any::Any;
@@ -87,6 +89,10 @@ impl crate::GuiExtension for Host {
 
     fn fonts(&self) -> Option<Box<dyn crate::FontSource>> {
         Some(Box::new(FontCache::new("fonts", Box::new(BlockFonts))))
+    }
+
+    fn layer_stamp(&self, _gui: &Gui, _now: u32) -> Option<u64> {
+        Some(0)
     }
 }
 

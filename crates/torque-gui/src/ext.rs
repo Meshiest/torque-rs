@@ -270,6 +270,15 @@ pub trait GuiExtension: Any {
         false
     }
 
+    /// A value that changes whenever the hooks that shape how a control draws ([`before_control`](Self::before_control),
+    /// [`replaces_fill`](Self::replaces_fill), [`opacity`](Self::opacity), [`shift`](Self::shift),
+    /// [`clip_to_parent`](Self::clip_to_parent) and [`text_outline`](Self::text_outline)) would answer differently for a control
+    /// of a client-script realm, `now`, or `None` when the extension cannot say. The server layer's draw is kept from one frame to
+    /// the next while this value and everything the layer draws from stay the same; with `None` it is drawn again every frame.
+    fn layer_stamp(&self, _gui: &Gui, _now: u32) -> Option<u64> {
+        None
+    }
+
     /// The displacement the children of `id` are drawn at, `now` (screen pixels).
     fn shift(&self, _gui: &Gui, _id: ObjId, _now: u32) -> (i32, i32) {
         (0, 0)
@@ -336,5 +345,9 @@ pub struct NoExtension;
 impl GuiExtension for NoExtension {
     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
         self
+    }
+
+    fn layer_stamp(&self, _gui: &Gui, _now: u32) -> Option<u64> {
+        Some(0)
     }
 }

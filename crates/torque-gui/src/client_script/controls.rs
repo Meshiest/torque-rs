@@ -565,6 +565,7 @@ pub(crate) fn wheel(vm: &Vm, gui: &Gui, id: ObjId, notch: Notch) -> bool {
             Some((s.handle, s.kind, s.scroll))
         });
         if let Some(Some((handle, kind, scroll))) = moved {
+            gui.touch_custom();
             if kind == Some(Kind::Scroll) {
                 emit(
                     gui,

@@ -188,7 +188,7 @@ The justfile's `client-script-check` is the whole suite, and its output is the e
   the stop) is folded into one number and the number must be the same natively, under Node and in Chrome. A case that reads the
   wall clock has none. A change that moves a number on purpose is written back with `TORQUE_PARITY_BLESS=1`.
 - **Budgets** (the justfile's `client-script-bench ui,net`): a hostile realm at its caps keeps the frame within 3 ms of the scene alone at
-  p99, and an idle realm with 1,024 controls costs at most 0.3 ms at p50.
+  p99, and an idle realm with 1,024 controls costs at most 0.3 ms at p50, both counting the canvas drawing the realm's controls.
 
 ## What servers cannot do
 
