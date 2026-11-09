@@ -236,3 +236,27 @@ fn an_address_that_is_none_or_port_zero_is_not_one_players_join_by() {
     assert!(warn(Some(SocketAddr::from(([192, 168, 1, 5], 28_000))), false).is_none());
     assert!(warn(Some(LOCAL), true).is_none());
 }
+
+#[test]
+fn a_public_bind_of_plain_engine_udp_is_refused() {
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(MinimalPlugins);
+    crate::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Engine);
+    let engine = builder.build().expect("the engine builds");
+    for address in [Ipv4Addr::UNSPECIFIED, Ipv4Addr::new(203, 0, 113, 7)] {
+        let listen = Listen::Udp {
+            address,
+            port: 0,
+            public: true,
+        };
+        let refused = start(&engine, listen)
+            .err()
+            .expect("a public plain bind is refused");
+        assert!(
+            refused.contains("private addresses only"),
+            "{address}: {refused}"
+        );
+    }
+    // The same engine listens on a private address.
+    assert!(start(&engine, udp_loopback()).is_ok());
+}

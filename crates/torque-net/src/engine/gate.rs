@@ -76,7 +76,7 @@ pub fn cookie(key: &[u8; 16], from: SocketAddr, nonce: u64, epoch: u64) -> Cooki
 }
 
 /// `addr` with an IPv4-mapped IPv6 address taken as the IPv4 address it maps.
-fn canonical(addr: SocketAddr) -> SocketAddr {
+pub fn canonical(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(addr.ip().to_canonical(), addr.port())
 }
 
@@ -352,7 +352,7 @@ struct Pending {
 
 /// A source network, the unit one party is assumed to hold many addresses of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Network {
+pub(crate) enum Network {
     /// The first three bytes (a /24).
     V4([u8; 3]),
     /// The first eight bytes (a /64).
@@ -360,8 +360,12 @@ enum Network {
 }
 
 impl Network {
-    fn of(addr: SocketAddr) -> Network {
-        match addr.ip() {
+    pub(crate) fn of(addr: SocketAddr) -> Network {
+        Network::of_ip(addr.ip())
+    }
+
+    pub(crate) fn of_ip(ip: IpAddr) -> Network {
+        match ip.to_canonical() {
             IpAddr::V4(ip) => {
                 let [a, b, c, _] = ip.octets();
                 Network::V4([a, b, c])

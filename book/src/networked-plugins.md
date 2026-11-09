@@ -185,7 +185,8 @@ name. A mismatch is refused with the reason, which the client's script hears in 
 | The protocols have no version in common | `server speaks protocol 12 to 12, you speak ...` |
 
 The test is `tests/net.rs`, which gives a server and a client without the plugin: it ends with the first line, and no ghost was
-sent. An engine with nothing networked sends no manifest and judges none, so its handshake is Torque's own. A plain TGE client
+sent. In Torque's protocol an engine with nothing networked sends no manifest and judges none, so its handshake is Torque's own;
+in the engine's protocol ([Network protocols](network-protocols.md)) the manifest is part of every connect and always judged. A plain TGE client
 meeting a networked server is refused as one that has none of the plugins ("you do not have it"); a server that wants both kinds
 of client leaves its plugins without a `net_version`, and the engine's classes then go only to the clients a game says are the
 engine's own (`$Server::EngineClasses`, which a server whose gate admitted every client sets for itself). Over a connection that
@@ -359,7 +360,9 @@ channel message that is written first in the packet (within its own budget), so 
 TGE's packets as they are for every peer that registers no RPC. An unreliable RPC is sent reliably in TGE mode. Handlers run in the
 server's tick after the packets were received, and on a client in its tick after the packets of the frame were applied, so a call
 that names a ghost from the same packet finds it. The framing and the checks are in `RpcLink`, which hands frames to an
-`RpcCarrier`; the channel is the TGE-mode carrier.
+`RpcCarrier`; the channel is the TGE-mode carrier. In the engine's protocol the carrier is the session's own RPC lane
+(`RpcLanes`): reliable batches ride it, unreliable ones that fit ride the unreliable lane and are dropped when lost, and the
+session's unacknowledged bytes are the backpressure.
 
 (`examples/minimal-engine/tests/rpc.rs` runs a call with a reply, a notification each way, the script natives, a script
 handler, a flood, and the permission checks through the engine's own server and client over the memory transport.)

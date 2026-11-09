@@ -175,6 +175,18 @@ fn messages() -> Vec<(&'static str, Vec<u8>)> {
             "control-accept",
             Control::Accept(accept(1_200)).encode().expect("an accept"),
         ),
+        (
+            "control-challenge",
+            Control::Challenge(0x0bad_cafe_f00d_5eed)
+                .encode()
+                .expect("a challenge"),
+        ),
+        (
+            "control-ticket",
+            Control::Ticket(b"ticket".to_vec())
+                .encode()
+                .expect("a ticket"),
+        ),
     ]
 }
 
@@ -253,7 +265,7 @@ fn engine_framing_1_bytes_are_pinned() {
 fn the_pinned_datagrams_read_back() {
     for (name, bytes) in messages() {
         match name {
-            "control-connect" | "control-accept" => {
+            "control-connect" | "control-accept" | "control-challenge" | "control-ticket" => {
                 let back = Control::decode(&bytes).expect(name).encode().expect(name);
                 assert_eq!(back, bytes, "{name}");
             }

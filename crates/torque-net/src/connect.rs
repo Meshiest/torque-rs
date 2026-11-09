@@ -299,6 +299,11 @@ pub trait ConnectGate: fmt::Debug + Send + Sync {
 
     /// What the request this gate accepted says about taking content from the server (its mods section), for the server to send
     /// its required mods to a client that can take them. `None` (the default): the client cannot.
+    /// The canonical token of `ticket` (its auth provider's [`AuthProvider::ticket_id`]), which a replay check remembers.
+    fn ticket_id(&self, ticket: &[u8]) -> Vec<u8> {
+        ticket.to_vec()
+    }
+
     fn mods_support(&self, _fields: &ConnectFields) -> Option<ModsSection> {
         None
     }
@@ -322,6 +327,12 @@ pub trait AuthProvider: fmt::Debug + Send + Sync {
     /// identity it stands for, or the reason it is refused (cut at 255 bytes on the wire). A slow check belongs to a provider
     /// that answers from a cache; this runs inside the handshake.
     fn verify(&self, from: SocketAddr, cx: &AuthContext, ticket: &[u8]) -> Result<Vec<u8>, String>;
+
+    /// The canonical token a ticket stands for, which a server's replay check remembers (two encodings of one token are one
+    /// ticket). The bytes themselves unless the provider's tickets have more than one encoding.
+    fn ticket_id(&self, ticket: &[u8]) -> Vec<u8> {
+        ticket.to_vec()
+    }
 }
 
 /// The standard gate: the server's manifest the client's must satisfy, then the auth provider's verdict.
@@ -377,6 +388,12 @@ pub fn reason(text: &str) -> Vec<u8> {
 }
 
 impl ConnectGate for ManifestGate {
+    fn ticket_id(&self, ticket: &[u8]) -> Vec<u8> {
+        self.auth
+            .as_ref()
+            .map_or_else(|| ticket.to_vec(), |auth| auth.ticket_id(ticket))
+    }
+
     fn mods_support(&self, fields: &ConnectFields) -> Option<ModsSection> {
         fields.block.as_ref().and_then(|b| b.mods.clone())
     }

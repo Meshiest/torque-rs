@@ -137,12 +137,24 @@ impl<G: NetGame> EngineClass for GameConnectionClass<G> {
                 rec.silent,
                 table,
                 rec.local_peer.is_some(),
+                rec.conn,
             )
         };
-        let (addr, sequence, reason, silent, table, local) = plan;
-        // Only a network connection sends the Disconnect packet; a local one never has it.
-        if !silent && !local {
+        let (addr, sequence, reason, silent, table, local, conn) = plan;
+        let engine = self.shared.borrow().engine_host.is_some();
+        // Only a network connection sends the Disconnect packet; a local one never has it. In engine mode it is the session's
+        // goodbye, and a connection never accepted has no session of its own to say it on (its reject is the session's).
+        if !silent && !local && (conn.is_some() || !engine) {
             vm.print(b"Issuing Disconnect packet.");
+        }
+        if engine {
+            if conn.is_some() {
+                super::engine::goodbye(&self.shared, addr, &reason, !silent && !local);
+                if let (Some(conn), Some(lanes)) = (conn, vm.extension::<super::rpc::RpcLanes>()) {
+                    lanes.close(Some(conn));
+                }
+            }
+        } else if !silent && !local {
             let types = self.shared.borrow().codecs.handshake_types();
             let datagram = types.disconnect(&table, sequence, &reason);
             let transport = Rc::clone(&self.shared.borrow().transport);

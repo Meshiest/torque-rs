@@ -219,6 +219,11 @@ impl Datagrams for LocalLink {
     fn port(&self) -> u16 {
         0
     }
+
+    /// The worker's link stands for a data channel, as the server's relay transport says.
+    fn link_kind(&self) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
+    }
 }
 
 /// A client's link to a player's host reached by an invite link: the page's data channel to it.
@@ -235,6 +240,11 @@ impl Datagrams for PageLink {
 
     fn port(&self) -> u16 {
         0
+    }
+
+    /// The worker's link stands for a data channel, as the server's relay transport says.
+    fn link_kind(&self) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
     }
 }
 

@@ -84,7 +84,7 @@ pub const RUNNER_IDS: [&str; 4] = [
 ];
 
 /// The ids of the plugins that set the network protocol, by protocol: `[net] protocol` turns the others off, as the protocol slot
-/// holds one. The engine's own protocol has no plugin in the groups yet, so naming it is a warning until it does.
+/// holds one. Both are in the plugin groups ([`ProtocolPlugins`](crate::plugins::ProtocolPlugins)).
 pub const PROTOCOL_IDS: [(ProtocolKind, &str); 2] = [
     (ProtocolKind::Tge, "torque.net.tge"),
     (ProtocolKind::Engine, "torque.net.engine"),

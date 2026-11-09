@@ -334,6 +334,15 @@ fn a_game_socket_carries_datagrams_both_ways() {
     assert_eq!(data, [1, 2, 3]);
     assert!(is_stand_in(from), "a stand-in address: {from}");
     assert_eq!(t.peer_of(from), Some(local));
+    // The host's caps count the TCP peer behind the stand-in, and a socket's link is a validated one.
+    assert_eq!(t.peer_ip(from), local.ip());
+    assert!(t.link_kind(from).facts.validated);
+    let elsewhere = SocketAddr::from(([192, 168, 3, 4], 5_000));
+    assert_eq!(
+        t.peer_ip(elsewhere),
+        elsewhere.ip(),
+        "an address that is no stand-in is its own"
+    );
     assert!(t.holds(from) && !t.holds(local));
     assert!(t.send_to(from, &[9; 1400]));
     assert!(

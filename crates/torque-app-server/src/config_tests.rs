@@ -2,7 +2,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 
-use torque_engine::{BuildError, EngineBuilder, Plugin, PluginId, ProtocolKind, Warning};
+use torque_engine::{BuildError, EngineBuilder, ProtocolKind, Warning};
 use torque_ts_vm::host::MemFiles;
 
 use crate::config::{
@@ -10,7 +10,9 @@ use crate::config::{
     MAX_IDS, MAX_NAME_LEN, PATH, client_entry, server_entry,
 };
 use crate::files::GameFiles;
-use crate::plugins::{MinimalPlugins, TerrainPlugin, TgeProtocolPlugin, WaterPlugin};
+use crate::plugins::{
+    EngineProtocolPlugin, MinimalPlugins, TerrainPlugin, TgeProtocolPlugin, WaterPlugin,
+};
 use crate::server::{GameServer, Listen, ServerStart};
 
 const SAMPLE: &str = r#"
@@ -270,17 +272,6 @@ fn a_runner_that_is_not_in_the_build_is_a_warning_and_the_set_one_stays() {
     assert!(engine.warnings().is_empty());
 }
 
-/// What the engine's own protocol's plugin will be: it sets the slot to the engine's protocol.
-#[derive(PluginId)]
-#[plugin(id = "torque.net.engine")]
-struct EngineProtocolStandIn;
-
-impl Plugin for EngineProtocolStandIn {
-    fn build(&self, engine: &mut EngineBuilder) {
-        engine.net().protocol(ProtocolKind::Engine);
-    }
-}
-
 #[test]
 fn the_net_protocol_reads_engine_and_tge_and_refuses_anything_else() {
     assert_eq!(parse("").protocol, None);
@@ -323,21 +314,20 @@ fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
         .unwrap();
     assert_eq!(engine.protocol(), ProtocolKind::Tge);
     assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
-    // The engine's own protocol replaces Torque's plugin with its own.
+    // The engine's own protocol: the group's plugin of it is turned on, Torque's off.
     let config = parse("[net]\nprotocol = \"engine\"\n");
     let engine = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
-        .add_plugins(EngineProtocolStandIn)
-        .disable_id("torque.net.engine")
         .config(&config)
         .build()
         .unwrap();
     assert_eq!(engine.protocol(), ProtocolKind::Engine);
+    assert!(engine.is_plugin_added::<EngineProtocolPlugin>());
     assert!(!engine.is_plugin_added::<TgeProtocolPlugin>());
     assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
     // A build without that plugin warns and keeps the protocol it has.
     let engine = EngineBuilder::new()
-        .add_plugins(MinimalPlugins)
+        .add_plugins(TgeProtocolPlugin)
         .config(&config)
         .build()
         .unwrap();
@@ -355,7 +345,7 @@ fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
 fn a_second_plugin_that_sets_the_protocol_fails_the_build_naming_both() {
     let error = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
-        .add_plugins(EngineProtocolStandIn)
+        .enable_id("torque.net.engine")
         .build()
         .unwrap_err();
     assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{error}");

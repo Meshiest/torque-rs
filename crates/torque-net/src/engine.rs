@@ -13,6 +13,9 @@
 //! - [`session`]: one peer's session on either side: the connect flow, the lanes (control, RPC, unreliable, then the stream
 //!   lanes the host writes: ghosts, moves, channels), their budgets, and the notify of packets that carried stream data.
 //! - [`gate`]: what a plain link's server does with datagrams from addresses that have no session.
+//! - [`table`]: a server's sessions: routing by source, the gate in front of plain links, the per-source caps the host owes.
+//! - [`order`]: the wide packet numbers, in send order, that the layers above a session key their records by.
+//! - [`bridge`]: the connect message as the connect fields, block and ticket context both modes judge a connect by.
 //!
 //! **Versioned.** Byte 0 of every datagram is [`ENGINE_TAG`]: the engine family in the high nibble, the framing version in the
 //! low one. Any change to these bytes is a new [`ENGINE_FRAMING`], and every version's goldens are kept
@@ -30,11 +33,14 @@
 //! - drain every session's events each tick ([`Session::next_event`]): a session that holds too many closes;
 //! - draw nonces, session ids and gate keys from a cryptographic random source, and refuse plain links on public addresses.
 
+pub mod bridge;
 pub(crate) mod framing;
 pub mod gate;
 mod lanes;
 pub mod link;
+pub mod order;
 pub mod session;
+pub mod table;
 
 pub use framing::{
     Accept, Body, COOKIE_BYTES, Connect, Control, Cookie, CookieValue, Datagram, Disconnect,
@@ -43,11 +49,13 @@ pub use framing::{
 };
 pub use gate::{Gate, GateConfig, GateOutcome};
 pub use lanes::{ACK_BITS, MESSAGE_WINDOW, PACKET_WINDOW, SendError};
-pub use link::{Link, LinkFacts, NoRoom, ServerIdentity};
+pub use link::{Link, LinkFacts, LinkKind, NoRoom, ServerIdentity};
+pub use order::PacketOrder;
 pub use session::{
-    CloseReason, Delivery, Event, LaneBudgets, LaneLimits, NoStreams, Polled, Session,
+    CloseReason, Delivery, Event, LaneBudgets, LaneLimits, NoStreams, PacketFates, Polled, Session,
     SessionConfig, State, StreamSource,
 };
+pub use table::{Arrival, Peer, SessionTable, Stage, TableLimits, canonical};
 
 /// The engine framing version this build speaks.
 pub const ENGINE_FRAMING: u8 = 1;

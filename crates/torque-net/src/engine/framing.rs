@@ -23,6 +23,7 @@
 use super::{ENGINE_FAMILY, ENGINE_FRAMING, ENGINE_TAG, HELLO_BYTES};
 use crate::NetError;
 use crate::cap::NET_MAX_CONNECT_ARGS;
+use crate::connect::MAX_TICKET_BYTES;
 
 /// The bytes of a one-byte-length string.
 pub const STR_BYTES: usize = 255;
@@ -430,12 +431,19 @@ pub const MAX_ACCEPT_WIDTH: u8 = 24;
 
 const CONTROL_CONNECT: u8 = 1;
 const CONTROL_ACCEPT: u8 = 2;
+const CONTROL_CHALLENGE: u8 = 3;
+const CONTROL_TICKET: u8 = 4;
 
 /// A message of the control lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Control {
     Connect(Box<Connect>),
     Accept(Accept),
+    /// Server to client, after the connect: the nonce the server chose, which the client's auth ticket must be made for.
+    Challenge(u64),
+    /// Client to server, the answer to a challenge: the auth ticket made for it (empty: the client has none), at most
+    /// [`MAX_TICKET_BYTES`].
+    Ticket(Vec<u8>),
 }
 
 impl Control {
@@ -478,6 +486,21 @@ impl Control {
                 w.u64(a.digests.channels);
                 w.u64(a.digests.rpcs);
                 w.u64(a.digests.uploads);
+            }
+            Control::Challenge(nonce) => {
+                w.u8(CONTROL_CHALLENGE);
+                w.u64(*nonce);
+            }
+            Control::Ticket(ticket) => {
+                if ticket.len() > MAX_TICKET_BYTES {
+                    return Err(NetError::Cap {
+                        what: "ticket bytes",
+                        count: ticket.len() as u64,
+                        cap: MAX_TICKET_BYTES as u64,
+                    });
+                }
+                w.u8(CONTROL_TICKET);
+                w.blob(ticket)?;
             }
         }
         Ok(w.buf)
@@ -541,6 +564,18 @@ impl Control {
                     return Err(NetError::Invalid("accept field"));
                 }
                 Control::Accept(a)
+            }
+            CONTROL_CHALLENGE => Control::Challenge(r.u64()?),
+            CONTROL_TICKET => {
+                let ticket = r.blob()?;
+                if ticket.len() > MAX_TICKET_BYTES {
+                    return Err(NetError::Cap {
+                        what: "ticket bytes",
+                        count: ticket.len() as u64,
+                        cap: MAX_TICKET_BYTES as u64,
+                    });
+                }
+                Control::Ticket(ticket.to_vec())
             }
             _ => return Err(NetError::Invalid("control message kind")),
         };

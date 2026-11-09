@@ -80,6 +80,7 @@ use crate::predict::{FileReader, Predictor};
 use crate::render::RenderResets;
 use crate::state::{ClientState, GameSlot};
 
+pub mod engine_wire;
 pub mod tge;
 
 /// The client's tick: one move and one packet each (TGE's process list ticks every 32 ms; `$pref::Net::PacketRateToServer` is 32).
@@ -283,6 +284,12 @@ pub trait Link {
 
     /// The next datagram the server sent, if one waits (`wait`: how long a blocking link may wait for one).
     fn recv(&mut self, wait: Duration) -> io::Result<Option<Vec<u8>>>;
+
+    /// What the link guarantees and the largest datagram it takes, as engine mode reads it (plain UDP unless the link says
+    /// otherwise).
+    fn kind(&self) -> net::engine::LinkKind {
+        net::engine::LinkKind::PLAIN_UDP
+    }
 }
 
 /// What a connect gives the game's feed ([`ConnGame::start`]).
@@ -654,6 +661,10 @@ impl Link for InboxLink {
 
     fn recv(&mut self, _wait: Duration) -> io::Result<Option<Vec<u8>>> {
         Ok(self.inbox.borrow_mut().pop_front())
+    }
+
+    fn kind(&self) -> net::engine::LinkKind {
+        self.net.borrow().link_kind()
     }
 }
 

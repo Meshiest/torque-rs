@@ -1,0 +1,19 @@
+# The lines `just trace-hash` must print (natively and as wasm32), one per scenario and fold. A change to a line comes with
+# its reason here, one `#` line above it. The `tge` lines are Torque's protocol and never move.
+figure tge ea637b68aa3eaf81
+buggy tge 590baa604ba3b7aa
+# The engine's own protocol over the memory link: one packet a tick each way, the ghost lane at the byte rate's size
+# (256 KiB/s), the session's acks in place of TGE's.
+figure engine 45159b8e603266ea
+buggy engine a8c6b4dadf0a29ef
+all tge f8cf53d9d1a33026
+all engine cb53dd915036b58d
+figure-smooth tge 218cc5e67d025571
+predictors tge c63f6b6b971854cc
+rapier-drop none 31a5ce13c9db549d
+physics none 716cb8e96e71430f
+props-drop tge 6033b93d22486e30
+# Joints between props (tether, winch, weld, hinge) and a Player's grapple.
+props-joints tge 53ddcf6a451cd096
+# The fold of the plugin scenarios, with props-joints added.
+plugins tge 072a2ae657a9bd06

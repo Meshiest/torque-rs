@@ -61,6 +61,16 @@ pub fn all() -> Vec<Scenario> {
             mode: Some(Mode::Tge),
             run: || buggy(Baseline),
         },
+        Scenario {
+            name: "figure",
+            mode: Some(Mode::Engine),
+            run: || figure_in(Mode::Engine, Baseline),
+        },
+        Scenario {
+            name: "buggy",
+            mode: Some(Mode::Engine),
+            run: || buggy_in(Mode::Engine, Baseline),
+        },
     ]
 }
 
@@ -488,8 +498,13 @@ fn run_with<M>(
 
 /// The figure on foot: a server `Player` and the client's prediction of it, run with `plugins` added to the engine.
 pub fn figure<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
+    figure_in(Mode::Tge, plugins)
+}
+
+/// [`figure`] over the protocol `mode`.
+pub fn figure_in<M>(mode: Mode, plugins: impl Plugins<M>) -> Result<Outcome, String> {
     run(
-        Mode::Tge,
+        mode,
         plugins,
         Control::Figure,
         0x9e37_79b9_7f4a_7c15,
@@ -589,8 +604,13 @@ pub fn figure_smooth() -> Result<Outcome, String> {
 
 /// The buggy: a server `WheeledVehicle` its client drives and the client's prediction of it, run with `plugins` added.
 pub fn buggy<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
+    buggy_in(Mode::Tge, plugins)
+}
+
+/// [`buggy`] over the protocol `mode`.
+pub fn buggy_in<M>(mode: Mode, plugins: impl Plugins<M>) -> Result<Outcome, String> {
     run(
-        Mode::Tge,
+        mode,
         plugins,
         Control::Buggy,
         0xd1b5_4a32_d192_ed03,

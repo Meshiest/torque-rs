@@ -1036,3 +1036,36 @@ fn a_server_with_nothing_required_holds_nobody_and_counts_nobody() {
         "every client joined at once, past the cap of one"
     );
 }
+
+#[test]
+fn the_mods_request_is_an_rpc_in_the_engines_protocol_and_a_command_in_torques() {
+    use torque::app::plugins::set_protocol;
+    use torque::engine::ProtocolKind;
+    let files = game(None);
+    let build = |kind| {
+        let config = GameConfig::load(&files).unwrap();
+        let mut builder = EngineBuilder::new();
+        builder
+            .add_plugins((
+                DefaultPlugins.set(server_plugin()),
+                ExamplePlugin(files.clone()),
+            ))
+            .config(&config);
+        set_protocol(&mut builder, kind);
+        builder.build().expect("the engine builds")
+    };
+    let profile = HandshakeProfile::default();
+    // Torque's protocol: no RPC, so the manifest and the wire are what they were.
+    let tge = build(ProtocolKind::Tge);
+    assert!(tge.net_rpcs().unwrap().id(torque::mods::GET_RPC).is_none());
+    assert!(tge.net_manifest(&profile).rpcs.count() == 0);
+    // The engine's: the request rides the RPC lane.
+    let engine = build(ProtocolKind::Engine);
+    assert!(
+        engine
+            .net_rpcs()
+            .unwrap()
+            .id(torque::mods::GET_RPC)
+            .is_some()
+    );
+}

@@ -23,15 +23,21 @@ use std::rc::Rc;
 use web_time::{Duration, Instant};
 
 use torque_engine::command::ServerCommand;
-use torque_engine::{Engine, EngineBuilder, ServerStage, ServerTick, TickInfo, TickPhase};
+use torque_engine::{
+    Engine, EngineBuilder, ProtocolKind, ServerStage, ServerTick, TickInfo, TickPhase,
+};
 use torque_game::sim_classes::SimClasses;
+use torque_net::connect::ManifestGate;
+use torque_net::engine::bridge::table_digests;
 use torque_server::game::GameParts;
 use torque_server::net::channels;
 use torque_server::net::cmdlimit::{CommandTable, register_command_drops};
 use torque_server::net::peer::ProtocolMode;
-use torque_server::net::rpc::{ServerRpc, SharedHost, register_server_natives};
+use torque_server::net::rpc::{RpcLanes, ServerRpc, SharedHost, register_server_natives};
 use torque_server::net::torque::TorqueNet;
-use torque_server::net::transport::{MemoryEnd, SharedTransport};
+use torque_server::net::transport::{
+    LanRules, MemoryEnd, PlainEngineRefusal, SharedTransport, check_plain_engine_bind,
+};
 use torque_server::net::{HostParts, NetShared};
 use torque_server::server::{Server, TICK_MS, TickHooks};
 use torque_server::state::ServerState;
@@ -89,6 +95,18 @@ pub enum Listen {
     Bound(BoundTransport),
     /// A transport a plugin registered under its own id ([`Listen::custom`]), with the request it reads.
     Custom(CustomListen),
+}
+
+/// Why a server in engine mode may not listen as `listen` asks: plain UDP on an address outside the private set (the engine's
+/// protocol takes plain UDP for LAN and development only). The other transports' links bring their own security.
+pub fn plain_engine_refusal(listen: &Listen) -> Option<PlainEngineRefusal> {
+    let address = match listen {
+        Listen::Udp { address, .. } => *address,
+        #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
+        Listen::Web { address, web, .. } if web.udp => *address,
+        _ => return None,
+    };
+    check_plain_engine_bind(&LanRules::PLAIN, address.into()).err()
 }
 
 /// How a server starts: where it listens, the globals set before `server.cs` runs, and the script function that starts the
@@ -200,6 +218,11 @@ impl GameServer {
         start: &ServerStart,
         prepare: &mut dyn FnMut(&mut Vm),
     ) -> Result<GameServer, String> {
+        if engine.protocol() == ProtocolKind::Engine
+            && let Some(refusal) = plain_engine_refusal(&start.listen)
+        {
+            return Err(refusal.to_string());
+        }
         let ServerLink { transport, end } = open_listen(engine, &start.listen)?;
 
         let mut vm = Vm::new();
@@ -236,7 +259,31 @@ impl GameServer {
         // An engine with networked plugins or an auth provider holds every client to its manifest and tickets, before
         // `onConnectRequest`; one with neither judges no one and speaks Torque's handshake.
         let profile = shared.borrow().handshake_profile();
-        if let Some(gate) = engine.connect_gate(&profile) {
+        let engine_mode = engine.protocol() == ProtocolKind::Engine;
+        // In engine mode the manifest is the connect itself: every client is held to it, whatever the plugins say on the wire.
+        let gate = engine.connect_gate(&profile).or_else(|| {
+            engine_mode.then(|| {
+                let gate = ManifestGate::new(engine.net_manifest(&profile));
+                match engine.auth() {
+                    Some(auth) => gate.with_auth(auth),
+                    None => gate,
+                }
+            })
+        });
+        if engine_mode {
+            let manifest = engine.net_manifest(&profile);
+            let mut sh = shared.borrow_mut();
+            if let Some(host) = torque_server::net::engine::ensure_host(&server.vm, &mut sh) {
+                host.digests = table_digests(Some(&manifest));
+                // A server that checks tickets challenges every connect, and checks the ticket against the challenge.
+                host.auth = if engine.auth().is_some() {
+                    torque_server::net::engine::Auth::Challenge
+                } else {
+                    torque_server::net::engine::Auth::None
+                };
+            }
+        }
+        if let Some(gate) = gate {
             // The mods a server requires are known once its mods are loaded, after the gate is set; the script engine holds the
             // list the gate judges with.
             server.vm.set_extension(Rc::new(gate.required().clone()));
@@ -268,7 +315,8 @@ impl GameServer {
         let permissions = torque_engine::permissions::Permissions::new(engine)
             .map_err(|e| format!("the permissions: {e}"))?;
         server.vm.set_extension(Rc::new(permissions));
-        // The plugins' RPCs ride the reserved channel; the server's pump runs them once a tick.
+        // The plugins' RPCs ride the reserved channel (each session's RPC lanes in engine mode); the server's pump runs them once
+        // a tick.
         let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
         let has_rpcs = !rpcs.is_empty();
         if has_rpcs && let Some(hub) = &hub {
@@ -277,7 +325,13 @@ impl GameServer {
                 .vm
                 .extension::<torque_engine::permissions::Permissions>()
                 .ok_or("the server has no permissions")?;
-            let rpc = Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms));
+            let rpc = if engine_mode {
+                let lanes = Rc::new(RpcLanes::default());
+                server.vm.set_extension(Rc::clone(&lanes));
+                Rc::new(ServerRpc::over_lanes(rpcs, hub.clone(), host, perms, lanes))
+            } else {
+                Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms))
+            };
             register_server_natives(&mut server.vm, &rpc);
             server.vm.set_extension(rpc);
         }

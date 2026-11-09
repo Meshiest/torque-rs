@@ -1504,16 +1504,32 @@ impl Mods {
             }
         }
         // What the server is waiting for: the next run of blocks, or word that everything is mounted. The numbers are the
-        // downloads' own, so the script is fixed text.
+        // downloads' own, so the script is fixed text. In the engine's protocol the run is asked for with the RPC, once the
+        // connection's RPCs take calls.
+        let rpc = crate::transfer::get_rpc_ready(vm);
+        if rpc == Some(false) {
+            return;
+        }
         match downloads.next_command() {
             Some(Command::Get(r)) => {
-                let _ = vm.eval(
+                let call = if rpc.is_some() {
+                    format!(
+                        "rpcToServer(\"{}\", {}, {}, {}, {});",
+                        crate::transfer::GET_RPC,
+                        r.mod_index,
+                        r.file,
+                        r.start,
+                        r.count
+                    )
+                } else {
                     format!(
                         "commandToServer('TorqueModsGet', {}, {}, {}, {});",
                         r.mod_index, r.file, r.start, r.count
                     )
-                    .as_bytes(),
-                );
+                };
+                if let Err(e) = vm.eval(call.as_bytes()) {
+                    vm.warn(format!("mods: the request for blocks did not go: {e}"));
+                }
             }
             Some(Command::Ready) => {
                 let _ = vm.eval(b"commandToServer('TorqueModsReady');");

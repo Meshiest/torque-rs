@@ -13,7 +13,7 @@
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
-//! | [`TgeProtocolPlugin`] | `torque.net.tge` | both, the engine's protocol slot | sets the protocol to Torque's own (`EngineBuilder::net().protocol`) |
+//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`TgeProtocolPlugin`] sets Torque's own protocol, [`EngineProtocolPlugin`] the engine's; one of them is on ([`protocol_from_env`]) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
@@ -25,8 +25,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, ProtocolKind, Requires,
-    ServerStage,
+    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, PluginType, ProtocolKind,
+    Requires, ServerStage,
 };
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
@@ -71,7 +71,7 @@ impl PluginGroup for MinimalPlugins {
             .add(ServerGamePlugin)
             .add(TerrainPlugin)
             .add(WaterPlugin)
-            .add(TgeProtocolPlugin)
+            .add_group(ProtocolPlugins)
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
             .add_group(ContentFormatPlugins)
@@ -234,6 +234,71 @@ impl Plugin for TgeProtocolPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.net().protocol(ProtocolKind::Tge);
     }
+}
+
+/// The network protocol slot, set to the engine's own protocol: its own framing over a link contract (QUIC and the web's links
+/// later, plain UDP on private addresses, WebRTC, WebSockets, the memory link), every peer the engine's own, the manifest
+/// always sent, RPCs in their own lanes ([`torque_server::net::engine`]). A game turns [`TgeProtocolPlugin`] off and this on
+/// to speak it, or names it in `game.toml` (`[net] protocol = "engine"`).
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.net.engine")]
+pub struct EngineProtocolPlugin;
+
+impl Plugin for EngineProtocolPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().protocol(ProtocolKind::Engine);
+    }
+}
+
+/// The variable that picks the protocol of [`ProtocolPlugins`] for a run (`tge` or `engine`): what the `net-matrix` recipe sets to
+/// run the same tests in both modes. A game's `game.toml` (`[net] protocol`) still has the last word.
+pub const PROTOCOL_ENV: &str = "TORQUE_NET_PROTOCOL";
+
+/// The protocol [`ProtocolPlugins`] turns on: the one [`PROTOCOL_ENV`] names when it names one, else Torque's. In a browser,
+/// which has no environment, the build's (`TORQUE_NET_PROTOCOL` when it was compiled).
+pub fn protocol_from_env() -> ProtocolKind {
+    let named = if cfg!(target_arch = "wasm32") {
+        option_env!("TORQUE_NET_PROTOCOL").map(str::to_owned)
+    } else {
+        std::env::var(PROTOCOL_ENV).ok()
+    };
+    named
+        .as_deref()
+        .and_then(ProtocolKind::from_label)
+        .unwrap_or(ProtocolKind::Tge)
+}
+
+/// Both protocol plugins, the one [`protocol_from_env`] picks on and the other added off, so `game.toml` or a game's own
+/// `enable`/`disable` can switch them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProtocolPlugins;
+
+impl PluginGroup for ProtocolPlugins {
+    fn build(self) -> PluginGroupBuilder {
+        let group = PluginGroupBuilder::new()
+            .add(TgeProtocolPlugin)
+            .add(EngineProtocolPlugin);
+        match protocol_from_env() {
+            ProtocolKind::Engine => group.disable::<TgeProtocolPlugin>(),
+            _ => group.disable::<EngineProtocolPlugin>(),
+        }
+    }
+}
+
+/// Makes the engine `builder` speaks `kind`, whichever protocol plugin it had on: the other one is turned off. For a host or a
+/// test that must speak one protocol whatever [`PROTOCOL_ENV`] says.
+pub fn set_protocol(builder: &mut EngineBuilder, kind: ProtocolKind) -> &mut EngineBuilder {
+    let (on, off) = match kind {
+        ProtocolKind::Engine => (EngineProtocolPlugin::ID, TgeProtocolPlugin::ID),
+        _ => (TgeProtocolPlugin::ID, EngineProtocolPlugin::ID),
+    };
+    if !builder.contains(on.as_str()) {
+        match kind {
+            ProtocolKind::Engine => builder.add_plugins(EngineProtocolPlugin),
+            _ => builder.add_plugins(TgeProtocolPlugin),
+        };
+    }
+    builder.disable_id(off.as_str()).enable_id(on.as_str())
 }
 
 /// The server's network host of Torque's net game and the passes that drive it from the main loop.

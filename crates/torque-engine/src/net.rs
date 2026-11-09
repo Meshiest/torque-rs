@@ -223,6 +223,15 @@ impl NetRegistry<'_> {
     }
 }
 
+impl EngineBuilder {
+    /// The network protocol the plugins built so far set ([`NetRegistry::protocol`]), else Torque's: what a plugin's
+    /// [`finish`](crate::Plugin::finish) reads to register what only one protocol has.
+    pub fn protocol(&self) -> ProtocolKind {
+        self.slot::<ProtocolSlot>()
+            .map_or(ProtocolKind::Tge, |slot| slot.0)
+    }
+}
+
 impl Engine {
     /// The network protocol the engine speaks: the one a plugin set ([`NetRegistry::protocol`]), else Torque's.
     pub fn protocol(&self) -> ProtocolKind {
@@ -333,6 +342,22 @@ impl Engine {
             .validate()
             .map_err(|e| format!("this build cannot send its manifest: {e}"))?;
         Ok(Some(block))
+    }
+
+    /// The block of a connect in the engine's own protocol, whose connect always carries the manifest: this engine's for
+    /// `profile`, and a ticket its auth provider made for the connection `cx` names. An `Err` is the provider's reason it has
+    /// no ticket (shown to the player; the connect ends).
+    pub fn engine_connect_block(
+        &self,
+        profile: &HandshakeProfile,
+        cx: &AuthContext,
+    ) -> Result<ConnectBlock, String> {
+        let ticket = self.auth().map(|auth| auth.ticket(cx)).transpose()?;
+        Ok(ConnectBlock {
+            manifest: Some(self.net_manifest(profile)),
+            ticket,
+            ..Default::default()
+        })
     }
 
     /// The gate a server of this engine judges connect requests with: clients must match its manifest and carry a ticket its

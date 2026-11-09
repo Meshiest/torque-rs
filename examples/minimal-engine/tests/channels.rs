@@ -8,7 +8,9 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
 use torque::app::client::ClientNet;
+use torque::app::plugins::set_protocol;
 use torque::app::server::Listen;
+use torque::engine::ProtocolKind;
 use torque::engine::{Plugin, PluginId};
 use torque::net::chunk::{ChannelLimits, Kind};
 use torque::server::net::channels::{ChannelHub, ChunkChannel, ClientChannels};
@@ -152,10 +154,14 @@ fn the_handshake_turns_a_plugin_channel_on_and_each_connection_gets_the_data() {
 fn a_server_without_channels_never_turns_a_clients_channels_on() {
     let terrain = Terrain::default();
     let files = files().unwrap();
-    // The server's engine has no channel and no gate; the client's lists one in its manifest.
-    let plain = builder(&files).unwrap().build().unwrap();
+    // The server's engine has no channel and no gate; the client's lists one in its manifest. A TGE-mode case: in the
+    // engine's protocol every connect is judged by the manifest (the next test).
+    let mut p = builder(&files).unwrap();
+    set_protocol(&mut p, ProtocolKind::Tge);
+    let plain = p.build().unwrap();
     let mut b = builder(&files).unwrap();
     b.add_plugins(TerrainPlugin(terrain.clone()));
+    set_protocol(&mut b, ProtocolKind::Tge);
     let with = b.build().unwrap();
     let server = server(&plain, Listen::Memory(SERVER)).expect("the server starts");
     assert!(server.vm().extension::<ChannelHub>().is_none());
@@ -179,6 +185,47 @@ fn a_server_without_channels_never_turns_a_clients_channels_on() {
     // The connection works as a Torque one does, and nothing is read as channels.
     assert_eq!(client.ghost_count(), 3, "{:?}", client.client_log);
     assert!(!channels.is_active());
+    assert_eq!(*terrain.messages.borrow(), 0);
+}
+
+#[test]
+fn in_the_engines_protocol_a_client_whose_channels_differ_is_refused_with_the_manifests_reason() {
+    let terrain = Terrain::default();
+    let files = files().unwrap();
+    let mut p = builder(&files).unwrap();
+    set_protocol(&mut p, ProtocolKind::Engine);
+    let plain = p.build().unwrap();
+    let mut b = builder(&files).unwrap();
+    b.add_plugins(TerrainPlugin(terrain.clone()));
+    set_protocol(&mut b, ProtocolKind::Engine);
+    let with = b.build().unwrap();
+    let server = server(&plain, Listen::Memory(SERVER)).expect("the server starts");
+    let mut client = client(
+        &with,
+        ClientNet::Memory {
+            client: CLIENT,
+            server: SERVER,
+        },
+    )
+    .expect("the client");
+    client
+        .call(
+            "eval",
+            &["function GameConnection::onConnectRequestRejected(%this, %why) { $Why = %why; }"],
+        )
+        .unwrap();
+    client.start_hosting(server);
+    client.call("connectTo", &[&SERVER.to_string()]).unwrap();
+    for _ in 0..200 {
+        client.step(32);
+    }
+    assert_eq!(
+        client.ghost_count(),
+        0,
+        "no ghost before the manifest matched"
+    );
+    let why = client.global("$Why");
+    assert!(why.contains("channel"), "{why:?} {:?}", client.client_log);
     assert_eq!(*terrain.messages.borrow(), 0);
 }
 

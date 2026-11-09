@@ -7,15 +7,17 @@ use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
-use torque_app_server::plugins::MinimalPlugins;
+use torque_app_server::plugins::{MinimalPlugins, set_protocol};
 use torque_app_server::server::{GameServer, Listen, ServerStart};
+use torque_client::conn::engine_wire::EngineNonceKey;
 use torque_client::conn::tge::TgeConn;
 use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
 use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_client::predict::FileReader;
 use torque_client::state::ClientState;
-use torque_engine::{Engine, EngineBuilder, Plugins};
+use torque_engine::{Engine, EngineBuilder, Plugins, ProtocolKind};
+use torque_server::net::engine::ensure_host;
 use torque_ts_vm::host::{FileHost, FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
@@ -35,16 +37,27 @@ const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
 pub enum Mode {
     /// Torque's own protocol.
     Tge,
+    /// The engine's own protocol, over the memory link.
+    Engine,
 }
 
 impl Mode {
     /// Every mode, in the order the lines print.
-    pub const ALL: [Mode; 1] = [Mode::Tge];
+    pub const ALL: [Mode; 2] = [Mode::Tge, Mode::Engine];
 
     /// The word that labels the mode's lines.
     pub const fn label(self) -> &'static str {
         match self {
             Mode::Tge => "tge",
+            Mode::Engine => "engine",
+        }
+    }
+
+    /// The protocol the engines of a run in this mode speak.
+    pub const fn protocol(self) -> ProtocolKind {
+        match self {
+            Mode::Tge => ProtocolKind::Tge,
+            Mode::Engine => ProtocolKind::Engine,
         }
     }
 }
@@ -141,11 +154,11 @@ impl Rig {
         control: Control,
         setup: impl FnOnce(&mut Vm) -> Result<(), String>,
     ) -> Result<Rig, String> {
-        let engine = EngineBuilder::new()
-            .add_plugins(MinimalPlugins)
-            .add_plugins(plugins)
-            .build()
-            .map_err(|e| e.to_string())?;
+        // The run's protocol whatever `TORQUE_NET_PROTOCOL` says: each line is pinned for its own mode.
+        let mut builder = EngineBuilder::new();
+        builder.add_plugins(MinimalPlugins).add_plugins(plugins);
+        set_protocol(&mut builder, mode.protocol());
+        let engine = builder.build().map_err(|e| e.to_string())?;
         let files = files();
         let server = GameServer::start_engine(
             &engine,
@@ -159,6 +172,9 @@ impl Rig {
         )?;
         // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs too.
         server.shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
+        if let Some(host) = ensure_host(server.vm(), &mut server.shared.borrow_mut()) {
+            host.table.rekey(CHALLENGE_KEY);
+        }
 
         let mut vm = Vm::new();
         torque_game::specs::install(&mut vm);
@@ -185,6 +201,8 @@ impl Rig {
         // What the engine's plugins say in a connect request (their manifest), as a client of the same engine says it: nothing
         // for an engine that says nothing on the wire.
         torque_client::conn::tge::ConnectHello::install(&mut vm, &engine);
+        // The client's nonces, as the server's keys, are fixed so that a run's datagrams repeat.
+        vm.set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
         vm.set_step_limit(Some(50_000_000));
         setup(&mut vm)?;
         vm.advance_time(1_000);

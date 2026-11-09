@@ -12,6 +12,11 @@
 //! once that side is established, the session id), and a packet without the right token is ignored, so a sender off the path
 //! cannot inject packets into a session without guessing 64 bits. On a validated link the link already binds the peer.
 //!
+//! **The challenge.** A server whose connects carry auth tickets answers a connect with a challenge, a nonce it drew
+//! ([`Session::challenge`]); the client makes its ticket for that nonce and answers with it ([`Event::Challenge`],
+//! [`Session::answer`]), and only then does the server decide. A ticket is so bound to a value the server chose for this
+//! session: one captured on another connection, or made before the challenge, is for another nonce.
+//!
 //! **What is read when.** Until a client has the accept, and until a server has accepted and seen the client's first data
 //! packet, only the control lane is read: a packet with any other section is dropped unread and not acknowledged, so its
 //! sender counts it lost and resends.
@@ -147,8 +152,11 @@ pub enum State {
     Hello,
     /// Client: connect sent, waiting for the accept. Server: waiting for the connect.
     Opening,
-    /// Server: the connect arrived; the host decides ([`Session::accept`] or [`Session::reject`]).
+    /// Server: the connect arrived; the host decides ([`Session::accept`] or [`Session::reject`]), or challenges first
+    /// ([`Session::challenge`]).
     Deciding,
+    /// Server: the challenge went out; waiting for the client's ticket.
+    Challenging,
     /// Server: accepted, waiting for the client's first packet after the accept.
     Accepted,
     Established,
@@ -179,6 +187,10 @@ pub enum Event {
     ConnectRequest(Box<Connect>),
     /// Client: the server accepted.
     Accepted(Accept),
+    /// Client: the server challenged with this nonce; the host answers with a ticket made for it ([`Session::answer`]).
+    Challenge(u64),
+    /// Server: the client's answer to the challenge, its ticket (empty: it has none); the host decides.
+    Ticket(Vec<u8>),
     /// A whole message of the RPC lane or the unreliable lane.
     Message {
         delivery: Delivery,
@@ -210,8 +222,10 @@ impl Event {
                     + c.password.len()
                     + c.args.iter().map(String::len).sum::<usize>()
             }
-            Event::Message { data, .. } | Event::Stream { data, .. } => data.len(),
-            Event::Accepted(_) | Event::Notify { .. } | Event::Closed(_) => 0,
+            Event::Message { data, .. } | Event::Stream { data, .. } | Event::Ticket(data) => {
+                data.len()
+            }
+            Event::Accepted(_) | Event::Challenge(_) | Event::Notify { .. } | Event::Closed(_) => 0,
         }
     }
 }
@@ -308,6 +322,17 @@ pub struct Session {
     event_bytes: usize,
     /// A reject or a goodbye to send at the next poll, which then closes the session.
     outbox: Option<Vec<u8>>,
+    /// Client: a challenge came (a second one is a protocol error).
+    challenged: bool,
+    /// Packets of this side known to have arrived, and known lost, since the session began.
+    fates: PacketFates,
+}
+
+/// How many of a session's packets are known to have arrived and to have been lost (every packet, whatever its lanes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PacketFates {
+    pub delivered: u64,
+    pub lost: u64,
 }
 
 impl Session {
@@ -345,6 +370,8 @@ impl Session {
             events: VecDeque::new(),
             event_bytes: 0,
             outbox: None,
+            challenged: false,
+            fates: PacketFates::default(),
             config,
         }
     }
@@ -436,6 +463,26 @@ impl Session {
         self.close.as_ref()
     }
 
+    /// The client's nonce: drawn by the client, learnt by a server from the first `Opening`. What a ticket is bound to on
+    /// both sides, with the server's address.
+    #[must_use]
+    pub fn nonce(&self) -> Option<u64> {
+        self.nonce
+    }
+
+    /// How many of this side's packets are known to have arrived and to have been lost so far (a loss count over every packet,
+    /// not only the ones with stream data).
+    #[must_use]
+    pub fn fates(&self) -> PacketFates {
+        self.fates
+    }
+
+    /// The smoothed round trip, in milliseconds (200 before the first ack).
+    #[must_use]
+    pub fn round_trip_ms(&self) -> u32 {
+        self.srtt_ms
+    }
+
     /// Reliable message bytes queued that the peer has not acknowledged (an RPC carrier's backpressure).
     #[must_use]
     pub fn unacked_reliable(&self) -> usize {
@@ -494,10 +541,44 @@ impl Session {
         Ok(())
     }
 
+    /// Server: challenges the connect the host was asked about with `nonce` (from the host's random source): the client's
+    /// ticket comes back as [`Event::Ticket`], and the host decides then.
+    ///
+    /// # Errors
+    /// The session is not waiting for a decision.
+    pub fn challenge(&mut self, nonce: u64) -> Result<(), NetError> {
+        if self.state != State::Deciding || !matches!(self.role, Role::Server { .. }) {
+            return Err(NetError::Invalid("challenge outside a decision"));
+        }
+        let bytes = Control::Challenge(nonce).encode()?;
+        self.control_send
+            .push(bytes)
+            .map_err(|_| NetError::Invalid("challenge does not fit the control lane"))?;
+        self.state = State::Challenging;
+        Ok(())
+    }
+
+    /// Client: answers the server's challenge with `ticket` (made for the challenge's nonce; empty when the client has none).
+    ///
+    /// # Errors
+    /// No challenge came, or the ticket is longer than a ticket may be.
+    pub fn answer(&mut self, ticket: Vec<u8>) -> Result<(), NetError> {
+        if !self.challenged || self.accept.is_some() || !matches!(self.role, Role::Client { .. }) {
+            return Err(NetError::Invalid("an answer without a challenge"));
+        }
+        let bytes = Control::Ticket(ticket).encode()?;
+        self.control_send
+            .push(bytes)
+            .map_err(|_| NetError::Invalid("ticket does not fit the control lane"))
+    }
+
     /// Server: refuses the connect. The reject goes out at the next poll, which closes the session.
     pub fn reject(&mut self, code: RejectCode, text: &str) {
         if matches!(self.role, Role::Server { .. })
-            && matches!(self.state, State::Opening | State::Deciding)
+            && matches!(
+                self.state,
+                State::Opening | State::Deciding | State::Challenging
+            )
             && let Some(nonce) = self.nonce
             && let Ok(bytes) = Reject::new(nonce, code, text).encode()
         {
@@ -720,6 +801,16 @@ impl Session {
                 self.state = State::Established;
                 self.push_event(Event::Accepted(a))
             }
+            (Role::Client { .. }, State::Opening, Control::Challenge(nonce))
+                if !self.challenged =>
+            {
+                self.challenged = true;
+                self.push_event(Event::Challenge(nonce))
+            }
+            (Role::Server { .. }, State::Challenging, Control::Ticket(ticket)) => {
+                self.state = State::Deciding;
+                self.push_event(Event::Ticket(ticket))
+            }
             (Role::Server { .. }, State::Opening, Control::Connect(c)) => {
                 if c.game != self.config.game {
                     let text = format!("the server runs {}", self.config.game);
@@ -774,6 +865,11 @@ impl Session {
         let mut resolved = std::mem::take(&mut self.resolved);
         let mut result = Ok(());
         for (record, arrived) in resolved.drain(..) {
+            if arrived {
+                self.fates.delivered += 1;
+            } else {
+                self.fates.lost += 1;
+            }
             for (lane, frag) in &record.frags {
                 let sender = self.reliable(*lane);
                 if arrived {

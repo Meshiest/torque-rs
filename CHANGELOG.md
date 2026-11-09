@@ -200,6 +200,12 @@ different.
   Torque's own protocol is the only one so far and its bytes are unchanged. `Engine::protocol` reads the slot, and the server
   decides what each connection's peer is in one place (`PeerKind`) instead of in each feature. The trace-hash lines are labeled
   with the protocol.
+- The engine's own network protocol (`EngineProtocolPlugin`, `torque.net.engine`; `[net] protocol = "engine"`), opt-in beside
+  Torque's: its own framing over plain UDP on private addresses, WebRTC data channels, WebSockets and the memory link, the
+  manifest always sent with the connect, every peer the engine's own, one packet a tick at a byte-rate ceiling, plugin RPCs in
+  their own lanes, and per-address and per-network caps on a server's sessions. Plain engine UDP refuses a public bind. A
+  server with an auth provider challenges each connect and takes only a ticket made for that challenge, once; the mods
+  download asks for blocks with the `torque.mods.get` RPC.
 - Server tick hooks and server commands for plugins. `engine.push(ServerTick::before(..))` and `ServerTick::after(..)` run a
   function of injected parameters once per 32 ms server tick around the process list's pass, in the order pushed, with the tick's
   number and time (`TickInfo`); a server with none ticks as before. `engine.server_command(name, CommandSpec, handler)` declares a

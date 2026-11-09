@@ -1,5 +1,5 @@
-//! Plugin RPCs on the server and on a client in TGE mode: the carrier that puts an [`RpcLink`]'s
-//! frames in the reserved channel ([`RPC_CHANNEL`]), the per-connection links, the pump a host runs once a tick, and the
+//! Plugin RPCs on the server and on a client: the carriers that put an [`RpcLink`]'s frames in the reserved channel
+//! ([`RPC_CHANNEL`], TGE mode) or in the session's RPC lanes ([`RpcLanes`], engine mode), the per-connection links, the pump a host runs once a tick, and the
 //! script natives (`rpcToClient`, `rpcToServer`, `rpcDrops`).
 //!
 //! **Server.** [`ServerRpc`] (an extension of the server's script engine, with the channel hub) holds one link for each client
@@ -38,16 +38,18 @@
 //! list in its `rpc` docs.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 
 use torque_engine::permissions::{NoPermissions, Permissions, SubjectKey};
 use torque_engine::rpc::{
-    CarrierFull, DEFAULT_TIMEOUT_TICKS, Delivery, GhostResolver, NoGhosts, RPC_CHANNEL, RpcCarrier,
-    RpcChannel, RpcEnv, RpcError, RpcHooks, RpcLink, RpcRef, RpcTable, Side,
+    CONN_INBOX_CAP, CarrierFull, DEFAULT_SEND_QUEUE, DEFAULT_TIMEOUT_TICKS, Delivery,
+    GhostResolver, NoGhosts, RPC_CHANNEL, Received, RpcCarrier, RpcChannel, RpcEnv, RpcError,
+    RpcHooks, RpcLink, RpcRef, RpcTable, Side,
 };
 use torque_ghosts::codec::NetWidths;
 use torque_net::chunk::Kind;
+use torque_net::engine::{Delivery as LaneDelivery, LaneLimits, Session};
 use torque_net::handshake::ConnId;
 use torque_ts_vm::fields::atob;
 use torque_ts_vm::sim::ObjId;
@@ -209,6 +211,170 @@ impl RpcCarrier for ServerCarrier {
     }
 }
 
+// ---- engine mode's carrier: the session's RPC lanes
+
+/// One connection's RPC batches between its links and its session in engine mode.
+#[derive(Default)]
+struct LaneQueue {
+    /// Batches the link handed over that the session has not taken yet.
+    out: VecDeque<(Vec<u8>, Delivery)>,
+    out_bytes: usize,
+    /// Reliable bytes the session holds unacknowledged, as the host last read them.
+    unacked: usize,
+    /// Batches the session received that the pump has not taken yet.
+    inbox: Vec<Vec<u8>>,
+    held: usize,
+}
+
+/// Engine mode's RPC carrier: each connection's RPC batches ride its session's own lanes (the reliable RPC lane, and the
+/// unreliable lane for unreliable batches that fit it), not the reserved channel. The network host moves batches between
+/// this queue and the sessions every pass ([`RpcLanes::take_out`], [`RpcLanes::give_back`], [`RpcLanes::received`]); a
+/// link sees a queue with the session's backpressure. A server keeps one queue per connection (`Some(id)`), a client one
+/// (`None`).
+#[derive(Default)]
+pub struct RpcLanes {
+    conns: RefCell<BTreeMap<Option<ConnId>, LaneQueue>>,
+    /// Batches a session refused (past its largest message, or closed): counted, never sent.
+    dropped: Cell<u64>,
+}
+
+impl RpcLanes {
+    /// Hands `session` the batches queued for `conn`, oldest first: an unreliable batch that fits the unreliable lane goes
+    /// there, any other reliably, as many as the RPC lane's send queue takes; the rest wait here. Both a server's host and a
+    /// client's connection feed their sessions with it.
+    pub fn feed(&self, conn: Option<ConnId>, session: &mut Session) {
+        let limits = LaneLimits::default();
+        let mut queue: VecDeque<(Vec<u8>, Delivery)> = self.take_out(conn).into();
+        while let Some((batch, asked)) = queue.pop_front() {
+            let lane = if asked == Delivery::Unreliable && batch.len() <= limits.unreliable_message
+            {
+                LaneDelivery::Unreliable
+            } else {
+                LaneDelivery::Reliable
+            };
+            if lane == LaneDelivery::Reliable
+                && session.unacked_reliable() + batch.len() > limits.rpc_send_queue
+            {
+                queue.push_front((batch, asked));
+                break;
+            }
+            if session.send(batch, lane).is_err() {
+                self.dropped.set(self.dropped.get() + 1);
+            }
+        }
+        self.give_back(conn, queue.into());
+        self.set_unacked(conn, session.unacked_reliable());
+    }
+
+    /// Batches a session refused so far (none from an honest link: its own caps are within the lanes').
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.dropped.get()
+    }
+
+    /// The batches queued for `conn`'s session, oldest first.
+    pub fn take_out(&self, conn: Option<ConnId>) -> Vec<(Vec<u8>, Delivery)> {
+        let mut conns = self.conns.borrow_mut();
+        let Some(q) = conns.get_mut(&conn) else {
+            return Vec::new();
+        };
+        q.out_bytes = 0;
+        q.out.drain(..).collect()
+    }
+
+    /// Batches the session could not take now go back to the front, in order.
+    pub fn give_back(&self, conn: Option<ConnId>, batches: Vec<(Vec<u8>, Delivery)>) {
+        let mut conns = self.conns.borrow_mut();
+        let q = conns.entry(conn).or_default();
+        for batch in batches.into_iter().rev() {
+            q.out_bytes += batch.0.len();
+            q.out.push_front(batch);
+        }
+    }
+
+    /// The reliable bytes `conn`'s session holds unacknowledged.
+    pub fn set_unacked(&self, conn: Option<ConnId>, bytes: usize) {
+        self.conns.borrow_mut().entry(conn).or_default().unacked = bytes;
+    }
+
+    /// A batch `conn`'s session received. False when it would pass the connection's share of what is held between two pumps
+    /// ([`CONN_INBOX_CAP`]): it is not kept, and the host drops the connection.
+    pub fn received(&self, conn: Option<ConnId>, batch: Vec<u8>) -> bool {
+        let mut conns = self.conns.borrow_mut();
+        let q = conns.entry(conn).or_default();
+        if q.held.saturating_add(batch.len()) > CONN_INBOX_CAP {
+            return false;
+        }
+        q.held += batch.len();
+        q.inbox.push(batch);
+        true
+    }
+
+    /// What every connection received since the last take, by connection in id order.
+    pub fn take_received(&self) -> Vec<(Option<ConnId>, Vec<u8>)> {
+        let mut conns = self.conns.borrow_mut();
+        let mut out = Vec::new();
+        for (conn, q) in conns.iter_mut() {
+            q.held = 0;
+            out.extend(q.inbox.drain(..).map(|batch| (*conn, batch)));
+        }
+        out
+    }
+
+    /// `conn` is gone: what it queued and received is dropped.
+    pub fn close(&self, conn: Option<ConnId>) {
+        self.conns.borrow_mut().remove(&conn);
+    }
+
+    fn unacked(&self, conn: Option<ConnId>) -> usize {
+        self.conns
+            .borrow()
+            .get(&conn)
+            .map_or(0, |q| q.unacked + q.out_bytes)
+    }
+
+    fn push(
+        &self,
+        conn: Option<ConnId>,
+        batch: Vec<u8>,
+        delivery: Delivery,
+    ) -> Result<(), CarrierFull> {
+        let mut conns = self.conns.borrow_mut();
+        let q = conns.entry(conn).or_default();
+        if q.unacked + q.out_bytes + batch.len() > DEFAULT_SEND_QUEUE {
+            return Err(CarrierFull);
+        }
+        q.out_bytes += batch.len();
+        q.out.push_back((batch, delivery));
+        Ok(())
+    }
+}
+
+/// The carrier a link of `conn` gets over `lanes`.
+#[cfg(test)]
+pub(crate) fn lane_carrier(lanes: &Rc<RpcLanes>, conn: Option<ConnId>) -> impl RpcCarrier {
+    LaneCarrier {
+        lanes: Rc::clone(lanes),
+        conn,
+    }
+}
+
+/// One connection's end of [`RpcLanes`].
+struct LaneCarrier {
+    lanes: Rc<RpcLanes>,
+    conn: Option<ConnId>,
+}
+
+impl RpcCarrier for LaneCarrier {
+    fn unacked(&self) -> usize {
+        self.lanes.unacked(self.conn)
+    }
+
+    fn send(&self, batch: Vec<u8>, delivery: Delivery) -> Result<(), CarrierFull> {
+        self.lanes.push(self.conn, batch, delivery)
+    }
+}
+
 /// The server's RPCs: one [`RpcLink`] for each client whose channels are on, and the pump that drives them.
 pub struct ServerRpc {
     table: RpcTable,
@@ -216,6 +382,8 @@ pub struct ServerRpc {
     host: Rc<dyn RpcServerHost>,
     perms: Rc<Permissions>,
     links: RefCell<HashMap<ConnId, RpcLink>>,
+    /// Engine mode's carrier, in place of the reserved channel.
+    lanes: Option<Rc<RpcLanes>>,
 }
 
 impl ServerRpc {
@@ -232,12 +400,33 @@ impl ServerRpc {
             host,
             perms,
             links: RefCell::new(HashMap::new()),
+            lanes: None,
+        }
+    }
+
+    /// [`ServerRpc::new`] for a server in engine mode: the batches ride each session's RPC lanes ([`RpcLanes`]), which the
+    /// network host moves; the hub still says which clients there are.
+    pub fn over_lanes(
+        table: RpcTable,
+        hub: ChannelHub,
+        host: Rc<dyn RpcServerHost>,
+        perms: Rc<Permissions>,
+        lanes: Rc<RpcLanes>,
+    ) -> ServerRpc {
+        ServerRpc {
+            lanes: Some(lanes),
+            ..ServerRpc::new(table, hub, host, perms)
         }
     }
 
     /// The RPC table.
     pub fn table(&self) -> &RpcTable {
         &self.table
+    }
+
+    /// The `GameConnection` of `conn` (what a native handler acts for).
+    pub fn object_of(&self, conn: ConnId) -> Option<ObjId> {
+        self.host.object_of(conn)
     }
 
     /// Runs `f` on `conn`'s link, if the client has one (its channels are on and the pump has seen it).
@@ -275,10 +464,16 @@ impl ServerRpc {
     /// Gives `conn` a link if it has none.
     fn ensure_link(&self, conn: ConnId, tick: u64) {
         self.links.borrow_mut().entry(conn).or_insert_with(|| {
-            let carrier = Rc::new(ServerCarrier {
-                hub: self.hub.clone(),
-                conn,
-            });
+            let carrier: Rc<dyn RpcCarrier> = match &self.lanes {
+                Some(lanes) => Rc::new(LaneCarrier {
+                    lanes: Rc::clone(lanes),
+                    conn: Some(conn),
+                }),
+                None => Rc::new(ServerCarrier {
+                    hub: self.hub.clone(),
+                    conn,
+                }),
+            };
             RpcLink::new(
                 self.table.clone(),
                 Side::Server,
@@ -304,12 +499,21 @@ impl ServerRpc {
             if let Some(mut link) = self.links.borrow_mut().remove(&conn) {
                 link.close();
             }
+            if let Some(lanes) = &self.lanes {
+                lanes.close(Some(conn));
+            }
         }
         let mut batches: HashMap<ConnId, Vec<Vec<u8>>> = HashMap::new();
-        let taken = self
-            .hub
-            .with_up_channel::<RpcChannel, _>(RPC_CHANNEL, RpcChannel::take)
-            .unwrap_or_default();
+        let taken = match &self.lanes {
+            Some(lanes) => Received {
+                batches: lanes.take_received(),
+                over: Vec::new(),
+            },
+            None => self
+                .hub
+                .with_up_channel::<RpcChannel, _>(RPC_CHANNEL, RpcChannel::take)
+                .unwrap_or_default(),
+        };
         for (conn, batch) in taken.batches {
             if let Some(conn) = conn {
                 batches.entry(conn).or_default().push(batch);
@@ -509,6 +713,8 @@ pub struct ClientRpc {
     epoch: Cell<u64>,
     broken: Cell<bool>,
     host: RefCell<Option<Rc<dyn ClientRpcHost>>>,
+    /// Engine mode's carrier, in place of the reserved channel.
+    lanes: Option<Rc<RpcLanes>>,
 }
 
 impl ClientRpc {
@@ -522,6 +728,20 @@ impl ClientRpc {
             epoch: Cell::new(epoch),
             broken: Cell::new(false),
             host: RefCell::new(None),
+            lanes: None,
+        }
+    }
+
+    /// [`ClientRpc::new`] for a client in engine mode: the batches ride the session's RPC lanes ([`RpcLanes`]), which the
+    /// connection moves; the channels still say when a connection starts and ends, and its ghost-id width.
+    pub fn over_lanes(
+        table: RpcTable,
+        channels: Rc<ClientChannels>,
+        lanes: Rc<RpcLanes>,
+    ) -> ClientRpc {
+        ClientRpc {
+            lanes: Some(lanes),
+            ..ClientRpc::new(table, channels)
         }
     }
 
@@ -554,6 +774,9 @@ impl ClientRpc {
             if let Some(link) = self.link.borrow_mut().as_mut() {
                 link.close();
             }
+            if let Some(lanes) = &self.lanes {
+                lanes.close(None);
+            }
             self.run(vm, tick);
             self.link.borrow_mut().take();
             self.broken.set(false);
@@ -571,7 +794,13 @@ impl ClientRpc {
                 Side::Client,
                 None,
                 widths(bits),
-                Rc::new(ClientCarrier(Rc::clone(&self.channels))),
+                match &self.lanes {
+                    Some(lanes) => Rc::new(LaneCarrier {
+                        lanes: Rc::clone(lanes),
+                        conn: None,
+                    }),
+                    None => Rc::new(ClientCarrier(Rc::clone(&self.channels))),
+                },
                 tick,
             );
             let seconds = vm
@@ -581,10 +810,16 @@ impl ClientRpc {
             link.set_timeout(seconds.map_or(DEFAULT_TIMEOUT_TICKS, |s| (s * 1000.0 / 32.0) as u64));
             *self.link.borrow_mut() = Some(link);
         }
-        let batches = self
-            .channels
-            .with_channel::<RpcChannel, _>(RPC_CHANNEL, RpcChannel::take)
-            .unwrap_or_default();
+        let batches = match &self.lanes {
+            Some(lanes) => Received {
+                batches: lanes.take_received(),
+                over: Vec::new(),
+            },
+            None => self
+                .channels
+                .with_channel::<RpcChannel, _>(RPC_CHANNEL, RpcChannel::take)
+                .unwrap_or_default(),
+        };
         let mut malformed = !batches.over.is_empty();
         let batches = batches.batches;
         if let Some(link) = self.link.borrow_mut().as_mut() {

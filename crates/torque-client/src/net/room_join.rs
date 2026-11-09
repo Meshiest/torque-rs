@@ -486,6 +486,11 @@ mod web {
         fn port(&self) -> u16 {
             0
         }
+
+        /// A room's data channel.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind::WEB_RTC
+        }
     }
 }
 

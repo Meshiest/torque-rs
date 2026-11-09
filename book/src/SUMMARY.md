@@ -16,6 +16,7 @@
 [Writing a plugin](writing-a-plugin.md)
 [Server tick hooks and commands](server-ticks-and-commands.md)
 [Networked plugins](networked-plugins.md)
+[Network protocols](network-protocols.md)
 [Props and joints](props-and-joints.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)

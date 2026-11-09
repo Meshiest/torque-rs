@@ -169,12 +169,19 @@ impl ClientBuilder {
         if !channels.is_empty() {
             vm.set_extension(Rc::new(ClientChannels::new(&channels)));
         }
-        // The plugins' RPCs ride the reserved channel; the client's tick pumps them.
+        // The plugins' RPCs ride the reserved channel (the session's RPC lanes in engine mode); the client's tick pumps them.
         let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
         if !rpcs.is_empty()
             && let Some(channels) = vm.extension::<ClientChannels>()
         {
-            let rpc = Rc::new(ClientRpc::new(rpcs, channels));
+            // In engine mode the batches ride the session's RPC lanes, which the connection fills and empties.
+            let rpc = if engine.protocol() == torque_engine::ProtocolKind::Engine {
+                let lanes = Rc::new(torque_server::net::rpc::RpcLanes::default());
+                vm.set_extension(Rc::clone(&lanes));
+                Rc::new(ClientRpc::over_lanes(rpcs, channels, lanes))
+            } else {
+                Rc::new(ClientRpc::new(rpcs, channels))
+            };
             rpc.set_host(Rc::new(RpcHost(Rc::clone(&state))));
             register_client_natives(&mut vm, &rpc);
             vm.set_extension(rpc);

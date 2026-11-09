@@ -16,6 +16,7 @@ pub mod conn;
 pub mod content;
 pub mod datablock;
 pub mod datablocks;
+pub mod engine;
 pub mod events;
 pub mod ghosting;
 pub mod ghosts;

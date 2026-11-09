@@ -645,13 +645,14 @@ impl RateWindow {
 /// Per-source counters with a bounded table: when it is full the source that entered first is forgotten (a queue of keys in
 /// insertion order, so a new source costs O(1)).
 #[derive(Debug, Default)]
-pub(crate) struct SourceLimiter {
+pub struct SourceLimiter {
     windows: HashMap<IpAddr, RateWindow>,
     order: VecDeque<IpAddr>,
 }
 
 impl SourceLimiter {
-    pub(crate) fn allow(&mut self, ip: IpAddr, now: u32, limit: u32) -> bool {
+    /// Whether `ip` may have one more of what is counted this second, at most `limit`.
+    pub fn allow(&mut self, ip: IpAddr, now: u32, limit: u32) -> bool {
         if !self.windows.contains_key(&ip) {
             if self.windows.len() >= NET_LIMITER_ENTRIES
                 && let Some(oldest) = self.order.pop_front()
@@ -698,6 +699,9 @@ pub struct Connection {
     /// What the client said about taking content from the server ([`ConnectGate::mods_support`]); `None` unless the connection has
     /// channels.
     pub mods: Option<crate::modsync::ModsSection>,
+    /// The connection's packets ride an engine-mode session ([`crate::engine`]) the host keeps: this table never pings it or
+    /// times it out, and its `protocol` only keeps the sequence numbers and the packet size its payload is written with.
+    pub engine: bool,
     created: u32,
     packets: RateWindow,
     disconnects: RateWindow,
@@ -718,6 +722,18 @@ pub struct PendingRequest {
     pub replaced: Option<ConnId>,
     /// The request ended with the profile's extension argument (taken off `fields.args`).
     pub extension: bool,
+}
+
+/// What [`Server::insert_engine`] enters: an engine-mode connection the host accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineAccepted {
+    pub addr: SocketAddr,
+    /// The ghost-id width the accept carried.
+    pub ghost_bits: u8,
+    /// What the gate's auth provider verified the client as, when there is one.
+    pub identity: Option<Vec<u8>>,
+    /// What the client said about taking content from the server.
+    pub mods: Option<crate::modsync::ModsSection>,
 }
 
 /// The host's answer to a [`PendingRequest`].
@@ -1214,6 +1230,7 @@ impl Server {
                     extension: request.extension,
                     channels,
                     mods,
+                    engine: false,
                     created: now,
                     packets: RateWindow::default(),
                     disconnects: RateWindow::default(),
@@ -1269,11 +1286,48 @@ impl Server {
             extension,
             channels: false,
             mods: None,
+            engine: false,
             created: now,
             packets: RateWindow::default(),
             disconnects: RateWindow::default(),
         };
         self.by_addr.insert(addr, id);
+        self.conns.insert(id, conn);
+        id
+    }
+
+    /// Enters a connection whose session the host accepted in engine mode ([`crate::engine`]): established at once (the
+    /// session's connect flow already ran), under the peer's address, every peer the engine's own (the extension and the
+    /// channels, when the host writes them). The host checks the player count first ([`ServerConfig::max_connections`]); an
+    /// older connection from the same address is replaced. The table never pings or times it out: the session does.
+    pub fn insert_engine(&mut self, accepted: EngineAccepted, now: u32) -> ConnId {
+        if let Some(old) = self.by_addr.get(&accepted.addr).copied() {
+            self.remove(old);
+        }
+        let id = self.fresh_id();
+        let protocol_version = self.config.profile.protocol_current;
+        let mut protocol = Protocol::new(Role::Server, 0, self.config.rates, now);
+        protocol.set_engine_packet(0, 0);
+        let conn = Connection {
+            id,
+            addr: accepted.addr,
+            sequence: 0,
+            protocol,
+            protocol_version,
+            ghost_bits: accepted.ghost_bits,
+            extra: Vec::new(),
+            identity: accepted.identity,
+            pending: false,
+            local: false,
+            extension: true,
+            channels: self.config.channels,
+            mods: accepted.mods,
+            engine: true,
+            created: now,
+            packets: RateWindow::default(),
+            disconnects: RateWindow::default(),
+        };
+        self.by_addr.insert(accepted.addr, id);
         self.conns.insert(id, conn);
         id
     }
@@ -1358,7 +1412,7 @@ impl Server {
         let mut events = Vec::new();
         let mut gone = Vec::new();
         for conn in self.conns.values_mut() {
-            if conn.local {
+            if conn.local || conn.engine {
                 continue;
             }
             if conn.pending && now.wrapping_sub(conn.created) > NET_PENDING_TIMEOUT_MS {

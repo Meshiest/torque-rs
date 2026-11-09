@@ -824,8 +824,9 @@ let engine = EngineBuilder::new()
 - **Runner.** `[runner] id` names one of the runner plugins in the build. The others the engine ships are turned off,
   as the runner slot holds one. Naming a runner the build does not have is a warning, and the one already set stays.
 - **Protocol.** A game speaks one network protocol, and one plugin sets it (`engine.net().protocol(..)`): `DefaultPlugins` and
-  `MinimalPlugins` carry `TgeProtocolPlugin` (`torque.net.tge`), which sets Torque's own. `[net] protocol` is `"tge"` or
-  `"engine"`; it turns the other protocol's plugin off, the same way `[runner]` does. Naming a protocol the build has no plugin
+  `MinimalPlugins` carry `TgeProtocolPlugin` (`torque.net.tge`, Torque's own, on by default) and `EngineProtocolPlugin`
+  (`torque.net.engine`, the engine's own, off). `[net] protocol` is `"tge"` or `"engine"`; it turns the other protocol's plugin
+  off, the same way `[runner]` does ([Network protocols](network-protocols.md)). Naming a protocol the build has no plugin
   for is a warning, and the one already set stays. A second plugin that sets the slot fails the build and names both.
   `engine.protocol()` reads it. Any other value is an error at its line and column.
 

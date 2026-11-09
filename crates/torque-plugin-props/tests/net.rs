@@ -102,11 +102,19 @@ fn many_awake_props_stay_within_their_share_and_near_the_server() {
         worst < 0.5,
         "a client's prop was {worst} units from the server's"
     );
-    // Every packet's prop records within 40% of its 450 bytes, and some had to wait for a later packet.
+    // Every packet's prop records within 40% of the packet: 450 bytes in Torque's protocol, where some had to wait for a later
+    // packet; in the engine's, the most a packet takes on the memory link (an eighth of a second at the byte rate).
+    let engine =
+        torque_app_server::plugins::protocol_from_env() == torque_engine::ProtocolKind::Engine;
+    let packet_bytes = if engine {
+        u64::from(torque_server::net::engine::DEFAULT_BYTE_RATE / 8)
+    } else {
+        450
+    };
     for t in rig.totals() {
         assert!(t.share_bits_max > 0, "{t:?}");
-        assert!(t.share_bits_max <= 450 * 8 * 2 / 5, "{t:?}");
-        assert!(t.share_deferred > 0, "{t:?}");
+        assert!(t.share_bits_max <= packet_bytes * 8 * 2 / 5, "{t:?}");
+        assert!(engine || t.share_deferred > 0, "{t:?}");
     }
 }
 

@@ -61,10 +61,20 @@ site-check:
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
 # The determinism check: the trace-hash scenarios (the figure on foot and the buggy, each a 600-tick scripted run of a server and a
-# predicting client, hashed tick by tick; and the Rapier world's drop of bodies onto a terrain and an interior) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
-# they print must be equal. Needs `rustup target add wasm32-wasip1`; `just trace-hash --release` runs the release profile
+# predicting client, hashed tick by tick, in each network protocol; and the Rapier world's drop of bodies onto a terrain and an interior) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
+# they print must be equal, and equal to crates/torque-trace-hash/expected.txt. Needs `rustup target add wasm32-wasip1`; `just trace-hash --release` runs the release profile
 trace-hash *flags:
     node web/trace-hash.mjs {{flags}}
+
+# The suites that must pass in both network protocols: every example's tests, and the rope, mods and props plugins' suites
+net_matrix_packages := "-p torque-example-minimal -p torque-example-minimal-engine -p torque-example-character -p torque-example-level-demo -p torque-example-fps -p torque-example-vehicle-demo -p torque-example-mods-demo -p torque-plugin-rope -p torque-mods -p torque-plugin-props"
+
+# The network matrix: the examples' headless runs and the suites above, once with Torque's protocol and once with the engine's
+# (`TORQUE_NET_PROTOCOL` picks the protocol the plugin groups turn on; a game's `[net] protocol` and the tests that pin one
+# keep theirs); each run must end with 0 failures. Extra flags go to cargo test (`--release`)
+net-matrix *flags:
+    $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
 
 # What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
 # at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails

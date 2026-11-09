@@ -61,3 +61,51 @@ pub trait Link {
     /// What the link guarantees. It does not change during a session.
     fn facts(&self) -> LinkFacts;
 }
+
+/// What a host knows of the link to a peer before it has a session on it: what the link guarantees and the largest datagram
+/// it takes. A transport reports it per peer, and both ends of one link must report the same facts (a client that thinks
+/// its link validated sends no `Hello`, which a plain link's server never answers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkKind {
+    pub facts: LinkFacts,
+    pub max_datagram: usize,
+}
+
+impl LinkKind {
+    /// Plain UDP: LAN and development only.
+    pub const PLAIN_UDP: LinkKind = LinkKind {
+        facts: LinkFacts::PLAIN,
+        max_datagram: 1_200,
+    };
+
+    /// The in-process link.
+    pub const MEMORY: LinkKind = LinkKind {
+        facts: LinkFacts::MEMORY,
+        max_datagram: 65_535,
+    };
+
+    /// A WebRTC data channel: ICE proved the address, DTLS encrypts, SCTP runs congestion control.
+    pub const WEB_RTC: LinkKind = LinkKind {
+        facts: LinkFacts {
+            validated: true,
+            secure: true,
+            congestion_controlled: true,
+            server_identity: None,
+        },
+        max_datagram: 1_200,
+    };
+
+    /// A WebSocket (`secure`: `wss`): TCP proved the address and runs congestion control.
+    #[must_use]
+    pub const fn web_socket(secure: bool) -> LinkKind {
+        LinkKind {
+            facts: LinkFacts {
+                validated: true,
+                secure,
+                congestion_controlled: true,
+                server_identity: None,
+            },
+            max_datagram: 16_384,
+        }
+    }
+}

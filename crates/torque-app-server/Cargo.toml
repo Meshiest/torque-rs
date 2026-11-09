@@ -14,6 +14,7 @@ categories = ["game-engines", "game-development"]
 # `torque-app` re-exports every module as its own.
 
 [dependencies]
+torque-net = { path = "../torque-net" }
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
 torque-collide = { path = "../torque-collide" }
@@ -45,10 +46,6 @@ webrtc = ["web", "torque-server/webrtc"]
 # Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
 # `net::web::p2p`).
 p2p = ["webrtc", "torque-server/p2p"]
-
-[dev-dependencies]
-# A sign-in provider for the start-up warning's tests.
-torque-net = { path = "../torque-net" }
 
 [lints]
 workspace = true

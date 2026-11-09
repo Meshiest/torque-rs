@@ -3,6 +3,8 @@
 use torque_engine::{VmMut, function};
 use torque_server::net::channels::ChannelHub;
 use torque_server::net::commands::find_net_connection;
+use torque_ts_vm::sim::ObjId;
+use torque_ts_vm::vm::Vm;
 
 use crate::mods::{ModStatus, Mods};
 use crate::offer::Request;
@@ -226,7 +228,7 @@ pub(crate) fn clear_mod_download_cache(vm: VmMut) -> String {
 }
 
 /// Drops a client the mods refuse: a request nobody honest makes.
-fn kick(vm: &mut VmMut, obj: torque_ts_vm::sim::ObjId, reason: &str) {
+fn kick(vm: &mut Vm, obj: ObjId, reason: &str) {
     // The reasons are fixed plain text.
     let _ = vm.eval(format!("{obj}.delete(\"{reason}\");").as_bytes());
 }
@@ -241,11 +243,7 @@ pub(crate) fn server_cmd_get(
     start: i32,
     count: i32,
 ) {
-    let (Some(obj), Some(mods), Some(hub)) = (
-        find_net_connection(&vm, client.as_bytes()),
-        Mods::of(&vm),
-        vm.extension::<ChannelHub>(),
-    ) else {
+    let Some(obj) = find_net_connection(&vm, client.as_bytes()) else {
         return;
     };
     let (Ok(mod_index), Ok(file), Ok(start), Ok(count)) = (
@@ -257,15 +255,27 @@ pub(crate) fn server_cmd_get(
         kick(&mut vm, obj, "Mod request out of range.");
         return;
     };
-    let request = Request {
-        mod_index,
-        file,
-        start,
-        count,
+    serve_get(
+        &mut vm,
+        obj,
+        Request {
+            mod_index,
+            file,
+            start,
+            count,
+        },
+    );
+}
+
+/// Serves `request` to client `obj` (the command in Torque's protocol, the `torque.mods.get` RPC in the engine's): a request
+/// the mods refuse ends the serving and drops the client.
+pub(crate) fn serve_get(vm: &mut Vm, obj: ObjId, request: Request) {
+    let (Some(mods), Some(hub)) = (Mods::of(vm), vm.extension::<ChannelHub>()) else {
+        return;
     };
     if let Err(reason) = mods.serve_request(&hub, obj, request) {
         mods.end_serving(obj);
-        kick(&mut vm, obj, reason);
+        kick(vm, obj, reason);
     }
 }
 

@@ -50,6 +50,57 @@ pub(crate) const BURST_BUDGET: usize = 1_100;
 /// The remote commands a held client may run: the two the mods take.
 pub(crate) const COMMANDS: [&str; 2] = ["serverCmdTorqueModsGet", "serverCmdTorqueModsReady"];
 
+/// The RPC a client asks for a run of blocks with in the engine's protocol, in place of the `TorqueModsGet` command.
+pub const GET_RPC: &str = "torque.mods.get";
+
+/// A client's ask for a run of blocks (`TorqueModsGet`'s arguments) as the message of [`GET_RPC`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, torque_engine::NetMessage)]
+pub struct ModsGet {
+    /// The mod's place in the offer.
+    pub mod_index: u32,
+    /// The file's place in the mod.
+    pub file: u32,
+    /// The first block.
+    pub start: u32,
+    /// How many blocks.
+    pub count: u32,
+}
+
+/// Registers [`GET_RPC`]: a notification to the server, at most 64 a second (a burst of 128), served as the command is.
+pub(crate) fn register_get_rpc(engine: &mut torque_engine::EngineBuilder) {
+    engine
+        .net()
+        .rpc::<ModsGet, ()>(GET_RPC)
+        .to_server()
+        .rate(64, 128)
+        .max_bytes(32)
+        .server(|cx, get: ModsGet| {
+            let obj = cx.caller().and_then(|conn| {
+                cx.vm
+                    .extension::<torque_server::net::rpc::ServerRpc>()?
+                    .object_of(conn)
+            });
+            if let Some(obj) = obj {
+                let request = crate::offer::Request {
+                    mod_index: get.mod_index,
+                    file: get.file,
+                    start: get.start,
+                    count: get.count,
+                };
+                crate::natives::serve_get(cx.vm, obj, request);
+            }
+            Ok(())
+        });
+}
+
+/// Whether this client asks for blocks with [`GET_RPC`] (its engine speaks the engine's protocol), and whether its link takes
+/// calls yet: `Some(false)` while the connection's RPCs are not ready.
+pub(crate) fn get_rpc_ready(vm: &torque_ts_vm::vm::Vm) -> Option<bool> {
+    let rpc = vm.extension::<torque_server::net::rpc::ClientRpc>()?;
+    rpc.table().id(GET_RPC)?;
+    Some(rpc.is_ready())
+}
+
 /// The most bytes of one message of the channel: an offer, or the data of a request.
 pub const MAX_MESSAGE: usize = 2 << 20;
 

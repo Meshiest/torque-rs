@@ -213,6 +213,13 @@ pub fn send<G: NetGame>(shared: &Shared<G>, to: SocketAddr, data: &[u8]) -> bool
     sent
 }
 
+/// Sends a handshake reply; an engine session's replies are its own, so there an empty one sends nothing.
+fn send_reply<G: NetGame>(shared: &Shared<G>, to: SocketAddr, reply: &[u8]) {
+    if !reply.is_empty() {
+        send(shared, to, reply);
+    }
+}
+
 /// Whether `from` is the server itself: `127.0.0.1` with the socket's own port, also when the socket is bound to every
 /// address.
 pub fn is_own_address(local: Option<SocketAddr>, from: SocketAddr) -> bool {
@@ -247,6 +254,7 @@ pub fn receive<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32, new_tick: 
                 DeleteMode::Immediate,
             );
         }
+        super::engine::forget(vm, shared, addr);
     }
     let local = transport.borrow().local_addr();
     let mut buf = vec![0u8; RECV_BUFFER_BYTES];
@@ -334,6 +342,10 @@ fn handle_datagram<G: NetGame>(
     let codecs = Rc::clone(&shared.borrow().codecs);
     if data.len() <= NET_MAX_DATAGRAM && data.first().is_some_and(|&ty| codecs.is_info_type(ty)) {
         return super::query::handle(vm, shared, from, data, now);
+    }
+    // In engine mode every other datagram is the sessions' (TGE's handshake and packets are not answered).
+    if super::engine::ensure_host(vm, &mut shared.borrow_mut()).is_some() {
+        return super::engine::receive(vm, shared, from, data, now);
     }
     let handled = {
         let mut sh = shared.borrow_mut();
@@ -426,7 +438,12 @@ fn reject_candidate<G: NetGame>(
 }
 
 /// A connect request that passed the handshake's checks.
-fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingRequest, now: u32) {
+pub(super) fn handle_request<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    request: PendingRequest,
+    now: u32,
+) {
     shared.borrow_mut().counters.requests += 1;
     // The global rate and the script budget: a request over either is dropped, never the server, and a reconnect dropped here
     // keeps its old session.
@@ -490,13 +507,17 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
     };
     let finished = {
         let mut sh = shared.borrow_mut();
-        let table = sh.string_table();
-        sh.hs.finish_request(&table, request.clone(), decision, now)
+        if sh.engine_host.is_some() {
+            super::engine::finish(&mut sh, &request, decision, now)
+        } else {
+            let table = sh.string_table();
+            sh.hs.finish_request(&table, request.clone(), decision, now)
+        }
     };
     match finished {
         Finished::Rejected { reply } => {
             shared.borrow_mut().counters.rejected += 1;
-            send(shared, request.addr, &reply);
+            send_reply(shared, request.addr, &reply);
             delete_running(vm, shared, obj, None, DeleteMode::Immediate, true);
         }
         Finished::Refused => {
@@ -555,7 +576,8 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
                         let limits = server.0.limits(vm);
                         {
                             let mut sh = shared.borrow_mut();
-                            if let Some(c) = sh.hs.connection_mut(conn) {
+                            // An engine connection's packets are the byte rate's size already: no burst.
+                            if let Some(c) = sh.hs.connection_mut(conn).filter(|c| !c.engine) {
                                 c.protocol.set_burst(true);
                             }
                             sh.awaiting.push(Awaiting {
@@ -568,7 +590,7 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
                                 moved: now,
                             });
                         }
-                        send(shared, request.addr, &reply);
+                        send_reply(shared, request.addr, &reply);
                         return;
                     }
                     Err(reason) => {
@@ -590,7 +612,7 @@ fn handle_request<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, request: PendingR
             }
             // `onConnect` may have kicked the client already.
             if vm.objects().contains(obj) {
-                send(shared, request.addr, &reply);
+                send_reply(shared, request.addr, &reply);
             }
         }
     }
@@ -713,7 +735,7 @@ fn poll_content<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
 }
 
 /// Deletes the object of handshake connection `conn`, if the host has one; else just forgets the connection.
-fn drop_conn<G: NetGame>(
+pub(super) fn drop_conn<G: NetGame>(
     vm: &mut Vm,
     shared: &Shared<G>,
     conn: ConnId,
@@ -730,7 +752,7 @@ fn drop_conn<G: NetGame>(
 }
 
 /// A new data packet: acks and drops, a ping's answer, and the payload.
-fn handle_game<G: NetGame>(
+pub(super) fn handle_game<G: NetGame>(
     vm: &mut Vm,
     shared: &Shared<G>,
     conn: ConnId,
@@ -942,7 +964,7 @@ fn run_followups<G: NetGame>(
 
 /// A protocol error from a connection: the error is printed, and the connection is given the reason `Packet Error.` and
 /// destroyed at once.
-fn packet_error<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, conn: ConnId, why: &str) {
+pub(super) fn packet_error<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, conn: ConnId, why: &str) {
     let obj = shared.borrow().by_conn.get(&conn).copied();
     // A connection with an object is removed from the handshake table as the object goes, after `onDrop` ran: until then the
     // connection still has its identity (what its permissions are kept under).
@@ -962,7 +984,12 @@ fn packet_error<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, conn: ConnId, why: 
 }
 
 /// The peer's own Disconnect: its text is the reason (`onDisconnect`). The connection is destroyed at once.
-fn peer_disconnected<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, conn: ConnId, reason: &[u8]) {
+pub(super) fn peer_disconnected<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Shared<G>,
+    conn: ConnId,
+    reason: &[u8],
+) {
     let obj = shared.borrow().by_conn.get(&conn).copied();
     let Some(obj) = obj else { return };
     vm.print(format!("Client {obj} disconnected.").as_bytes());
@@ -1147,6 +1174,12 @@ pub fn send_pass<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
             break;
         }
         shared.borrow_mut().cursor = id.0.wrapping_add(1);
+        if shared.borrow().hs.connection(id).is_some_and(|c| c.engine) {
+            work = work.saturating_add(super::engine::send_conn(vm, shared, id, now, &mut failed));
+            work = work.saturating_add(take_payload_work(shared, id));
+            run_payload_calls(vm, shared, id);
+            continue;
+        }
         // The gated packet, then forced ones until the window is full while the connection is busy.
         let first = build_packet(vm, shared, id, now, false, &mut lagging, &mut failed);
         work = work.saturating_add(take_payload_work(shared, id));
@@ -1165,6 +1198,8 @@ pub fn send_pass<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
             sent += 1;
         }
     }
+    // The engine sessions not accepted yet: their cookies, accepts, rejects and goodbyes.
+    super::engine::poll_pending(vm, shared, now);
     // The pass's end, after the connections have been written: the ghost game's hook and the feed of new objects.
     if let Some(hub) = hub.as_ref() {
         hub.end_pass(vm.sim_time());

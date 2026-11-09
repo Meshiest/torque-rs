@@ -65,4 +65,4 @@ pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};
 pub use share::{ModShare, ModShareDefault, Share};
-pub use transfer::{CHANNEL, CacheChoice, DownloadLimits, ModsChannel};
+pub use transfer::{CHANNEL, CacheChoice, DownloadLimits, GET_RPC, ModsChannel, ModsGet};

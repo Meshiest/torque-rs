@@ -1,11 +1,12 @@
 // The determinism check: the trace-hash scenarios (crates/torque-trace-hash) run natively and as wasm32-wasip1, and the lines
-// they print must be equal. The native run is made twice (`--runs <n>`, default 2) and must repeat itself first. The wasm module
+// they print must be equal, and equal to the lines pinned in crates/torque-trace-hash/expected.txt. The native run is made twice (`--runs <n>`, default 2) and must repeat itself first. The wasm module
 // is run by Node's WASI (web/wasi-run.mjs): no browser and no window.
 //
 // Usage: node trace-hash.mjs [--runs <n>] [--release]
 // Needs the wasm32-wasip1 target (`rustup target add wasm32-wasip1`). The build folder is CARGO_TARGET_DIR's, else `target`.
 // Prints each scenario's line once, and exits 1 when a run differs from the first native one.
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -57,6 +58,20 @@ if (wasm !== native[0]) {
 }
 if (!/^all [a-z]+ [0-9a-f]{16}$/m.test(native[0]) || native[0].split('\n').filter(Boolean).length < 3) {
   console.error(`no scenarios ran:\n${native[0]}`);
+  ok = false;
+}
+// The pinned lines (crates/torque-trace-hash/expected.txt, `#` lines are the reasons): a full run must print exactly these.
+const pinned = readFileSync(join(root, 'crates', 'torque-trace-hash', 'expected.txt'), 'utf8')
+  .split('\n')
+  .map((l) => l.trim())
+  .filter((l) => l && !l.startsWith('#'));
+const printed = native[0].split('\n').map((l) => l.trim()).filter(Boolean);
+const missing = pinned.filter((l) => !printed.includes(l));
+const unpinned = printed.filter((l) => !pinned.includes(l));
+if (missing.length || unpinned.length) {
+  console.error(
+    `the lines differ from expected.txt:\n--- pinned, not printed\n${missing.join('\n')}\n--- printed, not pinned\n${unpinned.join('\n')}`,
+  );
   ok = false;
 }
 if (!ok) process.exit(1);

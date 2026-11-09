@@ -444,6 +444,11 @@ fn a_banned_browser_that_comes_back_is_still_refused() {
 
 #[test]
 fn the_per_address_limits_hold_across_a_peers_sockets() {
+    // Torque's challenges: the engine's protocol has none, and its per-source caps are its session table's
+    // (`torque-net`'s `engine::table` tests).
+    if torque::app::plugins::protocol_from_env() == torque::engine::ProtocolKind::Engine {
+        return;
+    }
     let mut s = server(Transports::Web);
     run(&mut s, &mut [], 64);
     let sim_start = s.vm().sim_time();

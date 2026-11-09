@@ -556,14 +556,29 @@ fn a_malformed_batch_from_the_server_ends_the_connection_with_a_reason() {
         .vm()
         .extension::<torque::server::net::channels::ChannelHub>()
         .unwrap();
-    // Bytes no server of this engine sends: a frame that says it is longer than the batch.
-    hub.send_to(
-        conn,
-        "torque.rpc",
-        torque::net::chunk::Kind::Delta,
-        vec![200, 0, 1],
-    )
-    .expect("queued");
+    // Bytes no server of this engine sends: a frame that says it is longer than the batch, on the carrier the protocol uses
+    // (the session's RPC lane in the engine's, the reserved channel in Torque's).
+    let lanes = rig
+        .client
+        .server
+        .as_ref()
+        .unwrap()
+        .vm()
+        .extension::<torque::server::net::rpc::RpcLanes>();
+    match lanes {
+        Some(lanes) => lanes.give_back(
+            Some(conn),
+            vec![(vec![200, 0, 1], torque::engine::rpc::Delivery::Reliable)],
+        ),
+        None => hub
+            .send_to(
+                conn,
+                "torque.rpc",
+                torque::net::chunk::Kind::Delta,
+                vec![200, 0, 1],
+            )
+            .expect("queued"),
+    }
     let mut steps = 0;
     while !hub.clients().is_empty() && steps < 2_000 {
         rig.client.step(32);

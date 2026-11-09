@@ -1122,13 +1122,14 @@ fn at_speed_the_tracks_and_dust_start_under_the_wheels_for_the_driver_and_for_an
             .enumerate()
         {
             if let Some((head, dust)) = under_wheels(g, ghost, dir) {
-                // A tick's travel at this speed is over 0.6: the head and the dust start under the tire drawn this frame.
+                // A tick's travel at this speed is over 0.6: the head and the dust start under the tire drawn this frame. The
+                // other player's dust lands up to 0.08 off in Torque's protocol and 0.082 in the engine's (one packet a tick).
                 assert!(
                     head < 0.08,
                     "{who}: a track head {head} from its wheel at {speed} m/s"
                 );
                 assert!(
-                    dust < 0.08,
+                    dust < 0.09,
                     "{who}: new dust {dust} from the wheels at {speed} m/s"
                 );
                 checked[k] += 1;

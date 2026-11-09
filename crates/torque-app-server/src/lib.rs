@@ -36,6 +36,8 @@ pub mod water;
 #[cfg(test)]
 mod config_tests;
 #[cfg(test)]
+mod engine_tickets_tests;
+#[cfg(test)]
 mod plugins_tests;
 #[cfg(test)]
 mod run_tests;

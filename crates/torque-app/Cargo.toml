@@ -38,6 +38,7 @@ torque-maps = { path = "../torque-maps" }
 torque-render-core = { path = "../torque-render-core" }
 torque-render-hd = { path = "../torque-render-hd" }
 torque-render-scene = { path = "../torque-render-scene" }
+torque-net = { path = "../torque-net" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
 # A Player's swim pose.

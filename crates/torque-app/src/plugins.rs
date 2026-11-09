@@ -14,7 +14,7 @@
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
-//! | [`TgeProtocolPlugin`] | `torque.net.tge` | both, the engine's protocol slot | sets the protocol to Torque's own (`EngineBuilder::net().protocol`) |
+//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`TgeProtocolPlugin`] sets Torque's own protocol, [`EngineProtocolPlugin`] the engine's; one of them is on ([`protocol_from_env`]) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
@@ -62,9 +62,10 @@ use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 
 pub use torque_app_server::plugins::{
-    ContentFormatPlugins, GameClassesPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin,
-    ServerGamePlugin, ServerTransportPlugins, ServerWiring, SimClassesPlugin, TerrainPlugin,
-    TgeProtocolPlugin, WaterPlugin,
+    ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, MinimalPlugins, ModsPlugin,
+    NetHostPlugin, PROTOCOL_ENV, ProtocolPlugins, ServerGamePlugin, ServerTransportPlugins,
+    ServerWiring, SimClassesPlugin, TerrainPlugin, TgeProtocolPlugin, WaterPlugin,
+    protocol_from_env, set_protocol,
 };
 
 pub use crate::camera_modes::CameraModesPlugin;
@@ -106,7 +107,7 @@ impl PluginGroup for DefaultPlugins {
             .add(ServerGamePlugin)
             .add(TerrainPlugin)
             .add(WaterPlugin)
-            .add(TgeProtocolPlugin)
+            .add_group(ProtocolPlugins)
             .add(NetHostPlugin)
             .add_group(ServerTransportPlugins)
             .add_group(ContentFormatPlugins)

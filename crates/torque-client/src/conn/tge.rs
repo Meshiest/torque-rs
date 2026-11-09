@@ -58,15 +58,17 @@ use net::profile::DEFAULT_DATABLOCK_BITS;
 use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
-use torque_engine::Engine;
 use torque_engine::net_classes::{
     ClientGhostLookup, ClientGhosts, DrawnShapes, GhostSinks, RawGhostEvent,
 };
+use torque_engine::{Engine, ProtocolKind};
 use torque_server::net::channels::ClientChannels;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
+use torque_server::net::rpc::RpcLanes;
 use ts_vm::fields::{FieldRules, FieldType};
 use ts_vm::vm::Vm;
 
+use super::engine_wire::{EngineNonceKey, EngineStart, EngineWire, WireEvent, engine_nonce};
 use super::{ConnGame, Connect, Feed, FeedEvent, Link, Started, WorldOf};
 use crate::datablocks::{Unpacked, UnpackedField};
 use crate::hud::{HudWorld, ShapeName};
@@ -465,13 +467,20 @@ pub struct ConnectHello {
 }
 
 impl ConnectHello {
-    /// Attaches the engine's hello to `vm` when the engine [says anything on the wire](Engine::is_networked).
+    /// Attaches the engine's hello to `vm` when the engine [says anything on the wire](Engine::is_networked) or speaks the
+    /// engine's protocol (whose connect always carries the manifest).
     pub fn install(vm: &mut Vm, engine: &Engine) {
-        if engine.is_networked() {
+        if engine.is_networked() || engine.protocol() == ProtocolKind::Engine {
             vm.set_extension(Rc::new(ConnectHello {
                 engine: engine.clone(),
             }));
         }
+    }
+
+    /// Whether the client's engine speaks the engine's protocol.
+    #[must_use]
+    pub fn engine_mode(&self) -> bool {
+        self.engine.protocol() == ProtocolKind::Engine
     }
 
     /// What makes the block of one connect: an `Err` it returns is the auth provider's reason it has no ticket.
@@ -481,8 +490,14 @@ impl ConnectHello {
         let mods = vm
             .extension::<torque_engine::net::ConnectExtras>()
             .and_then(|extras| (extras.0)(vm));
+        let always = self.engine_mode();
         BlockSource::new(move |cx| {
-            Ok(engine.connect_block(cx)?.map(|mut block| {
+            let block = if always {
+                Some(engine.engine_connect_block(&net::profile::HandshakeProfile::default(), cx)?)
+            } else {
+                engine.connect_block(cx)?
+            };
+            Ok(block.map(|mut block| {
                 block.mods.clone_from(&mods);
                 block
             }))
@@ -519,6 +534,11 @@ pub struct TgeFeed {
     channels: Option<Rc<ClientChannels>>,
     /// The plugins' ghost and datablock classes the feed reads past the class table's ids.
     plugins: PluginClasses,
+    /// The engine-mode session that carries the connection in place of TGE's handshake and packet header
+    /// ([`TgeFeed::over_engine`]).
+    engine: Option<EngineWire>,
+    /// Engine mode's RPC carrier, which the session's RPC lanes fill and empty.
+    rpc_lanes: Option<Rc<RpcLanes>>,
 }
 
 impl TgeFeed {
@@ -543,13 +563,43 @@ impl TgeFeed {
         local: Option<(u32, u8)>,
         rates: RateConfig,
     ) -> Result<TgeFeed, String> {
+        let mut feed = TgeFeed::made(link, password, args, seq, local, rates)?;
+        match local {
+            Some((_, bits)) => feed.accepted(bits),
+            None => feed.challenge(),
+        }
+        Ok(feed)
+    }
+
+    /// A feed whose connection rides an engine-mode session ([`super::engine_wire`]): the connect is made at the first
+    /// pump, from `start`; `lanes` carries the RPCs.
+    pub fn over_engine(
+        link: Box<dyn Link>,
+        start: EngineStart,
+        lanes: Option<Rc<RpcLanes>>,
+        rates: RateConfig,
+    ) -> Result<TgeFeed, String> {
+        let mut feed = TgeFeed::made(link, &start.password, start.args.clone(), 0, None, rates)?;
+        feed.engine = Some(EngineWire::new(start));
+        feed.rpc_lanes = lanes;
+        Ok(feed)
+    }
+
+    fn made(
+        link: Box<dyn Link>,
+        password: &[u8],
+        args: Vec<Vec<u8>>,
+        seq: u32,
+        local: Option<(u32, u8)>,
+        rates: RateConfig,
+    ) -> Result<TgeFeed, String> {
         let tables = TgeTables::tge()?;
         let fields = ConnectFields::standard(password, args);
         let client = match local {
             Some((protocol, bits)) => Client::local(fields, rates, protocol, u32::from(bits), 0),
             None => Client::new(seq, fields).with_rates(rates),
         };
-        let mut feed = TgeFeed {
+        Ok(TgeFeed {
             link,
             reader: None,
             wheel_counts: std::collections::BTreeMap::new(),
@@ -570,12 +620,9 @@ impl TgeFeed {
             control_set: false,
             channels: None,
             plugins: PluginClasses::default(),
-        };
-        match local {
-            Some((_, bits)) => feed.accepted(bits),
-            None => feed.challenge(),
-        }
-        Ok(feed)
+            engine: None,
+            rpc_lanes: None,
+        })
     }
 
     /// The engine's bulk channels this connection reads. They start over for this connection ([`ClientChannels::reset`]) and
@@ -607,7 +654,143 @@ impl TgeFeed {
     }
 
     fn connected(&self) -> bool {
-        *self.client.state() == net::client::ClientState::Connected
+        match &self.engine {
+            Some(wire) => wire.is_accepted(),
+            None => *self.client.state() == net::client::ClientState::Connected,
+        }
+    }
+
+    /// The pump in engine mode: the session's own timers, then the datagrams that came, each as the session reads it.
+    fn engine_pump(&mut self, world: &mut TgeWorld) -> Result<(), String> {
+        let mut out = Vec::new();
+        if let Some(wire) = self.engine.as_mut() {
+            wire.pump(&mut *self.link, self.now, &mut out);
+        }
+        self.apply_wire(world, std::mem::take(&mut out))?;
+        for _ in 0..DATAGRAMS_PER_PUMP {
+            if self.events.len() >= MAX_WAITING_EVENTS || self.gone {
+                break;
+            }
+            let Some(data) = self
+                .link
+                .recv(std::time::Duration::ZERO)
+                .map_err(|e| e.to_string())?
+            else {
+                break;
+            };
+            if let Some(wire) = self.engine.as_mut() {
+                wire.receive(&data, self.now, &mut out);
+            }
+            self.apply_wire(world, std::mem::take(&mut out))?;
+        }
+        Ok(())
+    }
+
+    /// What the session said, as the feed's events and the payload's reads and fates.
+    fn apply_wire(&mut self, world: &mut TgeWorld, events: Vec<WireEvent>) -> Result<(), String> {
+        for event in events {
+            if self.gone {
+                break;
+            }
+            match event {
+                WireEvent::Sent => self.events.push_back(FeedEvent::ChallengeSent),
+                WireEvent::Answered => self.events.push_back(FeedEvent::ChallengeAnswered),
+                WireEvent::Accepted { ghost_bits } => {
+                    // Every peer of the engine's protocol has the channels on, both ways.
+                    let bits = if ghost_bits == 0 {
+                        self.default_ghost_bits()
+                    } else {
+                        ghost_bits
+                    };
+                    if let Some(channels) = &self.channels {
+                        channels.set_active(true);
+                        channels.set_ghost_bits(bits);
+                    }
+                    self.accepted(bits);
+                    self.events.push_back(FeedEvent::Accepted);
+                }
+                WireEvent::Packet { seq, data } => {
+                    self.game_packet(world, &Received::payload(u32::from(seq)), &data, 0)
+                        .map_err(|e| e.to_string())?;
+                }
+                WireEvent::Rpc(batch) => {
+                    let kept = self
+                        .rpc_lanes
+                        .as_ref()
+                        .is_some_and(|lanes| lanes.received(None, batch));
+                    if !kept {
+                        return Err(
+                            "the server sent RPC messages this client does not take".to_string()
+                        );
+                    }
+                }
+                WireEvent::Fate {
+                    send_seq,
+                    delivered,
+                } => {
+                    let mut settled = Vec::new();
+                    self.out.on_notify(send_seq, delivered, &mut settled);
+                    if let Some(channels) = &self.channels {
+                        channels.on_notify(send_seq, delivered);
+                    }
+                }
+                WireEvent::Ended(event) => self.end(event),
+                WireEvent::Failed(why) => return Err(why),
+            }
+        }
+        Ok(())
+    }
+
+    /// The ghost-id width of a server's accept that names none.
+    fn default_ghost_bits(&self) -> u8 {
+        net::ghost::GhostConfig {
+            max_ghosts: net::profile::DEFAULT_GHOST_LIMIT,
+            local: false,
+            class_bits: self.tables.classes.id_bits(Kind::Object),
+        }
+        .ghost_bits()
+    }
+
+    /// The tick's packet in engine mode: the control block, then the events that wait, in the move lane.
+    fn engine_send(&mut self, world: &mut TgeWorld, block: &ClientBlock) {
+        let Some(wire) = self.engine.as_mut() else {
+            return;
+        };
+        if let Some(lanes) = &self.rpc_lanes {
+            wire.feed_rpcs(lanes);
+        }
+        let (queue, channels, tables, widths) =
+            (&mut self.out, &self.channels, &self.tables, self.widths);
+        let mut write = |send_seq: u32, room: usize| {
+            let packet_bits = room * 8;
+            let mut w = BitWriter::with_limit(packet_bits);
+            w.enable_string_buffer();
+            // The upstream channels' chunks come first, in the room the moves leave.
+            if let Some(channels) = channels
+                && channels.writes_upstream()
+            {
+                let mut moves = BitWriter::new();
+                block.write(&mut moves);
+                channels.write_upstream(&mut w, send_seq, packet_bits, moves.bits());
+            }
+            block.write(&mut w);
+            let params = SectionParams {
+                ghosting: false,
+                hold_ordered: false,
+                packet_bits,
+                min_start_bits: w.bits(),
+            };
+            // The client's events are a few bits each: a section that does not write sends nothing this tick, and its events
+            // wait for the next.
+            let written =
+                queue.write_section_stalling(&mut w, &tables.ctx(widths), send_seq, params);
+            (written.is_ok() && !w.is_overflowed()).then(|| w.into_bytes())
+        };
+        let mut out = Vec::new();
+        wire.send(&mut *self.link, self.now, &mut write, &mut out);
+        if let Err(why) = self.apply_wire(world, out) {
+            self.end(FeedEvent::Dropped(why.into_bytes()));
+        }
     }
 
     /// `WheeledVehicleData::preload` on the client for datablock `id` (just received): its wheel count from the hubs of the
@@ -688,17 +871,9 @@ impl TgeFeed {
                 {
                     channels.set_active(true);
                 }
-                let bits = accept.ghost_bits.map_or_else(
-                    || {
-                        net::ghost::GhostConfig {
-                            max_ghosts: net::profile::DEFAULT_GHOST_LIMIT,
-                            local: false,
-                            class_bits: self.tables.classes.id_bits(Kind::Object),
-                        }
-                        .ghost_bits()
-                    },
-                    |b| b as u8,
-                );
+                let bits = accept
+                    .ghost_bits
+                    .map_or_else(|| self.default_ghost_bits(), |b| b as u8);
                 if let Some(channels) = &self.channels {
                     channels.set_ghost_bits(bits);
                 }
@@ -883,6 +1058,9 @@ impl Feed for TgeFeed {
         if self.gone {
             return Ok(());
         }
+        if self.engine.is_some() {
+            return self.engine_pump(world);
+        }
         let handshaking = matches!(
             self.client.state(),
             net::client::ClientState::Idle | net::client::ClientState::Challenging
@@ -924,7 +1102,9 @@ impl Feed for TgeFeed {
         if self.gone {
             return;
         }
-        if self.connected() {
+        if let Some(wire) = self.engine.as_mut() {
+            wire.disconnect(&mut *self.link, reason, self.now);
+        } else if self.connected() {
             let bye = self
                 .client
                 .disconnect_datagram(&self.tables.table, reason.as_bytes());
@@ -950,11 +1130,20 @@ impl Feed for TgeFeed {
     }
 
     fn protocol_version(&self) -> u32 {
-        self.client.accept().map_or(0, |a| a.protocol)
+        match &self.engine {
+            Some(wire) if wire.is_accepted() => {
+                net::profile::HandshakeProfile::default().protocol_current
+            }
+            Some(_) => 0,
+            None => self.client.accept().map_or(0, |a| a.protocol),
+        }
     }
 
     fn round_trip(&self) -> f32 {
-        self.client.protocol().map_or(0.0, |p| p.round_trip())
+        match &self.engine {
+            Some(wire) => wire.round_trip(),
+            None => self.client.protocol().map_or(0.0, |p| p.round_trip()),
+        }
     }
 
     fn room_ordered(&self) -> usize {
@@ -968,8 +1157,11 @@ impl Feed for TgeFeed {
     }
 
     fn send_tick(&mut self, world: &mut TgeWorld, block: &ClientBlock) {
-        let _ = world;
         if self.gone || !self.connected() {
+            return;
+        }
+        if self.engine.is_some() {
+            self.engine_send(world, block);
             return;
         }
         let Some(mut w) = self.client.begin_data_packet(self.now, false) else {
@@ -1026,15 +1218,38 @@ impl ConnGame for TgeConn {
         let _ = client;
         let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
         let reader = crate::game::installed_game(vm).and_then(|g| g.file_reader());
-        let mut feed = TgeFeed::with_rates(
-            connect.link,
-            &connect.password,
-            connect.args,
-            connect.seq,
-            local,
-            client_rates(vm),
-        )?;
+        let hello = vm.extension::<ConnectHello>();
+        let mut feed = match hello.filter(|h| local.is_none() && h.engine_mode()) {
+            Some(hello) => {
+                vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+                    connect.server.into(),
+                )));
+                let start = EngineStart {
+                    server: connect.server.into(),
+                    nonce: engine_nonce(vm.extension::<EngineNonceKey>().as_deref(), connect.seq),
+                    source: Some(hello.source(vm)),
+                    password: connect.password,
+                    args: connect.args,
+                    kind: connect.link.kind(),
+                };
+                TgeFeed::over_engine(
+                    connect.link,
+                    start,
+                    vm.extension::<RpcLanes>(),
+                    client_rates(vm),
+                )?
+            }
+            None => TgeFeed::with_rates(
+                connect.link,
+                &connect.password,
+                connect.args,
+                connect.seq,
+                local,
+                client_rates(vm),
+            )?,
+        };
         if local.is_none()
+            && feed.engine.is_none()
             && let Some(hello) = vm.extension::<ConnectHello>()
         {
             vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(

@@ -412,6 +412,8 @@ pub struct NetShared<G: NetGame> {
     pub cursor: u32,
     /// Connections accepted with content to send, whose `onConnect` waits for it ([`content`](super::content)).
     pub awaiting: Vec<Awaiting>,
+    /// Engine mode's sessions and their state ([`engine`](super::engine)); `None` for a server that speaks Torque's protocol.
+    pub engine_host: Option<Box<super::engine::EngineHost>>,
 }
 
 impl<G: NetGame> NetShared<G> {
@@ -557,7 +559,7 @@ impl<G: NetGame> NetShared<G> {
 /// Sixteen bytes for the challenge digest's key, from the operating system's randomness as the standard library's hasher seeds
 /// draw it (a different seed per process and per call), mixed with the clock. The digest is keyed and verified server-side
 /// only.
-fn digest_key() -> [u8; 16] {
+pub(crate) fn digest_key() -> [u8; 16] {
     let mut key = [0u8; 16];
     for (i, half) in key.chunks_mut(8).enumerate() {
         let mut hasher = RandomState::new().build_hasher();
@@ -638,6 +640,7 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         last_sweep: 0,
         awaiting: Vec::new(),
         cursor: 0,
+        engine_host: None,
     }));
     conn::install(vm, &shared);
     let hub = GhostHub::new(
