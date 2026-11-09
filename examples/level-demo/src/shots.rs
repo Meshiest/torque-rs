@@ -99,7 +99,8 @@ const OFFICE_CORNER: [f32; 2] = [-18.0, -12.0];
 
 /// The office level's pictures at `size` into `dir`: the outside from above, the figure walked in at the front door (the camera
 /// behind it), views from a standing figure's eyes (1.7 units up) of the lobby, the desks, the meeting room and the kitchen, a
-/// view out through a window, and the camera behind the figure once it has backed up to the front wall.
+/// view out through a window, the camera behind the figure once it has backed up to the front wall, and a chair the figure
+/// pushed along its row (`office-chair-pushed`), then picked up and held out (`office-chair-held`).
 pub fn write_office(
     files: GameFiles,
     dir: &Path,
@@ -160,6 +161,57 @@ pub fn write_office(
     ] {
         picture(&mut seat, Some(eye(from, to)), name)?;
     }
+    // A chair pushed out of place: the figure set down in the aisle west of the first pod's north-west chair and walked east
+    // into it, the chair shoved along its row.
+    let figure = seat
+        .game
+        .server
+        .as_ref()
+        .and_then(|s| s.figure())
+        .ok_or("the office has no figure")?;
+    let [x, y, _] = at(12.65, 5.15, 0.0);
+    let set_down = format!(
+        "{figure}.setTransform(\"{x} {y} 0.2 0 0 1 {}\");",
+        std::f32::consts::FRAC_PI_2
+    );
+    seat.game
+        .server
+        .as_mut()
+        .ok_or("the office has no server")?
+        .vm_mut()
+        .eval(set_down.as_bytes())
+        .map_err(|e| e.to_string())?;
+    seat.run(&gpu, 500)?;
+    seat.game.key(Key::W, true);
+    seat.run(&gpu, 1200)?;
+    seat.game.key(Key::W, false);
+    seat.run(&gpu, 800)?;
+    picture(
+        &mut seat,
+        Some(eye(at(12.6, 7.4, 2.2), at(16.0, 4.6, 0.4))),
+        "office-chair-pushed",
+    )?;
+    // The figure picks up the chair it pushed (a click while looking down at it) and holds it out, its arm held out.
+    seat.game.set_global("$mvPitch", "0.6");
+    seat.run(&gpu, 300)?;
+    seat.game.call("grab", &["1"])?;
+    seat.run(&gpu, 300)?;
+    seat.game.set_global("$mvPitch", "-0.6");
+    seat.run(&gpu, 600)?;
+    let at = seat
+        .game
+        .server
+        .as_ref()
+        .and_then(|s| s.figure_position())
+        .ok_or("the office has no figure")?;
+    picture(
+        &mut seat,
+        Some(eye(
+            [at[0] + 2.6, at[1] + 2.4, 1.9],
+            [at[0] + 0.5, at[1], 1.1],
+        )),
+        "office-chair-held",
+    )?;
     Ok(shots.paths)
 }
 

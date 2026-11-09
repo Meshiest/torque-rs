@@ -17,6 +17,13 @@ in `_glow` are drawn unlit: the ceiling lights and the screens (monitors, laptop
 
 Every piece of furniture stands on the floor, on a rug or on another piece: an office chair's base lies on the floor.
 
+Props: each movable piece of furniture and each desk item is its own outliner group inside its room's, named
+`prop <kind> <name>` (`prop chair poda sw chair`); the level loader builds each into a prop of that kind (its boxes one
+shape, its bounds the prop's box) and the rest of the model into the interior. A turned item's turn is its group's (its
+`origin` the pivot, its `rotation` the turn), so its boxes stay square to it and its bounds are its own; the drawn look is
+the same as the boxes turned one by one. The building and its fixed fittings (walls, glass, rugs, art, counters, shelves,
+the cubicle partitions, the ceiling lights) stay in the room's group.
+
 Run: python -I tools/office.py  (from examples/level-demo).
 """
 
@@ -478,8 +485,9 @@ TEX_INDEX = {name: i for i, name in enumerate(MATERIALS)}
 # ---- elements --------------------------------------------------------------------------------------------------------
 
 elements = []
-groups = []          # (name, [uuids])
+groups = []          # (name, children): an element's uuid, or an item's group (a dict)
 current = None
+current_item = None  # the item being built (`item`)
 fixtures = []        # ceiling lights: (x, y) in the office's numbers
 
 
@@ -491,6 +499,31 @@ def group(name):
     global current
     current = (name, [])
     groups.append(current)
+
+
+class item:
+    """`with item(kind, name, turn):` makes the boxes built inside it one prop of `kind` (module docs): an outliner group
+    `prop <kind> <name>` turned by `turn` = (yaw degrees, about (x, y)), the turn every box inside it must be given."""
+
+    def __init__(self, kind, name, turn=None):
+        assert " " not in kind, kind
+        self.group = {"name": "prop %s %s" % (kind, name.strip()), "origin": [0, 0, 0], "children": []}
+        self.turn = turn
+        if turn:
+            yaw, (cx, cy) = turn
+            self.group["origin"] = bb((cx, cy, 0))
+            self.group["rotation"] = [0, round(yaw, 3), 0]
+
+    def __enter__(self):
+        global current_item
+        assert current_item is None, "an item inside " + current_item.group["name"]
+        current_item = self
+        current[1].append(self.group)
+        return self
+
+    def __exit__(self, *_):
+        global current_item
+        current_item = None
 
 
 def bb(p):
@@ -522,12 +555,17 @@ def box(name, lo, hi, material, faces=None, turn=None, skip=()):
     e = {"name": name, "box_uv": False, "rescale": False, "locked": False, "render_order": "default",
          "allow_mirror_modeling": True, "from": frm, "to": to, "autouv": 0, "color": 0, "inflate": 0,
          "origin": [0, 0, 0], "faces": fs, "type": "cube", "uuid": new_uuid()}
-    if turn:
-        yaw, (cx, cy) = turn
-        e["origin"] = bb((cx, cy, 0))
-        e["rotation"] = [0, round(yaw, 3), 0]
+    if current_item is not None:
+        # The item's group carries the turn.
+        assert turn == current_item.turn, name
+        current_item.group["children"].append(e["uuid"])
+    else:
+        if turn:
+            yaw, (cx, cy) = turn
+            e["origin"] = bb((cx, cy, 0))
+            e["rotation"] = [0, round(yaw, 3), 0]
+        current[1].append(e["uuid"])
     elements.append(e)
-    current[1].append(e["uuid"])
 
 
 def finish_uvs():
@@ -555,49 +593,55 @@ def chair(name, cx, cy, yaw, fabric="fabric_black", office=True, lift=0.0):
     """An office chair (or a four-legged one) at (cx, cy), its sitter facing yaw; `lift` stands it on a rug."""
     t = (yaw, (cx, cy))
     put = lifted(lift)
-    if office:
-        # The base's arms lie on the floor (casters, four more boxes a chair, would cut the office into two interiors).
-        put(name + "baseA", (cx - 0.3, cy - 0.03, 0), (cx + 0.3, cy + 0.03, 0.06), "dark_metal", turn=t)
-        put(name + "baseB", (cx - 0.03, cy - 0.3, 0), (cx + 0.03, cy - 0.03, 0.06), "dark_metal", turn=t)
-        put(name + "baseC", (cx - 0.03, cy + 0.03, 0), (cx + 0.03, cy + 0.3, 0.06), "dark_metal", turn=t)
-        put(name + "post", (cx - 0.035, cy - 0.035, 0.06), (cx + 0.035, cy + 0.035, 0.42), "dark_metal", turn=t)
-    else:
-        for i, (dx, dy) in enumerate([(-0.2, -0.2), (0.2, -0.2), (-0.2, 0.2), (0.2, 0.2)]):
-            put(name + "leg" + "abcd"[i], (cx + dx - 0.025, cy + dy - 0.025, 0), (cx + dx + 0.025, cy + dy + 0.025, 0.42),
-                "dark_metal", turn=t)
-    put(name + "seat", (cx - 0.25, cy - 0.25, 0.42), (cx + 0.25, cy + 0.25, 0.5), fabric, turn=t)
-    put(name + "back", (cx - 0.23, cy - 0.3, 0.5), (cx + 0.23, cy - 0.25, 1.0), fabric, turn=t)
+    with item("chair" if office else "side_chair", name, t):
+        if office:
+            # The base's arms lie on the floor (casters, four more boxes a chair, would cut the office into two interiors).
+            put(name + "baseA", (cx - 0.3, cy - 0.03, 0), (cx + 0.3, cy + 0.03, 0.06), "dark_metal", turn=t)
+            put(name + "baseB", (cx - 0.03, cy - 0.3, 0), (cx + 0.03, cy - 0.03, 0.06), "dark_metal", turn=t)
+            put(name + "baseC", (cx - 0.03, cy + 0.03, 0), (cx + 0.03, cy + 0.3, 0.06), "dark_metal", turn=t)
+            put(name + "post", (cx - 0.035, cy - 0.035, 0.06), (cx + 0.035, cy + 0.035, 0.42), "dark_metal", turn=t)
+        else:
+            for i, (dx, dy) in enumerate([(-0.2, -0.2), (0.2, -0.2), (-0.2, 0.2), (0.2, 0.2)]):
+                put(name + "leg" + "abcd"[i], (cx + dx - 0.025, cy + dy - 0.025, 0),
+                    (cx + dx + 0.025, cy + dy + 0.025, 0.42), "dark_metal", turn=t)
+        put(name + "seat", (cx - 0.25, cy - 0.25, 0.42), (cx + 0.25, cy + 0.25, 0.5), fabric, turn=t)
+        put(name + "back", (cx - 0.23, cy - 0.3, 0.5), (cx + 0.23, cy - 0.25, 1.0), fabric, turn=t)
 
 
 def plant(name, cx, cy, size=1.0):
     s = size
-    box(name + "pot", (cx - 0.25 * s, cy - 0.25 * s, 0), (cx + 0.25 * s, cy + 0.25 * s, 0.45 * s), "terracotta")
-    box(name + "soil", (cx - 0.21 * s, cy - 0.21 * s, 0.45 * s), (cx + 0.21 * s, cy + 0.21 * s, 0.48 * s), "soil")
-    box(name + "trunk", (cx - 0.04, cy - 0.04, 0.48 * s), (cx + 0.04, cy + 0.04, 1.0 * s), "trunk")
-    box(name + "crown", (cx - 0.35 * s, cy - 0.35 * s, 1.0 * s), (cx + 0.35 * s, cy + 0.35 * s, 1.5 * s), "leaves")
-    box(name + "top", (cx - 0.22 * s, cy - 0.22 * s, 1.5 * s), (cx + 0.22 * s, cy + 0.22 * s, 1.8 * s), "leaves")
-    box(name + "tuftA", (cx + 0.35 * s, cy - 0.15 * s, 1.1 * s), (cx + 0.5 * s, cy + 0.15 * s, 1.35 * s), "leaves")
-    box(name + "tuftB", (cx - 0.5 * s, cy - 0.1 * s, 1.2 * s), (cx - 0.35 * s, cy + 0.2 * s, 1.4 * s), "leaves")
+    with item("plant", name):
+        box(name + "pot", (cx - 0.25 * s, cy - 0.25 * s, 0), (cx + 0.25 * s, cy + 0.25 * s, 0.45 * s), "terracotta")
+        box(name + "soil", (cx - 0.21 * s, cy - 0.21 * s, 0.45 * s), (cx + 0.21 * s, cy + 0.21 * s, 0.48 * s), "soil")
+        box(name + "trunk", (cx - 0.04, cy - 0.04, 0.48 * s), (cx + 0.04, cy + 0.04, 1.0 * s), "trunk")
+        box(name + "crown", (cx - 0.35 * s, cy - 0.35 * s, 1.0 * s), (cx + 0.35 * s, cy + 0.35 * s, 1.5 * s), "leaves")
+        box(name + "top", (cx - 0.22 * s, cy - 0.22 * s, 1.5 * s), (cx + 0.22 * s, cy + 0.22 * s, 1.8 * s), "leaves")
+        box(name + "tuftA", (cx + 0.35 * s, cy - 0.15 * s, 1.1 * s), (cx + 0.5 * s, cy + 0.15 * s, 1.35 * s), "leaves")
+        box(name + "tuftB", (cx - 0.5 * s, cy - 0.1 * s, 1.2 * s), (cx - 0.35 * s, cy + 0.2 * s, 1.4 * s), "leaves")
 
 
 def monitor(name, cx, cy, yaw):
+    """A monitor on a desk (its foot, neck and screen one prop), its screen toward its user (facing yaw)."""
     t = (yaw, (cx, cy))
-    box(name + "foot", (cx - 0.12, cy - 0.08, 0.76), (cx + 0.12, cy + 0.08, 0.78), "dark_metal", turn=t)
-    box(name + "neck", (cx - 0.025, cy + 0.02, 0.78), (cx + 0.025, cy + 0.06, 0.95), "dark_metal", turn=t)
-    box(name + "screen", (cx - 0.3, cy + 0.06, 0.9), (cx + 0.3, cy + 0.1, 1.25), "dark_metal",
-        faces={"north": "screen_glow"}, turn=t)
+    with item("monitor", name if "monitor" in name else name + "monitor", t):
+        box(name + "foot", (cx - 0.12, cy - 0.08, 0.76), (cx + 0.12, cy + 0.08, 0.78), "dark_metal", turn=t)
+        box(name + "neck", (cx - 0.025, cy + 0.02, 0.78), (cx + 0.025, cy + 0.06, 0.95), "dark_metal", turn=t)
+        box(name + "screen", (cx - 0.3, cy + 0.06, 0.9), (cx + 0.3, cy + 0.1, 1.25), "dark_metal",
+            faces={"north": "screen_glow"}, turn=t)
 
 
 def laptop(name, cx, cy, yaw, top=0.78):
     """A laptop open on a table whose top is at `top`, its screen toward its user (facing yaw)."""
     t = (yaw, (cx, cy))
-    box(name + "base", (cx - 0.17, cy - 0.12, top), (cx + 0.17, cy + 0.12, top + 0.02), "dark_metal",
-        faces={"up": "keyboard"}, turn=t)
-    box(name + "lid", (cx - 0.17, cy + 0.1, top + 0.02), (cx + 0.17, cy + 0.12, top + 0.25), "dark_metal",
-        faces={"south": "screen_glow"}, turn=t)
+    with item("laptop", name, t):
+        box(name + "base", (cx - 0.17, cy - 0.12, top), (cx + 0.17, cy + 0.12, top + 0.02), "dark_metal",
+            faces={"up": "keyboard"}, turn=t)
+        box(name + "lid", (cx - 0.17, cy + 0.1, top + 0.02), (cx + 0.17, cy + 0.12, top + 0.25), "dark_metal",
+            faces={"south": "screen_glow"}, turn=t)
 
 
 def desk(name, x0, y0, x1, y1, top="desk_blue", sides=True):
+    """A desk's top and, with `sides`, its two side panels (the caller makes it an item: the private office's desk has more)."""
     box(name + "top", (x0, y0, 0.72), (x1, y1, 0.76), top)
     if sides:
         box(name + "sideA", (x0 + 0.02, y0 + 0.05, 0), (x0 + 0.06, y1 - 0.05, 0.72), "metal")
@@ -615,10 +659,11 @@ def sofa(name, x0, y0, x1, fabric="fabric_beige", depth=0.9, facing_north=True, 
         ya, yb, back = y0 - depth, y0, (y0 - depth, y0 - depth + 0.25)
     else:
         ya, yb, back = y0, y0 + depth, (y0 + depth - 0.25, y0 + depth)
-    put(name + "base", (x0, ya, 0), (x1, yb, 0.42), "dark_wood", faces={"up": fabric})
-    put(name + "back", (x0 + 0.22, back[0], 0.42), (x1 - 0.22, back[1], 0.9), fabric)
-    put(name + "armA", (x0, ya, 0.42), (x0 + 0.22, yb, 0.65), fabric)
-    put(name + "armB", (x1 - 0.22, ya, 0.42), (x1, yb, 0.65), fabric)
+    with item("sofa", name):
+        put(name + "base", (x0, ya, 0), (x1, yb, 0.42), "dark_wood", faces={"up": fabric})
+        put(name + "back", (x0 + 0.22, back[0], 0.42), (x1 - 0.22, back[1], 0.9), fabric)
+        put(name + "armA", (x0, ya, 0.42), (x0 + 0.22, yb, 0.65), fabric)
+        put(name + "armB", (x1 - 0.22, ya, 0.42), (x1, yb, 0.65), fabric)
 
 
 def ceiling_light(name, cx, cy, along_x=True):
@@ -776,16 +821,20 @@ def lobby():
     box("lobby rug", (0.6, 2.4, 0), (5.0, 6.4, 0.02), "rug")
     sofa("lobby sofa south", 0.9, 3.2, 4.6, facing_north=True, depth=0.9, lift=0.02)
     sofa("lobby sofa north", 0.9, 5.7, 4.6, facing_north=False, depth=0.9, lift=0.02)
-    box("coffee table", (1.8, 4.0, 0.3), (3.8, 4.9, 0.36), "wood")
-    box("coffee table base", (2.1, 4.2, 0.02), (3.5, 4.7, 0.3), "dark_wood")
-    box("magazines", (2.3, 4.3, 0.36), (2.7, 4.6, 0.39), "paper")
+    with item("table", "coffee table"):
+        box("coffee table", (1.8, 4.0, 0.3), (3.8, 4.9, 0.36), "wood")
+        box("coffee table base", (2.1, 4.2, 0.02), (3.5, 4.7, 0.3), "dark_wood")
+    with item("magazines", "magazines"):
+        box("magazines", (2.3, 4.3, 0.36), (2.7, 4.6, 0.39), "paper")
     plant("lobby plant west", 0.8, 14.0, 1.2)
     plant("lobby plant east", 11.2, 1.0, 1.2)
     plant("lobby plant reception", 2.6, 9.4, 0.9)
-    box("cooler stand", (11.3, 6.5, 0), (11.8, 7.0, 0.9), "ceramic")
-    box("cooler bottle", (11.37, 6.57, 0.9), (11.73, 6.93, 1.35), "water")
+    with item("cooler", "cooler"):
+        box("cooler stand", (11.3, 6.5, 0), (11.8, 7.0, 0.9), "ceramic")
+        box("cooler bottle", (11.37, 6.57, 0.9), (11.73, 6.93, 1.35), "water")
     box("lobby art", (11.86, 3.0, 1.2), (11.9, 5.0, 2.2), "art", faces={"west": "art"})
-    box("bench", (8.0, 0.6, 0), (10.6, 1.1, 0.45), "wood")
+    with item("bench", "bench"):
+        box("bench", (8.0, 0.6, 0), (10.6, 1.1, 0.45), "wood")
     ceiling_light("lobby light a", 2.8, 4.4)
     ceiling_light("lobby light b", 8.0, 4.4)
     ceiling_light("lobby light c", 6.0, 12.4)
@@ -804,26 +853,32 @@ def open_plan():
                 for half, (xa, xb) in [("w", (x0, x0 + 1.97)), ("e", (x0 + 2.03, x0 + 4.0))]:
                     dn = n + side + half + " "
                     if side == "s":
-                        desk(dn + "desk ", xa + 0.05, y0 + 0.2, xb - 0.05, y0 + 1.15)
+                        with item("desk", dn + "desk"):
+                            desk(dn + "desk ", xa + 0.05, y0 + 0.2, xb - 0.05, y0 + 1.15)
                         cx = (xa + xb) / 2
                         monitor(dn, cx, y0 + 0.85, 180)
-                        box(dn + "keys", (cx - 0.22, y0 + 0.35, 0.76), (cx + 0.22, y0 + 0.5, 0.78), "dark_metal",
-                            faces={"up": "keyboard"})
+                        with item("keyboard", dn + "keys"):
+                            box(dn + "keys", (cx - 0.22, y0 + 0.35, 0.76), (cx + 0.22, y0 + 0.5, 0.78), "dark_metal",
+                                faces={"up": "keyboard"})
                         chair(dn + "chair ", cx + RNG.uniform(-0.2, 0.2), y0 - 0.45, RNG.uniform(-25, 25))
                     else:
-                        desk(dn + "desk ", xa + 0.05, y0 + 1.25, xb - 0.05, y0 + 2.2)
+                        with item("desk", dn + "desk"):
+                            desk(dn + "desk ", xa + 0.05, y0 + 1.25, xb - 0.05, y0 + 2.2)
                         cx = (xa + xb) / 2
                         monitor(dn, cx, y0 + 1.55, 0)
-                        box(dn + "keys", (cx - 0.22, y0 + 1.9, 0.76), (cx + 0.22, y0 + 2.05, 0.78), "dark_metal",
-                            faces={"up": "keyboard"})
+                        with item("keyboard", dn + "keys"):
+                            box(dn + "keys", (cx - 0.22, y0 + 1.9, 0.76), (cx + 0.22, y0 + 2.05, 0.78), "dark_metal",
+                                faces={"up": "keyboard"})
                         chair(dn + "chair ", cx + RNG.uniform(-0.2, 0.2), y0 + 2.85, 180 + RNG.uniform(-25, 25))
                     if RNG.random() < 0.5:
                         mx = xa + 0.25
                         my = y0 + 0.4 if side == "s" else y0 + 1.95
-                        box(dn + "mug", (mx - 0.05, my - 0.05, 0.76), (mx + 0.05, my + 0.05, 0.88), "ceramic")
+                        with item("mug", dn + "mug"):
+                            box(dn + "mug", (mx - 0.05, my - 0.05, 0.76), (mx + 0.05, my + 0.05, 0.88), "ceramic")
             ceiling_light(n + "light", x0 + 2.0, y0 + 1.2)
     for i, y in enumerate([1.5, 4.5, 7.5]):
-        box("cabinet %s" % "abc"[i], (35.3, y, 0), (35.95, y + 1.2, 1.3), "metal")
+        with item("cabinet", "cabinet %s" % "abc"[i]):
+            box("cabinet %s" % "abc"[i], (35.3, y, 0), (35.95, y + 1.2, 1.3), "metal")
     bookshelf("open shelf", 35.55, 10.0, 35.95, 12.4, 2.0)
     plant("open plant south", 34.8, 0.8, 1.1)
     plant("open plant corridor", 12.8, 12.4, 1.0)
@@ -835,17 +890,22 @@ def kitchen():
     box("counter base", (0.3, 23.3, 0), (6.5, 24.0, 0.9), "dark_wood")
     box("counter top", (0.25, 23.25, 0.9), (6.55, 24.0, 0.95), "granite")
     box("sink", (2.0, 23.4, 0.95), (2.8, 23.85, 1.0), "steel")
-    box("coffee machine", (4.5, 23.5, 0.95), (4.9, 23.9, 1.4), "dark_metal")
+    with item("coffee_machine", "coffee machine"):
+        box("coffee machine", (4.5, 23.5, 0.95), (4.9, 23.9, 1.4), "dark_metal")
     box("upper cabinets", (0.3, 23.6, 1.6), (2.0, 24.0, 2.3), "dark_wood")
     box("upper cabinets east", (4.0, 23.6, 1.6), (6.5, 24.0, 2.3), "dark_wood")
-    box("fridge", (7.0, 23.1, 0), (8.0, 24.0, 2.0), "steel")
-    box("kitchen table", (2.8, 18.3, 0.72), (4.4, 19.9, 0.76), "wood")
-    box("kitchen table post", (3.55, 19.05, 0), (3.65, 19.15, 0.72), "dark_metal")
+    with item("fridge", "fridge"):
+        box("fridge", (7.0, 23.1, 0), (8.0, 24.0, 2.0), "steel")
+    with item("table", "kitchen table"):
+        box("kitchen table", (2.8, 18.3, 0.72), (4.4, 19.9, 0.76), "wood")
+        box("kitchen table post", (3.55, 19.05, 0), (3.65, 19.15, 0.72), "dark_metal")
     for i, (cx, cy, yaw) in enumerate([(3.6, 17.6, 0), (3.6, 20.6, 180), (2.1, 19.1, -90), (5.1, 19.1, 90)]):
         chair("bistro chair %s " % "abcd"[i], cx, cy, yaw + RNG.uniform(-10, 10), fabric="fabric_orange", office=False)
-    box("kitchen cooler stand", (9.2, 16.0, 0), (9.7, 16.5, 0.9), "ceramic")
-    box("kitchen cooler bottle", (9.27, 16.07, 0.9), (9.63, 16.43, 1.35), "water")
-    box("bin", (8.5, 15.3, 0), (8.9, 15.7, 0.6), "metal")
+    with item("cooler", "kitchen cooler"):
+        box("kitchen cooler stand", (9.2, 16.0, 0), (9.7, 16.5, 0.9), "ceramic")
+        box("kitchen cooler bottle", (9.27, 16.07, 0.9), (9.63, 16.43, 1.35), "water")
+    with item("bin", "bin"):
+        box("bin", (8.5, 15.3, 0), (8.9, 15.7, 0.6), "metal")
     plant("kitchen plant", 0.8, 16.0, 1.0)
     box("kitchen art", (9.86, 18.0, 1.3), (9.9, 19.6, 2.2), "gold", faces={"west": "art"})
     ceiling_light("kitchen light a", 3.6, 19.1)
@@ -854,9 +914,10 @@ def kitchen():
 
 def meeting_room():
     group("meeting room")
-    box("meeting table", (12.5, 18.7, 0.72), (17.5, 20.3, 0.78), "dark_wood")
-    box("meeting table leg west", (13.0, 19.2, 0), (13.2, 19.8, 0.72), "dark_metal")
-    box("meeting table leg east", (16.8, 19.2, 0), (17.0, 19.8, 0.72), "dark_metal")
+    with item("table", "meeting table"):
+        box("meeting table", (12.5, 18.7, 0.72), (17.5, 20.3, 0.78), "dark_wood")
+        box("meeting table leg west", (13.0, 19.2, 0), (13.2, 19.8, 0.72), "dark_metal")
+        box("meeting table leg east", (16.8, 19.2, 0), (17.0, 19.8, 0.72), "dark_metal")
     for i, x in enumerate([13.3, 15.0, 16.7]):
         chair("meeting chair s%s " % "abc"[i], x, 18.1, RNG.uniform(-12, 12))
         chair("meeting chair n%s " % "abc"[i], x, 20.9, 180 + RNG.uniform(-12, 12))
@@ -871,32 +932,38 @@ def meeting_room():
 
 def print_room():
     group("print room")
-    box("copier", (21.0, 22.8, 0), (22.4, 23.9, 1.05), "metal", faces={"up": "dark_metal"})
-    box("copier tray", (22.4, 23.2, 0.7), (22.7, 23.7, 0.75), "paper")
+    with item("copier", "copier"):
+        box("copier", (21.0, 22.8, 0), (22.4, 23.9, 1.05), "metal", faces={"up": "dark_metal"})
+        box("copier tray", (22.4, 23.2, 0.7), (22.7, 23.7, 0.75), "paper")
     for i, y in enumerate([16.0, 17.3, 18.6, 19.9]):
-        box("file cabinet %s" % "abcd"[i], (25.2, y, 0), (25.9, y + 1.2, 1.4), "metal", faces={"west": "steel"})
+        with item("cabinet", "file cabinet %s" % "abcd"[i]):
+            box("file cabinet %s" % "abcd"[i], (25.2, y, 0), (25.9, y + 1.2, 1.4), "metal", faces={"west": "steel"})
     bookshelf("print shelf", 23.0, 23.55, 25.0, 23.95, 2.1)
-    box("paper boxes", (20.3, 15.4, 0), (21.1, 16.0, 0.6), "paper")
+    with item("boxes", "paper boxes"):
+        box("paper boxes", (20.3, 15.4, 0), (21.1, 16.0, 0.6), "paper")
     plant("print plant", 20.7, 20.5, 0.9)
     ceiling_light("print light", 23.0, 19.5, along_x=False)
 
 
 def private_office():
     group("private office")
-    desk("exec desk ", 29.0, 20.6, 33.0, 21.6, top="wood", sides=False)
-    box("exec desk front", (29.0, 20.6, 0), (33.0, 20.7, 0.72), "dark_wood")
-    box("exec desk end west", (29.0, 20.7, 0), (29.1, 21.6, 0.72), "dark_wood")
-    box("exec desk end east", (32.9, 20.7, 0), (33.0, 21.6, 0.72), "dark_wood")
+    with item("desk", "exec desk"):
+        desk("exec desk ", 29.0, 20.6, 33.0, 21.6, top="wood", sides=False)
+        box("exec desk front", (29.0, 20.6, 0), (33.0, 20.7, 0.72), "dark_wood")
+        box("exec desk end west", (29.0, 20.7, 0), (29.1, 21.6, 0.72), "dark_wood")
+        box("exec desk end east", (32.9, 20.7, 0), (33.0, 21.6, 0.72), "dark_wood")
     monitor("exec ", 31.0, 21.2, 0)
     chair("exec chair ", 31.0, 22.3, 180)
     chair("visitor chair a ", 30.2, 19.6, 0, fabric="fabric_beige", office=False, lift=0.02)
     chair("visitor chair b ", 31.8, 19.6, 0, fabric="fabric_beige", office=False, lift=0.02)
     bookshelf("exec shelf", 33.6, 23.5, 35.6, 23.94, 2.2)
     box("exec rug", (28.0, 17.0, 0), (34.0, 20.0, 0.02), "rug")
-    box("armchair", (26.6, 15.6, 0), (27.6, 16.6, 0.45), "fabric_beige")
-    box("armchair back", (26.6, 15.6, 0.45), (26.85, 16.6, 1.0), "fabric_beige")
-    box("floor lamp", (27.9, 15.5, 0), (28.0, 15.6, 1.6), "dark_metal")
-    box("floor lamp shade", (27.75, 15.35, 1.6), (28.15, 15.75, 1.9), "paper")
+    with item("armchair", "armchair"):
+        box("armchair", (26.6, 15.6, 0), (27.6, 16.6, 0.45), "fabric_beige")
+        box("armchair back", (26.6, 15.6, 0.45), (26.85, 16.6, 1.0), "fabric_beige")
+    with item("lamp", "floor lamp"):
+        box("floor lamp", (27.9, 15.5, 0), (28.0, 15.6, 1.6), "dark_metal")
+        box("floor lamp shade", (27.75, 15.35, 1.6), (28.15, 15.75, 1.9), "paper")
     plant("private plant", 35.2, 15.8, 1.2)
     box("private art", (26.1, 17.5, 1.3), (26.14, 19.0, 2.2), "gold", faces={"east": "art"})
     ceiling_light("private light", 31.0, 18.5)
@@ -929,7 +996,11 @@ new SimGroup(MissionGroup)
    // The office: built from levels/office.bbmodel when the example starts.
 %interiors%
    // The ceiling lights: a spot light under each panel, pointing down.
-""" + "\n".join(lights) + "\n};\n"
+""" + "\n".join(lights) + """
+};
+// The furniture and the desk items: props, built from the model's prop groups when the example starts.
+%props%
+"""
 
 
 def main():
@@ -965,9 +1036,16 @@ def main():
                          "frame_order": "", "frame_interpolate": False, "visible": True, "internal": True,
                          "saved": False, "uuid": new_uuid(), "relative_path": "",
                          "source": "data:image/png;base64," + base64.b64encode(data).decode()})
-    outliner = [{"name": name, "origin": [0, 0, 0], "color": 0, "uuid": new_uuid(), "export": True,
-                 "mirror_uv": False, "isOpen": False, "locked": False, "visibility": True, "autouv": 0,
-                 "children": children} for name, children in groups]
+    def outline(name, children, origin=(0, 0, 0), rotation=None):
+        g = {"name": name, "origin": list(origin), "color": 0, "uuid": new_uuid(), "export": True,
+             "mirror_uv": False, "isOpen": False, "locked": False, "visibility": True, "autouv": 0}
+        if rotation:
+            g["rotation"] = rotation
+        g["children"] = [c if isinstance(c, str) else outline(c["name"], c["children"], c["origin"], c.get("rotation"))
+                         for c in children]
+        return g
+
+    outliner = [outline(name, children) for name, children in groups]
     model = {"meta": {"format_version": "4.10", "model_format": "free", "box_uv": False},
              "name": "office", "model_identifier": "", "visible_box": [1, 1, 0], "variable_placeholders": "",
              "variable_placeholder_buttons": [], "timeline_setups": [], "unhandled_root_fields": {},

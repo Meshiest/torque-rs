@@ -66,6 +66,7 @@ fn cuboid(key: u32, at: [f32; 3], half: [f32; 3], hull: bool) -> CollisionShape 
             ShapeKind::Box { half }
         },
         type_mask: STATIC_SHAPE,
+        passes: None,
     }
 }
 

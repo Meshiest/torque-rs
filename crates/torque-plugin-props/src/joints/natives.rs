@@ -144,6 +144,40 @@ fn joint_grapple(
     made(&mut vm, &props, Joint::new(kind, a, b, owner))
 }
 
+/// makes a player carry a prop and returns the joint's object id
+///
+/// `offset` is `"x y z"` in the player's own frame (right, forward and up from its feet): the prop is carried there, upright
+/// and facing where the player faces, driven each step to that point so walls and other props still stop it, and never
+/// pushing its holder (the players' collision leaves a held prop out). A player holds one prop and a prop has one holder;
+/// `jointDelete` lets go. What may be held, from how far and by whom is the game's own rule (`jointCheck` with kind `hold`
+/// first): there is no client entry point.
+#[function(name = "jointHold")]
+fn joint_hold(
+    mut vm: VmMut,
+    props: Res<ServerProps>,
+    player: &str,
+    prop: &str,
+    offset: &str,
+    owner: Option<i32>,
+) -> Result<i32, ScriptError> {
+    let offset = finite(offset, "the offset")?;
+    let (a, b) = ends(&mut vm, &props, player, prop)?;
+    let (End::Player { id, .. }, End::Prop { id: p, .. }) = (a, b) else {
+        return Err(ScriptError::new("a hold is a player's on a prop"));
+    };
+    let owner = owner_of(&mut vm, owner);
+    let joint = Joint::new(
+        Kind::Hold,
+        End::Player { id, offset },
+        End::Prop {
+            id: p,
+            local: [0.0; 3],
+        },
+        owner,
+    );
+    made(&mut vm, &props, joint)
+}
+
 /// welds a prop to another (or, with `b` empty, to the world) as they are now, and returns the joint's object id
 #[function(name = "jointWeld")]
 fn joint_weld(
@@ -476,13 +510,13 @@ fn joint_count_on(vm: VmMut, props: Res<ServerProps>, prop: i32) -> Result<i32, 
 /// checks whether two ends could be joined for a player: "" when they may, else the reason
 ///
 /// `client` is the connection asking (the joint's owner). `a` and `b` are ends as `jointTether` takes them (a weld's or a hinge's
-/// world end may be empty); `kind` is the joint's (`tether` when left out or empty: `winch`, `weld`, `hinge`, `grapple`, whose
-/// first end is a player), and a hinge gives its `point`. Every end and the point must be within `reach` of `eye` (the player's
-/// eye, as the server gives it: 8 when left out). A player at an end is where the server has it, and must be the client's own
-/// control object unless `allowOtherPlayers`; a prop at an end must be the client's (its owner key) or no one's unless
-/// `allowOtherOwners` (each a game's choice, off by default). The caps must allow one more joint for the client, its address and
-/// each prop, and a player may have one grapple. Joints have no client entry point: a game's own server command (with its
-/// declared limits and permission) calls this first.
+/// world end may be empty); `kind` is the joint's (`tether` when left out or empty: `winch`, `weld`, `hinge`, `grapple` and
+/// `hold`, whose first end is a player), and a hinge gives its `point`. Every end and the point must be within `reach` of `eye`
+/// (the player's eye, as the server gives it: 8 when left out). A player at an end is where the server has it, and must be the
+/// client's own control object unless `allowOtherPlayers`; a prop at an end must be the client's (its owner key) or no one's
+/// unless `allowOtherOwners` (each a game's choice, off by default). The caps must allow one more joint for the client, its
+/// address and each prop, and a player may have one grapple. Joints have no client entry point: a game's own server command
+/// (with its declared limits and permission) calls this first.
 #[function(name = "jointCheck")]
 #[expect(
     clippy::too_many_arguments,
@@ -699,6 +733,7 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
     torque_engine::natives![
         joint_tether,
         joint_grapple,
+        joint_hold,
         joint_weld,
         joint_hinge,
         joint_winch,

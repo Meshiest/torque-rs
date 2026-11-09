@@ -47,12 +47,14 @@ struct PropGhost {
     data_block: DatablockRef,
 }
 
-/// A prop's datablock: the shape file it is drawn as.
+/// A prop's datablock: the shape file it is drawn as, and whether its props rest ("1").
 #[derive(Debug, Clone, PartialEq, Default, EngineClass, DatablockCodec)]
 #[class(name = "PropData", parent = "SimDataBlock")]
 struct PropData {
     #[net(max_len = 64)]
     model: String,
+    #[net(max_len = 4)]
+    rests: String,
 }
 
 /// The server's prop: the object the ghost is packed from.
@@ -80,8 +82,9 @@ impl Plugin for Props {
             .ghost::<PropGhost>("Prop", Replicate::Interpolated)
             .datablock::<PropData>("PropData")
             .drawn_shape::<PropGhost>("Prop", |prop, blocks| {
-                let model = blocks.text(prop.data_block.0?, "model")?;
-                Some(ShapeDraw::new(model))
+                let id = prop.data_block.0?;
+                let model = blocks.text(id, "model")?;
+                Some(ShapeDraw::new(model).resting(blocks.text(id, "rests") == Some("1")))
             });
         engine.server_script().class::<PropData>().class::<Prop>();
         engine.client_script().class::<PropData>().class::<Prop>();
@@ -504,4 +507,46 @@ fn a_cut_to_a_far_view_draws_its_ghosts_on_that_frame() {
     let elsewhere = look_at([0.0, -600.0, 3.0], [0.0, -800.0, 1.0]);
     assert!(drawn_from(&mut view, elsewhere), "a cut is not culled");
     assert_eq!(gpu.device_errors().validation, 0);
+}
+
+/// A resting plugin ghost is drawn as a still copy of its shape's static batch (the frame's moving shapes leave it out) and
+/// looks as the same ghost does drawn every frame; once it stops resting, its batch goes and it is a moving shape again; and
+/// one whose batch the view's budget would cut short is drawn every frame instead.
+#[test]
+fn a_resting_plugin_ghost_is_a_still_copy_that_looks_as_the_moving_one() {
+    let Some(gpu) = gpu() else { return };
+    let files = files();
+    let mut session = Session::new(&files, None);
+    let mut view = view(&gpu, &session.engine);
+    let mut scene = GhostScene::new(GhostOptions::default());
+    let place = |session: &mut Session, data: &str| {
+        session.eval(&format!(
+            "if (isObject($Prop)) $Prop.delete(); $Prop = makeProp({AT}, {data});"
+        ));
+        session.run(30);
+    };
+    place(&mut session, "CrateProp");
+    let moving = objects(&session, &mut scene, &mut view);
+    assert_eq!((moving.len(), scene.resting_count()), (1, 0));
+    assert_eq!(view.static_batch_triangles(), 0);
+    let a = shot(&mut view, &gpu, moving);
+    save(&a, "moving");
+    place(&mut session, "CrateResting");
+    let still = objects(&session, &mut scene, &mut view);
+    assert_eq!((still.len(), scene.resting_count()), (0, 1));
+    assert!(view.static_batch_triangles() > 0);
+    let b = shot(&mut view, &gpu, still);
+    save(&b, "resting");
+    let off = differing(&a, &b, 8);
+    assert!(off < 40, "the resting copy differs in {off} pixels");
+    place(&mut session, "CrateProp");
+    let again = objects(&session, &mut scene, &mut view);
+    assert_eq!((again.len(), scene.resting_count()), (1, 0));
+    assert_eq!(view.static_batch_triangles(), 0, "its batch went");
+    // A batch the view's triangle budget would cut short: the resting crate is drawn every frame instead, never left out.
+    view.set_static_batch_budget(1);
+    place(&mut session, "CrateResting");
+    let short = objects(&session, &mut scene, &mut view);
+    assert_eq!((short.len(), scene.resting_count()), (1, 0));
+    assert_eq!(view.static_batch_triangles(), 0);
 }

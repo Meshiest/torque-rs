@@ -22,6 +22,8 @@ torque-import = { path = "../../crates/torque-import" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+# The levels' furniture and desk items as props a figure pushes, the client predicting the ones it pushes.
+torque-plugin-props = { path = "../../crates/torque-plugin-props" }
 # A rope across the plaza (the `rope` feature).
 torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
 # The smoothed predictor beside TGE's (the `smooth-prediction` feature).

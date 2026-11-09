@@ -63,6 +63,15 @@
 //!   about to be drawn, shadows and reflections included (`a_shape_out_of_view_whose_shadow_falls_in_view_is_kept`, in
 //!   `torque-render-scene`), and nothing on the first frame, a cut's or another renderer's
 //!   (`a_cut_to_a_far_view_draws_its_ghosts_on_that_frame`, in `tests/drawn_shapes.rs`).
+//! - A [`ghosts::GhostScene`] that draws the moving shapes ([`ghosts::GhostOptions::select`] `Moving`) draws the resting plugin
+//!   ghosts (sleeping props) as still copies of one static batch a shape (`resting.rs`; ids from [`view::RESTING_BATCHES`]),
+//!   laid out again only when a shape's resting copies change, and its moving shapes leave out exactly the ghosts it drew so
+//!   (`Hooks::still`): one it could not keep (past [`view::MAX_RESTING_SHAPES`], a shape that did not load, a batch the
+//!   budget would cut short) is drawn every frame. Whether a ghost rests is read live (its record and the datablocks its draw
+//!   reads), a copy looks as the ghost drawn every frame, and a ghost that stops resting leaves its batch the same frame
+//!   (`a_resting_plugin_ghost_is_a_still_copy_that_looks_as_the_moving_one`, in `tests/drawn_shapes.rs`;
+//!   `a_ghosts_shape_is_read_live_so_a_datablock_arriving_or_changing_after_it_counts`; the level demo's
+//!   `the_sleeping_furniture_is_drawn_still_and_a_pushed_chair_moves_again`).
 //! - The interiors hand their panes out with the last frame's draws moved over, not copied, and a frame with none changed
 //!   reads no file name again (bench `interiors update 100 kept` in `benches/app.rs`, timed under the bench lock).
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
@@ -89,6 +98,7 @@ pub mod page_bridge;
 pub mod plugins;
 pub mod render;
 pub mod renderers;
+mod resting;
 pub mod run;
 pub mod shots;
 pub mod terrain;

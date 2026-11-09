@@ -153,6 +153,18 @@ impl JointBook {
         out
     }
 
+    /// The player ghost an unbroken hold carries the prop ghost `prop` for, if one does.
+    pub fn holder_of(&self, prop: u32) -> Option<u32> {
+        self.joints.values().find_map(|j| match (j.kind, j.a, j.b) {
+            (KindId::Hold, EndWire::Ghost { ghost: player, .. }, EndWire::Ghost { ghost, .. })
+                if ghost == prop && !j.broken =>
+            {
+                Some(player)
+            }
+            _ => None,
+        })
+    }
+
     /// The grapple whose first end is the ghost `player`: none when there are none or two.
     pub fn grapple_on(&self, player: u32) -> Option<&ClientJoint> {
         let mut grapples = self.joints.values().filter(|j| {

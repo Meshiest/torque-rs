@@ -388,6 +388,7 @@ getModDownloadState 1..1 getModDownloadState() - where a client's download of th
 getModField 3..3 getModField(id, field) - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
 getModList 1..2 getModList([all]) - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with `true`)
 getModStages 1..1 getModStages() - the declared load stages, separated by spaces
+getPredictor 1..1 () - The id of the predictor the client's control object runs with.
 getRandom 1..3 getRandom([a [, b]]) - a random number: in (0, 1], from 0 to a, or from a to b
 getRandomSeed 1..1 getRandomSeed() - the random generator's state
 getRealTime 1..1 getRealTime() - a millisecond counter of the computer
@@ -438,6 +439,10 @@ mSolveQuartic 6..6 mSolveQuartic(a, b, c, d, e) - the real roots of a*x^4 + b*x^
 mSqrt 2..2 mSqrt(x) - the square root
 mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
+propPredictBlast 4..4 propPredictBlast(point, radius, impulse) - shows an explosion's push on every prop the client predicts within `radius` of `point` at once, `impulse` at the center
+propPredictImpulse 4..4 propPredictImpulse(ghost, point, impulse) - shows a push on a prop the client predicts at once: `ghost` is the prop's ghost index, `point` and `impulse` are `"x y z"`
+propPredictSpawn 3..3 propPredictSpawn(data, transform) - shows a prop of the client's `PropData` datablock at once at `transform` (`"x y z [ax ay az angle]"`) and returns the predict
+propPredicted 1..1 propPredicted() - the ghost indexes of the props the client predicts now, separated by spaces
 quit 1..1 quit() - asks the main loop to stop
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
@@ -450,6 +455,7 @@ serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start
 serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
 setCameraMode 2..2 (name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
 setField 4..4 setField(text, index, value) - the text with that field replaced
+setPredictor 2..2 (id) - Runs the client's control object with the predictor registered as id, from the next tick.
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced
 setRenderer 2..2 setRenderer(id);

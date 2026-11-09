@@ -180,6 +180,45 @@ fn every_awake_state_is_written_back_at_the_wires_precision() {
 }
 
 #[test]
+fn a_prop_put_to_sleep_where_it_rests_holds_still_until_a_push_wakes_it() {
+    let mut w = world(PropLimits::default());
+    // A crate on the floor and a second one on top of it, both put to sleep as they are spawned.
+    w.spawn(100, 9, crate_params(), at(0.0, 0.0, 0.5), None, 0)
+        .unwrap();
+    w.spawn(101, 9, crate_params(), at(0.0, 0.0, 1.5), None, 0)
+        .unwrap();
+    assert_eq!(w.sleep(100), Some(MASK_STATE | MASK_FLAGS));
+    assert_eq!(w.sleep(101), Some(MASK_STATE | MASK_FLAGS));
+    assert_eq!(w.sleep(100), None, "asleep already");
+    let start: Vec<_> = [100, 101].map(|id| w.get(id).unwrap().q).to_vec();
+    for _ in 0..200 {
+        let r = w.tick(&[], &far);
+        assert!(r.dirty.is_empty() && r.events.is_empty(), "{r:?}");
+    }
+    assert_eq!([100, 101].map(|id| w.get(id).unwrap().q).to_vec(), start);
+    // A player walking into the lower one wakes it and carries it along.
+    let pusher = Pusher {
+        id: 7,
+        min: [-1.55, -0.5, 0.0],
+        max: [-0.5, 0.5, 2.0],
+        velocity: [4.0, 0.0, 0.0],
+        mass: 90.0,
+    };
+    let r = w.tick(&[pusher], &far);
+    assert!(r.events.contains(&(100, PropEvent::Wake)), "{r:?}");
+    for _ in 0..10 {
+        w.tick(&[], &far);
+    }
+    assert!(w.get(100).unwrap().q.position()[0] > 0.1);
+    // A frozen prop is not put to sleep.
+    w.spawn(102, 9, crate_params(), at(9.0, 0.0, 0.5), None, 0)
+        .unwrap();
+    w.freeze(102).unwrap();
+    assert_eq!(w.sleep(102), None);
+    assert_eq!(w.sleep(999), None);
+}
+
+#[test]
 fn a_frozen_prop_holds_still_and_takes_no_push() {
     let mut w = world(PropLimits::default());
     w.spawn(100, 9, crate_params(), at(0.0, 0.0, 3.0), None, 0)

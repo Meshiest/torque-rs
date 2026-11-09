@@ -75,6 +75,8 @@ All run on the server.
 | `propSpawn(datablock, transform [, owner, predictId])` | spawns a prop at `"x y z [ax ay az angle]"`; returns its object id, or prints an error and returns 0 past a cap (the owner's caps only when an owner is given) |
 | `propDelete(prop)` | takes it away from the world and every client (`%prop.delete()` does too) |
 | `propFreeze(prop)`, `propUnfreeze(prop)` | pins it where it is (others rest on it), or lets it move again |
+| `propSleep(prop)` | puts it to sleep where it lies, stopped, until something pushes or touches it: a map's props placed at rest stay put as the map loads |
+| `propRayCast(start, end [, ignore])` | the first prop a segment meets (`"prop x y z"`, or ""); props are not `containerRayCast`'s, so a game casts both and takes the nearer to see what stands in front |
 | `propApplyImpulse(prop, "x y z")` | a push, mass times units a second |
 | `propSetVelocity(prop, velocity [, spin])` | sets its speed (held to `maxSpeed`) and spin |
 | `propGetVelocity`, `propGetSpin`, `propGetTransform`, `propIsAsleep`, `propIsFrozen`, `propGetOwner` | what the clients are sent |
@@ -83,6 +85,10 @@ All run on the server.
 
 A prop is a `SceneObject`: `getTransform()` and `getPosition()` read the pose the clients are sent. It is put in `MissionCleanup`
 when there is one.
+
+A map's furniture is props spawned asleep where the map places them (`propSleep(propSpawn(Chair, %at))`): the level demo's
+office does this for every chair, desk, table, sofa, cabinet, plant and desk item of its Blockbench model (its outliner groups
+named `prop <kind> <name>`; `examples/level-demo/src/props.rs`), so the figure pushes what it walks into.
 
 Props have **no client entry point**: no client command spawns, pushes or freezes one. Who may spawn what is the game's decision
 (a sandbox mode, a game's own scripts), made in its own server commands. Before it spawns a prop for a player, a game asks
@@ -207,9 +213,23 @@ be left empty for the world.
 | weld | `jointWeld(a, b [, owner])` | two props (or a prop and the world) at the pose they have to each other now |
 | hinge | `jointHinge(a, b, point, axis [, owner])` | two props (or a prop and the world) about `axis` through `point`; `jointSetLimits(j, low, high)` (radians) and `jointSetMotor(j, speed, maxTorque)` |
 | grapple | `jointGrapple(player, target, length [, owner])` | a player at most `length` from a point or a prop (`%player SPC "0 0 1.2"` holds it at an offset from its position) |
+| hold | `jointHold(player, prop, offset [, owner])` | a prop carried at `offset` in the player's own frame (right, forward, up from its feet), upright and facing where the player faces |
 
 A tether's spring (`jointSetSpring(j, stiffness, damping)`: force a unit past the length, and a unit a second) pulls only past the
 length and never pushes; a stiffness of 0 makes it hard again. A hanging load stretches it by its weight over the stiffness.
+
+**Holds.** A hold carries a prop for a player: before each step the prop is given the speed and spin that take it to its
+point by the step's end (at most 10 units and 20 radians a second, so a fast turn never flings it through a wall), the step's
+fall made up, so walls and other props still stop it, and never into another player's box. Nothing pulls the player, and
+only the holder's own collision passes through its held prop (a plugin collision shape's `passes`: the server's object or
+the client's ghost of the holder), so a held prop never pushes or launches its holder while every other player meets it. A
+player holds one prop, a prop has one holder, a frozen prop cannot be held, and a held prop never sleeps. A hold breaks
+(`onBreak`) when its prop is frozen or ends a step more than a unit from its point (stuck behind a wall). Every player's and
+vehicle's box is a frictionless kinematic body of the props' world (placed, never given a speed), so no prop, held, let go
+or shoved by a held one, stays inside a player: the solver pushes it out, walls and other props in its way. The holder's own client predicts it from where each move leaves its Player (the move's
+box and facing), so it is drawn at the hand with no lag. `jointDelete` lets go; a holder that goes lets go too. Who may pick up
+what, from how far, is the game's: the level demo's office lets a click pick up a prop of at most 15 kg that the figure looks
+at within 2.5 units (`propRayCast`, with nothing in front by `containerRayCast`), its arm held out (`setArmThread("hold")`).
 
 **Grapples.** A player is not a physics body: it is simulated by Torque's own Player rules, and its client predicts it. A grapple
 pulls inside the Player's own tick, after its move has made the velocity and before the sweep along it: the velocity is changed so
@@ -239,7 +259,7 @@ panic takes every joint again in id order. A sleeping prop a joint changes (a wi
 | Function | Does |
 |---|---|
 | `jointDelete(j)` | takes it away from the world and every client, with its rope |
-| `jointGetKind`, `jointGetLength`, `jointGetDistance`, `jointGetForce`, `jointIsAtLimit`, `jointIsBroken` | its kind (`tether`, `winch`, `weld`, `hinge`, `grapple`), its length, the distance between its ends, the force it held, whether a tether is at its length, whether it broke |
+| `jointGetKind`, `jointGetLength`, `jointGetDistance`, `jointGetForce`, `jointIsAtLimit`, `jointIsBroken` | its kind (`tether`, `winch`, `weld`, `hinge`, `grapple`, `hold`), its length, the distance between its ends, the force it held, whether a tether is at its length, whether it broke |
 | `jointCount([client])`, `jointCountOn(prop)` | how many there are (a client's own), how many a prop is an end of |
 | `jointCheck(client, a, b, eye [, reach, kind, point, allowOtherPlayers, allowOtherOwners])` | "" when two ends may be joined for a player, else the reason |
 
@@ -300,7 +320,7 @@ let engine = EngineBuilder::new()
 It is a part of the client's prediction slot: it runs after whichever predictor the game picks (TGE's, the smooth one), and it
 sends nothing new, so it has no network version.
 
-**What is predicted.** Each tick: the props the Player holds (the far end of its grapple), the props under its feet and the
+**What is predicted.** Each tick: the props the Player holds (the far end of its grapple or its hold), the props under its feet and the
 props it touched in the last 16 ticks, each with the props jointed to it, at most 8. **The most is a Rust setting of the
 plugin** (`PredictConfig::max_predicted`, up to 32), not a pref. Frozen props are not predicted: they do not move.
 
@@ -361,7 +381,11 @@ for 256 awake props and 0.5 ms for 1,024 asleep:
 | the world's tick (step, writeback, sleep, cap) | 0.76 ms | 0.05 ms |
 | a whole server tick (the world, the record fields, the engine's own tick) | 0.86 ms | 0.13 ms |
 
-A server whose props all sleep skips the physics step: it costs only the walk over the props.
+A server whose props all sleep skips the physics step: it costs only the walk over the props. On a client a sleeping (or
+frozen) prop costs a frame almost nothing too: its draw says it rests, and the engine's ghost scene draws it as a still copy
+of its shape's static batch (kept on the GPU, culled there, in the cached shadows) instead of posing and building it every
+frame; a prop that wakes, or that the client's prediction moves, is a moving shape again from that frame. In the level demo's
+office (197 props, all asleep) that took a frame from about 7.7 to 4.1 ms in its slowest view.
 
 ## Tests
 

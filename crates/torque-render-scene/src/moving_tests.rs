@@ -845,3 +845,54 @@ fn a_player_the_cull_leaves_out_keeps_time_but_is_not_posed_or_built() {
     assert_eq!(count(&hooks), (1, 1));
     assert!(out.opaque_owners.contains(&2));
 }
+
+/// A host that draws ghost 1 with its still geometry.
+struct KeepsOneStill;
+
+impl Hooks<ClientWorld<TgeClientSet>> for KeepsOneStill {
+    type Live = ();
+
+    fn still(&self, index: u32) -> bool {
+        index == 1
+    }
+}
+
+#[test]
+fn a_resting_plugin_ghost_is_left_out_only_where_its_host_draws_it_still() {
+    let (_, mut plugin, files) = same_shape_both_ways(pose([2.0, 0.0, 1.0], 0.4));
+    let class = prop_class(Replicate::Interpolated);
+    // Resting while its size is above 0; a size of 2 is drawn twice as long along x alone.
+    let mut drawn = DrawnShapes::default();
+    drawn.insert(
+        class,
+        ShapeFn::new::<Prop>(|prop, _| {
+            let draw = ShapeDraw::new(CRATE).resting(prop.size > 0.0);
+            Some(if prop.size == 2.0 {
+                draw.scaled([2.0, 1.0, 1.0])
+            } else {
+                draw
+            })
+        }),
+    );
+    plugin.plugin_shapes = drawn;
+    assert!(resting(&plugin, 1));
+    // A host that keeps it still: left out of the frame's shapes; a host that does not (it could not): drawn as every frame.
+    let (kept, _) = draws_of(&plugin, &files, &KeepsOneStill, ShapeSelect::Moving, None);
+    let (drawn_here, _) = draws_of(&plugin, &files, &(), ShapeSelect::Moving, None);
+    assert!(kept.opaque.is_empty() && !drawn_here.opaque.is_empty());
+    // A prediction drawing it somewhere else: it does not rest.
+    let at = plugin.ghosts[&1].pose().expect("a pose");
+    plugin.ghost_render.insert(1, at);
+    assert!(!resting(&plugin, 1));
+    plugin.ghost_render.clear();
+    // Not resting, or a scale a still copy cannot have.
+    for size in [-1.0, 2.0] {
+        let prop = Prop {
+            pose: pose([2.0, 0.0, 1.0], 0.4),
+            data: DatablockRef(Some(3)),
+            size,
+        };
+        set_prop(&mut plugin, prop);
+        assert!(!resting(&plugin, 1), "size {size}");
+    }
+}

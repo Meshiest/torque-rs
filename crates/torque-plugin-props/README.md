@@ -36,9 +36,11 @@ propApplyImpulse(%crate, "0 40 0");
 
 - `PropData` (shape, collision box or ball, mass or density, friction, restitution, damping, top speed, sleep thresholds,
   `canFreeze`, `maxPerPlayer`), every number clamped on write and on read; callbacks `onPropSpawn`, `onPropSleep`, `onPropWake`.
-- The `Prop` class and `propSpawn`, `propDelete`, `propFreeze`, `propUnfreeze`, `propApplyImpulse`, `propSetVelocity`, the getters,
-  `propCount`, `propAwakeCount`, and `propCheckPlacement` (a ray from the eye, a box that overlaps nothing), which a game's own
-  server command calls before it spawns for a player. Props have no client entry point.
+- The `Prop` class and `propSpawn`, `propDelete`, `propFreeze`, `propUnfreeze`, `propSleep` (a map's props placed at rest),
+  `propApplyImpulse`, `propSetVelocity`, the getters, `propCount`, `propAwakeCount`, `propRayCast` (the first prop a segment
+  meets), and `propCheckPlacement` (a ray from the
+  eye, a box that overlaps nothing), which a game's own server command calls before it spawns for a player. Props have no
+  client entry point.
 - A collision source on both sides (`$TypeMasks::PropObjectType`): players, items and projectiles hit props, vehicles see them as
   static, and a player or vehicle that walks into one pushes it.
 - The `Prop` ghost class, its updates held to `$Pref::Props::NetShare` (40%) of each packet and ordered for each client (touched
@@ -46,7 +48,7 @@ propApplyImpulse(%crate, "0 40 0");
   (`ClientProps`), drawn as shapes.
 - Joints between props, the world and players: `jointTether` (hard, or a spring past its length), `jointWinch`, `jointWeld`,
   `jointHinge` (limits, a motor) and `jointGrapple` (a Player held to a point or a prop inside its own tick, so its client
-  predicts it exactly), breakable, with their setters, getters and `jointCheck` for a game's own commands; the `Joint` ghost
+  predicts it exactly) and `jointHold` (a prop a player carries in front of it, its client predicting it), breakable, with their setters, getters and `jointCheck` for a game's own commands; the `Joint` ghost
   class and each client's book (`ClientJoints`). With feature `rope`, `jointRope` makes a networked rope that follows a joint
   and pulls on nothing.
 

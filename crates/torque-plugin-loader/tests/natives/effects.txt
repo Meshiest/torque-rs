@@ -286,6 +286,7 @@ jointGetKind -
 jointGetLength -
 jointGrapple -
 jointHinge -
+jointHold -
 jointIsAtLimit -
 jointIsBroken -
 jointSetBreakForce -
@@ -367,7 +368,9 @@ propPredictBlast -
 propPredicted -
 propPredictImpulse -
 propPredictSpawn -
+propRayCast -
 propSetVelocity -
+propSleep -
 propSpawn -
 propUnfreeze -
 purgeResources -

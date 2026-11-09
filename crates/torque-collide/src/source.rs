@@ -190,6 +190,9 @@ pub struct CollisionShape {
     pub kind: ShapeKind,
     /// The type bits it asks for ([`SHAPE_TYPE_BITS`] is all it gets), beside its source's own.
     pub type_mask: u32,
+    /// The one mover that passes through it, by its id on the side's own world (a server's object, a client's ghost index): a
+    /// mover carrying it, which would otherwise meet what it carries. Every other mover and ray meets it. None for none.
+    pub passes: Option<u32>,
 }
 
 /// What a shape is.
@@ -582,6 +585,8 @@ pub fn is_source_name(name: &str) -> bool {
 struct Entry {
     id: ObjectId,
     view: ObjectView,
+    /// The mover that passes through it ([`CollisionShape::passes`]).
+    passes: Option<ObjectId>,
     builder: Rc<ShapeBuilder>,
     hull: Option<Rc<Hull>>,
 }
@@ -617,6 +622,7 @@ impl Entry {
         Some(Entry {
             id: ObjectId(PLUGIN_ID_BASE + b.index * MAX_SHAPES_PER_SOURCE as u32 + s.key),
             view,
+            passes: s.passes.map(ObjectId),
             builder: Rc::new(ShapeBuilder {
                 half: hull.is_none().then_some(obj_box.max),
                 bounds: obj_box,
@@ -680,6 +686,7 @@ impl ShapeSet {
                 return;
             }
             if Some(e.id) == exclude
+                || (exclude.is_some() && e.passes == exclude)
                 || e.view.type_mask & mask == 0
                 || e.view.collision_disabled
                 || !e.view.world_box.overlaps(query)
@@ -707,6 +714,7 @@ impl ShapeSet {
         let mut best: Option<(ObjectId, f32, F3)> = None;
         for e in &self.entries {
             if Some(e.id) == exclude
+                || (exclude.is_some() && e.passes == exclude)
                 || e.view.type_mask & mask == 0
                 || e.view.collision_disabled
                 || !e.view.world_box.overlaps(&reach)

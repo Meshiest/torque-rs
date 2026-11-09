@@ -15,6 +15,12 @@ datablock PropData(CrateProp)
    model = "art/crate.dts";
 };
 
+datablock PropData(CrateResting)
+{
+   model = "art/crate.dts";
+   rests = "1";
+};
+
 function startProps()
 {
    new SimGroup(MissionCleanup);
@@ -49,9 +55,11 @@ function makeStatic(%xf)
    return %o;
 }
 
-function makeProp(%xf)
+function makeProp(%xf, %data)
 {
-   %o = new Prop() { dataBlock = CrateProp.getId(); };
+   if (%data $= "")
+      %data = CrateProp;
+   %o = new Prop() { dataBlock = %data.getId(); };
    %o.setTransform(%xf);
    MissionCleanup.add(%o);
    return %o;

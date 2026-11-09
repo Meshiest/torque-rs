@@ -12,10 +12,20 @@
 //!   a player has at most one.
 //!   It pulls inside the Player's own tick ([`torque_game::player_tether`]), so a client's prediction replays it exactly; a prop
 //!   at the far end takes the equal and opposite impulse the next step.
+//! - a **hold** carries a prop at a point of a player's own frame (its offset: right, forward and up from its feet, turned
+//!   with its heading), upright and facing where the player faces: before each step the prop is driven to reach that pose by
+//!   the step's end ([`HOLD_SPEED`] and [`HOLD_SPIN`] at most), so walls and other props still stop it, and never into
+//!   another player's box. Nothing pulls the player, and only the holder's own collision passes through its held prop
+//!   ([`torque_collide::source::CollisionShape::passes`]), so a held prop never pushes its holder and every other player meets
+//!   it. A player holds at most one prop and a prop has at most one holder; a frozen prop cannot be held; a held prop never
+//!   sleeps. A hold breaks when its prop is frozen or ends a step more than [`HOLD_BREAK`] from its point (stuck behind a
+//!   wall). Every player's and vehicle's box is a kinematic body of the props' world, so no prop (held, let go or shoved by
+//!   one) ends up inside a player.
 //!
-//! Every joint but a grapple is a Rapier impulse joint in the props' world ([`torque_physics_rapier::JointKind`]), added when it
-//! is made and again, in id order, when the world is made again. A joint whose body goes goes with it; one pulled past its
-//! `breakForce` breaks (it holds nothing from then on, and `onBreak` is called on it), and stays until a script deletes it.
+//! Every joint but a grapple and a hold is a Rapier impulse joint in the props' world ([`torque_physics_rapier::JointKind`]),
+//! added when it is made and again, in id order, when the world is made again. A joint whose body goes goes with it; one pulled
+//! past its `breakForce` breaks (it holds nothing from then on, and `onBreak` is called on it), and stays until a script
+//! deletes it.
 //!
 //! **Caps** ([`JointLimits`]): joints per player (64), per address (256), per server (1,024) and per prop (16); a length is at
 //! most [`MAX_LENGTH`], a winch's rate at most [`MAX_WINCH_RATE`], every force, torque and spring held to its range, and a point
@@ -55,6 +65,13 @@ pub const MAX_STIFFNESS: f32 = torque_game::player_tether::MAX_STIFFNESS;
 pub const MAX_DAMPING: f32 = torque_game::player_tether::MAX_DAMPING;
 /// The fastest a hinge's motor turns (radians a second).
 pub const MAX_MOTOR_SPEED: f32 = 50.0;
+/// The fastest a hold drives its prop to its point (units a second): a holder that turns fast swings its prop no faster, so it
+/// never tunnels through a wall or flings what it hits.
+pub const HOLD_SPEED: f32 = 10.0;
+/// The fastest a hold turns its prop to face where its holder faces (radians a second).
+pub const HOLD_SPIN: f32 = 20.0;
+/// How far a held prop may end a step from its point before its hold breaks (units).
+pub const HOLD_BREAK: f32 = 1.0;
 /// The most joints a server holds (the cap of its pref).
 pub const MAX_JOINTS: u32 = 1024;
 /// How near its length a tether's ends must be to count as at its limit (units).
@@ -105,7 +122,8 @@ pub enum End {
     Prop { id: u32, local: [f32; 3] },
     /// A point in the world.
     Point([f32; 3]),
-    /// A player (a grapple's first end), the point held its position moved by `offset`.
+    /// A player (a grapple's or a hold's first end): a grapple's point is its position moved by `offset`, a hold's is `offset`
+    /// in the player's own frame (right, forward, up from its feet).
     Player { id: u32, offset: [f32; 3] },
     /// The world itself: a weld's second end, held to the world as it was when the weld was made. It goes on the wire as the
     /// world's origin.
@@ -254,6 +272,8 @@ pub enum Kind {
     Grapple {
         reach: Reach,
     },
+    /// A player carries the prop at its second end ([module docs](self)).
+    Hold,
 }
 
 /// The kinds as the wire numbers them.
@@ -265,16 +285,18 @@ pub enum KindId {
     Weld,
     Hinge,
     Grapple,
+    Hold,
 }
 
 impl KindId {
     /// Every kind, by its number.
-    pub const ALL: [KindId; 5] = [
+    pub const ALL: [KindId; 6] = [
         KindId::Tether,
         KindId::Winch,
         KindId::Weld,
         KindId::Hinge,
         KindId::Grapple,
+        KindId::Hold,
     ];
 
     pub fn number(self) -> u32 {
@@ -304,7 +326,13 @@ impl KindId {
             KindId::Weld => "weld",
             KindId::Hinge => "hinge",
             KindId::Grapple => "grapple",
+            KindId::Hold => "hold",
         }
+    }
+
+    /// Whether the kind's first end is a player.
+    pub fn from_player(self) -> bool {
+        matches!(self, KindId::Grapple | KindId::Hold)
     }
 
     /// Whether the kind has a length a rope following it takes.
@@ -321,6 +349,7 @@ impl Kind {
             Kind::Weld { .. } => KindId::Weld,
             Kind::Hinge(_) => KindId::Hinge,
             Kind::Grapple { .. } => KindId::Grapple,
+            Kind::Hold => KindId::Hold,
         }
     }
 
@@ -409,6 +438,10 @@ pub enum JointError {
     PerProp,
     /// The player has a grapple already (one each, so the server and the client predicting it always pick the same).
     Grappled,
+    /// The player holds a prop already, or the prop has a holder already (one each).
+    Held,
+    /// A frozen prop cannot be held.
+    Frozen,
     /// An end is not one the kind takes (a prop, a point, a grapple's player first, a weld's or a hinge's world second), a point
     /// or an offset is out of the world, or both ends are one thing or both points.
     Ends,
@@ -430,6 +463,8 @@ impl std::fmt::Display for JointError {
             JointError::PerServer => "the server has the most joints it may have",
             JointError::PerProp => "a prop at an end has the most joints it may have",
             JointError::Grappled => "the player has a grapple already",
+            JointError::Held => "the player holds a prop already, or the prop is held",
+            JointError::Frozen => "a frozen prop cannot be held",
             JointError::Ends => {
                 "the ends must be two things: props, points, or a player and a prop or point"
             }

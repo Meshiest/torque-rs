@@ -38,6 +38,8 @@ pub struct ClientProp {
     pub q: Quantized,
     pub asleep: bool,
     pub frozen: bool,
+    /// A player holds it: its holder passes through it ([`ClientSource`]).
+    pub held: bool,
     /// Updates heard (a count, to see an update came).
     pub updates: u32,
     /// Where the client's prediction has it while it predicts it ([`crate::predict`]): what the client's own Player meets and a
@@ -119,6 +121,7 @@ impl PropBook {
                     q: Quantized::default(),
                     asleep: false,
                     frozen: false,
+                    held: false,
                     updates: 0,
                     predicted: None,
                 })
@@ -144,6 +147,7 @@ impl PropBook {
         if let Some(flags) = record.flags {
             entry.asleep = flags.asleep;
             entry.frozen = flags.frozen;
+            entry.held = flags.held;
         }
         entry.updates = entry.updates.wrapping_add(1);
     }
@@ -248,23 +252,39 @@ pub fn heard(vm: &mut Vm, book: &ClientProps, event: GhostEvent<'_, PropGhost>) 
 }
 
 /// The props as the predicting client's collision source: the boxes the server's source gives, from the states it sent (where
-/// the client predicts a prop, from its predicted state), keyed by the server's slots, so both sides have the same shapes.
+/// the client predicts a prop, from its predicted state), keyed by the server's slots, so both sides have the same shapes; a
+/// held prop's holder (its ghost, from the joints' book) passes through it, as on the server.
 #[derive(Debug, Clone)]
-pub struct ClientSource(pub ClientProps);
+pub struct ClientSource {
+    pub book: ClientProps,
+    pub joints: crate::joints::client::ClientJoints,
+}
+
+impl ClientSource {
+    /// The shape of prop ghost `ghost`, its holder passing through it.
+    fn shape_of(&self, ghost: u32, p: &ClientProp) -> Option<CollisionShape> {
+        let params = p.params?;
+        let mut shape = crate::server::shape_of(p.slot, p.now(), params.shape.half_extents());
+        if p.held {
+            shape.passes = self
+                .joints
+                .0
+                .try_borrow()
+                .ok()
+                .and_then(|j| j.holder_of(ghost));
+        }
+        Some(shape)
+    }
+}
 
 impl CollisionSource for ClientSource {
     fn shapes(&self, out: &mut Vec<CollisionShape>) {
-        let _ = self.0.with(|book| {
-            for p in book.props().values() {
-                let Some(params) = p.params else { continue };
+        let _ = self.book.with(|book| {
+            for (&g, p) in book.props() {
                 if usize::from(p.slot) >= MAX_SHAPES_PER_SOURCE {
                     continue;
                 }
-                out.push(crate::server::shape_of(
-                    p.slot,
-                    p.now(),
-                    params.shape.half_extents(),
-                ));
+                out.extend(self.shape_of(g, p));
             }
         });
     }
@@ -272,26 +292,23 @@ impl CollisionSource for ClientSource {
     /// The prop in slot `key`, as [`ClientSource::shapes`] lists it.
     fn shape(&self, key: u32) -> Option<CollisionShape> {
         let slot = u16::try_from(key).ok()?;
-        self.0
+        self.book
             .with(|book| {
-                let (_, p) = book.in_slot(slot)?;
-                let params = p.params?;
-                Some(crate::server::shape_of(
-                    p.slot,
-                    p.now(),
-                    params.shape.half_extents(),
-                ))
+                let (g, p) = book.in_slot(slot)?;
+                self.shape_of(g, p)
             })
             .flatten()
     }
 
-    /// The book's [`PropBook::revision`]; none while it is being changed.
+    /// The book's [`PropBook::revision`] (a hold made or let go changes its prop's `held` flag, so the book's revision); none
+    /// while it is being changed.
     fn revision(&self) -> Option<u64> {
-        self.0.with(PropBook::revision)
+        self.book.with(PropBook::revision)
     }
 }
 
-/// What a prop is drawn as: its datablock's `shapeFile` at its `drawScale` (none for no shape, or a datablock the client lacks).
+/// What a prop is drawn as: its datablock's `shapeFile` at its `drawScale` (none for no shape, or a datablock the client
+/// lacks), resting while it sleeps or is frozen (a client may then draw it with its still geometry).
 pub fn draw(record: &PropGhost, datablocks: &dyn DatablockFields) -> Option<ShapeDraw> {
     let id = record.data_block.0?;
     let shape = datablocks.text(id, "shapeFile")?;
@@ -303,5 +320,6 @@ pub fn draw(record: &PropGhost, datablocks: &dyn DatablockFields) -> Option<Shap
         _ => 1.0,
     };
     let scale = draw_scale([element(0), element(1), element(2)]);
-    Some(ShapeDraw::new(shape).scaled(scale))
+    let rests = record.flags.is_some_and(|f| f.asleep || f.frozen);
+    Some(ShapeDraw::new(shape).scaled(scale).resting(rests))
 }

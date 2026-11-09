@@ -15,7 +15,7 @@ use crate::server::{
     CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
     owner_key, shot_push, write_back,
 };
-use crate::world::{Owner, OwnerKey, PropEvent, PropWorld, Pusher, StaticPiece};
+use crate::world::{Owner, OwnerKey, PlayerAt, PropEvent, PropWorld, Pusher, StaticPiece};
 
 /// Ticks between two looks for the map pieces and static shapes props land on.
 pub const STATICS_EVERY: u64 = 64;
@@ -257,7 +257,7 @@ fn live_owner_keys(vm: &Vm) -> BTreeMap<OwnerKey, Option<u32>> {
 }
 
 /// Where each player at a grapple's first end is now.
-fn grappled_players(vm: &Vm, world: &PropWorld) -> BTreeMap<u32, [f32; 3]> {
+fn grappled_players(vm: &Vm, world: &PropWorld) -> BTreeMap<u32, PlayerAt> {
     world
         .joints()
         .values()
@@ -265,8 +265,19 @@ fn grappled_players(vm: &Vm, world: &PropWorld) -> BTreeMap<u32, [f32; 3]> {
             crate::joints::End::Player { id, .. } => Some(id),
             _ => None,
         })
-        .filter_map(|id| Some((id, torque_game::sim::player::position(vm, id)?)))
+        .filter_map(|id| Some((id, player_at(vm, id)?)))
         .collect()
+}
+
+/// Where Player `id` is for the joints at it: its position and the way its transform faces (a client's prediction reads its
+/// predicted Player from its box's floor, the same point to a float's last bits, and the same transform).
+fn player_at(vm: &Vm, id: u32) -> Option<PlayerAt> {
+    let s = torque_game::sim::player::state(vm, id)?;
+    let m = &s.obj_to_world;
+    Some(PlayerAt::facing(
+        torque_game::sim::player::position(vm, id)?,
+        [m[1], m[5]],
+    ))
 }
 
 /// The object each owner's connection controls now, for the priority of the next packets.

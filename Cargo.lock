@@ -4332,6 +4332,7 @@ dependencies = [
  "torque-import",
  "torque-interior-builder",
  "torque-maps",
+ "torque-plugin-props",
  "torque-plugin-rope",
  "torque-plugin-smooth-prediction",
  "torque-render-core",

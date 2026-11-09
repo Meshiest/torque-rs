@@ -22,7 +22,9 @@ use crate::joints::records::EndWire;
 use crate::joints::{End, FarEnd, Joint, Kind, KindId, Reach, Spring};
 use crate::quant::{self, Quantized, conjugate, quat_mul, quat_nlerp};
 use crate::records::xf_of;
-use crate::world::{PUSH_MARGIN, PropWorld, Pusher, Rest, StaticPiece, length, world_half};
+use crate::world::{
+    PUSH_MARGIN, PlayerAt, PropWorld, Pusher, Rest, StaticPiece, length, world_half,
+};
 
 /// The ids the client's world gives the map pieces and the props around the predicted ones (fixed boxes), above the props'
 /// and joints' ghost indexes. The map's are the lower: the world keeps the lowest ids when it has too many fixed pieces, so no
@@ -392,11 +394,10 @@ impl Cx<'_> {
         if self.s.members.is_empty() || matches!(self.s.run, Run::Over) {
             return;
         }
-        let pusher = pusher_of(step.player.unwrap_or(0), &step.motion);
-        let player = step.player;
+        let (motion, player) = (step.motion, step.player);
         let mut charge = |units: u64| step.charge(units);
         if self
-            .step_move(&mut charge, m, Some(pusher), player)
+            .step_move(&mut charge, m, Some(motion), player)
             .is_err()
         {
             self.s.run = Run::Over;
@@ -476,10 +477,8 @@ impl Cx<'_> {
             self.s.world.restore(g, q, rest);
         }
         self.s.pre = pre;
-        let pusher = self
-            .motion_at(newest)
-            .map(|mo| pusher_of(player.unwrap_or(0), &mo));
-        self.step_move(charge, newest, pusher, player)?;
+        let motion = self.motion_at(newest);
+        self.step_move(charge, newest, motion, player)?;
         self.write_states();
         Ok(())
     }
@@ -829,7 +828,7 @@ impl Cx<'_> {
             self.s.world.restore(g, p.q, rest_of(p));
             m.updates = p.updates;
         }
-        self.rejoin();
+        self.rejoin(player);
         // After a correction the moves run again from the ack itself: nothing to replay here then.
         let count = if (next.wrapping_sub(ack) as i32) > 0 {
             next.wrapping_sub(ack).min(MAX_REPLAY)
@@ -844,11 +843,8 @@ impl Cx<'_> {
         let first = next.wrapping_sub(count);
         for k in 0..count {
             let m = first.wrapping_add(k);
-            let pusher = self
-                .motion_at(m)
-                .or(motion)
-                .map(|mo| pusher_of(player.unwrap_or(0), &mo));
-            self.step_move(charge, m, pusher, player)?;
+            let motion = self.motion_at(m).or(motion);
+            self.step_move(charge, m, motion, player)?;
         }
         self.write_states();
         Ok(before)
@@ -917,8 +913,9 @@ impl Cx<'_> {
     }
 
     /// The members' joints made again in the client's world from their states now: the joints between members (or a member
-    /// and the world), a hinge held as it lies.
-    fn rejoin(&mut self) {
+    /// and the world), a hinge held as it lies, and the hold of the client's own `player` on a member (driven from where each
+    /// move leaves the Player, as the server's).
+    fn rejoin(&mut self, player: Option<u32>) {
         for id in std::mem::take(&mut self.s.joints) {
             self.s.world.remove_joint(id);
         }
@@ -934,6 +931,17 @@ impl Cx<'_> {
         let mut made = Vec::new();
         for (&id, j) in self.joints.joints() {
             if j.broken {
+                continue;
+            }
+            if j.kind == KindId::Hold {
+                if let (EndWire::Ghost { ghost, offset }, Some(b)) = (j.a, member(&j.b))
+                    && Some(ghost) == player
+                {
+                    made.push((
+                        id,
+                        Joint::new(Kind::Hold, End::Player { id: ghost, offset }, b, None),
+                    ));
+                }
                 continue;
             }
             let (a, b) = match (member(&j.a), member(&j.b), j.b) {
@@ -952,8 +960,8 @@ impl Cx<'_> {
                     let Some(frame) = frame else { continue };
                     Kind::Weld { frame }
                 }
-                // A grapple pulls its prop from the Player's own step (`step_once`).
-                KindId::Grapple => continue,
+                // A grapple pulls its prop from the Player's own step (`step_once`); a hold is made above.
+                KindId::Grapple | KindId::Hold => continue,
             };
             let b = match (kind, b) {
                 (Kind::Weld { .. }, End::Point(_)) => End::World,
@@ -986,16 +994,22 @@ impl Cx<'_> {
             })
     }
 
-    /// One step for move `m`, the members' states before it kept: the Player's push, the held prop's pull from the grapple at
-    /// that move (as the server's step gives it), the pushes made at that move; its work charged to the tick's.
+    /// One step for move `m`, the members' states before it kept: the Player's push (from its `motion` at that move), the held
+    /// prop's pull from the grapple at that move (as the server's step gives it) or the hold's drive to where the move left the
+    /// Player, the pushes made at that move; its work charged to the tick's.
     fn step_move(
         &mut self,
         charge: &mut dyn FnMut(u64) -> bool,
         m: u32,
-        pusher: Option<Pusher>,
+        motion: Option<BodyMotion>,
         player: Option<u32>,
     ) -> Result<(), OverBudget> {
         self.fill_pre();
+        let pusher = motion.map(|mo| pusher_of(player.unwrap_or(0), &mo));
+        let at = player
+            .zip(motion)
+            .map(|(p, mo)| (p, PlayerAt::of_box(mo.min, mo.max, mo.forward)));
+        self.s.world.set_players(at.into_iter().collect());
         if let Some(p) = player
             && let Some(prop) = self.grappled(p)
             && let Some(far) = self.s.world.get(prop).map(FarEnd::of)
@@ -1364,6 +1378,7 @@ mod tests {
             q: Quantized::default(),
             asleep: false,
             frozen: false,
+            held: false,
             updates: 0,
             predicted: None,
         };

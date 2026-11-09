@@ -102,7 +102,8 @@ fn every_group_round_trips_and_the_state_is_exact() {
         record.flags,
         Some(FlagsWire {
             asleep: false,
-            frozen: true
+            frozen: true,
+            held: false,
         })
     );
     let (back, bits) = round(&record);

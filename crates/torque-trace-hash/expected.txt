@@ -12,15 +12,18 @@ figure-smooth tge 218cc5e67d025571
 predictors tge c63f6b6b971854cc
 rapier-drop none 31a5ce13c9db549d
 physics none 716cb8e96e71430f
-props-drop tge 6033b93d22486e30
-# Joints between props (tether, winch, weld, hinge) and a Player's grapple.
-props-joints tge 53ddcf6a451cd096
+# Players' and vehicles' boxes are kinematic bodies of the props' world: a crate falls onto a figure, not through it.
+props-drop tge d09a9b08e6536557
+# Joints between props (tether, winch, weld, hinge) and a Player's grapple; the figure's box is a kinematic body of the
+# props' world.
+props-joints tge 8b5a56153052676e
 # carry: the figure walks a crate held on a grapple past two others; the client predicts the crate with the figure's own moves, and the grapple pulls it by the pair's reduced mass.
 carry tge f7c0ef4cd6a55e3d
 # projectile-props: the figure holds a crate among four others while its own shots and blasts hit it; the client makes a hit's push at the move of the hit.
-projectile-props tge 2c764599fdc842d8
+# The figure's box is a kinematic body of the props' world, which the crates around it meet.
+projectile-props tge f5be5e5c2ceb0604
 # The fold of the plugin scenarios: props-drop, props-joints, carry and projectile-props.
-plugins tge 6380d50cf8a1e007
+plugins tge e45ce4b72b57d624
 # The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
 # reparents with both keep modes. Its fold has it alone. The engine's protocol sends the links to clients, so every local
 # pose is rounded to the wire's steps on the server (1/1024 units, 15-bit rotation parts) and the worlds move by that much.

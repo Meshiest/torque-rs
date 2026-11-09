@@ -148,6 +148,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("jointGetLength", joint)` *1; server; needs `torque.props`*
 - `ts.call("jointGrapple", player, target, length [, owner])` *3 to 4; server; needs `torque.props`*
 - `ts.call("jointHinge", a, b, point, axis [, owner])` *4 to 5; server; needs `torque.props`*
+- `ts.call("jointHold", player, prop, offset [, owner])` *3 to 4; server; needs `torque.props`*
 - `ts.call("jointIsAtLimit", joint)` *1; server; needs `torque.props`*
 - `ts.call("jointIsBroken", joint)` *1; server; needs `torque.props`*
 - `ts.call("jointSetBreakForce", joint, force)` *2; server; needs `torque.props`*
@@ -205,7 +206,9 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("propPredicted")` *none; client; needs `torque.props-prediction`*
 - `ts.call("propPredictImpulse", ghost, point, impulse)` *3; client; needs `torque.props-prediction`*
 - `ts.call("propPredictSpawn", data, transform)` *2; client; needs `torque.props-prediction`*
+- `ts.call("propRayCast", start, end [, ignore])` *2 to 3; server; needs `torque.props`*
 - `ts.call("propSetVelocity", prop, velocity [, spin])` *2 to 3; server; needs `torque.props`*
+- `ts.call("propSleep", prop)` *1; server; needs `torque.props`*
 - `ts.call("propSpawn", datablock, transform [, owner [, predictId]])` *2 to 4; server; needs `torque.props`*
 - `ts.call("propUnfreeze", prop)` *1; server; needs `torque.props`*
 - `ts.call("purgeResources")` *none; server*

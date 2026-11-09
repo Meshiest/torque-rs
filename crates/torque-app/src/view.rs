@@ -158,9 +158,17 @@ pub fn static_batch_key(batch: u32, chunk: u32) -> [i32; 3] {
 /// The most warnings a view keeps for the console between takes ([`WorldView::take_warnings`]).
 pub const MAX_WARNINGS: usize = 16;
 
-/// The first id of the static batches the plugins' sources are laid out as ([`crate::render::StaticBatchSource`]): the ids
-/// below are the game's own.
+/// The static batch ids ([`WorldView::set_static_batch`], below [`MAX_STATIC_BATCHES`]) fall in three ranges: below
+/// [`RESTING_BATCHES`] the game's own; from [`RESTING_BATCHES`] to [`PLUGIN_BATCHES`] a ghost scene's resting shapes
+/// ([`crate::ghosts::GhostScene`], [`MAX_RESTING_SHAPES`] of them); from [`PLUGIN_BATCHES`] the plugins' sources
+/// ([`crate::render::StaticBatchSource`], [`crate::render::MAX_ADDS`] of them).
 pub const PLUGIN_BATCHES: u32 = MAX_STATIC_BATCHES - crate::render::MAX_ADDS as u32;
+
+/// The most shapes a ghost scene keeps resting ghosts of as static batches at once: the resting ghosts of a shape past them are
+/// drawn every frame, as moving shapes are.
+pub const MAX_RESTING_SHAPES: u32 = 256;
+/// The first id of a ghost scene's resting shapes' batches (see [`PLUGIN_BATCHES`] for the three ranges).
+pub const RESTING_BATCHES: u32 = PLUGIN_BATCHES - MAX_RESTING_SHAPES;
 
 /// A plugin's static batch source and the generation of it the view laid out last.
 struct BatchSource {
@@ -227,6 +235,40 @@ impl SceneShape {
     /// An instance at the shape's rest pose, animated once.
     pub fn instance(&self) -> Option<ShapeInstance> {
         ShapeInstance::new(self.shape(), &mut |_| true).ok()
+    }
+
+    /// The shape at its rest pose in its own space (its drawn detail, unscaled, unskinned) as a static batch with no copies
+    /// yet: the mesh [`StaticBatch::transforms`] places. None for a shape with nothing to draw.
+    pub fn batch(&self, assets: &dyn Assets) -> Option<StaticBatch> {
+        let model = &self.loaded.model;
+        let detail = model.shape.details.get(self.detail()?).copied()?;
+        let instance = self.instance()?;
+        let mut set = TextureSet::new(assets);
+        let (draws, _) = shape_draws(
+            model,
+            &instance,
+            ShapeParts {
+                sub_shape: detail.sub_shape,
+                object_detail: detail.object_detail,
+                hidden: &[],
+                colors: None,
+                ifl_frames: &Default::default(),
+                hidden_objects: None,
+                skin: None,
+                color_all: None,
+            },
+            &Mat::IDENTITY,
+            &Mat::IDENTITY,
+            true,
+            &[],
+            &mut set,
+            &self.path,
+        );
+        (!draws.is_empty()).then(|| StaticBatch {
+            draws,
+            textures: set.into_textures(),
+            transforms: Vec::new(),
+        })
     }
 
     /// The index of the node named `name`.
@@ -612,7 +654,7 @@ impl WorldView {
     }
 
     /// Queues `warning` for the console (at most [`MAX_WARNINGS`] wait).
-    fn warn(&mut self, warning: String) {
+    pub(crate) fn warn(&mut self, warning: String) {
         if self.warnings.len() < MAX_WARNINGS {
             self.warnings.push(warning);
         }

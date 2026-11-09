@@ -27,6 +27,7 @@ fn boxed(key: u32, pose: Matrix, half: F3) -> CollisionShape {
         pose,
         kind: ShapeKind::Box { half },
         type_mask: STATIC_SHAPE,
+        passes: None,
     }
 }
 
@@ -408,6 +409,7 @@ fn a_working_set_builds_boxes_and_hulls_and_follows_a_move() {
             pose: at(20.0, 0.0, 0.0),
             kind: ShapeKind::Hull(hull),
             type_mask: STATIC_SHAPE,
+            passes: None,
         },
     ]);
     let entries = [PluginCollision::server("P", s.clone())];
@@ -578,4 +580,29 @@ fn a_set_is_listed_again_only_when_a_sources_revision_moves() {
     src.snapshot();
     src.snapshot();
     assert_eq!(a.listed.get(), 6);
+}
+
+#[test]
+fn a_shape_lets_only_the_mover_it_names_pass() {
+    let carried = CollisionShape {
+        passes: Some(7),
+        ..boxed(0, at(0.0, 0.0, 0.0), [1.0; 3])
+    };
+    let entries = [PluginCollision::server("P", source(vec![carried]))];
+    let src = sources(&entries, Side::Server);
+    let set = src.snapshot();
+    let near = Box3::new([-2.0; 3], [2.0; 3]);
+    let find = |exclude: Option<ObjectId>| {
+        let mut out = Vec::new();
+        set.find(&near, STATIC_SHAPE, exclude, 8, &mut out);
+        out.len()
+    };
+    // Its carrier walks through it; any other mover, or a query of no mover, meets it.
+    assert_eq!(find(Some(ObjectId(7))), 0);
+    assert_eq!(find(Some(ObjectId(8))), 1);
+    assert_eq!(find(None), 1);
+    // So do rays: the carrier's own shot passes, another's meets it.
+    let ray = |exclude| set.cast_ray([-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], STATIC_SHAPE, exclude);
+    assert!(ray(Some(ObjectId(7))).is_none());
+    assert!(ray(Some(ObjectId(8))).is_some());
 }

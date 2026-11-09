@@ -213,6 +213,10 @@ function switchCamera(%v)
       setCameraMode(getCameraMode() $= "first-person" ? "third-person" : "first-person");
 }
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
+// The left button (the fire binding): the server picks up the prop the figure looks at, or drops the one it holds (its own
+// rules: serverCmdPropGrab).
+function grab(%v) { if (%v && isObject(ServerConnection)) commandToServer('PropGrab'); }
+PlayMap.bind(mouse, button0, grab);
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);

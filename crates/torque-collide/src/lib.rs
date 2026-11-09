@@ -51,6 +51,9 @@
 //! - [`source::CollisionSources::snapshot`] lists the plugin shapes again only when a source's
 //!   [`source::CollisionSource::revision`] moved (or a source keeps none): a source that keeps one gives it a new
 //!   [`source::next_revision`] at every change of what it lists, or phases meet stale shapes.
+//! - A plugin shape's [`source::CollisionShape::passes`] lets one mover through it (a held prop's holder):
+//!   [`source::ShapeSet`]'s queries and rays skip it only for that mover, every other mover and ray meets it
+//!   (`a_shape_lets_only_the_mover_it_names_pass`).
 //! - A cache or index changes nothing that is charged or returned: the same [`World::charge`] units at the same points, the same
 //!   results in the same order (the trace-hash lines and torque-vehicle's printed rigid trace must not move).
 

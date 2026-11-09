@@ -27,6 +27,11 @@
 //!   whatever its chain (`mounts::tests::a_chain_of_unplaceable_links_costs_one_placement_a_ghost`).
 //! - Ghosts of one shape posed the same share one kept build ([`shapecache`]'s content key)
 //!   (`ghosts_of_one_shape_posed_the_same_share_one_kept_build`).
+//! - A plugin ghost whose draw rests ([`moving::resting`]: a sleeping prop) while nothing draws it anywhere but where its
+//!   record puts it (no prediction's pose, no blend left, not mounted, uniform scale, no skin) may be drawn by its host with
+//!   its still geometry (torque-app's resting batches): the frame's shapes leave out exactly the ghosts the host says it drew
+//!   so ([`moving::Hooks::still`]), so a ghost the host could not keep is still drawn here
+//!   (`a_resting_plugin_ghost_is_left_out_only_where_its_host_draws_it_still`).
 //! - [`hd::view_cull::ViewCull`] leaves a moving shape out only when no view, no sun shadow's sweep within the shadows' reach,
 //!   no water reflection, no seen light's reach and (while the light capture is drawn) no visible distance can show it; never on
 //!   the view alone (`a_shape_out_of_view_whose_shadow_falls_in_view_is_kept`,

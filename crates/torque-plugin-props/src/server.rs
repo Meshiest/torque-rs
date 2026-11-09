@@ -89,9 +89,10 @@ pub struct NetProp {
     owner_conn: i32,
     /// The predict id the owner's client gave it (0: none).
     predict: i32,
-    /// 1 while it sleeps, 1 while it is frozen.
+    /// 1 while it sleeps, 1 while it is frozen, 1 while a player holds it.
     asleep: i32,
     frozen: i32,
+    held: i32,
     /// The state at the wire's precision: the position in 1/1024 units, the rotation's largest component and the other three in
     /// 15 bits, the speed and the spin in 1/256 units a second.
     #[field(name = "qPosX")]
@@ -337,6 +338,10 @@ pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
             [
                 (b"asleep", Field::Int(i32::from(p.rest.is_asleep()))),
                 (b"frozen", Field::Int(i32::from(p.rest.is_frozen()))),
+                (
+                    b"held",
+                    Field::Int(i32::from(world.holder_of(id).is_some())),
+                ),
             ],
         );
         let m = quant::matrix(p.q.position(), p.q.rotation());
@@ -481,8 +486,13 @@ impl CollisionSource for ServerSource {
     fn shapes(&self, out: &mut Vec<CollisionShape>) {
         let _ = self.0.with(|s| {
             let Some(world) = &s.world else { return };
-            for p in world.props().values() {
-                out.push(shape_of(p.slot, &p.q, p.params.shape.half_extents()));
+            // A held prop's holder passes through it (it never pushes its holder); every other mover meets it. (Listed once a
+            // revision: [`ServerSource::revision`].)
+            let holders = world.holders();
+            for (id, p) in world.props() {
+                let mut shape = shape_of(p.slot, &p.q, p.params.shape.half_extents());
+                shape.passes = holders.get(id).copied();
+                out.push(shape);
             }
         });
     }
@@ -560,6 +570,7 @@ pub fn shape_of(slot: u16, q: &Quantized, half: [f32; 3]) -> CollisionShape {
         key: u32::from(slot),
         pose: quant::matrix(q.position(), q.rotation()),
         kind: ShapeKind::Box { half },
+        passes: None,
         type_mask: STATIC_SHAPE,
     }
 }

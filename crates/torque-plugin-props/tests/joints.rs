@@ -5,7 +5,7 @@ use torque_plugin_props::data::{PropNumbers, PropParams};
 use torque_plugin_props::joints::{
     End, Hinge, Joint, JointError, JointEvent, JointLimits, Kind, Motor, Reach, Spring, Winch,
 };
-use torque_plugin_props::world::{Owner, OwnerKey, PropLimits, PropWorld, StaticPiece};
+use torque_plugin_props::world::{Owner, OwnerKey, PlayerAt, PropLimits, PropWorld, StaticPiece};
 
 const TICKS: u32 = 600;
 const GRAVITY: f32 = 20.0;
@@ -560,7 +560,7 @@ fn a_player_has_one_grapple_and_an_offset_past_the_world_is_refused() {
     assert_eq!(w.add_joint(501, to_prop), Err(JointError::Grappled));
     assert_eq!(w.grapple_on(7), Some(500));
     // A broken grapple still counts (it stays until deleted): the tether, the pull and a client all find that one.
-    w.set_players([(7, [0.0, 8.0, 0.0])].into());
+    w.set_players([(7, PlayerAt::at([0.0, 8.0, 0.0]))].into());
     assert!(w.set_break_force(500, 0.001));
     w.pulled(7, [0.0, -2.0, 0.0], 90.0);
     tick(&mut w);
@@ -617,7 +617,7 @@ fn a_grapple_tethers_its_player_and_pulls_its_prop_back() {
         .unwrap();
     // No physics joint: the player is not a body.
     assert_eq!(w.physics().joint_count(), 0);
-    w.set_players([(7, [0.0, 8.0, 0.0])].into());
+    w.set_players([(7, PlayerAt::at([0.0, 8.0, 0.0]))].into());
     let t = w.tether_of(7).expect("the grapple's tether");
     assert_eq!(t.length, 5.0);
     assert_eq!(t.offset, [0.0, 0.0, 1.0]);
@@ -703,7 +703,7 @@ fn a_grapples_pull_moves_its_prop_by_the_pairs_reduced_mass_and_counts_the_playe
         None,
     );
     w.add_joint(500, grapple).unwrap();
-    w.set_players([(7, [0.0, -5.0, 0.5])].into());
+    w.set_players([(7, PlayerAt::at([0.0, -5.0, 0.5]))].into());
     w.pulled(7, change, 90.0);
     w.tick(&[], &|_| 0.0);
     // The break force counts the Player's momentum (180 over a tick), and the prop moves at the reduced mass's speed.
@@ -714,10 +714,294 @@ fn a_grapples_pull_moves_its_prop_by_the_pairs_reduced_mass_and_counts_the_playe
     // A frozen prop is a fixed end: the pull counts the same and moves nothing.
     assert!(w.freeze(100).is_some());
     let before = w.get(100).unwrap().q;
-    w.set_players([(7, [0.0, -5.0, 0.5])].into());
+    w.set_players([(7, PlayerAt::at([0.0, -5.0, 0.5]))].into());
     w.pulled(7, change, 90.0);
     w.tick(&[], &|_| 0.0);
     let force = w.joint(500).unwrap().status.force;
     assert!((force - 180.0 / 0.032).abs() < 1.0, "{force}");
     assert_eq!(w.get(100).unwrap().q, before);
+}
+
+#[test]
+fn a_hold_carries_its_prop_upright_at_its_point_through_a_walk_and_lets_go_when_deleted() {
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 1.5, 0.5], 12.0);
+    spawn(&mut w, 101, [40.0, -40.0, 0.5], 12.0);
+    let offset = [0.2, 1.2, 1.1];
+    let hold = |player: u32, prop: u32| {
+        Joint::new(
+            Kind::Hold,
+            End::Player { id: player, offset },
+            middle(prop),
+            None,
+        )
+    };
+    w.add_joint(500, hold(7, 100)).unwrap();
+    assert_eq!(w.physics().joint_count(), 0, "a hold is no physics joint");
+    // One holder a prop, one prop a holder.
+    assert_eq!(w.add_joint(501, hold(8, 100)), Err(JointError::Held));
+    assert_eq!(w.add_joint(501, hold(7, 101)), Err(JointError::Held));
+    assert_eq!(w.holder_of(100), Some(7));
+    // The player walks a curve along +x, turning its facing a little each tick; the crate keeps to its point, upright.
+    let mut worst = 0.0f32;
+    for t in 0..120 {
+        let turn = t as f32 * 0.02;
+        let at = PlayerAt::of_box(
+            [t as f32 * 0.12 - 0.5, -0.5, 0.0],
+            [t as f32 * 0.12 + 0.5, 0.5, 2.0],
+            [-turn.sin(), turn.cos()],
+        );
+        w.set_players([(7, at)].into());
+        let r = tick(&mut w);
+        assert!(
+            !r.events.iter().any(|&(id, _)| id == 100),
+            "a held prop never sleeps"
+        );
+        if t > 10 {
+            let (target, _) = PropWorld::hold_pose(&at, offset);
+            worst = worst.max(distance(w.get(100).unwrap().q.position(), target));
+            let [x, y, _, _] = w.get(100).unwrap().q.rotation();
+            assert!(1.0 - 2.0 * (x * x + y * y) > 0.999, "upright");
+        }
+    }
+    assert!(
+        worst < 0.03,
+        "the held crate strayed {worst} from its point"
+    );
+    // Deleted, it lets go: it falls to the floor and sleeps there.
+    w.remove_joint(500).unwrap();
+    assert_eq!(w.holder_of(100), None);
+    for _ in 0..120 {
+        tick(&mut w);
+    }
+    let p = w.get(100).unwrap();
+    assert!(
+        p.rest.is_asleep() && (p.q.position()[2] - 0.5).abs() < 0.02,
+        "{:?}",
+        p.q.position()
+    );
+    // A holder that goes lets go of its prop.
+    w.add_joint(502, hold(7, 101)).unwrap();
+    w.set_players(Default::default());
+    tick(&mut w);
+    assert!(w.joint(502).is_none() && w.holder_of(101).is_none());
+}
+
+#[test]
+fn a_jointed_prop_put_to_sleep_keeps_its_joint_and_wakes_with_its_partner() {
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 0.0, 0.5], 10.0);
+    spawn(&mut w, 101, [2.0, 0.0, 0.5], 10.0);
+    let tether = Kind::Tether {
+        reach: Reach::new(2.5),
+        winch: None,
+    };
+    w.add_joint(500, Joint::new(tether, middle(100), middle(101), None))
+        .unwrap();
+    for _ in 0..40 {
+        tick(&mut w);
+    }
+    for id in [100, 101] {
+        // Asleep already by itself, or put to sleep now.
+        let _ = w.sleep(id);
+        assert!(w.get(id).unwrap().rest.is_asleep());
+    }
+    let still = w.get(100).unwrap().q;
+    for _ in 0..60 {
+        tick(&mut w);
+    }
+    assert_eq!(w.get(100).unwrap().q, still, "a jointed sleeper stays put");
+    assert!(w.joint(500).is_some(), "and keeps its joint");
+    // Its partner flung away wakes it through the tether.
+    assert!(w.impulse(101, [200.0, 0.0, 0.0]));
+    for _ in 0..30 {
+        tick(&mut w);
+    }
+    assert!(
+        distance(w.get(100).unwrap().q.position(), still.position()) > 0.1,
+        "the tether pulled the sleeper along"
+    );
+}
+
+fn hold_of(player: u32, prop: u32, offset: [f32; 3]) -> Joint {
+    Joint::new(
+        Kind::Hold,
+        End::Player { id: player, offset },
+        middle(prop),
+        None,
+    )
+}
+
+fn standing(id: u32, at: [f32; 3]) -> torque_plugin_props::world::Pusher {
+    torque_plugin_props::world::Pusher {
+        id,
+        min: [at[0] - 0.5, at[1] - 0.5, at[2]],
+        max: [at[0] + 0.5, at[1] + 0.5, at[2] + 2.0],
+        velocity: [0.0; 3],
+        mass: 90.0,
+    }
+}
+
+/// Whether prop `id`'s box overlaps the box `min..max`.
+fn overlaps(w: &PropWorld, id: u32, p: &torque_plugin_props::world::Pusher) -> bool {
+    let q = w.get(id).unwrap().q;
+    let half = torque_plugin_props::world::world_half([0.5; 3], q.rotation());
+    let c = q.position();
+    (0..3).all(|k| c[k] + half[k] > p.min[k] && c[k] - half[k] < p.max[k])
+}
+
+#[test]
+fn a_hold_breaks_when_frozen_or_stuck_and_keeps_out_of_other_players() {
+    let mut w = world();
+    let me = PlayerAt::at([0.0, 0.0, 0.0]);
+    // A frozen prop cannot be held, and freezing a held one breaks its hold.
+    spawn(&mut w, 100, [0.0, 1.5, 0.5], 12.0);
+    w.freeze(100).unwrap();
+    assert_eq!(
+        w.add_joint(500, hold_of(7, 100, [0.0, 1.5, 1.0])),
+        Err(JointError::Frozen)
+    );
+    w.unfreeze(100).unwrap();
+    w.add_joint(500, hold_of(7, 100, [0.0, 1.5, 1.0])).unwrap();
+    w.set_players([(7, me)].into());
+    tick(&mut w);
+    w.freeze(100).unwrap();
+    assert_eq!(w.holder_of(100), None);
+    let r = tick(&mut w);
+    assert!(r.joint_events.contains(&(500, JointEvent::Break)), "{r:?}");
+    assert!(w.joint(500).unwrap().status.broken);
+    w.remove_joint(500);
+    w.unfreeze(100).unwrap();
+    // Another player standing at the hold's point: the prop stays out of its box; the holder's own box never stops it.
+    w.add_joint(501, hold_of(7, 100, [0.0, 2.3, 1.0])).unwrap();
+    let (holder, other) = (standing(7, [0.0, 0.0, 0.0]), standing(8, [0.0, 3.0, 0.0]));
+    for _ in 0..40 {
+        w.set_players([(7, me)].into());
+        w.tick(&[holder, other], &near);
+        assert!(
+            !overlaps(&w, 100, &other),
+            "the held prop went into another player"
+        );
+    }
+    assert_eq!(
+        w.holder_of(100),
+        Some(7),
+        "held still, short of the other player"
+    );
+    // Let go of while it overlaps a player (the holder walked into it), that player's box pushes it out.
+    let inside = standing(7, w.get(100).unwrap().q.position().map(|c| c - 0.3));
+    w.set_players([(7, me)].into());
+    w.tick(&[inside], &near);
+    w.remove_joint(501).unwrap();
+    for _ in 0..20 {
+        w.tick(&[inside], &near);
+    }
+    assert!(
+        !overlaps(&w, 100, &inside),
+        "the let-go prop was left inside its holder"
+    );
+    // Stuck behind a wall more than a unit from its point: the hold breaks.
+    w.sync_statics(vec![
+        (
+            1,
+            StaticPiece::Box {
+                position: [0.0, 0.0, -1.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                half: [500.0, 500.0, 1.0],
+            },
+        ),
+        (
+            2,
+            StaticPiece::Box {
+                position: [0.0, 6.0, 2.0],
+                rotation: [0.0, 0.0, 0.0, 1.0],
+                half: [5.0, 0.2, 2.0],
+            },
+        ),
+    ]);
+    spawn(&mut w, 101, [0.0, 4.5, 0.5], 12.0);
+    w.add_joint(502, hold_of(7, 101, [0.0, 8.0, 1.0])).unwrap();
+    let mut broke = false;
+    for _ in 0..20 {
+        w.set_players([(7, me)].into());
+        broke |= tick(&mut w)
+            .joint_events
+            .contains(&(502, JointEvent::Break));
+    }
+    assert!(
+        broke && w.holder_of(101).is_none(),
+        "a hold stuck behind a wall broke"
+    );
+}
+
+#[test]
+fn the_holder_alone_passes_through_its_held_prop() {
+    use torque_collide::source::CollisionSource as _;
+    use torque_plugin_props::ServerProps;
+    use torque_plugin_props::server::ServerSource;
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 1.5, 0.5], 12.0);
+    spawn(&mut w, 101, [3.0, 1.5, 0.5], 12.0);
+    w.add_joint(500, hold_of(7, 100, [0.0, 1.5, 1.0])).unwrap();
+    let props = ServerProps::default();
+    props.0.borrow_mut().world = Some(w);
+    let mut shapes = Vec::new();
+    ServerSource(props.clone()).shapes(&mut shapes);
+    let passes: Vec<Option<u32>> = shapes.iter().map(|s| s.passes).collect();
+    // The held prop names its holder (only it passes through); the other prop names no one.
+    assert_eq!(shapes.len(), 2);
+    assert!(
+        passes.contains(&Some(7)) && passes.contains(&None),
+        "{passes:?}"
+    );
+}
+
+/// How deep crate `id`'s box (1 unit across) reaches into the box of `p`, by corners: the deepest of its corners inside `p`'s
+/// box and of `p`'s corners inside it (0 when none is), so a turned crate touching a face is not counted as inside.
+fn depth_in(w: &PropWorld, id: u32, p: &torque_plugin_props::world::Pusher) -> f32 {
+    use torque_collide::math::{affine_inverse, mul_p};
+    let q = w.get(id).unwrap().q;
+    let m = torque_plugin_props::quant::matrix(q.position(), q.rotation());
+    let to_crate = affine_inverse(&m);
+    let corners = |lo: [f32; 3], hi: [f32; 3]| {
+        (0..8).map(move |c| {
+            std::array::from_fn::<f32, 3, _>(|k| if c & (1 << k) == 0 { lo[k] } else { hi[k] })
+        })
+    };
+    let within = |v: [f32; 3], lo: [f32; 3], hi: [f32; 3]| {
+        (0..3)
+            .map(|k| (v[k] - lo[k]).min(hi[k] - v[k]))
+            .fold(f32::MAX, f32::min)
+    };
+    let mine = corners([-0.5; 3], [0.5; 3]).map(|c| within(mul_p(&m, c), p.min, p.max));
+    let theirs = corners(p.min, p.max).map(|c| within(mul_p(&to_crate, c), [-0.5; 3], [0.5; 3]));
+    mine.chain(theirs).fold(0.0, f32::max)
+}
+
+#[test]
+fn a_held_prop_shoves_a_free_one_into_no_players_box() {
+    let mut w = world();
+    let (holder, other) = (standing(7, [0.0, 0.0, 0.0]), standing(8, [2.6, 2.4, 0.0]));
+    // The holder's crate, and a free crate in front of it, between it and the other player.
+    spawn(&mut w, 100, [0.0, 1.6, 0.6], 12.0);
+    spawn(&mut w, 101, [1.3, 1.9, 0.5], 12.0);
+    w.add_joint(500, hold_of(7, 100, [0.0, 1.6, 0.6])).unwrap();
+    // The holder turns right and back left: its crate sweeps the free one toward the other player, then toward the holder.
+    let mut touched = false;
+    let mut deepest = 0.0f32;
+    for t in 0..160 {
+        let a = (t as f32 * 0.04).sin() * 1.4;
+        w.set_players([(7, PlayerAt::facing([0.0; 3], [a.sin(), a.cos()]))].into());
+        w.tick(&[holder, other], &near);
+        touched |= distance(w.get(101).unwrap().q.position(), [1.3, 1.9, 0.5]) > 0.2;
+        for p in [&holder, &other] {
+            deepest = deepest.max(depth_in(&w, 101, p));
+        }
+    }
+    assert!(touched, "the held crate never shoved the free one");
+    // A contact may sink in by the solver's margin, never deeper.
+    assert!(
+        deepest < 0.02,
+        "the free crate went {deepest} into a player"
+    );
 }

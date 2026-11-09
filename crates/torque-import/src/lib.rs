@@ -32,6 +32,10 @@
 //! **Side files are read as hostile.** `gltf::side_files` resolves a path under the model's folder (canonicalized, still under it),
 //! then opens it through `torque_resource::plain::open_plain` (no link followed, the handle checked) and reads at most the length
 //! the reader asked for. A new resolver of files beside a model does the same (`tests/side_files.rs`).
+//!
+//! **Normals.** A reader gives every mesh its normals: the writer ([`dts::to_dts`]) puts straight up where a mesh has none,
+//! and a shape is lit by them. A Blockbench face's corners are its own and carry its outward normal (flat shading):
+//! `a_cube_is_twelve_triangles_clockwise_from_outside_a_block_a_meter`.
 
 #[cfg(feature = "gltf")]
 pub mod bbmodel;

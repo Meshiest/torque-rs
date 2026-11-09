@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-304 entries in 1 namespace.
+307 entries in 1 namespace.
 
 ## Global
 
@@ -331,13 +331,13 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 4 to 9; server; needs `torque.props`*
 
   `client` is the connection asking (the joint's owner). `a` and `b` are ends as `jointTether` takes them (a weld's or a hinge's
-  world end may be empty); `kind` is the joint's (`tether` when left out or empty: `winch`, `weld`, `hinge`, `grapple`, whose
-  first end is a player), and a hinge gives its `point`. Every end and the point must be within `reach` of `eye` (the player's
-  eye, as the server gives it: 8 when left out). A player at an end is where the server has it, and must be the client's own
-  control object unless `allowOtherPlayers`; a prop at an end must be the client's (its owner key) or no one's unless
-  `allowOtherOwners` (each a game's choice, off by default). The caps must allow one more joint for the client, its address and
-  each prop, and a player may have one grapple. Joints have no client entry point: a game's own server command (with its
-  declared limits and permission) calls this first.
+  world end may be empty); `kind` is the joint's (`tether` when left out or empty: `winch`, `weld`, `hinge`, `grapple` and
+  `hold`, whose first end is a player), and a hinge gives its `point`. Every end and the point must be within `reach` of `eye`
+  (the player's eye, as the server gives it: 8 when left out). A player at an end is where the server has it, and must be the
+  client's own control object unless `allowOtherPlayers`; a prop at an end must be the client's (its owner key) or no one's
+  unless `allowOtherOwners` (each a game's choice, off by default). The caps must allow one more joint for the client, its
+  address and each prop, and a player may have one grapple. Joints have no client entry point: a game's own server command
+  (with its declared limits and permission) calls this first.
 
 - `jointCount([owner])` - how many joints there are, or, given a client, how many its owner key owns
   *arguments: 0 to 1; server; needs `torque.props`*
@@ -367,6 +367,15 @@ Console functions, by namespace. Functions of the global namespace are called as
   object id
 
   `jointSetLimits` holds the angle between two limits, `jointSetMotor` turns it.
+
+- `jointHold(player, prop, offset [, owner])` - makes a player carry a prop and returns the joint's object id
+  *arguments: 3 to 4; server; needs `torque.props`*
+
+  `offset` is `"x y z"` in the player's own frame (right, forward and up from its feet): the prop is carried there, upright
+  and facing where the player faces, driven each step to that point so walls and other props still stop it, and never
+  pushing its holder (the players' collision leaves a held prop out). A player holds one prop and a prop has one holder;
+  `jointDelete` lets go. What may be held, from how far and by whom is the game's own rule (`jointCheck` with kind `hold`
+  first): there is no client entry point.
 
 - `jointIsAtLimit(joint)` - whether a tether's ends are at its length (a rope following it is drawn taut)
   *arguments: 1; server; needs `torque.props`*
@@ -538,10 +547,24 @@ Console functions, by namespace. Functions of the global namespace are called as
   The server's ghost that carries the id is the prop; one never confirmed within two seconds fades out. At most 16 wait at
   once: past that, for a datablock that is not a `PropData` or a transform that is not finite, the result is 0.
 
+- `propRayCast(start, end [, ignore])` - the first prop the segment from \`start\` to \`end\` meets: \`"prop x y z"\` (where it meets the prop's box), or "" for none
+  *arguments: 2 to 3; server; needs `torque.props`*
+
+  Props are not `containerRayCast`'s: a game casts both and takes the nearer to see whether a wall, a shape or a player stands
+  in front of the prop. Held props count; `ignore` (a prop) is left out.
+
 - `propSetVelocity(prop, velocity [, spin])` - sets a prop's velocity (\`"x y z"\`, units a second, held to its datablock's \`maxSpeed\`) and, if given, its spin (radians a
   *arguments: 2 to 3; server; needs `torque.props`*
 
   second about each axis); wakes it
+
+- `propSleep(prop)` - puts a prop to sleep where it lies, stopped; true if it was awake
+  *arguments: 1; server; needs `torque.props`*
+
+  For a map's props placed at rest (put to sleep as they are spawned, so nothing shifts as the map loads). It stops the prop
+  where it is, wherever that is (a prop put to sleep in mid-air stays there until something wakes it), and calls no
+  `onPropSleep` (that is for a prop that came to rest by itself). A push, an impulse, a joint or a prop that moves into it
+  wakes it again. `canFreeze` has no say: a sleeper is not pinned. False for a frozen prop or one asleep already.
 
 - `propSpawn(datablock, transform [, owner [, predictId]])` - spawns a prop of the datablock at a transform and returns its object id
   *arguments: 2 to 4; server; needs `torque.props`*

@@ -225,6 +225,7 @@ fn a_correction_runs_a_part_from_the_ack_with_each_move_after_the_control_object
         velocity: [0.0; 3],
         wish: [0.0; 3],
         mass: 90.0,
+        forward: [0.0, 1.0],
     };
     let log = Recorder::default();
     let mut parts: Vec<Box<dyn PredictionPart>> = vec![Box::new(log.clone())];

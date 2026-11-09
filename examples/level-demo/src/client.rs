@@ -274,6 +274,11 @@ impl LevelDemo {
         self.scene.own()
     }
 
+    /// The props the last frame drew as still geometry (they sleep): the moving shapes it drew leave them out.
+    pub fn resting_props(&self) -> usize {
+        self.scene.resting_count()
+    }
+
     /// Whether the camera is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
         self.modes.is_active(FIRST_PERSON)

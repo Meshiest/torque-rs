@@ -1,18 +1,18 @@
 //! The joints in the props' world ([`PropWorld`]): adding and removing them, their caps, what each tick does to them (a
-//! winch's reel and a grapple's pull before the step; the distance, the force, the limit and the break after it), and the
-//! tether a grapple puts on its player.
+//! winch's reel, a grapple's pull and a hold's drive before the step; the distance, the force, the limit and the break after
+//! it), and the tether a grapple puts on its player.
 
 use std::collections::BTreeMap;
 
 use torque_game::player_tether::Tether;
-use torque_physics_rapier::{Anchor, BodyId, JointDesc, JointId, JointKind, TICK};
+use torque_physics_rapier::{Anchor, BodyId, BodyState, JointDesc, JointId, JointKind, TICK};
 
 use super::records::{MASK_FLAGS, MASK_INIT, MASK_LENGTH, MASK_SPRING};
 use super::{
     AT_LIMIT, End, Hinge, Joint, JointError, JointEvent, Kind, KindId, Reach, Winch, number,
 };
 use crate::quant::{self, Quantized};
-use crate::world::{Owner, OwnerKey, PropWorld, TickReport, length};
+use crate::world::{Owner, OwnerKey, PlayerAt, PropWorld, TickReport, length, world_half};
 
 /// The point `local` of a prop's frame at the state `q`, in the world: the same arithmetic on the server and on a client.
 pub fn point_on(q: &Quantized, local: [f32; 3]) -> [f32; 3] {
@@ -98,11 +98,12 @@ impl PropWorld {
                     && p.iter()
                         .all(|v| v.is_finite() && v.abs() < quant::MAX_COORD)
             }
-            End::Player { offset, .. } => first && kind == KindId::Grapple && inside(&offset),
+            End::Player { offset, .. } => first && kind.from_player() && inside(&offset),
             End::World => !first && kind == KindId::Weld,
         };
         let first_ok = match kind {
             KindId::Grapple => matches!(a, End::Player { .. }),
+            KindId::Hold => matches!((a, b), (End::Player { .. }, End::Prop { .. })),
             KindId::Weld | KindId::Hinge => matches!(a, End::Prop { .. }),
             KindId::Tether | KindId::Winch => true,
         };
@@ -115,9 +116,20 @@ impl PropWorld {
             return Err(JointError::Ends);
         }
         if let End::Player { id, .. } = *a
+            && kind == KindId::Grapple
             && self.grapple_on(id).is_some()
         {
             return Err(JointError::Grappled);
+        }
+        if kind == KindId::Hold
+            && let (End::Player { id, .. }, Some(prop)) = (a, b.prop())
+        {
+            if self.hold_on(*id).is_some() || self.holder_of(prop).is_some() {
+                return Err(JointError::Held);
+            }
+            if self.get(prop).is_some_and(|p| p.rest.is_frozen()) {
+                return Err(JointError::Frozen);
+            }
         }
         if self.joints.len() as u32 >= self.joint_limits.per_server {
             return Err(JointError::PerServer);
@@ -159,9 +171,13 @@ impl PropWorld {
             }
         }
         let props: Vec<u32> = joint.props().collect();
+        let hold = joint.kind == Kind::Hold;
         self.joints.insert(id, joint);
         for p in props {
             self.rouse(p);
+            if hold {
+                self.held_changed(p);
+            }
         }
         Ok(MASK_INIT | MASK_LENGTH | MASK_SPRING | MASK_FLAGS)
     }
@@ -171,6 +187,12 @@ impl PropWorld {
         let joint = self.joints.remove(&id)?;
         let removed = self.physics_mut().remove_joint(JointId(id));
         self.note(&format!("joint {id}"), removed);
+        if joint.kind == Kind::Hold
+            && !joint.status.broken
+            && let Some(p) = joint.b.prop()
+        {
+            self.held_changed(p);
+        }
         Some(joint)
     }
 
@@ -180,8 +202,9 @@ impl PropWorld {
         std::mem::take(&mut self.gone_joints)
     }
 
-    /// Where the players at grapples' ends are now (a grapple whose player is not there is taken out at the next tick).
-    pub fn set_players(&mut self, players: BTreeMap<u32, [f32; 3]>) {
+    /// Where the players at grapples' and holds' ends are now (a joint whose player is not there is taken out at the next
+    /// tick).
+    pub fn set_players(&mut self, players: BTreeMap<u32, PlayerAt>) {
         self.players = players;
     }
 
@@ -262,7 +285,7 @@ impl PropWorld {
             End::Prop { id, local } => Some(point_on(&self.get(id)?.q, local)),
             End::Point(p) => Some(p),
             End::Player { id, offset } => {
-                let p = self.players.get(&id)?;
+                let p = self.players.get(&id)?.position;
                 Some(std::array::from_fn(|k| p[k] + offset[k]))
             }
             End::World => None,
@@ -292,6 +315,82 @@ impl PropWorld {
                 && matches!(j.a, End::Player { id, .. } if id == player))
             .then_some(id)
         })
+    }
+
+    /// The unbroken hold `player` carries a prop by, if it carries one.
+    pub fn hold_on(&self, player: u32) -> Option<u32> {
+        self.joints.iter().find_map(|(&id, j)| {
+            (j.kind == Kind::Hold
+                && !j.status.broken
+                && matches!(j.a, End::Player { id, .. } if id == player))
+            .then_some(id)
+        })
+    }
+
+    /// The player holding prop `prop` by an unbroken hold, if one is.
+    pub fn holder_of(&self, prop: u32) -> Option<u32> {
+        self.holds()
+            .find_map(|(_, player, p)| (p == prop).then_some(player))
+    }
+
+    /// Each held prop's holder, by prop.
+    pub fn holders(&self) -> BTreeMap<u32, u32> {
+        self.holds().map(|(_, player, p)| (p, player)).collect()
+    }
+
+    /// The props held now.
+    pub fn held_props(&self) -> impl Iterator<Item = u32> + '_ {
+        self.holds().map(|(_, _, p)| p)
+    }
+
+    /// The unbroken holds: each one's id, its player and its prop.
+    fn holds(&self) -> impl Iterator<Item = (u32, u32, u32)> + '_ {
+        self.joints
+            .iter()
+            .filter(|(_, j)| !j.status.broken)
+            .filter_map(|(&id, j)| match (j.kind, j.a, j.b) {
+                (Kind::Hold, End::Player { id: player, .. }, End::Prop { id: p, .. }) => {
+                    Some((id, player, p))
+                }
+                _ => None,
+            })
+    }
+
+    /// Breaks hold `id` (it holds nothing from then on): its prop is solid to its holder again (and pushed out of any player's
+    /// box by that player's kinematic box). False for a joint that is not an unbroken hold.
+    pub(crate) fn break_hold(&mut self, id: u32) -> bool {
+        let Some(j) = self
+            .joints
+            .get_mut(&id)
+            .filter(|j| j.kind == Kind::Hold && !j.status.broken)
+        else {
+            return false;
+        };
+        j.status.broken = true;
+        if let Some(p) = j.b.prop() {
+            self.held_changed(p);
+        }
+        true
+    }
+
+    /// The holds on prop `prop` broken (it was frozen), their breaks reported at the next tick.
+    pub(crate) fn break_holds_on(&mut self, prop: u32) {
+        let holds: Vec<u32> = self
+            .holds()
+            .filter(|&(_, _, p)| p == prop)
+            .map(|(id, ..)| id)
+            .collect();
+        for id in holds {
+            if self.break_hold(id) {
+                self.broken_holds.push(id);
+            }
+        }
+    }
+
+    /// Where the hold on a player at `at` carries its prop: the point `offset` of the player's frame, upright, facing where
+    /// the player faces.
+    pub fn hold_pose(at: &PlayerAt, offset: [f32; 3]) -> ([f32; 3], [f32; 4]) {
+        (at.point(offset), at.turn())
     }
 
     /// The tether the grapple on `player` puts on it: none when it has none, it broke, or its far end is nowhere.
@@ -360,7 +459,7 @@ impl PropWorld {
             End::Player { .. } => None,
         };
         let kind = match joint.kind {
-            Kind::Grapple { .. } => return None,
+            Kind::Grapple { .. } | Kind::Hold => return None,
             Kind::Tether { reach, .. } => JointKind::Distance {
                 min: reach.min,
                 max: reach.max,
@@ -433,9 +532,13 @@ impl PropWorld {
         self.note(&format!("joint {id} given again"), added);
     }
 
-    /// Before the step: grapples whose players went are taken out, each grapple's pull goes to the prop at its far end, and
-    /// each winch reels.
+    /// Before the step: the holds broken since the last tick reported, grapples and holds whose players went taken out, each
+    /// grapple's pull given to the prop at its far end, each winch reeled and each hold's prop driven.
     pub(crate) fn joints_before_step(&mut self, report: &mut TickReport) {
+        for id in std::mem::take(&mut self.broken_holds) {
+            report.joint_events.push((id, JointEvent::Break));
+            report.joints.push((id, MASK_FLAGS));
+        }
         let lost: Vec<u32> = self
             .joints
             .iter()
@@ -494,6 +597,74 @@ impl PropWorld {
             self.reapply(id);
             report.joints.push((id, MASK_LENGTH));
         }
+        self.drive_holds();
+    }
+
+    /// Each held prop given the speed and the spin that take it to its hold's pose by the end of the step (held to
+    /// [`super::HOLD_SPEED`] and [`super::HOLD_SPIN`]), the step's fall made up, and woken; a pose that would put it in another
+    /// player's box keeps it where it is.
+    fn drive_holds(&mut self) {
+        let config = self.physics().config();
+        let substeps = f32::from(config.substeps.max(1));
+        // A body set going at `v` falls `g T (n + 1) / 2n` short of `v T` over a tick of n semi-implicit sub-steps.
+        let fall = config
+            .gravity
+            .map(|g| -g * TICK * (substeps + 1.0) / (2.0 * substeps));
+        let holds: Vec<(u32, u32, [f32; 3])> = self
+            .joints
+            .values()
+            .filter(|j| !j.status.broken)
+            .filter_map(|j| match (j.kind, j.a, j.b) {
+                (Kind::Hold, End::Player { id, offset }, End::Prop { id: p, .. }) => {
+                    Some((p, id, offset))
+                }
+                _ => None,
+            })
+            .collect();
+        for (prop, player, offset) in holds {
+            let (Some(at), Some(now)) = (
+                self.players.get(&player).copied(),
+                self.physics().body(BodyId(prop)),
+            ) else {
+                continue;
+            };
+            if self.get(prop).is_none_or(|p| p.rest.is_frozen()) {
+                continue;
+            }
+            self.rouse(prop);
+            let (mut target, turn) = PropWorld::hold_pose(&at, offset);
+            if let Some(half) = self
+                .get(prop)
+                .map(|p| world_half(p.params.shape.half_extents(), turn))
+                && self.bodies.iter().any(|&(id, min, max)| {
+                    id != player
+                        && (0..3)
+                            .all(|k| target[k] + half[k] > min[k] && target[k] - half[k] < max[k])
+                })
+            {
+                target = now.position;
+            }
+            let linvel = clamp(
+                std::array::from_fn(|k| (target[k] - now.position[k]) / TICK),
+                super::HOLD_SPEED,
+            );
+            // The turn left to make, the short way: twice its vector part is its angle for a small turn, and turns a large one
+            // no faster than the clamp.
+            let left = quant::quat_mul(turn, quant::conjugate(now.rotation));
+            let sign = if left[3] < 0.0 { -1.0 } else { 1.0 };
+            let angvel = clamp(
+                std::array::from_fn(|k| 2.0 * sign * left[k] / TICK),
+                super::HOLD_SPIN,
+            );
+            let s = BodyState {
+                linvel: std::array::from_fn(|k| linvel[k] + fall[k]),
+                angvel,
+                sleeping: false,
+                ..now
+            };
+            let set = self.physics_mut().set_body(BodyId(prop), &s);
+            self.note(&format!("the hold on prop {prop}"), set);
+        }
     }
 
     /// After the step: each joint's distance and force read, a joint past its break force broken, the limit flags set.
@@ -504,6 +675,21 @@ impl PropWorld {
                 continue;
             };
             let (distance, force, torque) = match j.kind {
+                Kind::Hold if j.status.broken => (j.status.distance, 0.0, 0.0),
+                Kind::Hold => {
+                    let d = match (j.a, j.b.prop().and_then(|p| self.get(p))) {
+                        (End::Player { id, offset }, Some(p)) => match self.players.get(&id) {
+                            Some(at) => {
+                                let (target, _) = PropWorld::hold_pose(at, offset);
+                                let now = p.q.position();
+                                length(std::array::from_fn(|k| now[k] - target[k]))
+                            }
+                            None => j.status.distance,
+                        },
+                        _ => j.status.distance,
+                    };
+                    (d, 0.0, 0.0)
+                }
                 Kind::Grapple { .. } => {
                     let d = match (self.end_point(&j.a), self.end_point(&j.b)) {
                         (Some(a), Some(b)) => length(std::array::from_fn(|k| b[k] - a[k])),
@@ -519,11 +705,16 @@ impl PropWorld {
             };
             let at_limit =
                 !j.status.broken && j.kind.reach().is_some_and(|r| distance >= r.max - AT_LIMIT);
-            let breaks = !j.status.broken
-                && j.break_force > 0.0
-                && (force > j.break_force || torque > j.break_force);
+            let stuck = j.kind == Kind::Hold && !j.status.broken && distance > super::HOLD_BREAK;
+            let breaks = stuck
+                || !j.status.broken
+                    && j.break_force > 0.0
+                    && (force > j.break_force || torque > j.break_force);
             let before = (j.status.at_limit, j.status.broken);
-            if breaks {
+            if stuck {
+                self.break_hold(id);
+                report.joint_events.push((id, JointEvent::Break));
+            } else if breaks {
                 let removed = self.physics_mut().remove_joint(JointId(id));
                 self.note(&format!("joint {id}"), removed);
                 report.joint_events.push((id, JointEvent::Break));
@@ -573,5 +764,17 @@ impl PropWorld {
             ]);
         }
         out
+    }
+}
+
+/// `v` no longer than `max`.
+fn clamp(v: [f32; 3], max: f32) -> [f32; 3] {
+    let len = length(v);
+    if len > max && len.is_finite() {
+        v.map(|c| c * (max / len))
+    } else if len.is_finite() {
+        v
+    } else {
+        [0.0; 3]
     }
 }

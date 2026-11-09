@@ -87,7 +87,7 @@ Console classes, with the fields each adds to its parent's. 117 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
-| [Prop](#prop) | [SceneObject](#sceneobject) | 19 |
+| [Prop](#prop) | [SceneObject](#sceneobject) | 20 |
 | [PropData](#propdata) | [GameBaseData](#gamebasedata) | 15 |
 | [Rope](#rope) | [SceneObject](#sceneobject) | 29 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
@@ -1219,8 +1219,9 @@ No fields of its own.
 | `slot` | int | `0` |  | The key of its collision shape on both sides (0 to 1,023). |
 | `ownerConn` | int | `0` |  | The owner's connection object (0: none, or gone). |
 | `predict` | int | `0` |  | The predict id the owner's client gave it (0: none). |
-| `asleep` | int | `0` |  | 1 while it sleeps, 1 while it is frozen. |
+| `asleep` | int | `0` |  | 1 while it sleeps, 1 while it is frozen, 1 while a player holds it. |
 | `frozen` | int | `0` |  |  |
+| `held` | int | `0` |  |  |
 | `qPosX` | int | `0` |  | The state at the wire's precision: the position in 1/1024 units, the rotation's largest component and the other three in 15 bits, the speed and the spin in 1/256 units a second. |
 | `qPosY` | int | `0` |  |  |
 | `qPosZ` | int | `0` |  |  |

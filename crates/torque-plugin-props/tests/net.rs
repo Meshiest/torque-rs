@@ -357,6 +357,48 @@ fn a_client_without_the_props_plugin_is_refused_at_the_manifest() {
     );
 }
 
+/// The props plugin as it was before holds: the same id and everything else, an older network version.
+struct OldProps;
+
+impl torque_engine::Plugin for OldProps {
+    fn net_version(&self) -> Option<u32> {
+        Some(torque_plugin_props::NET_VERSION - 1)
+    }
+
+    fn build(&self, engine: &mut torque_engine::EngineBuilder) {
+        torque_plugin_props::PropsPlugin.build(engine);
+    }
+}
+
+impl torque_engine::PluginType for OldProps {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("torque.props");
+}
+
+#[test]
+fn a_client_of_the_older_props_version_is_refused_at_the_manifest() {
+    use torque_plugin_props::NET_VERSION;
+    assert_eq!(
+        NET_VERSION, 3,
+        "the version moved with the wire format (the hold, the held flag)"
+    );
+    let files = rig::files();
+    let mut rig = Rig::new(&files, &[]);
+    let config = torque_app::config::GameConfig::load(&files).expect("game.toml");
+    use torque_app::config::EngineConfig as _;
+    let mut old = torque_engine::EngineBuilder::new();
+    old.add_plugins((torque_app::plugins::DefaultPlugins, OldProps))
+        .config(&config);
+    rig.join(&files, old.build().expect("the engine builds"), 50_001, &[]);
+    rig.run(100);
+    let peer = &rig.peers[0];
+    assert_eq!(peer.ghosts(), 0);
+    let why = peer.global("$Why");
+    assert!(
+        why.contains("torque.props") && why.contains(&format!("you have {}", NET_VERSION - 1)),
+        "{why:?}"
+    );
+}
+
 #[test]
 fn a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere() {
     let (mut rig, _files) = clients(1, &[], &[]);

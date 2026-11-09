@@ -57,6 +57,14 @@ pub trait Hooks<W: ShapeWorld + ?Sized>: Sync {
     /// A ghost's live pose as the host keeps it.
     type Live: Send;
 
+    /// Whether the host draws ghost `index` this frame with its still geometry (a resting ghost it keeps as a copy of a static
+    /// batch, [`resting`]): the frame's shapes leave it out. A ghost the host could not keep so (none by default) is drawn
+    /// here.
+    fn still(&self, index: u32) -> bool {
+        let _ = index;
+        false
+    }
+
     /// The GL point lights a shape whose world sphere is at `centre` with `radius` is lit by, best first (none by default).
     fn lights(&self, centre: [f32; 3], radius: f32) -> Vec<PointLight> {
         let _ = (centre, radius);
@@ -325,6 +333,47 @@ pub fn is_moving<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
     dynamic_in(world, index, true)
 }
 
+/// Whether plugin ghost `index` rests where its record puts it, so a host may draw it with its still geometry instead of every
+/// frame (and says so through [`Hooks::still`]; a ghost the host keeps nowhere else is drawn with the moving shapes): its
+/// class's draw says it rests ([`ShapeDraw::rests`](crate::world::ShapeDraw::rests)), its scale is uniform and it has no
+/// skin (a still copy is its shape's own mesh, turned, scaled alike on every axis and moved), and nothing draws it anywhere
+/// else: no prediction's pose (`ClientWorld::ghost_render`), no blend from where it was drawn left to run, not the control
+/// object, not riding anything.
+pub fn resting<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
+    let Some(g) = world.records().ghosts.get(&index) else {
+        return false;
+    };
+    world.drawn_shape(g).is_some_and(|d| draw_rests(&d)) && drawn_where_sent(world, index)
+}
+
+/// Whether a plugin's draw of a ghost lets it rest ([`resting`]): it says it rests, has no skin and a uniform scale. The draw
+/// reads the ghost's record and the datablocks it names, either of which may change without the other: a host asks every
+/// frame it needs the answer.
+pub fn draw_rests(draw: &crate::world::ShapeDraw) -> bool {
+    let [x, y, z] = draw.scale;
+    draw.rests && draw.skin.is_none() && x == y && y == z
+}
+
+/// Whether ghost `index` is drawn where its record puts it this frame ([`resting`]'s part that changes between updates): not
+/// the control object, no prediction's or vehicle's pose, riding nothing, and no blend from where it was drawn left to run.
+pub fn drawn_where_sent<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
+    let r = world.records();
+    let Some(g) = r.ghosts.get(&index) else {
+        return false;
+    };
+    if r.control.object == Some(index)
+        || r.vehicle_render.contains_key(&index)
+        || r.ghost_render.contains_key(&index)
+        || r.mount_of(index).is_some()
+    {
+        return false;
+    }
+    let Some(pose) = g.pose() else {
+        return false;
+    };
+    !g.class.is_some_and(|c| world.interpolated_class(c)) || r.warped_pose(index, pose) == pose
+}
+
 fn dynamic_in<W: ShapeWorld + ?Sized>(world: &W, index: u32, animate: bool) -> bool {
     let r = world.records();
     // The vehicle the client drives (and runs) moves with the control object; whatever rides a moving object moves with
@@ -401,7 +450,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     let driven = BUDGET.with(|b| b.get().1);
     for class in world.shape_classes() {
         for (index, ghost) in records.of_class(class) {
-            if !select.takes(world, index) {
+            if !select.takes(world, index) || hooks.still(index) {
                 continue;
             }
             let mut here = Vec::new();

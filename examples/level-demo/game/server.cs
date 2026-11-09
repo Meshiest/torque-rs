@@ -74,6 +74,102 @@ function WorldFigureData::onEndSequence(%this, %obj, %slot)
    playerFlinchEnded(%obj, %slot);
 }
 
+// A figure that dies lets go of what it holds.
+function WorldFigureData::onDisabled(%this, %obj, %state)
+{
+   dropHeld(%obj);
+}
+
+// ---- carrying props
+//
+// A left click asks the server (PropGrab) to pick up the prop the figure looks at, or to drop the one it holds. The server
+// decides: the prop must be the first thing on the line from the figure's eye within $World::HoldReach (propRayCast, with no
+// wall, shape or other figure in front of it: containerRayCast), weigh no more than $World::HoldMaxMass (a chair, a plant, a monitor, a mug; not a desk, a table, a
+// sofa, a cabinet, the fridge or the copier), and have no other holder (the props plugin refuses a second). A held prop hangs
+// from the figure's right hand, its arm held out (the arm sequence `hold`); a figure that dies or leaves lets go.
+
+$World::HoldReach = 2.5;
+$World::HoldMaxMass = 15;
+// Where a held prop hangs, in the figure's own frame: right of its middle, its near face in front of the figure's box, its
+// top at the hand.
+$World::HoldRight = 0.3;
+$World::HoldFront = 0.6;
+$World::HoldHand = 1.35;
+
+// The commands run so far: the engine holds them to the plugin's declared rate (4 a second after a burst of 8) before they
+// run.
+$World::GrabCommands = 0;
+
+function serverCmdPropGrab(%client)
+{
+   $World::GrabCommands++;
+   %player = %client.player;
+   if (!isObject(%player))
+      return;
+   if (isObject(%player.holdJoint))
+      dropHeld(%player);
+   else
+      grabFor(%player, %client);
+}
+
+// %player picks up the prop it looks at, for %client (0 for none) when the rules let it: the joint, or 0 with the reason in
+// $World::GrabRefused.
+function grabFor(%player, %client)
+{
+   $World::GrabRefused = "";
+   if (%player.getState() $= "Dead")
+      return grabRefused("dead");
+   if (isObject(%player.holdJoint))
+      return grabRefused("holding");
+   %eye = %player.getEyePoint();
+   %end = VectorAdd(%eye, VectorScale(%player.getEyeVector(), $World::HoldReach));
+   %hit = propRayCast(%eye, %end);
+   %prop = firstWord(%hit);
+   if (%prop $= "")
+      return grabRefused("nothing in reach");
+   // A wall, a counter, a shape or another figure nearer on the line hides it.
+   %mask = $TypeMasks::InteriorObjectType | $TypeMasks::StaticShapeObjectType | $TypeMasks::PlayerObjectType
+      | $TypeMasks::TerrainObjectType;
+   if (containerRayCast(%eye, getWords(%hit, 1, 3), %mask, %player))
+      return grabRefused("out of sight");
+   %data = %prop.dataBlock;
+   if (%data.mass > $World::HoldMaxMass)
+      return grabRefused("too heavy");
+   %size = %data.size;
+   %offset = $World::HoldRight SPC $World::HoldFront + getWord(%size, 1) / 2
+      SPC getMax($World::HoldHand - getWord(%size, 2) / 2, getWord(%size, 2) / 2 + 0.05);
+   %joint = jointHold(%player, %prop, %offset, %client);
+   if (!%joint)
+      return grabRefused("held");
+   %player.holdJoint = %joint;
+   %joint.holder = %player;
+   %player.setArmThread("hold");
+   return %joint;
+}
+
+function grabRefused(%why)
+{
+   $World::GrabRefused = %why;
+   return 0;
+}
+
+// A hold the props plugin broke (its prop frozen, or stuck behind a wall): its holder lets go.
+function Joint::onBreak(%this)
+{
+   if (isObject(%this.holder) && %this.holder.holdJoint == %this.getId())
+      dropHeld(%this.holder);
+}
+
+// %player lets go of what it holds: the prop falls where it is, the arm hangs again.
+function dropHeld(%player)
+{
+   if (isObject(%player.holdJoint))
+      jointDelete(%player.holdJoint);
+   %player.holdJoint = "";
+   if (%player.getState() !$= "Dead")
+      %player.setArmThread("look");
+}
+
 // ---- the world
 
 exec("common/server.cs");
@@ -108,6 +204,7 @@ function GameConnection::onClientEnterGame(%client)
 
 function GameConnection::onClientLeaveGame(%client)
 {
+   // Its figure is gone already, and the props plugin let go of what it held with it.
 }
 
 // The client asked to start again at the spawn point.

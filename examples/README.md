@@ -33,11 +33,15 @@ Also: [the minimal server and client](#the-minimal-server-and-client), a dedicat
 A single-player game: pick a map from the menu, then walk and jump around it as the box figure. The server and the
 client run in one process and talk over an in-memory link, so the full network path runs without a socket. The maps are
 TorqueScript mission files (`level-demo/game/missions/`). The plaza, the maze, the ramps and the towers are built of cubes.
-The office is a Blockbench model (`game/levels/office.bbmodel`) built into interiors when the game starts, with glass and
-ceiling lights. The valley is a terrain with a lake (below).
+The office is a Blockbench model (`game/levels/office.bbmodel`) built when the game starts: the building into interiors,
+with glass and ceiling lights, and every chair, desk, table, sofa, cabinet, plant and desk item into a prop
+(`torque-plugin-props`) that the figure pushes when it walks into it, and a left click picks up a light one (a chair, a
+plant, a monitor) and carries it, arm held out; a second click drops it. The demo speaks the engine's own network protocol,
+which carries the props. The valley is a terrain with a lake (below).
 
 **Controls:** 1 to 9 pick a map on the menu; W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space
-jump, mouse look, Tab first or third person (the camera eases between them), R restart, Esc back to the menu.
+jump, mouse look, left click pick up or drop a prop (the office), Tab first or third person (the camera eases between them), R
+restart, Esc back to the menu.
 
 **Run it:**
 
@@ -51,8 +55,9 @@ jump, mouse look, Tab first or third person (the camera eases between them), R r
 | With a rope across the plaza (`torque-plugin-rope`) | `just examples/level-demo-rope-shots` (pictures) | `cargo run -p torque-example-level-demo --release --features rope` |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
-interiors and terrain; interiors built from a Blockbench model (nearest-sampled textures, see-through glass); spot lights
-with shadows; the camera blend; the web build with its files fetched by a list and kept in the browser's cache.
+interiors and terrain; interiors and props built from a Blockbench model (nearest-sampled textures, see-through glass,
+furniture the figure pushes, predicted on the client); spot lights with shadows; the camera blend; the web build with its
+files fetched by a list and kept in the browser's cache.
 
 ### The valley
 

@@ -12,7 +12,8 @@
 //! **Frames.** Blockbench is y up with 16 units a block: a point `(x, y, z)` is Torque's `(x, -z, y) / 16` times
 //! [`Options::scale`] (so a block is a meter, as Blockbench's own glTF export makes it). Turns are Euler angles in degrees,
 //! applied x, then y, then z. A face's corners run clockwise seen from outside, as a shape's triangles do; a mesh face's
-//! corners (stored counter-clockwise, a quad's in any order) are sorted round their middle. Pixel coordinates are divided by
+//! corners (stored counter-clockwise, a quad's in any order) are sorted round their middle. Each face's corners are its own
+//! and take its outward normal, so a model is shaded flat, as Blockbench draws it. Pixel coordinates are divided by
 //! the texture's `uv_width` and `uv_height` (else the project's `resolution`, else 16).
 //!
 //! **Hostile input.** The file is JSON: its size is capped ([`Options::max_json_bytes`]) and its values counted before it is
@@ -99,6 +100,28 @@ type V3 = [f64; 3];
 fn euler(deg: V3) -> DMat3 {
     let [x, y, z] = deg.map(f64::to_radians);
     DMat3::from_rotation_z(z) * (DMat3::from_rotation_y(y) * DMat3::from_rotation_x(x))
+}
+
+/// The outward unit normal of a face whose corners run clockwise seen from outside (Newell's sum, so a quad's corners off
+/// its plane average out); straight up for a face of no area.
+fn face_normal(corners: &[Vec3]) -> Vec3 {
+    let mut n = DVec3::ZERO;
+    for (k, a) in corners.iter().enumerate() {
+        let a = DVec3::from(a.map(f64::from));
+        let b = DVec3::from(corners[(k + 1) % corners.len()].map(f64::from));
+        n += DVec3::new(
+            (a.y - b.y) * (a.z + b.z),
+            (a.z - b.z) * (a.x + b.x),
+            (a.x - b.x) * (a.y + b.y),
+        );
+    }
+    // Newell's sum points out of a counter-clockwise face: a clockwise one's outside is the other way.
+    let n = -n;
+    if n.length() > 1e-12 {
+        n.normalize().as_vec3().to_array()
+    } else {
+        [0.0, 0.0, 1.0]
+    }
 }
 
 /// `p` turned by `deg` about `origin`.
@@ -240,11 +263,15 @@ impl Reader<'_> {
         )?;
         pay(charge, corners.len() as u64)?;
         let base = mesh.positions.len() as u32;
+        let start = mesh.positions.len();
         for (p, uv) in corners {
             mesh.positions.push(self.point(*p, origin));
             mesh.uv0
                 .push([(uv[0] / size.0[0]) as f32, (uv[1] / size.0[1]) as f32]);
         }
+        let normal = face_normal(&mesh.positions[start..]);
+        mesh.normals
+            .extend(std::iter::repeat_n(normal, corners.len()));
         let prim = *by_material.entry(material).or_insert_with(|| {
             mesh.primitives.push(Primitive {
                 material: Some(material),

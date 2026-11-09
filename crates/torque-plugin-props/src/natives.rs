@@ -104,6 +104,18 @@ fn prop_unfreeze(mut vm: VmMut, props: Res<ServerProps>, prop: i32) -> Result<bo
     Ok(change(&mut vm, &props, id, |w| w.unfreeze(id)))
 }
 
+/// puts a prop to sleep where it lies, stopped; true if it was awake
+///
+/// For a map's props placed at rest (put to sleep as they are spawned, so nothing shifts as the map loads). It stops the prop
+/// where it is, wherever that is (a prop put to sleep in mid-air stays there until something wakes it), and calls no
+/// `onPropSleep` (that is for a prop that came to rest by itself). A push, an impulse, a joint or a prop that moves into it
+/// wakes it again. `canFreeze` has no say: a sleeper is not pinned. False for a frozen prop or one asleep already.
+#[function(name = "propSleep")]
+fn prop_sleep(mut vm: VmMut, props: Res<ServerProps>, prop: i32) -> Result<bool, ScriptError> {
+    let id = prop_of(&vm, prop)?;
+    Ok(change(&mut vm, &props, id, |w| w.sleep(id)))
+}
+
 /// pushes a prop: `impulse` is `"x y z"` (mass times units a second), held to the world's limits; wakes it
 ///
 /// False for a frozen prop.
@@ -178,6 +190,29 @@ fn prop_get_transform(
         format!("{x} {y} {z} {ax} {ay} {az} {angle}")
     })
     .unwrap_or_default())
+}
+
+/// the first prop the segment from `start` to `end` meets: `"prop x y z"` (where it meets the prop's box), or "" for none
+///
+/// Props are not `containerRayCast`'s: a game casts both and takes the nearer to see whether a wall, a shape or a player stands
+/// in front of the prop. Held props count; `ignore` (a prop) is left out.
+#[function(name = "propRayCast")]
+fn prop_ray_cast(
+    vm: VmMut,
+    props: Res<ServerProps>,
+    start: &str,
+    end: &str,
+    ignore: Option<i32>,
+) -> Result<String, ScriptError> {
+    let from = finite_vec(start, "the start")?;
+    let to = finite_vec(end, "the end")?;
+    let ignore = ignore.and_then(|i| u32::try_from(i).ok());
+    let mut srv = props.0.borrow_mut();
+    let Some((id, t)) = srv.world_mut(&vm).ray(from, to, ignore) else {
+        return Ok(String::new());
+    };
+    let [x, y, z]: [f32; 3] = std::array::from_fn(|k| from[k] + (to[k] - from[k]) * t);
+    Ok(format!("{id} {x} {y} {z}"))
 }
 
 /// whether a prop is asleep (still, and costing nothing until something wakes it)
@@ -289,11 +324,13 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
         prop_delete,
         prop_freeze,
         prop_unfreeze,
+        prop_sleep,
         prop_apply_impulse,
         prop_set_velocity,
         prop_get_velocity,
         prop_get_spin,
         prop_get_transform,
+        prop_ray_cast,
         prop_is_asleep,
         prop_is_frozen,
         prop_get_owner,

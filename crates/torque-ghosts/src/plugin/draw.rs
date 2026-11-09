@@ -4,7 +4,8 @@
 //! The renderer draws the shape as it draws a TGE ghost's: lit, shadowed, culled, with the transform the record's first
 //! [`Xf`](crate::codec::Xf) gives it (shown between the server's updates as the class's [`Replicate`] mark says) and the scale and skin
 //! here. What the shape is comes from the record, and from the datablock it names when the draw function reads one
-//! ([`DatablockFields`]).
+//! ([`DatablockFields`]). A draw that says its ghost rests ([`ShapeDraw::rests`]: a sleeping prop) lets a client draw it with
+//! its still geometry until a record says otherwise.
 
 use std::fmt;
 use std::sync::Arc;
@@ -25,6 +26,10 @@ pub struct ShapeDraw {
     pub scale: [f32; 3],
     /// A texture file shown in place of the first material's (a skin); none keeps the shape's own.
     pub skin: Option<String>,
+    /// The ghost rests (a sleeping prop): it stays where its record puts it until a record says otherwise, so a client may draw
+    /// it with its still geometry (made once, kept on the GPU) instead of every frame, and draws it every frame again once it
+    /// stops resting.
+    pub rests: bool,
 }
 
 impl ShapeDraw {
@@ -34,7 +39,14 @@ impl ShapeDraw {
             shape: shape.into(),
             scale: [1.0; 3],
             skin: None,
+            rests: false,
         }
+    }
+
+    /// The shape resting (`rests`) or not.
+    pub fn resting(mut self, rests: bool) -> ShapeDraw {
+        self.rests = rests;
+        self
     }
 
     /// The shape at `scale` along each axis.

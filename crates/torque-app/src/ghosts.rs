@@ -583,6 +583,8 @@ struct GhostHooks {
     motions: HashMap<(u32, usize), HeldMotion>,
     /// [`GhostOptions::synced_poses`].
     synced: bool,
+    /// The ghosts drawn as still copies this frame ([`Hooks::still`]).
+    still: BTreeSet<u32>,
 }
 
 impl GhostHooks {
@@ -665,6 +667,10 @@ impl GhostHooks {
 
 impl Hooks<World> for GhostHooks {
     type Live = LivePlayer;
+
+    fn still(&self, index: u32) -> bool {
+        self.still.contains(&index)
+    }
 
     fn take_live(&self, index: u32) -> Option<LivePlayer> {
         self.live.lock().ok()?.remove(&index)
@@ -877,6 +883,8 @@ pub struct GhostScene<S = Plain> {
     pub flashes: usize,
     /// The map's interiors.
     interiors: Interiors,
+    /// The plugin ghosts at rest, drawn as still copies of their shapes' static batches.
+    resting: crate::resting::Resting,
     /// The own Player's eye between poses ([`GhostOptions::poses`]).
     eye_pose: EyePose,
     /// The dust the vehicles the client runs kick up ([`VehicleDust`]: TGE's tire and lift-off dust).
@@ -928,6 +936,7 @@ impl<S: GhostStyle> GhostScene<S> {
             ribbons_drawn: 0,
             flashes: 0,
             interiors: Interiors::default(),
+            resting: Default::default(),
             eye_pose: EyePose::default(),
             dust: VehicleDust::default(),
             tracks: None,
@@ -975,6 +984,7 @@ impl<S: GhostStyle> GhostScene<S> {
             ribbons_drawn: self.ribbons_drawn,
             flashes: _,
             interiors: _,
+            resting: _,
             eye_pose: self.eye_pose,
             dust: _,
             tracks: _,
@@ -983,6 +993,13 @@ impl<S: GhostStyle> GhostScene<S> {
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
         self.dust = dust;
+        self.resting.forget();
+    }
+
+    /// The plugin ghosts drawn as still copies of their shapes' static batches now (they rest,
+    /// [`torque_render_scene::moving::resting`]): the frame's moving shapes leave them out.
+    pub fn resting_count(&self) -> usize {
+        self.resting.count()
     }
 
     /// The client's own Player as the last frame placed it.
@@ -1735,6 +1752,13 @@ impl<S: GhostStyle> GhostScene<S> {
         let mut set = TextureSet::new(assets);
         let mut notes = Vec::new();
         let select = self.options.select;
+        // The resting plugin ghosts drawn as still copies (a scene that draws every shape draws them with the rest): the
+        // shapes below leave out exactly those.
+        self.hooks.still = if select == ShapeSelect::Moving {
+            self.resting.update(view, assets, world)
+        } else {
+            BTreeSet::new()
+        };
         let hooks = &self.hooks;
         // The vehicle the client drives: the one it runs that its control object rides.
         let driven = world

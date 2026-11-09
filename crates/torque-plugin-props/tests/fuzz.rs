@@ -107,6 +107,7 @@ fn record(rng: &mut Rng) -> PropGhost {
         flags: (rng.below(2) == 0).then(|| FlagsWire {
             asleep: rng.below(2) == 0,
             frozen: rng.below(2) == 0,
+            held: rng.below(2) == 0,
         }),
     }
 }
@@ -115,7 +116,10 @@ fn record(rng: &mut Rng) -> PropGhost {
 fn a_hostile_servers_records_never_panic_the_client() {
     let mut rng = Rng(0x2545_f491_4f6c_dd1d);
     let book = ClientProps::default();
-    let source = ClientSource(book.clone());
+    let source = ClientSource {
+        book: book.clone(),
+        joints: Default::default(),
+    };
     let table = Table::torque();
     let widths = NetWidths::engine_default();
     let mut blocks = Blocks(BTreeMap::new());
@@ -240,9 +244,11 @@ fn hostile_commands_and_calls_never_panic_the_server_and_the_caps_hold() {
                 format!("propApplyImpulse({id}, \"{a}\"); propSetVelocity({id}, \"{b}\", \"{c}\");")
             }
             5 => format!(
-                "propFreeze({id}); propUnfreeze({id}); propGetTransform({id}); propGetOwner({id});"
+                "propFreeze({id}); propUnfreeze({id}); propSleep({id}); propGetTransform({id}); propGetOwner({id});"
             ),
-            6 => format!("propDelete({id}); propCount(\"{a}\"); propIsAsleep({id});"),
+            6 => format!(
+                "propDelete({id}); propCount(\"{a}\"); propIsAsleep({id}); propRayCast(\"{a}\", \"{b}\", {id});"
+            ),
             _ => {
                 rig.step();
                 continue;
@@ -414,13 +420,16 @@ fn hostile_joint_calls_never_panic_the_server_and_the_caps_hold() {
                 "jointSetSpring({j}, {x}, {y}); jointSetBreakForce({j}, {x}); jointSetLimits({j}, {x}, {y}); jointSetMotor({j}, {x}, {y});"
             ),
             6 => {
-                let kind = ["", "tether", "winch", "weld", "hinge", "grapple", "rope"]
-                    [rng.below(7) as usize];
+                let kind = [
+                    "", "tether", "winch", "weld", "hinge", "grapple", "hold", "rope",
+                ][rng.below(8) as usize];
                 format!(
                     "jointCheck({client}, \"{a}\", \"{b}\", \"{c}\", {x}, \"{kind}\", \"{c}\", {j}, {j});"
                 )
             }
-            7 => format!("jointDelete({j}); jointGetLength({j}); jointCount({client});"),
+            7 => format!(
+                "jointDelete({j}); jointGetLength({j}); jointCount({client}); jointHold(\"{a}\", \"{b}\", \"{c}\", {client});"
+            ),
             _ => {
                 rig.step();
                 continue;

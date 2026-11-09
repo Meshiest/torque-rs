@@ -168,27 +168,30 @@ impl NetField for InitWire {
     }
 }
 
-/// Whether a prop sleeps and whether it is frozen.
+/// Whether a prop sleeps, whether it is frozen and whether a player holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FlagsWire {
     pub asleep: bool,
     pub frozen: bool,
+    pub held: bool,
 }
 
 impl NetField for FlagsWire {
-    const MIN_BITS: usize = 2;
+    const MIN_BITS: usize = 3;
     const COMPOUND: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
         c.flag(name, &mut self.asleep)?;
-        c.flag(name, &mut self.frozen)
+        c.flag(name, &mut self.frozen)?;
+        c.flag(name, &mut self.held)
     }
 
-    /// The server prop's `asleep` and `frozen`.
+    /// The server prop's `asleep`, `frozen` and `held`.
     fn from_view(view: &dyn ObjectView, _name: &str, _index: usize, _spec: FieldSpec) -> FlagsWire {
         FlagsWire {
             asleep: int(view, "asleep", 0) != 0,
             frozen: int(view, "frozen", 0) != 0,
+            held: int(view, "held", 0) != 0,
         }
     }
 
@@ -209,7 +212,7 @@ pub struct PropGhost {
     /// The pose and the speeds, at the wire's precision (the server's state exactly).
     #[net(mask = MASK_STATE)]
     pub state: Option<StateWire>,
-    /// Asleep, frozen.
+    /// Asleep, frozen, held.
     #[net(mask = MASK_FLAGS)]
     pub flags: Option<FlagsWire>,
 }

@@ -5,20 +5,21 @@
 //! - the datablock class `PropData` ([`PropData`]): what a kind of prop collides as, its mass, friction and bounce, when it sleeps,
 //!   whether it may be frozen, the shape it is drawn as;
 //! - the console class `Prop` ([`server::NetProp`]) and the server's console functions `propSpawn`, `propDelete`, `propFreeze`,
-//!   `propUnfreeze`, `propApplyImpulse`, `propSetVelocity`, the getters, and `propCheckPlacement` ([`natives`]): a server API
-//!   only. Props have no client entry point: a game's own server commands decide who may spawn what, checking a placement
-//!   with [`ServerProps::check_placement`] first;
+//!   `propUnfreeze`, `propSleep`, `propApplyImpulse`, `propSetVelocity`, the getters, `propRayCast` and `propCheckPlacement`
+//!   ([`natives`]): a server API only. Props have no client entry point: a game's own server commands decide who may spawn
+//!   what, checking a placement with [`ServerProps::check_placement`] first;
 //! - one persistent Rapier world on the server ([`PropWorld`], on [`torque_physics_rapier`]) stepped after each tick's objects,
 //!   its state quantized to the wire's precision every tick ([`quant`]), so a client is sent the server's state exactly;
 //! - a collision source on both sides: players, items and projectiles hit props as static boxes, and a player or vehicle that
 //!   walks into one pushes it;
 //! - the `Prop` ghost class ([`PropGhost`]), its updates ordered and held to a share of each packet, and each client's book of
-//!   the props it was sent ([`client::PropBook`]), drawn as shapes;
-//! - joints ([`joints`]): tethers (hard or soft), winches, welds, hinges and grapples between props, the world and players, in the
-//!   same physics world, made with the server's `joint*` functions (no client entry point), the `Joint` ghost class
-//!   ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own tick
-//!   ([`torque_game::player_tether`]), so a client's prediction replays it exactly; with feature `rope`, networked ropes that
-//!   follow joints ([`joints::rope`]);
+//!   the props it was sent ([`client::PropBook`]), drawn as shapes, a sleeping or frozen one resting ([`client::draw`]: a
+//!   client draws it as a still copy of its shape's static batch, not every frame);
+//! - joints ([`joints`]): tethers (hard or soft), winches, welds, hinges, grapples and holds between props, the world and
+//!   players, in the same physics world, made with the server's `joint*` functions (no client entry point), the `Joint` ghost
+//!   class ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own
+//!   tick ([`torque_game::player_tether`]), so a client's prediction replays it exactly; with feature `rope`, networked ropes
+//!   that follow joints ([`joints::rope`]);
 //! - projectiles that push the props they hit, and explosions that push the props around them ([`hits`]);
 //! - with [`predict::PropPredictionPlugin`] on a client, the props its own Player holds, stands on or pushes predicted and drawn
 //!   through a smoothed correction ([`predict`]), predicted impulses and spawns, and the Player's own shots followed ahead.
@@ -107,6 +108,20 @@
 //! - A joint's anchor on a Player is where the scene hierarchy puts the Player, the tree's pending moves written first:
 //!   `a_grapple_from_a_player_on_a_moving_platform_measures_from_where_the_platform_puts_it` (torque-plugin-hierarchy's
 //!   `tests/joint_anchor.rs`). On a client a joint's ropes follow their ghost ends through the rope plugin, resolved the same way.
+//! - A prop put to sleep where it rests ([`PropWorld::sleep`], `propSleep`: a map's furniture as it loads) is not stepped and
+//!   sends nothing until a push wakes it: `a_prop_put_to_sleep_where_it_rests_holds_still_until_a_push_wakes_it`, and the
+//!   level demo's `the_props_start_asleep_where_the_model_put_them_and_nothing_moves_while_no_one_touches_them`.
+//! - A hold carries its prop within a few centimeters of its point through a walk and a turn, upright, never asleep; it pulls
+//!   nothing and only its holder's collision passes through its prop ([`server::ServerSource`] and [`client::ClientSource`]
+//!   name the holder, torque-collide's `a_shape_lets_only_the_mover_it_names_pass`); one holder a prop and one prop a holder;
+//!   a holder that goes lets go: `a_hold_carries_its_prop_upright_at_its_point_through_a_walk_and_lets_go_when_deleted`. A
+//!   frozen prop cannot be held, freezing breaks a hold, a prop stuck past [`joints::HOLD_BREAK`] breaks it, and the drive
+//!   keeps a held prop out of other players' boxes: `a_hold_breaks_when_frozen_or_stuck_and_keeps_out_of_other_players`,
+//!   `the_holder_alone_passes_through_its_held_prop`. Every pusher's box (a player's, a vehicle's) is a frictionless kinematic
+//!   body of the props' world, placed where its box is and never given a speed, so no prop (shoved by a held one, let go
+//!   inside one, fallen on one) stays inside a player: `a_held_prop_shoves_a_free_one_into_no_players_box`. The
+//!   holder's client predicts the held prop from each move's box and facing ([`world::PlayerAt::of_box`], read the same way as
+//!   the server's): the level demo's `a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_click_drops_it`.
 //! - A poisoned world is made again: `a_stopped_world_is_made_again_from_the_props_states`,
 //!   `a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere`.
 //! - This crate has no client entry point: `a_client_sending_the_old_spawn_command_gets_nothing`, and for joints
@@ -243,7 +258,7 @@ pub use server::{PropPrefs, ServerProps};
 pub use world::{PropLimits, PropWorld};
 
 /// The network version of the props plugin: a client and a server must run the same.
-pub const NET_VERSION: u32 = 2;
+pub const NET_VERSION: u32 = 3;
 
 /// The name of the ghost class a prop is.
 pub const GHOST_CLASS: &str = "Prop";
@@ -325,7 +340,10 @@ impl Plugin for PropsPlugin {
         ));
         engine.push(PluginCollision::client(
             COLLISION_NAME,
-            Rc::new(client::ClientSource(book.clone())),
+            Rc::new(client::ClientSource {
+                book: book.clone(),
+                joints: joints.clone(),
+            }),
         ));
         // Each server starts its props over; each client its book.
         let fresh = server.clone();

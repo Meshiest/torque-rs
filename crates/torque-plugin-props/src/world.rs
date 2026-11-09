@@ -21,7 +21,8 @@ use std::rc::Rc;
 
 use torque_collide::ObjectId;
 use torque_collide::map::MapShape;
-use torque_collide::source::next_revision;
+use torque_collide::math::{Box3, affine_inverse, mul_p};
+use torque_collide::source::{next_revision, segment_box};
 use torque_physics_rapier::{
     BodyDesc, BodyId, BodyState, Config, Error, Limits as WorldLimits, Motion, Shape, World,
 };
@@ -37,6 +38,8 @@ pub const SLEEP_TICKS: u16 = 16;
 const WAKE_STEPS: u32 = 2;
 /// The most props a server holds (the slots of the collision source and the wire).
 pub const MAX_PROPS: u32 = 1024;
+/// The smallest half-extent of a pusher's kinematic box (units).
+const MIN_HALF: f32 = 0.01;
 /// The most map pieces and static shapes the world takes.
 pub const MAX_STATICS: usize = 512;
 /// How far past a pusher's box a prop is touched (units).
@@ -220,6 +223,69 @@ impl Pusher {
     }
 }
 
+/// Where a player at a joint's end is ([`PropWorld::set_players`]): its feet and the way it faces across the ground, from its
+/// transform on the server and from its predicted box and transform in a client's prediction ([`PlayerAt::of_box`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerAt {
+    /// The middle of its box's floor.
+    pub position: [f32; 3],
+    /// The way it faces across the ground, a unit vector.
+    pub forward: [f32; 2],
+}
+
+impl PlayerAt {
+    /// A player at `position` facing `forward` across the ground (made unit; straight along +y when it is not a direction).
+    pub fn facing(position: [f32; 3], forward: [f32; 2]) -> PlayerAt {
+        let len = (forward[0] * forward[0] + forward[1] * forward[1]).sqrt();
+        let forward = if len > 1.0e-6 && len.is_finite() {
+            forward.map(|f| f / len)
+        } else {
+            [0.0, 1.0]
+        };
+        PlayerAt { position, forward }
+    }
+
+    /// A player whose box is `min..max` (its position the middle of the box's floor), facing `forward` ([`PlayerAt::facing`]):
+    /// how a client's prediction reads its Player from a move.
+    pub fn of_box(min: [f32; 3], max: [f32; 3], forward: [f32; 2]) -> PlayerAt {
+        let floor = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, min[2]];
+        PlayerAt::facing(floor, forward)
+    }
+
+    /// A player standing at `position`, facing +y.
+    pub fn at(position: [f32; 3]) -> PlayerAt {
+        PlayerAt {
+            position,
+            forward: [0.0, 1.0],
+        }
+    }
+
+    /// The point `offset` of its own frame (right, forward, up from its feet) in the world.
+    pub fn point(&self, offset: [f32; 3]) -> [f32; 3] {
+        let [fx, fy] = self.forward;
+        let [r, f, u] = offset;
+        [
+            self.position[0] + fy * r + fx * f,
+            self.position[1] - fx * r + fy * f,
+            self.position[2] + u,
+        ]
+    }
+
+    /// Its turn about the up axis: the unit quaternion (`x, y, z, w`) that takes +y to where it faces, with no trigonometry
+    /// (the same bits on every target).
+    pub fn turn(&self) -> [f32; 4] {
+        let [fx, fy] = self.forward;
+        // Half way between +y and the facing: (0, 0, sin, 1 + cos) made unit, which is a half turn when it faces -y.
+        let q = [0.0, 0.0, -fx, 1.0 + fy];
+        let len = (q[2] * q[2] + q[3] * q[3]).sqrt();
+        if len > 1.0e-6 {
+            q.map(|c| c / len)
+        } else {
+            [0.0, 0.0, 1.0, 0.0]
+        }
+    }
+}
+
 /// A static piece of the map props land on: a terrain or an interior, or a box (a static shape).
 #[derive(Clone, Debug)]
 pub enum StaticPiece {
@@ -303,8 +369,17 @@ pub struct PropWorld {
     pub(crate) joints: BTreeMap<u32, Joint>,
     /// The joints taken out because a body at an end went, with their ropes, for the caller to delete their objects.
     pub(crate) gone_joints: Vec<(u32, u32)>,
-    /// Where each player at a grapple's end is, given before each tick.
-    pub(crate) players: BTreeMap<u32, [f32; 3]>,
+    /// Where each player at a grapple's or a hold's end is, given before each tick.
+    pub(crate) players: BTreeMap<u32, PlayerAt>,
+    /// Props whose flags (held) changed since the last tick, for the next to report.
+    pub(crate) reflag: Vec<u32>,
+    /// Holds broken since the last tick (their props were frozen), for the next to report.
+    pub(crate) broken_holds: Vec<u32>,
+    /// The players' and vehicles' boxes as the last tick had them (each with its id): what a held prop is kept out of.
+    pub(crate) bodies: Vec<(u32, [f32; 3], [f32; 3])>,
+    /// Each pusher's kinematic box in the physics world, by its id: its middle and half-extents as last placed
+    /// ([`PropWorld::place_pushers`]).
+    pusher_boxes: BTreeMap<u32, ([f32; 3], [f32; 3])>,
     /// Sleepers a joint woke since the last tick (reported by the next).
     roused: Vec<u32>,
     pub joint_limits: JointLimits,
@@ -408,6 +483,10 @@ impl PropWorld {
             joints: BTreeMap::new(),
             gone_joints: Vec::new(),
             players: BTreeMap::new(),
+            reflag: Vec::new(),
+            broken_holds: Vec::new(),
+            bodies: Vec::new(),
+            pusher_boxes: BTreeMap::new(),
             roused: Vec::new(),
             joint_limits: JointLimits::default(),
             config: config(substeps),
@@ -671,6 +750,8 @@ impl PropWorld {
         p.rest = Rest::Frozen;
         p.q = p.q.stopped();
         self.revision = next_revision();
+        // A frozen prop cannot be held: its hold breaks.
+        self.break_holds_on(id);
         Some(MASK_STATE | MASK_FLAGS)
     }
 
@@ -686,6 +767,19 @@ impl PropWorld {
         let p = self.props.get_mut(&id)?;
         p.rest = Rest::Awake;
         p.quiet = 0;
+        Some(MASK_STATE | MASK_FLAGS)
+    }
+
+    /// Puts an awake prop to sleep where it is, stopped, as a sleeper of its own falls asleep (a map's props placed at rest:
+    /// nothing shifts as the map loads); the mask bits to send. None for a frozen prop, one asleep already, or one that is not
+    /// there. It reports no [`PropEvent::Sleep`] (the prop did not come to rest by itself), stops a prop in mid-air as well,
+    /// and ignores `can_freeze` (a sleeper is not pinned). A push, an impulse, a joint or a prop that moves into it wakes it
+    /// as it wakes any sleeper.
+    pub fn sleep(&mut self, id: u32) -> Option<u32> {
+        if !self.props.get(&id)?.rest.is_awake() {
+            return None;
+        }
+        self.put_to_sleep(id);
         Some(MASK_STATE | MASK_FLAGS)
     }
 
@@ -819,6 +913,7 @@ impl PropWorld {
             return None;
         }
         self.world = World::new(self.config);
+        self.pusher_boxes.clear();
         let mut lost = Vec::new();
         let statics = std::mem::take(&mut self.statics);
         for (id, piece) in statics {
@@ -880,7 +975,12 @@ impl PropWorld {
             p.touched.clear();
         }
         let mut impulses: Vec<(u32, [f32; 3])> = Vec::new();
+        let held: BTreeSet<u32> = self.held_props().collect();
         for (&id, prop) in self.props.iter_mut() {
+            // A held prop goes where its hold drives it.
+            if held.contains(&id) {
+                continue;
+            }
             let center = prop.q.position();
             let half = world_half(prop.params.shape.half_extents(), prop.q.rotation());
             for pusher in pushers {
@@ -937,8 +1037,15 @@ impl PropWorld {
             lost: rebuilt.unwrap_or_default(),
             ..TickReport::default()
         };
+        self.bodies = pushers.iter().map(|p| (p.id, p.min, p.max)).collect();
+        self.place_pushers(pushers);
         self.push(pushers);
         self.joints_before_step(&mut report);
+        for id in std::mem::take(&mut self.reflag) {
+            if self.props.contains_key(&id) {
+                report.dirty.push((id, MASK_FLAGS));
+            }
+        }
         for id in std::mem::take(&mut self.roused) {
             report.events.push((id, PropEvent::Wake));
             report.dirty.push((id, MASK_FLAGS));
@@ -978,8 +1085,9 @@ impl PropWorld {
             Err(_) => {}
         }
         let ids: Vec<u32> = self.props.keys().copied().collect();
+        let held: BTreeSet<u32> = self.held_props().collect();
         for id in ids {
-            self.settle(id, &mut report);
+            self.settle(id, held.contains(&id), &mut report);
         }
         // The cap: the farthest awake props from every player sleep first.
         let cap = self.cut.unwrap_or(cap).min(cap);
@@ -1020,6 +1128,103 @@ impl PropWorld {
         report
     }
 
+    /// The first prop the segment from `from` to `to` meets (its box at its state now, at the wire's precision), but `ignore`,
+    /// and the share of the way along the segment it meets it. Held props count.
+    pub fn ray(&self, from: [f32; 3], to: [f32; 3], ignore: Option<u32>) -> Option<(u32, f32)> {
+        let mut best: Option<(u32, f32)> = None;
+        for (&id, p) in &self.props {
+            if Some(id) == ignore {
+                continue;
+            }
+            let to_local = affine_inverse(&quant::matrix(p.q.position(), p.q.rotation()));
+            let half = p.params.shape.half_extents();
+            let bx = Box3::new(half.map(|h| -h), half);
+            if let Some((t, ..)) = segment_box(mul_p(&to_local, from), mul_p(&to_local, to), &bx)
+                && best.is_none_or(|(_, b)| t < b)
+            {
+                best = Some((id, t));
+            }
+        }
+        best
+    }
+
+    /// Each pusher's box as a kinematic body of the physics world (frictionless, so a player walking on a prop does not drag
+    /// it), placed where its box is now and moved only when the box moves: no prop can be pushed into a player or a vehicle
+    /// (a held prop's shove, another prop's fall), and one that is there already is pushed out by the solver, walls and other
+    /// props in its way. A box goes when its pusher does. Pushes stay [`Pusher`]'s impulses: a box is placed, never given a
+    /// speed, so it flings nothing (a teleported figure included).
+    fn place_pushers(&mut self, pushers: &[Pusher]) {
+        let gone: Vec<u32> = self
+            .pusher_boxes
+            .keys()
+            .filter(|id| !pushers.iter().any(|p| p.id == **id))
+            .copied()
+            .collect();
+        for id in gone {
+            self.pusher_boxes.remove(&id);
+            let removed = self.world.remove_body(BodyId(id));
+            self.note(&format!("pusher {id}'s box"), removed);
+        }
+        for p in pushers {
+            // A pusher whose id is a prop, a map piece or a joint is no box (ids are the host's objects: never so).
+            if self.props.contains_key(&p.id)
+                || self.statics.contains_key(&p.id)
+                || self.joints.contains_key(&p.id)
+            {
+                continue;
+            }
+            let middle: [f32; 3] = std::array::from_fn(|k| (p.min[k] + p.max[k]) * 0.5);
+            let half: [f32; 3] =
+                std::array::from_fn(|k| ((p.max[k] - p.min[k]) * 0.5).max(MIN_HALF));
+            if !middle.iter().chain(&half).all(|v| v.is_finite()) {
+                continue;
+            }
+            match self.pusher_boxes.get(&p.id) {
+                Some(&(m, h)) if m == middle && h == half => {}
+                Some(&(_, h)) if h == half => {
+                    let s = BodyState {
+                        position: middle,
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        linvel: [0.0; 3],
+                        angvel: [0.0; 3],
+                        sleeping: false,
+                    };
+                    let set = self.world.set_body(BodyId(p.id), &s);
+                    self.note(&format!("pusher {}'s box", p.id), set);
+                    self.pusher_boxes.insert(p.id, (middle, half));
+                }
+                kept => {
+                    // New, or its box changed size (a crouch): made again.
+                    if kept.is_some() {
+                        let removed = self.world.remove_body(BodyId(p.id));
+                        self.note(&format!("pusher {}'s box", p.id), removed);
+                    }
+                    let desc = BodyDesc {
+                        motion: Motion::Kinematic,
+                        shape: Shape::Box { half },
+                        position: middle,
+                        friction: 0.0,
+                        restitution: 0.0,
+                        ..BodyDesc::default()
+                    };
+                    let mut free = |_: u64| true;
+                    if self.world.add_body(BodyId(p.id), &desc, &mut free).is_ok() {
+                        self.pusher_boxes.insert(p.id, (middle, half));
+                    } else {
+                        self.pusher_boxes.remove(&p.id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A hold on prop `id` was made or taken away: its flags go to the clients at the next tick, and the collision sources list
+    /// the props again (a held prop is left out of the players' collision).
+    pub(crate) fn held_changed(&mut self, id: u32) {
+        self.revision = next_revision();
+        self.reflag.push(id);
+    }
+
     /// Wakes a sleeping prop that something other than a contact is to move (a joint made or changed, a winch reeling): awake,
     /// its quiet count started over, its wake reported by the next tick. A prop that sleeps settles back exactly where it lay
     /// unless it moves, so a joint's slow start would otherwise never wake it.
@@ -1051,8 +1256,8 @@ impl PropWorld {
         let _ = self.world.set_body(BodyId(id), &s);
     }
 
-    /// One prop after the step: quantized and written back, asleep or woken.
-    fn settle(&mut self, id: u32, report: &mut TickReport) {
+    /// One prop after the step: quantized and written back, asleep or woken (a `held` one never falls asleep).
+    fn settle(&mut self, id: u32, held: bool, report: &mut TickReport) {
         let Some(s) = self.world.body(BodyId(id)) else {
             return;
         };
@@ -1099,7 +1304,8 @@ impl PropWorld {
         }
         let q = Quantized::of(&s);
         let (lin, ang) = (length(s.linvel), length(s.angvel));
-        let quiet = p.params.sleep_linear > 0.0
+        let quiet = !held
+            && p.params.sleep_linear > 0.0
             && p.params.sleep_angular > 0.0
             && lin < p.params.sleep_linear
             && ang < p.params.sleep_angular;
