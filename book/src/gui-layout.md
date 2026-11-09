@@ -177,6 +177,46 @@ menu.gap = 12
 ts.object("PlayButton").flexGrow = 1
 ```
 
+## In a server's client scripts
+
+A server's client scripts (see [Server scripts](server-scripts.md)) make controls from a closed set of kinds, not from GUI
+files, and they cannot name `GuiFlexCtrl`. When the engine has this plugin they get two more kinds, `flex` and `grid`, laid
+out by these same classes:
+
+```lua
+local menu = ui.new("flex", { size = { 240, 400 }, direction = "column", gap = { 8, 8 }, padding = 16 })
+ui.new("button", { text = "Play", size = { 100, 30 } }, menu)
+ui.new("button", { text = "Options", size = { 100, 30 } }, menu)
+ui.new("panel", { grow = 1 }, menu)                      -- the room left over
+ui.new("button", { text = "Quit", size = { 100, 30 } }, menu)
+```
+
+The props are the fields above under the names the script uses (a pair or four numbers where the field takes words, a list for
+the tracks of a grid):
+
+| Container prop | Field | Lua value |
+|---|---|---|
+| `direction`, `wrap` (flex) | `direction`, `wrap` | the CSS words, `"column"`, `"wrap-reverse"` |
+| `columns`, `rows` (grid) | `columns`, `rows` | a list: `{ 100, "1fr", "auto" }` (lengths, shares, `auto`) |
+| `autoFlow`, `justifyItems` (grid) | `autoFlow`, `justifyItems` | the CSS words, `"row dense"` |
+| `justifyContent`, `alignItems`, `alignContent` | same | the CSS words |
+| `gap` | `gap` | `{ between rows, between columns }` |
+| `padding` | `padding` | a number, `{ vertical, horizontal }` or `{ top, right, bottom, left }` |
+
+Every control, of any kind, has the item props that tell the container above it how to place it: `grow`, `shrink`, `basis`
+(-1 is the control's own size), `alignSelf`, `justifySelf`, `margin`, `row`, `column`, `rowSpan`, `columnSpan`, `minSize` and
+`maxSize` (0 is none). They are the children's fields of the same names (`flexGrow`, `gridColumn`, ...) and do nothing under a
+parent that is not a container. A container has no look: no `enabled`, `tooltip` or `opacity`, no events, it draws nothing and
+is clicked through (put a `panel` in it, or under it, for a background). A container inside another is laid out at the `size`
+the script gave it; without one it follows its content.
+
+The server is not trusted, so every number must be finite and within a cap, and the engine refuses the rest (it stops the
+realm; the Lua side refuses first, with an error): containers nest at most 8 deep, a container has at most 256 children, a grid
+at most 32 columns and 32 rows, gaps, padding and margins are at most 1,024, a share at most 1,000 and a length at most 16,384.
+
+An engine without this plugin keeps a container as a plain group: it places nothing, its children stay where their own `pos` and
+`size` put them, and the item props are ignored. Everything else a script does is unaffected.
+
 ## Differences from CSS
 
 - Lengths are pixels and have no unit; percentages are of the container's size (inside its padding).

@@ -1,4 +1,11 @@
 //! The `ui` tier's controls: kinds, props (ids, types, ranges, defaults), the rich-text markup, content paths and caps.
+//!
+//! **Layout.** Two kinds, `flex` and `grid`, are containers: they hold controls and lay them out by the rules of CSS's flexbox
+//! and grid, and have no look of their own (a `panel` inside one is its background). Every control has the item props (`grow`,
+//! `column`, `margin`, ...) that tell the container above it how to place it; they do nothing under any other parent. All of it
+//! is untrusted data: the reader here checks the ranges of each prop and [`MAX_TRACKS`]; the guest and the GUI's applier check
+//! [`MAX_CONTAINER_DEPTH`] and [`MAX_CONTAINER_CHILDREN`], which need the tree. An engine without a layout class keeps the
+//! containers as plain groups.
 
 use crate::codec::{Malformed, Reader, Writer};
 
@@ -25,6 +32,18 @@ pub const MAX_ROWS: usize = 1024;
 pub const ACTIVATION_US: u64 = 1_000_000;
 /// The longest content path.
 pub const MAX_PATH: usize = 256;
+/// How many containers may be nested (a container inside a container inside ...), the container itself counted.
+pub const MAX_CONTAINER_DEPTH: usize = 8;
+/// The most children a container has.
+pub const MAX_CONTAINER_CHILDREN: usize = 256;
+/// The most tracks of a grid's `columns` or `rows`, and the most a child's `row`, `column` or span names.
+pub const MAX_TRACKS: usize = 32;
+/// The most a gap, a padding side or a margin side is, in UI units.
+pub const MAX_SPACING: f64 = 1024.0;
+/// The most a `grow` or `shrink` or a track's `fr` is.
+pub const MAX_SHARE: f64 = 1000.0;
+/// The most a length of layout (a track's size, a `basis`, a `minSize`) is, in UI units.
+pub const MAX_LENGTH: f64 = 16384.0;
 /// How many markup tags may be open at once in rich text.
 pub const MAX_RICH_NESTING: usize = 8;
 /// The extensions of image content paths.
@@ -56,6 +75,30 @@ pub enum Kind {
     Slider = 9,
     /// A progress bar.
     Progress = 10,
+    /// A container that lays its children out in a row or a column ([`Container::Flex`]).
+    Flex = 11,
+    /// A container that lays its children out in a grid ([`Container::Grid`]).
+    Grid = 12,
+}
+
+/// The layout a container kind has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Container {
+    /// Flexbox: children in a row or a column.
+    Flex,
+    /// Grid: children in the cells of rows and columns.
+    Grid,
+}
+
+impl Kind {
+    /// The layout of a container kind; none for the others.
+    pub fn container(self) -> Option<Container> {
+        match self {
+            Kind::Flex => Some(Container::Flex),
+            Kind::Grid => Some(Container::Grid),
+            _ => None,
+        }
+    }
 }
 
 /// A prop's id.
@@ -128,6 +171,52 @@ pub enum Prop {
     Progress = 39,
     /// `step`: a slider's step (0: none).
     Step = 40,
+    /// `grow`: the share of the room left over a flex child takes.
+    Grow = 41,
+    /// `shrink`: the share of the shortage a flex child gives up.
+    Shrink = 42,
+    /// `basis`: a flex child's size along the main axis before growing or shrinking (-1: its own size).
+    Basis = 43,
+    /// `alignSelf`: this child's own cross-axis alignment.
+    AlignSelf = 44,
+    /// `justifySelf`: this child's own alignment across its grid cell's width.
+    JustifySelf = 45,
+    /// `margin`: the room around a child.
+    Margin = 46,
+    /// `row`: the grid row (1-based) a child starts in (0: placed by the auto-flow).
+    Row = 47,
+    /// `column`: the grid column (1-based) a child starts in (0: placed by the auto-flow).
+    Column = 48,
+    /// `rowSpan`: the rows a grid child covers.
+    RowSpan = 49,
+    /// `columnSpan`: the columns a grid child covers.
+    ColumnSpan = 50,
+    /// `minSize`: the least size a child is laid out at (0: its own).
+    MinSize = 51,
+    /// `maxSize`: the largest size a child is laid out at (0: none).
+    MaxSize = 52,
+    /// `direction`: a flex container's main axis.
+    Direction = 53,
+    /// `wrap` of a flex container: whether and how children wrap onto more lines.
+    LineWrap = 54,
+    /// `justifyContent`: where the children sit along the main axis (of a grid: where the columns sit).
+    JustifyContent = 55,
+    /// `alignItems`: where the children sit across their line (of a grid: across their cell's height).
+    AlignItems = 56,
+    /// `alignContent`: where the lines sit across the container (of a grid: where the rows sit).
+    AlignContent = 57,
+    /// `gap`: the room between rows, then between columns.
+    Gap = 58,
+    /// `padding`: the room inside the container's edges.
+    Padding = 59,
+    /// `columns`: a grid's column tracks.
+    Columns = 60,
+    /// `rows` of a grid: its row tracks.
+    TrackRows = 61,
+    /// `autoFlow`: how a grid places children that have no row or column.
+    AutoFlow = 62,
+    /// `justifyItems`: where a grid's children sit across their cell's width.
+    JustifyItems = 63,
 }
 
 /// A prop's type and range.
@@ -174,6 +263,29 @@ pub enum PropType {
     Image,
     /// Rows of plain text.
     Rows,
+    /// Four finite `f64`s (top, right, bottom, left), each in `min..=max`.
+    Sides {
+        /// The lowest value of any side.
+        min: f64,
+        /// The highest value of any side.
+        max: f64,
+    },
+    /// At most `max` grid tracks ([`Track`]).
+    Tracks {
+        /// The most tracks.
+        max: usize,
+    },
+}
+
+/// One grid track: how wide a column or how tall a row is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Track {
+    /// As much as its content needs.
+    Auto,
+    /// A length in UI units, 0 to [`MAX_LENGTH`].
+    Px(f64),
+    /// A share of the room left over, 0 to [`MAX_SHARE`] (`1fr`).
+    Fr(f64),
 }
 
 /// A prop's value.
@@ -195,6 +307,10 @@ pub enum PropValue {
     Enum(u8),
     /// Rows of text.
     Rows(Vec<String>),
+    /// Top, right, bottom and left.
+    Sides([f64; 4]),
+    /// Grid tracks.
+    Tracks(Vec<Track>),
 }
 
 /// A prop's default, as a constant.
@@ -216,6 +332,10 @@ pub enum PropDefault {
     Enum(u8),
     /// No rows.
     NoRows,
+    /// The same on all four sides.
+    Sides(f64),
+    /// No tracks.
+    NoTracks,
 }
 
 impl PropDefault {
@@ -230,6 +350,8 @@ impl PropDefault {
             PropDefault::Text(t) => PropValue::Text(t.to_string()),
             PropDefault::Enum(i) => PropValue::Enum(i),
             PropDefault::NoRows => PropValue::Rows(Vec::new()),
+            PropDefault::Sides(n) => PropValue::Sides([n; 4]),
+            PropDefault::NoTracks => PropValue::Tracks(Vec::new()),
         }
     }
 }
@@ -477,18 +599,220 @@ pub const PROPS: &[PropDef] = &[
         ty: PropType::Number { min: 0.0, max: 1e9 },
         default: PropDefault::Number(0.0),
     },
+    PropDef {
+        prop: Prop::Grow,
+        name: "grow",
+        ty: PropType::Number {
+            min: 0.0,
+            max: MAX_SHARE,
+        },
+        default: PropDefault::Number(0.0),
+    },
+    PropDef {
+        prop: Prop::Shrink,
+        name: "shrink",
+        ty: PropType::Number {
+            min: 0.0,
+            max: MAX_SHARE,
+        },
+        default: PropDefault::Number(1.0),
+    },
+    PropDef {
+        prop: Prop::Basis,
+        name: "basis",
+        ty: PropType::Number {
+            min: -1.0,
+            max: MAX_LENGTH,
+        },
+        default: PropDefault::Number(-1.0),
+    },
+    PropDef {
+        prop: Prop::AlignSelf,
+        name: "alignSelf",
+        ty: PropType::Enum(&["auto", "stretch", "start", "end", "center", "baseline"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::JustifySelf,
+        name: "justifySelf",
+        ty: PropType::Enum(&["auto", "stretch", "start", "end", "center"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::Margin,
+        name: "margin",
+        ty: PropType::Sides {
+            min: 0.0,
+            max: MAX_SPACING,
+        },
+        default: PropDefault::Sides(0.0),
+    },
+    PropDef {
+        prop: Prop::Row,
+        name: "row",
+        ty: PropType::Int {
+            min: 0,
+            max: MAX_TRACKS as u32,
+        },
+        default: PropDefault::Int(0),
+    },
+    PropDef {
+        prop: Prop::Column,
+        name: "column",
+        ty: PropType::Int {
+            min: 0,
+            max: MAX_TRACKS as u32,
+        },
+        default: PropDefault::Int(0),
+    },
+    PropDef {
+        prop: Prop::RowSpan,
+        name: "rowSpan",
+        ty: PropType::Int {
+            min: 1,
+            max: MAX_TRACKS as u32,
+        },
+        default: PropDefault::Int(1),
+    },
+    PropDef {
+        prop: Prop::ColumnSpan,
+        name: "columnSpan",
+        ty: PropType::Int {
+            min: 1,
+            max: MAX_TRACKS as u32,
+        },
+        default: PropDefault::Int(1),
+    },
+    PropDef {
+        prop: Prop::MinSize,
+        name: "minSize",
+        ty: PropType::Vec2 {
+            min: 0.0,
+            max: MAX_LENGTH,
+        },
+        default: PropDefault::Vec2(0.0, 0.0),
+    },
+    PropDef {
+        prop: Prop::MaxSize,
+        name: "maxSize",
+        ty: PropType::Vec2 {
+            min: 0.0,
+            max: MAX_LENGTH,
+        },
+        default: PropDefault::Vec2(0.0, 0.0),
+    },
+    PropDef {
+        prop: Prop::Direction,
+        name: "direction",
+        ty: PropType::Enum(&["row", "column", "row-reverse", "column-reverse"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::LineWrap,
+        name: "wrap",
+        ty: PropType::Enum(&["nowrap", "wrap", "wrap-reverse"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::JustifyContent,
+        name: "justifyContent",
+        ty: PropType::Enum(DISTRIBUTE),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::AlignItems,
+        name: "alignItems",
+        ty: PropType::Enum(&["stretch", "start", "end", "center", "baseline"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::AlignContent,
+        name: "alignContent",
+        ty: PropType::Enum(DISTRIBUTE),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::Gap,
+        name: "gap",
+        ty: PropType::Vec2 {
+            min: 0.0,
+            max: MAX_SPACING,
+        },
+        default: PropDefault::Vec2(0.0, 0.0),
+    },
+    PropDef {
+        prop: Prop::Padding,
+        name: "padding",
+        ty: PropType::Sides {
+            min: 0.0,
+            max: MAX_SPACING,
+        },
+        default: PropDefault::Sides(0.0),
+    },
+    PropDef {
+        prop: Prop::Columns,
+        name: "columns",
+        ty: PropType::Tracks { max: MAX_TRACKS },
+        default: PropDefault::NoTracks,
+    },
+    PropDef {
+        prop: Prop::TrackRows,
+        name: "rows",
+        ty: PropType::Tracks { max: MAX_TRACKS },
+        default: PropDefault::NoTracks,
+    },
+    PropDef {
+        prop: Prop::AutoFlow,
+        name: "autoFlow",
+        ty: PropType::Enum(&["row", "column", "row dense", "column dense"]),
+        default: PropDefault::Enum(0),
+    },
+    PropDef {
+        prop: Prop::JustifyItems,
+        name: "justifyItems",
+        ty: PropType::Enum(&["stretch", "start", "end", "center"]),
+        default: PropDefault::Enum(0),
+    },
 ];
 
-/// The props every kind has.
-const COMMON: &[Prop] = &[
+/// Where a container puts its content (or its lines) when it leaves room: the words of CSS's `justify-content`.
+const DISTRIBUTE: &[&str] = &[
+    "start",
+    "end",
+    "center",
+    "stretch",
+    "space-between",
+    "space-around",
+    "space-evenly",
+];
+
+/// The props that place a control in its parent: every kind has them.
+const PLACE: &[Prop] = &[
     Prop::Pos,
     Prop::Size,
     Prop::HSize,
     Prop::VSize,
     Prop::Visible,
-    Prop::Enabled,
-    Prop::Tooltip,
-    Prop::Opacity,
+];
+
+/// The props of a control's look and input: every kind but the containers has them.
+const LOOK: &[Prop] = &[Prop::Enabled, Prop::Tooltip, Prop::Opacity];
+
+/// The props that tell a container how to place a child: every kind has them (and they do nothing under a parent that is not
+/// a container).
+const ITEM: &[Prop] = &[
+    Prop::Grow,
+    Prop::Shrink,
+    Prop::Basis,
+    Prop::AlignSelf,
+    Prop::JustifySelf,
+    Prop::Margin,
+    Prop::Row,
+    Prop::Column,
+    Prop::RowSpan,
+    Prop::ColumnSpan,
+    Prop::MinSize,
+    Prop::MaxSize,
 ];
 
 /// An event a control sends (`h:on(name, fn)`), its id the `ui` event kind's ([`crate::event::ui`]).
@@ -561,23 +885,29 @@ pub struct KindDef {
 }
 
 impl KindDef {
-    /// Whether the kind has `prop` (common or its own).
+    /// Whether the kind has `prop` (common, an item prop or its own).
     pub fn has(&self, prop: Prop) -> bool {
-        COMMON.contains(&prop) || self.own.contains(&prop)
+        self.props().any(|p| p == prop)
     }
 
     /// The kind's prop named `name`.
     pub fn prop_named(&self, name: &str) -> Option<&'static PropDef> {
-        COMMON
-            .iter()
-            .chain(self.own)
-            .map(|&p| prop_def(p))
-            .find(|d| d.name == name)
+        self.props().map(prop_def).find(|d| d.name == name)
     }
 
-    /// Every prop of the kind, common first.
+    /// Every prop of the kind: the common ones first (a container has no look props), then the item props, then its own.
     pub fn props(&self) -> impl Iterator<Item = Prop> + '_ {
-        COMMON.iter().chain(self.own).copied()
+        let look = if self.kind.container().is_some() {
+            &[][..]
+        } else {
+            LOOK
+        };
+        PLACE
+            .iter()
+            .chain(look)
+            .chain(ITEM)
+            .chain(self.own)
+            .copied()
     }
 }
 
@@ -686,6 +1016,36 @@ pub const KINDS: &[KindDef] = &[
         kind: Kind::Progress,
         name: "progress",
         own: &[Prop::Progress, Prop::Fill, Prop::Color],
+        events: &[],
+    },
+    KindDef {
+        kind: Kind::Flex,
+        name: "flex",
+        own: &[
+            Prop::Direction,
+            Prop::LineWrap,
+            Prop::JustifyContent,
+            Prop::AlignItems,
+            Prop::AlignContent,
+            Prop::Gap,
+            Prop::Padding,
+        ],
+        events: &[],
+    },
+    KindDef {
+        kind: Kind::Grid,
+        name: "grid",
+        own: &[
+            Prop::Columns,
+            Prop::TrackRows,
+            Prop::AutoFlow,
+            Prop::JustifyItems,
+            Prop::JustifyContent,
+            Prop::AlignItems,
+            Prop::AlignContent,
+            Prop::Gap,
+            Prop::Padding,
+        ],
         events: &[],
     },
 ];
@@ -860,6 +1220,19 @@ pub fn check_value(def: &PropDef, value: &PropValue) -> Result<(), &'static str>
                 Err("not one of the names")
             }
         }
+        (PropType::Sides { min, max }, PropValue::Sides(sides)) => {
+            if sides.iter().all(|&v| in_range(v, min, max)) {
+                Ok(())
+            } else {
+                Err("a number out of range")
+            }
+        }
+        (PropType::Tracks { max }, PropValue::Tracks(tracks)) => {
+            if tracks.len() > max {
+                return Err("too many tracks");
+            }
+            tracks.iter().try_for_each(check_track)
+        }
         (PropType::Rows, PropValue::Rows(rows)) => {
             if rows.len() > MAX_ROWS {
                 return Err("too many rows");
@@ -873,6 +1246,75 @@ pub fn check_value(def: &PropDef, value: &PropValue) -> Result<(), &'static str>
             Ok(())
         }
         _ => Err("a value of the wrong type"),
+    }
+}
+
+/// One track within its range.
+fn check_track(track: &Track) -> Result<(), &'static str> {
+    let ok = match *track {
+        Track::Auto => true,
+        Track::Px(v) => v.is_finite() && (0.0..=MAX_LENGTH).contains(&v),
+        Track::Fr(v) => v.is_finite() && (0.0..=MAX_SHARE).contains(&v),
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err("a track out of range")
+    }
+}
+
+/// The most characters one number of [`field_text`] takes: a sign, up to ten digits (the widest range is 1e9), a point and
+/// [`NUMBER_DECIMALS`] decimals.
+pub const MAX_NUMBER_TEXT: usize = 16;
+/// The decimals [`number_text`] keeps.
+const NUMBER_DECIMALS: usize = 4;
+
+/// A finite number as short text: at most [`NUMBER_DECIMALS`] decimals, none trailing, and no `-0` (a value that rounds to
+/// nothing is `0`). `1e-300` is `0`, not three hundred digits.
+pub fn number_text(n: f64) -> String {
+    let fixed = format!("{n:.NUMBER_DECIMALS$}");
+    let trimmed = if fixed.contains('.') {
+        fixed.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        &fixed
+    };
+    match trimmed {
+        "-0" | "" => "0".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// A prop's value as the words of CSS that a layout class reads from a console field: a number as itself (to four
+/// decimals, [`number_text`]), a pair as `x y`, sides as `top right bottom left`, tracks as `120 1fr auto`, an enum as its
+/// name, a flag as `1` or `0`. Text and rows have no such form (empty). A number is at most [`MAX_NUMBER_TEXT`] characters.
+pub fn field_text(def: &PropDef, value: &PropValue) -> String {
+    match value {
+        PropValue::Bool(on) => String::from(if *on { "1" } else { "0" }),
+        // A negative basis is "its own size", which CSS spells `auto` (a negative length is read as none).
+        PropValue::Number(n) if def.prop == Prop::Basis && *n < 0.0 => "auto".to_string(),
+        PropValue::Number(n) => number_text(*n),
+        PropValue::Int(n) => n.to_string(),
+        PropValue::Vec2(x, y) => format!("{} {}", number_text(*x), number_text(*y)),
+        PropValue::Sides(sides) => sides
+            .iter()
+            .map(|&v| number_text(v))
+            .collect::<Vec<_>>()
+            .join(" "),
+        PropValue::Enum(i) => match def.ty {
+            PropType::Enum(names) => names.get(usize::from(*i)).copied().unwrap_or_default(),
+            _ => "",
+        }
+        .to_owned(),
+        PropValue::Tracks(tracks) => tracks
+            .iter()
+            .map(|t| match t {
+                Track::Auto => "auto".to_string(),
+                Track::Px(v) => number_text(*v),
+                Track::Fr(v) => format!("{}fr", number_text(*v)),
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        PropValue::Color(_) | PropValue::Text(_) | PropValue::Rows(_) => String::new(),
     }
 }
 
@@ -904,8 +1346,31 @@ fn write_value(out: &mut Writer, value: &PropValue) {
                 out.text(row);
             }
         }
+        PropValue::Sides(sides) => sides.iter().for_each(|&v| out.f64(v)),
+        PropValue::Tracks(tracks) => {
+            // A list past the cap is the reader's to refuse (a count of 255 is past every cap), never a wrapped count.
+            out.u8(u8::try_from(tracks.len()).unwrap_or(u8::MAX));
+            for track in tracks {
+                match *track {
+                    Track::Auto => out.u8(TRACK_AUTO),
+                    Track::Px(v) => {
+                        out.u8(TRACK_PX);
+                        out.f64(v);
+                    }
+                    Track::Fr(v) => {
+                        out.u8(TRACK_FR);
+                        out.f64(v);
+                    }
+                }
+            }
+        }
     }
 }
+
+/// A track's tag on the wire: `auto`, then a length (`f64`), then a share (`f64`).
+const TRACK_AUTO: u8 = 0;
+const TRACK_PX: u8 = 1;
+const TRACK_FR: u8 = 2;
 
 /// Writes props: a count and the pairs, which the caller gives in ascending id order (a `BTreeMap<Prop, _>`'s order),
 /// each checked, at most one of each prop.
@@ -945,6 +1410,29 @@ fn read_value(reader: &mut Reader<'_>, def: &PropDef) -> Result<PropValue, Malfo
                 rows.push(reader.text()?.to_string());
             }
             PropValue::Rows(rows)
+        }
+        PropType::Sides { .. } => PropValue::Sides([
+            reader.finite()?,
+            reader.finite()?,
+            reader.finite()?,
+            reader.finite()?,
+        ]),
+        PropType::Tracks { max } => {
+            let count = usize::from(reader.u8()?);
+            if count > max {
+                return Err(Malformed("more tracks than the prop's cap"));
+            }
+            // Every track takes at least a byte, so the bytes left bound what is reserved.
+            let mut tracks = Vec::with_capacity(count.min(reader.rest().len()));
+            for _ in 0..count {
+                tracks.push(match reader.u8()? {
+                    TRACK_AUTO => Track::Auto,
+                    TRACK_PX => Track::Px(reader.finite()?),
+                    TRACK_FR => Track::Fr(reader.finite()?),
+                    _ => return Err(Malformed("an unknown track")),
+                });
+            }
+            PropValue::Tracks(tracks)
         }
     })
 }

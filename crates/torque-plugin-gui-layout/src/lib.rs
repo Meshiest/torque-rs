@@ -10,6 +10,12 @@
 //!
 //! It is not in `DefaultPlugins`: a game adds it.
 //!
+//! It also gives a server's client scripts (the realm of `torque-plugin-client-script`) their `flex` and `grid` controls: it
+//! registers a [`RealmLayout`](torque_gui::client_script::RealmLayout) naming these two classes and the field each layout prop
+//! goes to, so the realm's applier (in `torque-gui`, which cannot depend on this crate) makes its containers as these classes.
+//! The applier has checked every value against the format's caps first. A game that wants server scripts without layout leaves
+//! this plugin out, and the containers are plain groups.
+//!
 //! ```
 //! use torque_engine::EngineBuilder;
 //! use torque_plugin_gui_layout::GuiLayoutPlugin;
@@ -56,11 +62,17 @@
 //!   and in the frame after a child is added or removed, shown or hidden, resized, or has a layout field changed: each
 //!   frame the outermost container compares a fingerprint of those inputs with the last layout's and lays out only on a
 //!   difference. A container in one of the host's overlays has no frame check: it lays out on resize and wake only.
+//! - **What it costs.** Laying out is charged to the script engine's work budget (`Vm::charge_work`): a unit of work a node and a
+//!   fingerprint, and for a grid what taffy does beyond its nodes: the cells its children cover, its tracks and the tracks each
+//!   child crosses, and in a dense auto-flow a rescan of the grid for every child. A grid too dear for the budget is not laid
+//!   out (its children keep their bounds); a hostile grid of wide children costs a frame its budget at most.
 //!
 //! The rules are CSS's: a field's words are the CSS property's values (`space-between`, `1fr`, `minmax(80, 1fr)`,
 //! `repeat(3, 1fr)`, ...), lengths in pixels without a unit.
 
+use torque_client_script_format::ui::Prop;
 use torque_engine::{EngineBuilder, EngineClass, Plugin, PluginId, ScriptClass};
+use torque_gui::client_script::RealmLayout;
 use torque_gui::custom::{ControlCx, GuiBuilderExt, GuiControlClass};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
@@ -70,7 +82,40 @@ pub mod parse;
 
 pub use layout::{CHILD_FIELDS, MAX_FIELD_BYTES, MAX_NESTING, MAX_NODES};
 
-/// Adds `GuiFlexCtrl` and `GuiGridCtrl` to every client's GUI.
+/// The layout a realm's `flex` and `grid` kinds use: these classes, each prop written to the field of its CSS name, and a
+/// container's size to `layoutWidth` and `layoutHeight`.
+static REALM_LAYOUT: RealmLayout = RealmLayout::new(
+    FlexCtrl::NAME,
+    GridCtrl::NAME,
+    &[
+        (Prop::Grow, "flexGrow"),
+        (Prop::Shrink, "flexShrink"),
+        (Prop::Basis, "flexBasis"),
+        (Prop::AlignSelf, "alignSelf"),
+        (Prop::JustifySelf, "justifySelf"),
+        (Prop::Margin, "margin"),
+        (Prop::Row, "gridRow"),
+        (Prop::Column, "gridColumn"),
+        (Prop::RowSpan, "gridRowSpan"),
+        (Prop::ColumnSpan, "gridColumnSpan"),
+        (Prop::MinSize, "layoutMinExtent"),
+        (Prop::MaxSize, "layoutMaxExtent"),
+        (Prop::Direction, "direction"),
+        (Prop::LineWrap, "wrap"),
+        (Prop::JustifyContent, "justifyContent"),
+        (Prop::AlignItems, "alignItems"),
+        (Prop::AlignContent, "alignContent"),
+        (Prop::Gap, "gap"),
+        (Prop::Padding, "padding"),
+        (Prop::Columns, "columns"),
+        (Prop::TrackRows, "rows"),
+        (Prop::AutoFlow, "autoFlow"),
+        (Prop::JustifyItems, "justifyItems"),
+    ],
+    ("layoutWidth", "layoutHeight"),
+);
+
+/// Adds `GuiFlexCtrl` and `GuiGridCtrl` to every client's GUI, and gives client-script realms their `flex` and `grid` kinds.
 #[derive(Debug, Default, Clone, Copy, PluginId)]
 #[plugin(id = "torque.gui-layout")]
 pub struct GuiLayoutPlugin;
@@ -79,7 +124,8 @@ impl Plugin for GuiLayoutPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine
             .add_gui_control::<FlexCtrl>()
-            .add_gui_control::<GridCtrl>();
+            .add_gui_control::<GridCtrl>()
+            .add_realm_layout(&REALM_LAYOUT);
     }
 }
 

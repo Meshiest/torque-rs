@@ -30,15 +30,19 @@
 //! Escape is the host's). It never draws or reads anything of the realm, which does not exist until the answer. A game may draw its
 //! own prompt in the engine layer instead; the plugin crate's `ConsentPrompt` is the slot.
 //!
-//! Layout containers (`GuiFlexCtrl`, `GuiGridCtrl`) are not used: format 1 has no props for them, only positions, sizes and the
-//! sizing rules of `GuiControl`.
+//! **Layout.** The format's `flex` and `grid` kinds are containers. Their classes are a plugin's (`GuiFlexCtrl` and
+//! `GuiGridCtrl` of the layout plugin, which this crate cannot depend on): the plugin registers a [`RealmLayout`] while the
+//! engine is built, the GUI plugin hands it to each client's GUI, and the applier makes the container as an object of its class
+//! with the checked props written to its fields as the words of CSS. A container, and the item props of any control, are the
+//! layout's to place; the realm sees neither a state nor a look of a container (it is a transparent group to input and
+//! drawing). Without a layout a container is a `ClientScriptGroup` that places nothing and the item props are not written.
 //!
 //! # Maintaining
 //!
 //! **Map.** `apply` is the realm's applier and teardown; `controls` the `ClientScript*` classes, their input handlers and hit
 //! test; `paint` how each kind draws (and the kept text layouts); `layers` the layer state, the draw plan, the per-frame holds,
 //! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `prompt` the consent prompt; `events` the events for the
-//! realm and their encoding; `props`, `rich` small helpers. The rest of the crate calls in at these places:
+//! realm and their encoding; `layout` the hook a layout plugin fills (`RealmLayout`); `props`, `rich` small helpers. The rest of the crate calls in at these places:
 //! - drawing (`draw.rs`): `draw_canvas` takes `DrawPlan::of`; `Walk::server_layer` draws the layer, `focus_on_top`'s field
 //!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed;
 //!   `Walk::engine_layer` draws the prompts and the chip; each layer is recorded as a `LayerMark`; realm images are drawn by
@@ -52,7 +56,9 @@
 //! **An op's way.** The host gives `Realm::apply_flush` a flush; it is decoded record by record, the tier checked against the
 //! grants, and a `ui` record read by its kind. Everything is checked before anything changes, so a refused op changes nothing.
 //! A create or set merges the props, checks the rules between them and the caps, makes or finds the object, writes the layout
-//! props to its fields and the rest to its `NodeState`. The player's input travels back: `route` finds the control, the class's
+//! props to its fields and the rest to its `NodeState`. A container (`flex`, `grid`) is made as an object of the layout's class
+//! with its props, and every control's item props, written as the words of CSS to the fields the layout names
+//! (`apply::layout_fields`); it keeps its props in the applier's node, not in a `NodeState`. The player's input travels back: `route` finds the control, the class's
 //! handler changes its state and queues a `UiEvent`, and the host takes the batch with `Gui::take_client_script_batch`.
 //!
 //! **Order.** Drawing: content, server layer, dialogs, engine layer, chip (`LayerMark` records it). Input: every Escape to the
@@ -89,10 +95,25 @@
 //! - The content store fails closed, and images are drawn from its bytes alone, never the game's files:
 //!   `client_script_images_are_refused_until_the_host_sets_a_content_check`, `client_script_images_come_from_the_servers_store_alone`.
 //! - Text is measured once a word and its layout kept: `client_script_wrapped_text_is_measured_once_a_word_and_kept`.
+//! - A container never has more children than `MAX_CONTAINER_CHILDREN` or more containers around it than `MAX_CONTAINER_DEPTH`, on
+//!   create and on `parent`, and a refused op changes nothing (the nodes count their containers, which `Realm::check` re-derives):
+//!   `client_script_a_container_has_at_most_so_many_children`, `client_script_containers_nest_at_most_so_deep`,
+//!   `client_script_applier_fuzz_of_layout_containers_100000_sequences` (and the same without a layout). A container takes no look prop,
+//!   no value out of range and no track past the cap: `client_script_a_container_refuses_the_looks_it_lacks_and_hostile_values`.
+//! - Without a layout a container is a transparent group that places nothing and writes no field, and with one it is invisible to
+//!   drawing and input (it has no `NodeState`, so no hit and no quad):
+//!   `client_script_without_a_layout_a_container_is_a_plain_group`, `client_script_a_container_is_transparent_to_input_and_adds_no_look`.
+//!   The layout plugin's own tests drive the real classes (`torque-plugin-gui-layout`, `tests/realm.rs`).
 //! - The caps hold, per control and in all: `client_script_the_caps_hold`, `client_script_images_and_text_are_counted_across_the_realm`.
 //!
 //! **Extending.** A new kind needs the format's kind and props first, then a class in `controls`, its name in `class_name` and
-//! `add_controls`, a draw in `paint`, and its cases in the refusal and canary tests. A new drawing hook goes in the list above.
+//! `add_controls`, a draw in `paint`, and its cases in the refusal and canary tests. A layout prop is a prop of the format first
+//! (`ITEM` or a container's own), then a row in the layout plugin's `RealmLayout` table; the applier needs no change. The layout's
+//! classes are not canvas children, so the GUI's frame does not reach them: `layers::frame` runs their `update` (`LayerState::laid`), and only
+//! for two frames after something a layout reads changed (`layout_frames`, set by `mark_layout` for every op on a container or on a
+//! control in one, and by a resize of the layer), so an idle realm does no layout work at all, which `Stats::layout_updates` and
+//! `layout_work` count: `client_script_layouts_are_checked_only_after_a_change_inside_one`. The applier is the only writer of what a
+//! layout reads; a new op that writes a container's fields or moves a control must call `mark_layout`. A new drawing hook goes in the list above.
 //! The consent prompt is an engine-layer control: put it in with `Gui::push_engine_layer`; it takes the pointer and the keys
 //! first and is modal, and the server layer takes none while it is up. Never give a realm control a way to run text: no field
 //! writes by name, no `Vm::eval`, no script method calls.
@@ -105,6 +126,7 @@ mod chip;
 mod controls;
 mod events;
 mod layers;
+mod layout;
 mod paint;
 mod prompt;
 mod props;
@@ -124,6 +146,7 @@ pub use layers::{
     MAX_QUEUED_EVENTS, RealmView, Stats, TierToggle,
 };
 pub(crate) use layers::{focus_on_top, forget, frame};
+pub use layout::{RealmLayout, RealmLayoutEntry};
 pub(crate) use paint::draw_tooltip;
 pub use prompt::{
     IGNORE_MS, MAX_LINE, MAX_ROWS, PromptAnswer, PromptRow, PromptSpec, PromptSpot, RowLock,
@@ -135,6 +158,7 @@ pub(crate) use route::{after_canvas, route};
 pub fn add_controls(builder: &mut EngineBuilder) {
     builder
         .add_gui_control::<controls::RootCtrl>()
+        .add_gui_control::<controls::GroupCtrl>()
         .add_gui_control::<controls::PanelCtrl>()
         .add_gui_control::<controls::TextCtrl>()
         .add_gui_control::<controls::RichTextCtrl>()
@@ -152,12 +176,19 @@ pub fn add_controls(builder: &mut EngineBuilder) {
 
 /// The names of the classes [`add_controls`] adds.
 pub fn class_names() -> Vec<&'static str> {
-    std::iter::once(controls::class_name(None))
+    let all = std::iter::once(controls::class_name(None))
         .chain(
             torque_client_script_format::ui::KINDS
                 .iter()
                 .map(|k| controls::class_name(Some(k.kind))),
         )
-        .chain([chip::CLASS, prompt::CLASS])
-        .collect()
+        .chain([chip::CLASS, prompt::CLASS]);
+    // The two container kinds share one class (the group made when no layout is installed): each name once, in order.
+    let mut names: Vec<&'static str> = Vec::new();
+    for name in all {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }

@@ -17,6 +17,8 @@ categories = ["gui", "game-development"]
 [dependencies]
 # Flexbox and CSS grid (MIT). Only the two algorithms and the tree are built: no block layout, no CSS parser.
 taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+# The props of the client-script format's `flex` and `grid` kinds, which the plugin names the fields of ([`RealmLayout`]).
+torque-client-script-format = { path = "../torque-client-script-format" }
 torque-engine = { path = "../torque-engine" }
 torque-gui = { path = "../torque-gui" }
 torque-ts-vm = { path = "../torque-ts-vm" }

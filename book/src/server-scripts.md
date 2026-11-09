@@ -86,6 +86,16 @@ engine.net().rpc::<Spawn, Spawned>("props.spawn").to_server().realm()
 An RPC without `.realm()` is refused on the client, and so is every one of this crate's own. Marking an RPC lets the server's
 scripts, which are code from the network, call it, so its handler treats the call exactly as it treats any client's.
 
+### Menus and layout
+
+With `ui` granted a realm has the `ui` table: `ui.new(kind, props, parent)` makes a control (`panel`, `text`, `richtext`, `image`,
+`button`, `toggle`, `textfield`, `list`, `scroll`, `slider`, `progress`, and the containers `flex` and `grid`), `h:set`, `h:get`,
+`h:parent`, `h:destroy` and `h:on` change and read it. Controls are placed by `pos` and `size` and the sizing rules, or by a
+container: a `flex` puts its children in a row or a column and a `grid` in cells, by the rules of CSS, if the game's engine has
+the layout plugin (`GuiLayoutPlugin`); the [layout chapter](gui-layout.md#in-a-servers-client-scripts) lists the props and the
+caps. A container is capped like everything else the server sends: 8 nested, 256 children, 32 tracks an axis, finite numbers in
+range only. Without the plugin a container is a plain group and its children keep their own `pos` and `size`.
+
 ## The server is the authority
 
 Nothing a realm does changes the server's state except through a message or an RPC that the server decodes, rate-limits, checks
@@ -120,7 +130,8 @@ once it has an RPC link (`clientScriptOffer(%client)` sends it again).
 2. On the client, make a `Realms` with the choices (`Choices::open(choices::default_path())`) and a `RunnerFactory` that instances the
    guest (`NativeRealm` under Wasmtime natively, `WebRunner` on the web), set its setting, and call `Realms::frame` once a frame
    with the script engine and the GUI and `Realms::disconnect` when a connection ends.
-3. Name the screens that show server controls with `Gui::set_client_script_screens`.
+3. Name the screens that show server controls with `Gui::set_client_script_screens`. To let a server lay its controls out, add
+   `GuiLayoutPlugin` too (`GuiPlugin` hands its layout to the GUI); leave it out and containers are plain groups.
 4. The prompt is a slot: the engine's own is `EnginePrompt`, and a game draws its own with `ConsentPrompt` (the abilities come with
    stable keys such as `client_script.ability.ui` and English lines, so a game can translate them; the prompt may look as it likes
    but sits in the engine layer, and the realm cannot draw over it).
@@ -170,7 +181,8 @@ The justfile's `client-script-check` is the whole suite, and its output is the e
   arrives in `clientScriptOnMessage` as text that nothing runs, `clientScriptSend` arrives in the realm, and the answer is heard in
   `clientScriptOnStatus`.
 - **Fuzzing** (seeded, `TORQUE_CLIENT_SCRIPT_FUZZ` set for the full counts): the message decoder 1,000,000 cases both ways, the
-  Lua-to-arguments converter 300,000, the rich-text reader 300,000 and the applier 100,000 sequences, all with no panic and every
+  Lua-to-arguments converter 300,000, the rich-text reader 300,000, the format's props reader 300,000 and the applier 100,000 sequences (with and without a layout, half
+  the controls containers), and a seeded run of random container ops against the layout plugin's real classes, all with no panic and every
   accepted result within its caps.
 - **Parity** (`parity.txt` in the host crate): each case's stream (log lines, applied `ui` records, messages, calls, revocations and
   the stop) is folded into one number and the number must be the same natively, under Node and in Chrome. A case that reads the

@@ -158,6 +158,8 @@ pub(super) fn draw_node(st: &mut NodeState, d: &mut DrawCtx<'_, '_>, at: &Place)
         Kind::Scroll => scroll_bar(st, d, rect),
         Kind::Slider => slider(st, d, rect),
         Kind::Progress => progress(st, d, rect),
+        // A container is a group of the layout's, which draws nothing; none has a state here.
+        Kind::Flex | Kind::Grid => {}
     }
 }
 

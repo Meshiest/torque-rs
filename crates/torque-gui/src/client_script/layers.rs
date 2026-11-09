@@ -11,7 +11,8 @@ use torque_ts_vm::vm::Vm;
 use super::controls::{NodeState, origin};
 use super::events::{UiEvent, encode_events};
 use crate::control::{self, children};
-use crate::{Gui, MAX_TREE_DEPTH, name_of};
+use crate::input::MAX_EVENT_STEPS;
+use crate::{Gui, MAX_FRAME_WORK, MAX_TREE_DEPTH, custom, name_of};
 
 /// The most events kept for the realm between two frames; past it the oldest go.
 pub const MAX_QUEUED_EVENTS: usize = 1024;
@@ -89,6 +90,10 @@ pub enum LayerAction {
 /// Counts the host layers keep, for tests and the host's own checks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
+    /// The layout checks run (one per laid-out container a frame it was due), and the work they were charged.
+    pub layout_updates: u64,
+    /// See [`Stats::layout_updates`]: the `Vm::charge_work` units of the frames' layout checks.
+    pub layout_work: u64,
     /// Input events made for the realm.
     pub input_events: u64,
     /// Escape key events a control of the realm was given (always 0).
@@ -181,6 +186,21 @@ pub struct LayerState {
     pub(crate) screen: (i32, i32),
     pub(crate) faces: [String; 3],
     pub(crate) stats: Stats,
+    /// The containers of the layout plugin's classes the realm made, oldest first. They are not canvas children, so the GUI's
+    /// frame does not reach them: [`frame`] runs their `update` (a layout checks whether its inputs changed there).
+    pub(crate) laid: Vec<ObjId>,
+    /// How many more frames the layouts are to be checked: set by anything that changes what a layout reads (the applier is
+    /// the only writer of a container's fields and of the controls in it), counting down each frame they are checked. Two
+    /// frames: one lays out, the next sees that it has settled. At 0 a frame does no layout work at all.
+    pub(crate) layout_frames: u8,
+}
+
+/// The frames the layouts are checked for after something changed.
+const LAYOUT_FRAMES: u8 = 2;
+
+/// Something a layout reads changed: check the layouts for the next frames.
+pub(crate) fn mark_layout(gui: &Gui) {
+    gui.0.borrow_mut().client_script.layout_frames = LAYOUT_FRAMES;
 }
 
 impl Default for LayerState {
@@ -212,6 +232,8 @@ impl Default for LayerState {
             screen: (0, 0),
             faces: DEFAULT_FACES.map(str::to_string),
             stats: Stats::default(),
+            laid: Vec::new(),
+            layout_frames: 0,
         }
     }
 }
@@ -477,6 +499,7 @@ pub(crate) fn frame(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
         let (pos, ext) = control::bounds(vm, id);
         if pos != (0, 0) || ext != size {
             control::resize(vm, gui, id, (0, 0), size);
+            mark_layout(gui);
         }
     }
     if server.is_none() {
@@ -493,6 +516,46 @@ pub(crate) fn frame(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
     }
     enforce_holds(vm, gui);
     super::chip::layout(vm, gui, size);
+    update_layouts(vm, gui);
+}
+
+/// The layout plugin's per-frame check for the containers the realm made that are on screen. A container inside another does
+/// nothing in its own `update`; the outermost compares what its layout read with what is there now and lays out on a difference.
+fn update_layouts(vm: &mut Vm, gui: &Gui) {
+    {
+        let s = gui.0.borrow();
+        let l = &s.client_script;
+        // An idle realm does nothing here: no fingerprint is read unless something changed (`layout_frames`). A layer that is
+        // not shown keeps what is owed until it is.
+        if l.laid.is_empty() || l.layout_frames == 0 {
+            return;
+        }
+    }
+    if !server_shown(vm, gui) {
+        return;
+    }
+    let saved = vm.begin_host_budget_with_runs(MAX_FRAME_WORK, MAX_EVENT_STEPS);
+    let mut runs = 0;
+    let mut at = 0;
+    loop {
+        // One short borrow a control: `update` runs with none held, and a layout may be removed meanwhile.
+        let next = gui.0.borrow().client_script.laid.get(at).copied();
+        let Some(id) = next else {
+            break;
+        };
+        at += 1;
+        if vm.objects().contains(id) && gui.is_awake(id) {
+            runs += 1;
+            if let Err(error) = custom::update(vm, gui, id) {
+                vm.error(format!("update of control {id}: {error}"));
+            }
+        }
+    }
+    let work = vm.end_host_budget(saved);
+    let l = &mut gui.0.borrow_mut().client_script;
+    l.layout_frames = l.layout_frames.saturating_sub(1);
+    l.stats.layout_updates += runs;
+    l.stats.layout_work += work;
 }
 
 /// Drops what the realm may not hold now: everything when its layer is not shown or a dialog or prompt is over it, the focus
@@ -600,6 +663,7 @@ pub(crate) fn forget(gui: &Gui, id: ObjId) {
         }
     }
     l.engine.retain(|e| *e != id);
+    l.laid.retain(|e| *e != id);
     l.visible = None;
     if l.chip == Some(id) {
         l.chip = None;

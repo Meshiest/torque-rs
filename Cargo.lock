@@ -4654,6 +4654,7 @@ version = "0.1.0"
 dependencies = [
  "taffy",
  "torque-app",
+ "torque-client-script-format",
  "torque-engine",
  "torque-gui",
  "torque-render-core",

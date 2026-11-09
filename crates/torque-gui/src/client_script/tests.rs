@@ -2,6 +2,7 @@
 //! the eval-path canary.
 
 mod fuzz;
+mod layout;
 mod prompt;
 
 use std::any::Any;
@@ -16,8 +17,9 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 use super::{
-    Applied, Changed, ContentCheck, DrawPlan, Hold, LayerAction, LayerMark, Realm, RealmView,
-    TierToggle, UiEvent, Violation, add_controls, class_names, encode_events,
+    Applied, Changed, ContentCheck, DrawPlan, Hold, LayerAction, LayerMark, Realm,
+    RealmLayoutEntry, RealmView, TierToggle, UiEvent, Violation, add_controls, class_names,
+    encode_events,
 };
 use crate::Gui;
 use crate::canvas::create_canvas;
@@ -223,11 +225,16 @@ pub(super) fn view(tiers: &[Tier]) -> RealmView {
 
 impl Rig {
     pub(super) fn new(tiers: &[Tier]) -> Rig {
-        let engine = engine();
+        Rig::of(&engine(), tiers)
+    }
+
+    /// A rig of the engine `engine`, whose plugins may have added a layout.
+    pub(super) fn of(engine: &Engine, tiers: &[Tier]) -> Rig {
         let mut vm = Vm::new();
         let gui = crate::register(&mut vm);
         gui.set_extension(Rc::new(Host));
         gui.add_controls(engine.list::<ControlEntry>());
+        gui.add_realm_layouts(engine.list::<RealmLayoutEntry>());
         engine
             .replay(torque_engine::script::CLIENT_SCRIPT_STAGE, &mut vm)
             .expect("the classes register");
@@ -367,8 +374,8 @@ fn client_script_classes_are_registered_below_gui_control() {
     let names = class_names();
     assert_eq!(
         names.len(),
-        14,
-        "a root, eleven kinds, the chip and the prompt"
+        15,
+        "a root, eleven kinds, the container group, the chip and the prompt"
     );
     for name in names {
         assert!(name.starts_with("ClientScript"));

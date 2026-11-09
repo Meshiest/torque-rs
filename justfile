@@ -188,13 +188,15 @@ client-script-host-test:
     cargo fmt -p torque-client-script-host -p torque-test-client-script-web-check --check
 
 # The client-script glue's tests (crates/torque-plugin-client-script: consent, messages), the choices-file and content rules in
-# torque-mods, and the GUI's prompt, with clippy and formatting. No guest needed
+# torque-mods, the format's, the GUI's prompt and the layout plugin's realm containers, with clippy and formatting. No guest needed
 client-script-test:
+    cargo test -p torque-client-script-format
     cargo test -p torque-plugin-client-script
     cargo test -p torque-mods client_script
     cargo test -p torque-gui client_script
-    cargo clippy -p torque-plugin-client-script -p torque-mods -p torque-gui --all-targets -- -D warnings
-    cargo fmt -p torque-plugin-client-script -p torque-mods -p torque-gui --check
+    cargo test -p torque-plugin-gui-layout --test realm
+    cargo clippy -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout --all-targets -- -D warnings
+    cargo fmt -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout --check
 
 # The SHA-256 of the realm guest `lua-client-web` built, and the line a release adds to ACCEPTED_CLIENT_GUESTS (the engine runs
 # only guests it lists)
@@ -217,11 +219,15 @@ client-script-guest-check: lua-client-web
     cargo run -p torque-client-script-host --example guest-hash -- --check "{{web_target}}/lua-web/torque_lua_client.wasm"
 
 # The client-script realm's fuzz and authority suites at their full counts (message decoder 1,000,000 cases, Lua-to-arguments
-# converter 300,000, rich text 300,000, 100,000 spoofing frames): the consent, message, authority and end-to-end tests and
-# the GUI's, run natively with TORQUE_CLIENT_SCRIPT_FUZZ set. No guest needed
+# converter 300,000, rich text 300,000, 100,000 spoofing frames; the format's props reader 300,000, the guest's layout-prop converter
+# 300,000, 60,000 random container ops against the layout plugin): the consent, message, authority and end-to-end tests and the
+# GUI's, run natively with TORQUE_CLIENT_SCRIPT_FUZZ set. No guest needed
 client-script-fuzz:
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-plugin-client-script -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-gui client_script -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-client-script-format -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-plugin-gui-layout --test realm -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script hostile_lua -- --nocapture
 
 # The time a realm costs a frame (crates/torque-plugin-client-script/tests/bench.rs): the real guest under Wasmtime in a client's
 # GUI, a hostile realm at its caps within 3 ms of the scene alone at p99, an idle realm with 1,024 controls within 0.3 ms at p50.

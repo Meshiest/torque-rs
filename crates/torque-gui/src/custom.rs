@@ -71,6 +71,7 @@ use torque_engine::{ClassInfo, EngineBuilder, ScriptClass};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
+use crate::client_script::{RealmLayout, RealmLayoutEntry};
 use crate::control::{self, screen_position};
 use crate::draw::DrawCtx;
 use crate::input::{self, GuiEvent};
@@ -543,9 +544,22 @@ pub trait GuiBuilderExt {
     /// - the parent is neither `GuiControl` nor a control class added before (the engine's other GUI classes draw and
     ///   handle input by their own names, so a class below one would lose that).
     fn add_gui_control<C: GuiControlClass>(&mut self) -> &mut Self;
+
+    /// Gives client-script realms their layout containers: the classes (added with [`add_gui_control`](Self::add_gui_control))
+    /// that lay a realm's `flex` and `grid` controls out, and where the layout props go. Without one a container is a plain
+    /// group. A second one is a build error naming the plugin.
+    fn add_realm_layout(&mut self, layout: &'static RealmLayout) -> &mut Self;
 }
 
 impl GuiBuilderExt for EngineBuilder {
+    fn add_realm_layout(&mut self, layout: &'static RealmLayout) -> &mut Self {
+        if !self.list::<RealmLayoutEntry>().is_empty() {
+            self.reject("a client-script realm has one layout, and another plugin added it first");
+            return self;
+        }
+        self.push(RealmLayoutEntry::of(layout))
+    }
+
     fn add_gui_control<C: GuiControlClass>(&mut self) -> &mut Self {
         if is_engine_class(C::NAME) {
             self.reject(format!(
@@ -588,6 +602,8 @@ pub(crate) struct Custom {
     objects: HashMap<ObjId, Slot>,
     /// What plugins keep on any control ([`Gui::control_data`]), by control and type.
     data: HashMap<ObjId, HashMap<TypeId, Box<dyn Any>>>,
+    /// The layout a client-script realm's containers use ([`Gui::add_realm_layouts`]).
+    realm_layout: Option<&'static RealmLayout>,
 }
 
 /// A control of a plugin's class. Its state is out of the slot (`None`) while one of the control's methods runs, so that a
@@ -619,6 +635,19 @@ impl Gui {
                 .entry(entry.info.name.to_ascii_lowercase())
                 .or_insert_with(|| Rc::clone(&entry.behavior));
         }
+    }
+
+    /// Gives the GUI the layout a plugin added for client-script realms (`entries` are the engine's list of them; the first is
+    /// kept, as the builder allows one).
+    pub fn add_realm_layouts(&self, entries: &[RealmLayoutEntry]) {
+        if let Some(entry) = entries.first() {
+            self.0.borrow_mut().custom.realm_layout = Some(entry.0);
+        }
+    }
+
+    /// The layout of client-script realm containers, when a plugin gave one.
+    pub(crate) fn realm_layout(&self) -> Option<&'static RealmLayout> {
+        self.0.borrow().custom.realm_layout
     }
 
     /// `f` of the state of type `T` the control `id` keeps (a control of a plugin's class whose

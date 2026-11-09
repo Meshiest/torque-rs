@@ -431,3 +431,210 @@ fn names_and_paths_refuse_dots_and_device_names() {
         assert!(abi::check_script_path(bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn containers_have_no_look_and_every_kind_has_the_item_props() {
+    for kind in ui::KINDS {
+        for item in [Prop::Grow, Prop::Column, Prop::Margin, Prop::MaxSize] {
+            assert!(kind.has(item), "{} lacks {item:?}", kind.name);
+        }
+        let container = kind.kind.container().is_some();
+        for look in [Prop::Enabled, Prop::Tooltip, Prop::Opacity] {
+            assert_eq!(kind.has(look), !container, "{} and {look:?}", kind.name);
+        }
+        assert!(kind.events.is_empty() || !container);
+    }
+    assert_eq!(ui::kind_named("flex").map(|k| k.kind), Some(Kind::Flex));
+    assert_eq!(ui::kind_named("grid").map(|k| k.kind), Some(Kind::Grid));
+    assert!(ui::kind_named("flex").unwrap().has(Prop::Direction));
+    assert!(!ui::kind_named("flex").unwrap().has(Prop::Columns));
+    assert!(ui::kind_named("grid").unwrap().has(Prop::Columns));
+    assert!(!ui::kind_named("panel").unwrap().has(Prop::Gap));
+}
+
+/// One prop written and read back by a kind that has it.
+fn round_trip(
+    kind: Kind,
+    prop: Prop,
+    value: PropValue,
+) -> Result<Vec<(Prop, PropValue)>, Malformed> {
+    let mut w = Writer::new();
+    ui::write_props(&mut w, pairs(&[(prop, value)]));
+    let mut r = Reader::new(w.bytes());
+    let props = ui::read_props(&mut r, ui::kind_def(kind))?;
+    r.finish()?;
+    Ok(props)
+}
+
+#[test]
+fn layout_props_round_trip_and_hold_their_ranges() {
+    use ui::Track;
+    let tracks = PropValue::Tracks(vec![Track::Px(120.0), Track::Fr(1.5), Track::Auto]);
+    assert_eq!(
+        round_trip(Kind::Grid, Prop::Columns, tracks.clone()).unwrap(),
+        vec![(Prop::Columns, tracks)]
+    );
+    let margin = PropValue::Sides([1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(
+        round_trip(Kind::Button, Prop::Margin, margin.clone()).unwrap(),
+        vec![(Prop::Margin, margin)]
+    );
+    let gap = PropValue::Vec2(8.0, 16.0);
+    assert_eq!(
+        round_trip(Kind::Flex, Prop::Gap, gap.clone()).unwrap(),
+        vec![(Prop::Gap, gap)]
+    );
+
+    let too_many = PropValue::Tracks(vec![Track::Auto; ui::MAX_TRACKS + 1]);
+    assert!(round_trip(Kind::Grid, Prop::Columns, too_many).is_err());
+    let full = PropValue::Tracks(vec![Track::Auto; ui::MAX_TRACKS]);
+    assert!(round_trip(Kind::Grid, Prop::TrackRows, full).is_ok());
+    for bad in [
+        Track::Px(-1.0),
+        Track::Px(ui::MAX_LENGTH + 1.0),
+        Track::Px(f64::NAN),
+        Track::Fr(f64::INFINITY),
+        Track::Fr(ui::MAX_SHARE + 1.0),
+    ] {
+        let value = PropValue::Tracks(vec![bad]);
+        assert!(
+            round_trip(Kind::Grid, Prop::Columns, value).is_err(),
+            "{bad:?}"
+        );
+    }
+    for bad in [
+        PropValue::Sides([0.0, 0.0, 0.0, -1.0]),
+        PropValue::Sides([0.0, ui::MAX_SPACING + 1.0, 0.0, 0.0]),
+        PropValue::Sides([0.0, 0.0, f64::NAN, 0.0]),
+    ] {
+        assert!(round_trip(Kind::Flex, Prop::Padding, bad).is_err());
+    }
+    assert!(
+        round_trip(
+            Kind::Flex,
+            Prop::Gap,
+            PropValue::Vec2(0.0, ui::MAX_SPACING + 1.0)
+        )
+        .is_err()
+    );
+    assert!(
+        round_trip(
+            Kind::Panel,
+            Prop::Grow,
+            PropValue::Number(ui::MAX_SHARE + 1.0)
+        )
+        .is_err()
+    );
+    assert!(round_trip(Kind::Panel, Prop::Basis, PropValue::Number(-2.0)).is_err());
+    assert!(
+        round_trip(
+            Kind::Panel,
+            Prop::Row,
+            PropValue::Int(ui::MAX_TRACKS as u32 + 1)
+        )
+        .is_err()
+    );
+    assert!(round_trip(Kind::Panel, Prop::ColumnSpan, PropValue::Int(0)).is_err());
+    // A prop of the other container, and a look a container lacks.
+    assert!(round_trip(Kind::Flex, Prop::Columns, PropValue::Tracks(vec![])).is_err());
+    assert!(round_trip(Kind::Grid, Prop::Direction, PropValue::Enum(0)).is_err());
+    assert!(round_trip(Kind::Flex, Prop::Opacity, PropValue::Number(1.0)).is_err());
+
+    // A track count past the cap is refused before any track is read, and an unknown tag is malformed.
+    let mut w = Writer::new();
+    w.u8(1);
+    w.u8(Prop::Columns as u8);
+    w.u8(255);
+    assert!(ui::read_props(&mut Reader::new(w.bytes()), ui::kind_def(Kind::Grid)).is_err());
+    let mut w = Writer::new();
+    w.u8(1);
+    w.u8(Prop::Columns as u8);
+    w.u8(1);
+    w.u8(9);
+    assert!(ui::read_props(&mut Reader::new(w.bytes()), ui::kind_def(Kind::Grid)).is_err());
+}
+
+#[test]
+fn layout_props_read_as_the_words_of_css() {
+    use ui::Track;
+    let text = |prop, value: PropValue| ui::field_text(ui::prop_def(prop), &value);
+    assert_eq!(text(Prop::Direction, PropValue::Enum(2)), "row-reverse");
+    assert_eq!(text(Prop::Gap, PropValue::Vec2(8.0, 16.5)), "8 16.5");
+    assert_eq!(
+        text(Prop::Padding, PropValue::Sides([1.0, 2.0, 3.0, 4.0])),
+        "1 2 3 4"
+    );
+    assert_eq!(text(Prop::Grow, PropValue::Number(0.25)), "0.25");
+    assert_eq!(text(Prop::Basis, PropValue::Number(-1.0)), "auto");
+    assert_eq!(text(Prop::Basis, PropValue::Number(0.0)), "0");
+    assert_eq!(text(Prop::Row, PropValue::Int(3)), "3");
+    assert_eq!(
+        text(
+            Prop::Columns,
+            PropValue::Tracks(vec![Track::Px(120.0), Track::Fr(1.0), Track::Auto])
+        ),
+        "120 1fr auto"
+    );
+    assert_eq!(text(Prop::Columns, PropValue::Tracks(vec![])), "");
+    assert_eq!(text(Prop::AutoFlow, PropValue::Enum(3)), "column dense");
+    // Numbers keep four decimals, never a long tail, and never a negative zero.
+    assert_eq!(text(Prop::Grow, PropValue::Number(1e-300)), "0");
+    assert_eq!(text(Prop::Grow, PropValue::Number(-1e-300)), "0");
+    assert_eq!(text(Prop::Grow, PropValue::Number(-0.0)), "0");
+    assert_eq!(text(Prop::Grow, PropValue::Number(0.12345678)), "0.1235");
+    assert_eq!(text(Prop::Gap, PropValue::Vec2(-0.0, 2.50)), "0 2.5");
+    assert_eq!(ui::number_text(16384.0), "16384");
+    // No value of any prop is longer than its numbers and spaces allow.
+    for value in [
+        f64::MIN_POSITIVE,
+        1e-300,
+        1e9,
+        -1e9,
+        16384.00004,
+        0.00005,
+        123456789.123456,
+    ] {
+        assert!(
+            ui::number_text(value).len() <= ui::MAX_NUMBER_TEXT,
+            "{value}"
+        );
+    }
+    let longest = PropValue::Tracks(vec![ui::Track::Fr(-1e9); ui::MAX_TRACKS]);
+    assert!(text(Prop::Columns, longest).len() <= ui::MAX_TRACKS * (ui::MAX_NUMBER_TEXT + 3));
+    // An index past the names reads as nothing, never a panic.
+    assert_eq!(text(Prop::Direction, PropValue::Enum(200)), "");
+}
+
+#[test]
+fn hostile_bytes_never_panic_the_props_reader() {
+    // A small xorshift: the same bytes every run.
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed
+    };
+    let cases = if std::env::var_os("TORQUE_CLIENT_SCRIPT_FUZZ").is_some() {
+        300_000
+    } else {
+        20_000
+    };
+    for _ in 0..cases {
+        let len = (next() % 80) as usize;
+        let mut bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();
+        // Mostly well-shaped starts: one to three props of the layout ids, so the payload readers run.
+        if len >= 2 && next() % 4 != 0 {
+            bytes[0] = (next() % 3 + 1) as u8;
+            bytes[1] = (Prop::Grow as u8) + (next() % 23) as u8;
+        }
+        let kind = &ui::KINDS[(next() % ui::KINDS.len() as u64) as usize];
+        // Whatever it reads is within the type's range, and never more than the bytes could hold.
+        if let Ok(props) = ui::read_props(&mut Reader::new(&bytes), kind) {
+            for (prop, value) in &props {
+                ui::check_value(ui::prop_def(*prop), value).unwrap();
+            }
+            assert!(props.len() <= bytes.len());
+        }
+    }
+}

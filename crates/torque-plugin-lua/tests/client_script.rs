@@ -1287,3 +1287,366 @@ fn a_file_run_gets_its_own_steps_and_a_frames_callbacks_the_frames() {
     frame(&mut r, 1, Batch::default());
     assert!(limits(&r).is_empty());
 }
+
+#[test]
+fn layout_containers_write_their_props_and_read_them_back() {
+    use ui::Track;
+    let mut r = full();
+    run(
+        &mut r,
+        r##"local row = ui.new("flex", {
+            size = { 300, 40 }, direction = "column", gap = { 4, 8 }, padding = { 1, 2, 3, 4 },
+            justifyContent = "space-between", alignItems = "center" })
+        local grid = ui.new("grid", { columns = { 100, "1fr", "auto" }, rows = { "2.5fr" }, autoFlow = "row dense" }, row)
+        local item = ui.new("button", { grow = 2, margin = 6, column = 2, columnSpan = 2, minSize = { 10, 20 } }, grid)
+        local pad = ui.new("flex", { padding = { 5, 7 } })
+        realm.log(row:get("direction"), tostring(#grid:get("columns")), grid:get("columns")[2], grid:get("columns")[3],
+            grid:get("rows")[1], grid:get("autoFlow"), tostring(item:get("margin")[3]), tostring(pad:get("padding")[4]),
+            tostring(item:get("basis")), item:get("alignSelf"))"##,
+    );
+    assert_eq!(logs(&r), ["column 3 1fr auto 2.5fr row dense 6 7 -1 auto"]);
+    let ops = ui_ops(&r);
+    let create = |at: usize, kind: Kind| {
+        let mut body = Reader::new(&ops[at].1);
+        body.u32().unwrap();
+        body.u32().unwrap();
+        let def = ui::kind_from_id(body.u8().unwrap()).unwrap();
+        assert_eq!(def.kind, kind);
+        let props = ui::read_props(&mut body, def).unwrap();
+        body.finish().unwrap();
+        props
+    };
+    // Ops: root, flex, grid, button, flex.
+    assert_eq!(
+        create(1, Kind::Flex),
+        [
+            (Prop::Size, PropValue::Vec2(300.0, 40.0)),
+            (Prop::Direction, PropValue::Enum(1)),
+            (Prop::JustifyContent, PropValue::Enum(4)),
+            (Prop::AlignItems, PropValue::Enum(3)),
+            (Prop::Gap, PropValue::Vec2(4.0, 8.0)),
+            (Prop::Padding, PropValue::Sides([1.0, 2.0, 3.0, 4.0])),
+        ]
+    );
+    assert_eq!(
+        create(2, Kind::Grid),
+        [
+            (
+                Prop::Columns,
+                PropValue::Tracks(vec![Track::Px(100.0), Track::Fr(1.0), Track::Auto])
+            ),
+            (Prop::TrackRows, PropValue::Tracks(vec![Track::Fr(2.5)])),
+            (Prop::AutoFlow, PropValue::Enum(2)),
+        ]
+    );
+    assert_eq!(
+        create(3, Kind::Button),
+        [
+            (Prop::Grow, PropValue::Number(2.0)),
+            (Prop::Margin, PropValue::Sides([6.0; 4])),
+            (Prop::Column, PropValue::Int(2)),
+            (Prop::ColumnSpan, PropValue::Int(2)),
+            (Prop::MinSize, PropValue::Vec2(10.0, 20.0)),
+        ]
+    );
+    assert_eq!(
+        create(4, Kind::Flex),
+        [(Prop::Padding, PropValue::Sides([5.0, 7.0, 5.0, 7.0]))]
+    );
+}
+
+#[test]
+fn layout_props_refuse_what_the_format_would() {
+    let mut r = full();
+    run(
+        &mut r,
+        r#"local grid = ui.new("grid", {})
+        local flex = ui.new("flex", {})
+        local panel = ui.new("panel", {})
+        local function bad(kind, props) return tostring((pcall(ui.new, kind, props))) end
+        local many = {}
+        for i = 1, 33 do many[i] = "auto" end
+        realm.log(
+            bad("flex", { opacity = 1 }), bad("flex", { tooltip = "x" }), bad("flex", { enabled = true }),
+            bad("flex", { columns = {} }), bad("grid", { direction = "row" }), bad("panel", { gap = { 1, 1 } }),
+            bad("grid", { columns = many }), bad("grid", { columns = { "wide" } }), bad("grid", { columns = { "1fr", {} } }),
+            bad("grid", { columns = { -1 } }), bad("grid", { columns = { 1e9 } }), bad("grid", { columns = { 0/0 } }),
+            bad("grid", { columns = { "infr" } }), bad("grid", { columns = "1fr" }),
+            bad("flex", { padding = { 1, 2, 3 } }), bad("flex", { padding = -1 }), bad("flex", { padding = math.huge }),
+            bad("flex", { padding = "4" }), bad("flex", { gap = { 2000, 0 } }), bad("flex", { gap = 4 }),
+            bad("panel", { grow = -1 }), bad("panel", { grow = 1001 }), bad("panel", { basis = -2 }),
+            bad("panel", { row = 33 }), bad("panel", { rowSpan = 0 }), bad("panel", { row = 1.5 }),
+            bad("panel", { alignSelf = "middle" }), bad("flex", { direction = "diagonal" }),
+            tostring(pcall(flex.set, flex, { columns = { 1 } })), tostring(pcall(grid.set, grid, { columns = { 1 } })),
+            tostring(pcall(panel.set, panel, { grow = 1 })))"#,
+    );
+    let line = logs(&r).join(" ");
+    let answers: Vec<&str> = line.split(' ').collect();
+    let expected = [
+        "false", "false", "false", "false", "false", "false", "false", "false", "false", "false",
+        "false", "false", "false", "false", "false", "false", "false", "false", "false", "false",
+        "false", "false", "false", "false", "false", "false", "false", "false", "false", "true",
+        "true",
+    ];
+    assert_eq!(answers, expected, "{line}");
+    // The refused ones wrote nothing: three controls and the one `set` that went through.
+    let kinds: Vec<u8> = ui_ops(&r).iter().map(|(k, _)| *k).collect();
+    use op::ui::*;
+    assert_eq!(kinds, [ROOT, CREATE, CREATE, CREATE, SET, SET]);
+}
+
+#[test]
+fn containers_hold_so_many_children_and_nest_so_deep() {
+    let mut r = full();
+    run(
+        &mut r,
+        r#"local box = ui.new("flex", {})
+        for i = 1, 256 do ui.new("panel", {}, box) end
+        local outside = ui.new("panel", {})
+        realm.log(tostring(pcall(ui.new, "panel", {}, box)), tostring(pcall(outside.parent, outside, box)))
+        local chain = ui.new("grid", {})
+        local top = chain
+        for i = 2, 8 do chain = ui.new("grid", {}, chain) end
+        realm.log(tostring(pcall(ui.new, "flex", {}, chain)), tostring(pcall(ui.new, "panel", {}, chain)))
+        local pair = ui.new("flex", {})
+        ui.new("flex", {}, pair)
+        realm.log(tostring(pcall(pair.parent, pair, chain)), tostring(pcall(pair.parent, pair, top)))"#,
+    );
+    let lines = logs(&r);
+    assert!(lines[0].starts_with("false false"), "{lines:?}");
+    assert!(lines[1].starts_with("false true"), "{lines:?}");
+    // Two containers do not fit under the eighth, and fit under the first.
+    assert!(lines[2].starts_with("false true"), "{lines:?}");
+}
+
+/// A small xorshift: the same cases every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+
+    fn pick<'a>(&mut self, items: &[&'a str]) -> &'a str {
+        items[self.below(items.len())]
+    }
+}
+
+/// A Lua expression: a number (often a hostile one), a word, a list or a table, nested at most twice.
+fn lua_value(rng: &mut Rng, depth: usize) -> String {
+    match rng.below(if depth < 2 { 8 } else { 6 }) {
+        0 | 1 => rng
+            .pick(&[
+                "0",
+                "1",
+                "-1",
+                "2.5",
+                "4",
+                "16384",
+                "16385",
+                "1024",
+                "1025",
+                "1000",
+                "1001",
+                "1e9",
+                "1e308",
+                "0/0",
+                "math.huge",
+                "-math.huge",
+                "-0",
+                "33",
+                "32",
+                "7",
+            ])
+            .to_string(),
+        2 => format!("{}", rng.below(70)),
+        3 | 4 => format!(
+            "\"{}\"",
+            rng.pick(&[
+                "auto",
+                "1fr",
+                "2.5fr",
+                "nanfr",
+                "infr",
+                "-1fr",
+                "1e999fr",
+                "fr",
+                "x",
+                "",
+                "row",
+                "column",
+                "wrap",
+                "start",
+                "end",
+                "center",
+                "stretch",
+                "space-between",
+                "baseline",
+                "row dense",
+                "nowrap",
+                "#ff0000",
+            ])
+        ),
+        5 => rng.pick(&["true", "false", "nil"]).to_string(),
+        _ => {
+            let len = if rng.below(8) == 0 {
+                30 + rng.below(8)
+            } else {
+                rng.below(6)
+            };
+            let items: Vec<String> = (0..len).map(|_| lua_value(rng, depth + 1)).collect();
+            if rng.below(4) == 0 {
+                format!(
+                    "{{ x = {}, y = {} }}",
+                    lua_value(rng, depth + 1),
+                    lua_value(rng, depth + 1)
+                )
+            } else {
+                format!("{{ {} }}", items.join(", "))
+            }
+        }
+    }
+}
+
+/// A Lua expression the converter should accept for a prop of type `ty`.
+fn valid_lua(rng: &mut Rng, ty: ui::PropType) -> Option<String> {
+    use ui::PropType;
+    let unit =
+        |rng: &mut Rng, min: f64, max: f64| min + (max - min) * (rng.below(1001) as f64 / 1000.0);
+    Some(match ty {
+        PropType::Bool => rng.pick(&["true", "false"]).to_string(),
+        PropType::Number { min, max } => unit(rng, min, max).to_string(),
+        PropType::Int { min, max } => {
+            (min + rng.below((max - min) as usize + 1) as u32).to_string()
+        }
+        PropType::Vec2 { min, max } => {
+            format!("{{ {}, {} }}", unit(rng, min, max), unit(rng, min, max))
+        }
+        PropType::Sides { min, max } => match rng.below(3) {
+            0 => unit(rng, min, max).to_string(),
+            1 => format!("{{ {}, {} }}", unit(rng, min, max), unit(rng, min, max)),
+            _ => format!(
+                "{{ {}, {}, {}, {} }}",
+                unit(rng, min, max),
+                unit(rng, min, max),
+                unit(rng, min, max),
+                unit(rng, min, max)
+            ),
+        },
+        PropType::Tracks { max } => {
+            let tracks: Vec<String> = (0..rng.below(max + 1))
+                .map(|_| match rng.below(3) {
+                    0 => "\"auto\"".to_string(),
+                    1 => format!("\"{}fr\"", rng.below(50)),
+                    _ => rng.below(500).to_string(),
+                })
+                .collect();
+            format!("{{ {} }}", tracks.join(", "))
+        }
+        PropType::Enum(names) => format!("\"{}\"", names[rng.below(names.len())]),
+        _ => return None,
+    })
+}
+
+#[test]
+fn hostile_lua_values_for_layout_props_never_get_past_the_converter() {
+    let full_run = std::env::var_os("TORQUE_CLIENT_SCRIPT_FUZZ").is_some();
+    // A file run has 100,000 steps: a batch is as many cases as fit.
+    const PER_BATCH: usize = 25;
+    let batches = if full_run { 300_000 } else { 8_000 } / PER_BATCH;
+    let names = [
+        "direction",
+        "wrap",
+        "justifyContent",
+        "alignItems",
+        "alignContent",
+        "gap",
+        "padding",
+        "columns",
+        "rows",
+        "autoFlow",
+        "justifyItems",
+        "grow",
+        "shrink",
+        "basis",
+        "alignSelf",
+        "justifySelf",
+        "margin",
+        "row",
+        "column",
+        "rowSpan",
+        "columnSpan",
+        "minSize",
+        "maxSize",
+        "size",
+        "pos",
+        "visible",
+        "opacity",
+        "text",
+    ];
+    let kinds = ["flex", "grid", "button", "panel"];
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let (mut made, mut refused) = (0usize, 0usize);
+    for _ in 0..batches {
+        let mut script = String::from("local box = ui.new(\"flex\", {})\nlocal made = 0\n");
+        for _ in 0..PER_BATCH {
+            let kind = rng.pick(&kinds);
+            let def = ui::kind_named(kind).unwrap();
+            let props: Vec<String> = (0..1 + rng.below(3))
+                .map(|_| {
+                    let name = rng.pick(&names);
+                    // Half the values are of the prop's own type (and mostly in range), half are anything.
+                    let own = def.prop_named(name).filter(|_| rng.below(2) == 0);
+                    let value = own
+                        .and_then(|d| valid_lua(&mut rng, d.ty))
+                        .unwrap_or_else(|| lua_value(&mut rng, 0));
+                    format!("{name} = {value}")
+                })
+                .collect();
+            script.push_str(&format!(
+                "if pcall(ui.new, \"{kind}\", {{ {} }}, box) then made += 1 end\n",
+                props.join(", ")
+            ));
+        }
+        script.push_str("realm.log(tostring(made))\n");
+        let mut r = full();
+        run(&mut r, &script);
+        // A script that ran to its end made no stray error; each control it made has props the host's reader accepts as they are.
+        let lines = logs(&r);
+        let count: usize = lines
+            .last()
+            .and_then(|l| l.parse().ok())
+            .unwrap_or_else(|| panic!("the script ended: {lines:?}"));
+        let mut seen = 0;
+        for (kind, body) in ui_ops(&r) {
+            if kind != op::ui::CREATE {
+                continue;
+            }
+            let mut body = Reader::new(&body);
+            let (_, _) = (body.u32().unwrap(), body.u32().unwrap());
+            let def = ui::kind_from_id(body.u8().unwrap()).unwrap();
+            let props =
+                ui::read_props(&mut body, def).expect("the guest wrote what the host reads");
+            body.finish().unwrap();
+            for (prop, value) in &props {
+                ui::check_value(ui::prop_def(*prop), value).expect("in range");
+            }
+            seen += 1;
+        }
+        // The box and the controls that were made, and no more than the cap of children.
+        assert_eq!(seen, count + 1);
+        made += count;
+        refused += PER_BATCH - count;
+    }
+    assert!(
+        made > batches * PER_BATCH / 5 && refused > made / 4,
+        "{made} made, {refused} refused"
+    );
+}

@@ -7,7 +7,9 @@ use mlua::{
     UserDataMethods, Value,
 };
 
-use super::format::ui::{self as fui, Event, Kind, KindDef, Prop, PropDef, PropType, PropValue};
+use super::format::ui::{
+    self as fui, Event, Kind, KindDef, Prop, PropDef, PropType, PropValue, Track,
+};
 use super::format::{Malformed, NodeBudget, Reader, Tier, Value as FormatValue, Writer, event, op};
 use super::{
     CallbackId, MAX_NAME, State, add_handler, function, granted, guarded, invoke_kept, keep,
@@ -33,12 +35,14 @@ struct Node {
     /// The bytes of all its text props.
     text: usize,
     depth: usize,
+    /// The containers on the way from its root to it, itself counted (a root is 0).
+    containers: usize,
     image: Option<String>,
     handlers: HashMap<Event, CallbackId>,
 }
 
 impl Node {
-    fn new(kind: Option<&'static KindDef>, parent: u32, depth: usize) -> Node {
+    fn new(kind: Option<&'static KindDef>, parent: u32, depth: usize, containers: usize) -> Node {
         Node {
             kind,
             parent,
@@ -47,9 +51,15 @@ impl Node {
             own_text: 0,
             text: 0,
             depth,
+            containers,
             image: None,
             handlers: HashMap::new(),
         }
+    }
+
+    /// Whether it is a container (`flex` or `grid`).
+    fn is_container(&self) -> bool {
+        self.kind.is_some_and(|k| k.kind.container().is_some())
     }
 
     /// The prop's value: as set, or its default.
@@ -216,6 +226,8 @@ fn text_cap(ty: PropType) -> usize {
         | PropType::Number { .. }
         | PropType::Int { .. }
         | PropType::Vec2 { .. }
+        | PropType::Sides { .. }
+        | PropType::Tracks { .. }
         | PropType::Color
         | PropType::Enum(_) => MAX_NAME,
     }
@@ -252,6 +264,8 @@ fn to_prop(def: &PropDef, value: &Value) -> Result<PropValue, String> {
             PropValue::Enum(at as u8)
         }
         PropType::Rows => PropValue::Rows(rows(value, cap).ok_or_else(wrong)?),
+        PropType::Sides { .. } => PropValue::Sides(sides(value).ok_or_else(wrong)?),
+        PropType::Tracks { max } => PropValue::Tracks(tracks(value, max).ok_or_else(wrong)?),
     };
     fui::check_value(def, &converted).map_err(|why| format!("`{}`: {why}", def.name))?;
     Ok(converted)
@@ -272,6 +286,48 @@ fn vec2(value: &Value) -> Option<(f64, f64)> {
         number(&v)
     };
     Some((get(1, "x")?, get(2, "y")?))
+}
+
+/// Four sides: one number for all, `{vertical, horizontal}` or `{top, right, bottom, left}`.
+fn sides(value: &Value) -> Option<[f64; 4]> {
+    if let Some(n) = number(value) {
+        return Some([n; 4]);
+    }
+    let Value::Table(t) = value else {
+        return None;
+    };
+    let get = |i: i32| number(&t.raw_get::<Value>(i).ok()?);
+    match t.raw_len() {
+        2 => {
+            let (vertical, horizontal) = (get(1)?, get(2)?);
+            Some([vertical, horizontal, vertical, horizontal])
+        }
+        4 => Some([get(1)?, get(2)?, get(3)?, get(4)?]),
+        _ => None,
+    }
+}
+
+/// Grid tracks: an array of at most `max` of a number (a length), `"auto"` or `"1fr"` (a share).
+fn tracks(value: &Value, max: usize) -> Option<Vec<Track>> {
+    let Value::Table(t) = value else {
+        return None;
+    };
+    let len = t.raw_len();
+    if len > max {
+        return None;
+    }
+    (1..=len)
+        .map(|i| match t.raw_get::<Value>(i).ok()? {
+            Value::String(s) => {
+                let s = short_text(&s, 32)?;
+                if s == "auto" {
+                    return Some(Track::Auto);
+                }
+                s.strip_suffix("fr")?.parse().ok().map(Track::Fr)
+            }
+            other => number(&other).map(Track::Px),
+        })
+        .collect()
 }
 
 /// A list's rows: an array of strings, each at most `cap` bytes.
@@ -330,6 +386,8 @@ fn describe(ty: PropType) -> &'static str {
         PropType::Image => "a content path (mods/<mod>/<file>.png)",
         PropType::Enum(_) => "one of its names",
         PropType::Rows => "a list of strings",
+        PropType::Sides { .. } => "a number, {vertical, horizontal} or {top, right, bottom, left}",
+        PropType::Tracks { .. } => "a list of lengths, \"auto\" and shares like \"1fr\"",
     }
 }
 
@@ -442,7 +500,7 @@ fn root_of(st: &mut State, mod_id: &str) -> mlua::Result<u32> {
     })?;
     st.ui.next = id;
     st.ui.roots.insert(mod_id.to_string(), id);
-    st.ui.nodes.insert(id, Node::new(None, 0, 0));
+    st.ui.nodes.insert(id, Node::new(None, 0, 0, 0));
     Ok(id)
 }
 
@@ -582,9 +640,17 @@ fn create(st: &mut State, kind: &'static KindDef, parent: u32, props: Props) -> 
     if st.ui.controls >= fui::MAX_CONTROLS {
         return Err(Error::runtime("ui: at most 1024 controls are live at once"));
     }
-    let depth = st.ui.live(parent)?.depth + 1;
+    let parent_node = st.ui.live(parent)?;
+    let depth = parent_node.depth + 1;
     if depth > fui::MAX_DEPTH {
         return Err(Error::runtime("ui: controls nest at most 32 deep"));
+    }
+    if parent_node.is_container() && parent_node.children.len() >= fui::MAX_CONTAINER_CHILDREN {
+        return Err(Error::runtime("ui: a container holds at most 256 children"));
+    }
+    let containers = parent_node.containers + usize::from(kind.kind.container().is_some());
+    if containers > fui::MAX_CONTAINER_DEPTH {
+        return Err(Error::runtime("ui: containers nest at most 8 deep"));
     }
     let counts = check_control(&st.ui, kind, None, &props)?;
     let id = st.ui.next_handle()?;
@@ -600,7 +666,8 @@ fn create(st: &mut State, kind: &'static KindDef, parent: u32, props: Props) -> 
     if let Some(p) = ui.nodes.get_mut(&parent) {
         p.children.push(id);
     }
-    ui.nodes.insert(id, Node::new(Some(kind), parent, depth));
+    ui.nodes
+        .insert(id, Node::new(Some(kind), parent, depth, containers));
     ui.apply(id, props, counts);
     Ok(id)
 }
@@ -688,7 +755,10 @@ fn reparent(lua: &Lua, this: &Control, parent: AnyUserData) -> mlua::Result<bool
     };
     let mut st = state(lua)?;
     let to = handle_of(&st, &parent, "parent")?;
-    let to_depth = st.ui.live(to)?.depth;
+    let (to_depth, to_containers) = {
+        let target = st.ui.live(to)?;
+        (target.depth, target.containers)
+    };
     let all = st.ui.subtree(id);
     if all.contains(&to) {
         return Err(Error::runtime("parent: a control never goes under itself"));
@@ -702,6 +772,23 @@ fn reparent(lua: &Lua, this: &Control, parent: AnyUserData) -> mlua::Result<bool
     let shift = to_depth + 1;
     if deepest - here + shift > fui::MAX_DEPTH {
         return Err(Error::runtime("parent: controls nest at most 32 deep"));
+    }
+    let old = st.ui.live(id)?.parent;
+    let old_containers = st.ui.live(old)?.containers;
+    let nested = all
+        .iter()
+        .filter_map(|n| st.ui.nodes.get(n))
+        .map(|n| n.containers - old_containers)
+        .max()
+        .unwrap_or(0);
+    if to_containers + nested > fui::MAX_CONTAINER_DEPTH {
+        return Err(Error::runtime("parent: containers nest at most 8 deep"));
+    }
+    let target = st.ui.live(to)?;
+    if target.is_container() && to != old && target.children.len() >= fui::MAX_CONTAINER_CHILDREN {
+        return Err(Error::runtime(
+            "parent: a container holds at most 256 children",
+        ));
     }
     st.emit(Tier::Ui, op::ui::PARENT, |w| {
         w.u32(id);
@@ -718,6 +805,7 @@ fn reparent(lua: &Lua, this: &Control, parent: AnyUserData) -> mlua::Result<bool
     for n in all {
         if let Some(node) = ui.nodes.get_mut(&n) {
             node.depth = node.depth - here + shift;
+            node.containers = node.containers - old_containers + to_containers;
         }
     }
     if let Some(node) = ui.nodes.get_mut(&id) {
@@ -852,6 +940,24 @@ fn prop_to_lua(lua: &Lua, ty: PropType, value: PropValue) -> mlua::Result<MultiV
             let t = lua.create_table()?;
             for (i, row) in rows.iter().enumerate() {
                 t.raw_set(i + 1, row.as_str())?;
+            }
+            Value::Table(t)
+        }
+        PropValue::Sides(sides) => {
+            let t = lua.create_table()?;
+            for (i, side) in sides.iter().enumerate() {
+                t.raw_set(i + 1, *side)?;
+            }
+            Value::Table(t)
+        }
+        PropValue::Tracks(tracks) => {
+            let t = lua.create_table()?;
+            for (i, track) in tracks.iter().enumerate() {
+                match track {
+                    Track::Auto => t.raw_set(i + 1, "auto")?,
+                    Track::Px(v) => t.raw_set(i + 1, *v)?,
+                    Track::Fr(v) => t.raw_set(i + 1, format!("{v}fr"))?,
+                }
             }
             Value::Table(t)
         }

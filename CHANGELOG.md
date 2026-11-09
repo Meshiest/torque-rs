@@ -58,7 +58,11 @@ different.
   (`Gui::control_data`).
 - `torque-plugin-gui-layout`: flex and grid layout containers (`GuiFlexCtrl`, `GuiGridCtrl`; taffy) whose children are any
   controls, read through dynamic layout fields, inside GUIs that keep TGE's absolute positions (`GuiLayoutPlugin`, not in
-  `DefaultPlugins`); TGE has only absolute positions and sizing flags.
+  `DefaultPlugins`); TGE has only absolute positions and sizing flags. A server's client scripts get them as the `flex` and
+  `grid` kinds: the plugin registers a `RealmLayout` (`GuiBuilderExt::add_realm_layout`) naming the two classes and the field of
+  each layout prop, so `torque-gui` has no dependency on it, and an engine without the plugin keeps a container as a plain group.
+  The format adds the two kinds and twelve item props (`grow`, `margin`, `column`, ...) every control has, with caps on nesting
+  (8), children (256), tracks (32) and every number.
 - `torque-gui` `client_script`: the GUI side of client scripts, the scripts a server sends to run on the player's client. A
   server's `ui` ops make controls of a closed set of Rust classes (`ClientScriptPanel`, `ClientScriptButton`, ...) through a
   typed applier that checks every op against the op format, the grants and the caps (a violation stops the realm). The

@@ -1,6 +1,6 @@
 //! Random op sequences against the applier, and random input against the layers.
 
-use torque_client_script_format::ui::{self, KINDS, KindDef, PropDef, PropType};
+use torque_client_script_format::ui::{self, KINDS, KindDef, PropDef, PropType, Track};
 
 use super::*;
 
@@ -116,6 +116,31 @@ fn random_value(rng: &mut Rng, def: &PropDef) -> PropValue {
                 .collect();
             PropValue::Rows(rows)
         }
+        PropType::Sides { min, max } => {
+            let side = |rng: &mut Rng| {
+                if valid || !rng.percent(40) {
+                    min + rng.unit() * (max - min)
+                } else {
+                    max.abs() * 2.0 + 1.0
+                }
+            };
+            PropValue::Sides([side(rng), side(rng), side(rng), side(rng)])
+        }
+        PropType::Tracks { max } => {
+            let count = if valid {
+                rng.below(max as u64 + 1) as usize
+            } else {
+                max + 1 + rng.below(3) as usize
+            };
+            let tracks = (0..count)
+                .map(|_| match rng.below(3) {
+                    0 => Track::Auto,
+                    1 => Track::Px(rng.unit() * ui::MAX_LENGTH),
+                    _ => Track::Fr(rng.unit() * ui::MAX_SHARE),
+                })
+                .collect();
+            PropValue::Tracks(tracks)
+        }
     }
 }
 
@@ -148,18 +173,35 @@ fn some_handle(rng: &mut Rng, live: &[u32], next: u32) -> u32 {
     }
 }
 
-fn random_op(rng: &mut Rng, live: &[u32], next: u32) -> Ops {
+/// A random kind: with `containers`, half of them are a container, so that the nesting and child caps are reached.
+fn random_kind(rng: &mut Rng, containers: bool) -> &'static KindDef {
+    if containers && rng.percent(50) {
+        let kinds: Vec<&KindDef> = KINDS
+            .iter()
+            .filter(|k| k.kind.container().is_some())
+            .collect();
+        return kinds[rng.below(kinds.len() as u64) as usize];
+    }
+    rng.pick(KINDS)
+}
+
+fn random_op(rng: &mut Rng, live: &[u32], next: u32, containers: bool) -> Ops {
     let mut ops = Ops::default();
     let handle = if rng.percent(94) { next } else { next + 1 };
     match rng.below(100) {
         0..=34 => {
-            let kind = rng.pick(KINDS);
-            let parent = some_handle(rng, live, next);
+            let kind = random_kind(rng, containers);
+            // With containers, most creates go under the newest control, which makes chains of them.
+            let parent = if containers && rng.percent(70) && next > 1 {
+                next - 1
+            } else {
+                some_handle(rng, live, next)
+            };
             ops.create(handle, parent, kind.kind, &random_props(rng, kind));
         }
         35..=54 => {
             let target = some_handle(rng, live, next);
-            let kind = rng.pick(KINDS);
+            let kind = random_kind(rng, containers);
             ops.set(target, &random_props(rng, kind));
         }
         55..=66 => {
@@ -197,12 +239,37 @@ fn random_op(rng: &mut Rng, live: &[u32], next: u32) -> Ops {
 
 #[test]
 fn client_script_applier_fuzz_100000_sequences() {
-    let mut rig = Rig::new(&[Tier::Ui, Tier::Net]);
+    applier_fuzz(
+        Rig::new(&[Tier::Ui, Tier::Net]),
+        0x9E37_79B9_7F4A_7C15,
+        false,
+    );
+}
+
+#[test]
+fn client_script_applier_fuzz_of_layout_containers_100000_sequences() {
+    let rig = super::layout::layout_rig(&[Tier::Ui, Tier::Net]);
+    applier_fuzz(rig, 0xD1B5_4A32_D192_ED03, true);
+}
+
+#[test]
+fn client_script_applier_fuzz_of_containers_without_a_layout() {
+    applier_fuzz(
+        Rig::new(&[Tier::Ui, Tier::Net]),
+        0x2545_F491_4F6C_DD1D,
+        true,
+    );
+}
+
+/// Runs [`SEQUENCES`] random sequences of ops against `rig`, checking the realm's invariants as it goes; with `containers`
+/// half the kinds made are containers.
+fn applier_fuzz(mut rig: Rig, seed: u64, containers: bool) {
     rig.realm.set_content_check(store("mods/m/"));
     let evals = rig.vm.eval_count();
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let mut rng = Rng(seed);
     let mut live = Vec::new();
     let (mut applied, mut refused) = (0u64, 0u64);
+    let mut reasons = std::collections::BTreeSet::new();
     let mut clock = 0u64;
     // A realm that has a root, so creates have somewhere to go.
     let mut start = Ops::default();
@@ -211,14 +278,17 @@ fn client_script_applier_fuzz_100000_sequences() {
     for sequence in 0..SEQUENCES {
         for _ in 0..=rng.below(6) {
             let next = rig.realm.next_handle();
-            let ops = random_op(&mut rng, &live, next);
+            let ops = random_op(&mut rng, &live, next, containers);
             clock += 1000;
             match rig
                 .realm
                 .apply_flush(&mut rig.vm, &rig.gui, ops.bytes(), clock)
             {
                 Ok(_) => applied += 1,
-                Err(_) => refused += 1,
+                Err(violation) => {
+                    refused += 1;
+                    reasons.insert(violation.0);
+                }
             }
         }
         assert!(rig.realm.control_count() <= MAX_CONTROLS);
@@ -246,6 +316,13 @@ fn client_script_applier_fuzz_100000_sequences() {
         "applied {applied}, refused {refused}"
     );
     assert!(rig.realm.control_count() > 0);
+    if containers {
+        // The chains of containers the generator makes reach the nesting cap, and the cap held.
+        assert!(
+            reasons.contains("containers nested past the cap"),
+            "{reasons:?}"
+        );
+    }
 }
 
 #[test]
@@ -535,7 +612,7 @@ fn client_script_spoof_fuzz_draws_the_realm_only_in_its_place_and_never_without_
             }
             _ => {
                 let next = rig.realm.next_handle();
-                let ops = random_op(&mut rng, &live, next);
+                let ops = random_op(&mut rng, &live, next, false);
                 let clock = (step as u64 + 1) * 1000;
                 let _ = rig
                     .realm

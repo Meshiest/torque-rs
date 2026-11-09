@@ -285,6 +285,38 @@ realm.log("built")
     )
 }
 
+/// Layout containers, their items and the numbers their props are made of (lengths, shares, sides, tracks).
+pub fn layout_tree() -> Vec<Action> {
+    run_script::<0>(
+        &[(
+            "main.lua",
+            r##"
+local root = ui.root()
+local menu = ui.new("flex", { size = { 300, 200 }, direction = "column", gap = { 4, 8.5 }, padding = { 6, 10 },
+  justifyContent = "space-between", alignItems = "center", wrap = "wrap" }, root)
+local grid = ui.new("grid", { size = { 280, 100 }, columns = { 100, "1fr", "auto", "2.5fr" }, rows = { 30, "1fr" },
+  autoFlow = "row dense", justifyItems = "start" }, menu)
+local a = ui.new("button", { text = "A", row = 1, column = 2, columnSpan = 2, margin = 3 }, grid)
+local b = ui.new("panel", { grow = 2.5, shrink = 0, basis = 40, alignSelf = "end", minSize = { 10, 20 }, maxSize = { 90, 0 } }, menu)
+local inner = ui.new("flex", { size = { 50, 50 }, padding = { 1, 2, 3, 4 } })
+ui.new("text", { text = "in", grow = 1 }, inner)
+realm.log(tostring(#grid:get("columns")), grid:get("columns")[4], tostring(a:get("margin")[2]), tostring(b:get("basis")), menu:get("padding")[3])
+realm.after(0.25, function()
+  inner:parent(menu)
+  menu:set({ direction = "row", gap = { 1, 2 } })
+  grid:set({ columns = { "auto" } })
+  realm.log(pcall(grid.set, grid, { columns = { 1e9 } }) and "accepted" or "refused")
+  realm.log(pcall(ui.new, "flex", { opacity = 1 }) and "accepted" or "refused")
+end)
+realm.log("built")
+"##,
+        )],
+        steady,
+        UI_NET,
+        20,
+    )
+}
+
 /// Messages and calls to the server.
 pub fn net() -> Vec<Action> {
     run_script::<0>(

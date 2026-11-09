@@ -170,6 +170,8 @@
 //! | enum | `u8` index into the prop's names | one of the names |
 //! | image | `text`: empty (none), or a content path ([`ui::check_content_path`]) with an image extension | a string |
 //! | rows | `u16` count, then count `text`s | an array of strings |
+//! | sides | four `f64` (top, right, bottom, left), finite, each in the prop's range | a number (all four), or an array of 2 (top and bottom, left and right) or 4 |
+//! | tracks | `u8` count (at most [`ui::MAX_TRACKS`]), then count tracks: a `u8` tag (0 auto; 1 length, then `f64`; 2 share, then `f64`), finite, in range | an array of numbers (lengths) and the strings `"auto"` and `"1fr"` (shares) |
 //!
 //! The kinds, their props, ranges and defaults are [`ui::KINDS`] and [`ui::PROPS`]. The text props of one control together
 //! hold at most [`ui::MAX_CONTROL_TEXT`] bytes, not counting a richtext's `text` ([`ui::MAX_RICH_TEXT`]) and a list's
@@ -177,6 +179,17 @@
 //! [`ui::MAX_TEXT`]; the distinct images of live controls are at most [`ui::MAX_IMAGES`]; live controls (roots not counted)
 //! at most [`ui::MAX_CONTROLS`]. Controls have no names, no profiles, no commands, no variables, no accelerators and no
 //! classes: those fields do not exist in this format.
+//!
+//! **Layout containers** are the kinds `flex` and `grid` (kinds 11 and 12, props 53 to 63): the host lays their children out
+//! by the rules of CSS's flexbox and grid, using the item props every kind has (`grow`, `shrink`, `basis`, `alignSelf`,
+//! `justifySelf`, `margin`, `row`, `column`, `rowSpan`, `columnSpan`, `minSize`, `maxSize`: props 41 to 52). A container has
+//! no look props (no `enabled`, `tooltip` or `opacity`) and no events; its looks are its children's. At most
+//! [`ui::MAX_CONTAINER_DEPTH`] containers nest, a container has at most [`ui::MAX_CONTAINER_CHILDREN`] children, a grid at
+//! most [`ui::MAX_TRACKS`] tracks on an axis, and every number is finite and within its prop's range (gaps, padding and
+//! margins at most [`ui::MAX_SPACING`], shares at most [`ui::MAX_SHARE`], lengths at most [`ui::MAX_LENGTH`]); a `create` or
+//! `parent` past a cap is a violation. The layout is the engine's to give: a host without a layout class keeps a container as
+//! a plain group that places nothing, and every other op works as before. This is an addition to format 2's tables, not a new
+//! version: a host that has it applies every flush of a guest that does not.
 //!
 //! # 8. Script files
 //!
@@ -228,6 +241,25 @@
 //! [`MAX_TIMERS`] live (`after`, `every` and `onFrame` together); a period shorter than a frame fires once a frame. An
 //! `on` list (`realm.on`, `ui.on`, `net.on`) holds at most [`MAX_HANDLERS`] functions. Strings longer than a field can hold are refused
 //! before they are read. The wall-clock deadline and the linear-memory cap are the host's.
+//!
+//! # Maintaining
+//!
+//! **Map.** `abi` the guest's config and the caps of script files; `codec` the records, the reader and the writer; `value` the
+//! free-form values; `ui` the control kinds, props (ids, types, ranges, defaults), the text, markup and path rules and the caps;
+//! `net` the RPC names. Three places read these bytes: the guest (`torque-plugin-lua`, `client_script`), the host's flush check
+//! (`torque-client-script-host`) and the GUI's applier (`torque-gui`, `client_script::apply`); the first and the last each check
+//! everything again, because neither trusts the other.
+//!
+//! **Extending.** A kind or a prop is a row of `ui::KINDS` or `ui::PROPS` (ids only ever appended); a new prop type is an arm in
+//! `check_value`, `write_value`, `read_value`, `field_text` and, in the guest, `to_prop`, `prop_to_lua`. Both appliers then need
+//! the rules that tie props together (a container's nesting and children, a slider's range). Such an addition keeps
+//! [`FORMAT_VERSION`]: a host that has it reads every flush of a guest that does not. Anything that changes a byte or a rule that
+//! exists is a new version. The guest's sources are part of its hash, so every change here is followed by the justfile's `lua-client-web`
+//! and the new hash in `ACCEPTED_CLIENT_GUESTS`.
+//!
+//! **Checking.** `cargo test -p torque-client-script-format` (the round trips, the ranges, every refusal and a seeded fuzz of the
+//! props reader, 300,000 cases with `TORQUE_CLIENT_SCRIPT_FUZZ` set), then the appliers' and the guest's suites
+//! (the justfile's `client-script-check`).
 
 #![warn(missing_docs)]
 

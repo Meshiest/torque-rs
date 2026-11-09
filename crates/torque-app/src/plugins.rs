@@ -58,6 +58,7 @@ use torque_client::state::ClientState;
 use torque_engine::{
     ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires,
 };
+use torque_gui::client_script::RealmLayoutEntry;
 use torque_gui::custom::ControlEntry;
 use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
@@ -195,6 +196,8 @@ impl Plugin for GuiPlugin {
             let gui = torque_gui::register(vm);
             // The control classes the plugins added (`add_gui_control`): their classes come with the script registry's, after.
             gui.add_controls(engine.list::<ControlEntry>());
+            // The layout a client-script realm's containers use, when a plugin added one (`add_realm_layout`).
+            gui.add_realm_layouts(engine.list::<RealmLayoutEntry>());
             if layout_fonts {
                 // The controls that measure text as they lay out (a list of games) find their fonts where the drawing does.
                 gui.0.borrow_mut().fonts =

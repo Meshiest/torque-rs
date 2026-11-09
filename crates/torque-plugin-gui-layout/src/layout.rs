@@ -67,6 +67,12 @@ const NODE_WORK: u64 = 512;
 /// What one control costs a fingerprint.
 const PRINT_WORK: u64 = 128;
 
+/// What taffy does for a grid beyond its nodes ([`grid_work`]): per cell a child covers (placing it, checking the cell is free),
+/// per track and per track a child crosses (sizing them), and per cell a dense auto-flow rescans for each child.
+const CELL_WORK: u64 = 8;
+const TRACK_WORK: u64 = 64;
+const DENSE_WORK: u64 = 2;
+
 /// A field's text.
 fn text(vm: &Vm, id: ObjId, name: &str) -> String {
     let raw = vm
@@ -360,6 +366,9 @@ impl Builder<'_> {
     fn children(&mut self, id: ObjId, this: &Container, below: usize) -> Vec<NodeId> {
         let vm = self.vm;
         let mut nodes = Vec::new();
+        // For a grid: the spans of each child, which its cost depends on; and where this level began, to take it back.
+        let mut spans: Vec<(u64, u64)> = Vec::new();
+        let (placed_at, ignored_at) = (self.placed.len(), self.ignored.len());
         for child in torque_gui::children(vm, id) {
             if self.placed.len() >= MAX_NODES || !vm.charge_work(NODE_WORK) {
                 break;
@@ -418,9 +427,73 @@ impl Builder<'_> {
             };
             self.placed[at].node = node;
             nodes.push(node);
+            if matches!(this, Container::Grid(_)) {
+                spans.push((
+                    span_of(vm, child, "gridRowSpan"),
+                    span_of(vm, child, "gridColumnSpan"),
+                ));
+            }
+        }
+        // A grid costs what its tracks, spans and auto-flow make taffy do, not only its nodes: one too dear for the frame's
+        // budget is left as it was (its children keep their bounds), whatever the fields say.
+        if let Container::Grid(grid) = this
+            && !vm.charge_work(grid_work(grid, &spans))
+        {
+            self.placed.truncate(placed_at);
+            self.ignored.truncate(ignored_at);
+            return Vec::new();
         }
         nodes
     }
+}
+
+/// How many rows or columns a span field says (at least 1, at most [`parse::MAX_TRACKS`]).
+fn span_of(vm: &Vm, id: ObjId, field: &str) -> u64 {
+    number(&text(vm, id, field)).map_or(1, |s| s.clamp(1.0, parse::MAX_TRACKS as f32) as u64)
+}
+
+/// The tracks a template names, a repeat counted out (at most [`parse::MAX_TRACKS`], as the template reader gives them).
+fn track_count(template: &str) -> u64 {
+    parse::template(template, None, 0.0)
+        .iter()
+        .map(|part| match part {
+            GridTemplateComponent::Single(_) => 1,
+            GridTemplateComponent::Repeat(r) => match r.count {
+                RepetitionCount::Count(n) => u64::from(n).saturating_mul(r.tracks.len() as u64),
+                _ => r.tracks.len() as u64,
+            },
+        })
+        .sum()
+}
+
+/// The work taffy does for the grid `grid` whose children span `spans` (rows, columns) beyond one unit a node: the cells the
+/// children cover (placing and checking them), the tracks the grid has and every track a child crosses (sizing them), and, in
+/// a dense auto-flow, a rescan of every cell for every child. The rows are those the children need when they flow into the
+/// columns there are, so a hostile grid (many children of the widest span) is charged for the implicit rows it makes.
+fn grid_work(grid: &GridCtrl, spans: &[(u64, u64)]) -> u64 {
+    let (mut area, mut crossings, mut widest) = (0u64, 0u64, 1u64);
+    for &(rows, columns) in spans {
+        area = area.saturating_add(rows.saturating_mul(columns));
+        crossings = crossings.saturating_add(rows + columns);
+        widest = widest.max(columns);
+    }
+    let columns = track_count(&grid.columns).max(widest);
+    let rows = track_count(&grid.rows).max(area.div_ceil(columns));
+    let mut work = CELL_WORK.saturating_mul(area).saturating_add(
+        TRACK_WORK.saturating_mul(crossings.saturating_add(columns).saturating_add(rows)),
+    );
+    if matches!(
+        parse::auto_flow(&grid.auto_flow),
+        GridAutoFlow::RowDense | GridAutoFlow::ColumnDense
+    ) {
+        let cells = columns.saturating_mul(rows);
+        work = work.saturating_add(
+            DENSE_WORK
+                .saturating_mul(cells)
+                .saturating_mul(spans.len() as u64),
+        );
+    }
+    work
 }
 
 /// The tree of the container `id` (`this`), its own width and height `size` (none: its content's); `known` the sizes of

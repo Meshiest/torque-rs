@@ -65,6 +65,10 @@
 //! the inboxes into the session, the GUI's events and the chip's actions, the realm's frame, and the record applied: logs, the
 //! `ui` pieces, then the `net` ops, so a flush whose `ui` is refused sends nothing.
 //!
+//! **Layout.** The `flex` and `grid` controls of a realm are laid out only if the game's engine has `GuiLayoutPlugin`
+//! (`torque-plugin-gui-layout`); without it they are plain groups and a server's scripts keep working, with their children
+//! where their own `pos` and `size` put them. The glue itself does nothing for layout.
+//!
 //! **Extending.** A tier needs its host module and review in `torque-client-script-host` first; its ability line is in
 //! `abilities`. A new built-in message is an RPC in `plugin` with a type in `messages` and a cap test beside it.
 //!

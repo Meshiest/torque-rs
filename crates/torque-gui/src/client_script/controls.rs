@@ -76,7 +76,7 @@ impl NodeState {
                 self.image.is_some() && props.color(Prop::Tint)[3] >= MIN_SHOWN_ALPHA
             }
             Some(Kind::Button | Kind::Toggle | Kind::TextField | Kind::List | Kind::Slider) => true,
-            Some(Kind::Scroll | Kind::Progress) | None => false,
+            Some(Kind::Scroll | Kind::Progress | Kind::Flex | Kind::Grid) | None => false,
         }
     }
 
@@ -205,6 +205,13 @@ macro_rules! node_behavior {
 pub(crate) struct RootCtrl {}
 node_behavior!(RootCtrl);
 
+/// A container the engine has no layout for: a transparent group that places nothing, so its children keep their own
+/// positions and sizes.
+#[derive(EngineClass)]
+#[class(name = "ClientScriptGroup", parent = "GuiControl")]
+pub(crate) struct GroupCtrl {}
+node_behavior!(GroupCtrl);
+
 /// A `panel`.
 #[derive(EngineClass)]
 #[class(name = "ClientScriptPanel", parent = "GuiControl")]
@@ -286,6 +293,7 @@ pub(crate) fn class_name(kind: Option<Kind>) -> &'static str {
         Some(Kind::Scroll) => "ClientScriptScroll",
         Some(Kind::Slider) => "ClientScriptSlider",
         Some(Kind::Progress) => "ClientScriptProgress",
+        Some(Kind::Flex | Kind::Grid) => "ClientScriptGroup",
     }
 }
 
@@ -319,7 +327,7 @@ fn mouse_down(st: &mut NodeState, cx: &mut ControlCx<'_>, ev: &PointerEvent) {
             st.pressed = true;
             slide(st, cx, ev.local.0);
         }
-        Kind::RichText | Kind::Scroll | Kind::Progress => {}
+        Kind::RichText | Kind::Scroll | Kind::Progress | Kind::Flex | Kind::Grid => {}
     }
 }
 
@@ -344,7 +352,9 @@ fn mouse_up(st: &mut NodeState, cx: &mut ControlCx<'_>, ev: &PointerEvent) {
         | Kind::List
         | Kind::Scroll
         | Kind::Slider
-        | Kind::Progress => {}
+        | Kind::Progress
+        | Kind::Flex
+        | Kind::Grid => {}
     }
 }
 

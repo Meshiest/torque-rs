@@ -7,8 +7,8 @@ use std::fmt;
 use std::sync::Arc;
 
 use torque_client_script_format::ui::{
-    self, Kind, MAX_CONTROL_TEXT, MAX_CONTROLS, MAX_DEPTH, MAX_IMAGES, MAX_LIST_TEXT,
-    MAX_RICH_TEXT, MAX_TEXT, Prop, PropType, PropValue,
+    self, Kind, MAX_CONTAINER_CHILDREN, MAX_CONTAINER_DEPTH, MAX_CONTROL_TEXT, MAX_CONTROLS,
+    MAX_DEPTH, MAX_IMAGES, MAX_LIST_TEXT, MAX_RICH_TEXT, MAX_TEXT, Prop, PropType, PropValue,
 };
 use torque_client_script_format::{
     Grants, MAX_FLUSH_BYTES, MAX_OPS, Malformed, Reader, Record, Records, Tier, abi, op,
@@ -22,6 +22,7 @@ use super::layers::{
     LayerState, RealmView, Release, effectively_visible, invalidate, release_holds,
     server_takes_input,
 };
+use super::layout::RealmLayout;
 use super::props::Props;
 use crate::control::{self, make_realm_control};
 use crate::draw::RealmImage;
@@ -89,6 +90,31 @@ struct Node {
     /// The bytes of its text props, for the realm-wide cap.
     text: usize,
     image: Option<String>,
+    /// The containers on the way from its mod root to it, itself counted (a root is 0).
+    containers: usize,
+    /// A container's props as set (it keeps no [`NodeState`]: its class is the layout plugin's). Empty for the others.
+    held: Props,
+}
+
+impl Node {
+    fn new(obj: ObjId, parent: u32, kind: Option<Kind>, depth: usize, containers: usize) -> Node {
+        Node {
+            obj,
+            parent,
+            kind,
+            depth,
+            children: Vec::new(),
+            text: 0,
+            image: None,
+            containers,
+            held: Props::default(),
+        }
+    }
+
+    /// Whether it is a container (`flex` or `grid`).
+    fn is_container(&self) -> bool {
+        self.kind.is_some_and(|k| k.container().is_some())
+    }
 }
 
 /// An image path in use, by how many controls, and what the store gave for it.
@@ -318,9 +344,9 @@ impl Realm {
             op::ui::ROOT => self.root(vm, gui, &mut r),
             op::ui::CREATE => self.create(vm, gui, &mut r),
             op::ui::SET => self.set(vm, gui, &mut r),
-            op::ui::DESTROY => self.destroy(vm, &mut r),
+            op::ui::DESTROY => self.destroy(vm, gui, &mut r),
             op::ui::PARENT => self.reparent(vm, gui, &mut r),
-            op::ui::ORDER => self.order(vm, &mut r),
+            op::ui::ORDER => self.order(vm, gui, &mut r),
             op::ui::INTERACTIVE => {
                 let on = r.bool()?;
                 r.finish()?;
@@ -380,18 +406,7 @@ impl Realm {
         }
         self.next += 1;
         self.roots.insert(mod_id.to_string(), handle);
-        self.nodes.insert(
-            handle,
-            Node {
-                obj,
-                parent: 0,
-                kind: None,
-                depth: 0,
-                children: Vec::new(),
-                text: 0,
-                image: None,
-            },
-        );
+        self.nodes.insert(handle, Node::new(obj, 0, None, 0, 0));
         Ok(())
     }
 
@@ -403,15 +418,26 @@ impl Realm {
         if handle != self.next {
             return Err(Violation("a handle that is not the next number"));
         }
-        let (parent_obj, depth) = {
+        let container = kind_def.kind.container();
+        let (parent_obj, depth, containers) = {
             let p = self.live(parent)?;
             if is_field(p) {
                 return Err(Violation("a control under a text field"));
             }
-            (p.obj, p.depth + 1)
+            if p.is_container() && p.children.len() >= MAX_CONTAINER_CHILDREN {
+                return Err(Violation("a container with more children than the cap"));
+            }
+            (
+                p.obj,
+                p.depth + 1,
+                p.containers + usize::from(container.is_some()),
+            )
         };
         if depth > MAX_DEPTH || self.controls >= MAX_CONTROLS {
             return Err(Violation("a control past the depth or count cap"));
+        }
+        if containers > MAX_CONTAINER_DEPTH {
+            return Err(Violation("containers nested past the cap"));
         }
         let mut props = Props::default();
         for (prop, value) in &given {
@@ -422,10 +448,19 @@ impl Realm {
         let image = props.text(Prop::Image).to_string();
         self.check_totals(text, &image, 0, None)?;
         let shown = self.image_for(&image)?;
-        let obj = make_realm_control(vm, gui, class_name(Some(kind_def.kind)), &[])
+        let layout = gui.realm_layout();
+        let fields = layout_fields(layout, kind_def.kind, &given);
+        let (obj, laid) = make_control(vm, gui, kind_def.kind, layout, &fields)
             .ok_or(Violation("a control that could not be made"))?;
+        let held = if container.is_some() {
+            props.clone()
+        } else {
+            Props::default()
+        };
+        // A container of the layout's class keeps no state of the realm's (its class is the layout's, so this finds none); a
+        // group made for an engine without a layout, and every other control, does.
         gui.with_custom_state::<NodeState, _>(obj, |s| {
-            *s = NodeState::new(handle, Some(kind_def.kind));
+            *s = NodeState::new(handle, container.is_none().then_some(kind_def.kind));
             s.set_props(props, shown.clone());
         });
         place_defaults(vm, gui, obj, &given);
@@ -433,24 +468,23 @@ impl Realm {
             discard(vm, obj);
             return Err(Violation("a control that could not be placed"));
         }
+        if laid {
+            gui.0.borrow_mut().client_script.laid.push(obj);
+        }
+        if containers > 0 {
+            mark_layout(gui);
+        }
         self.next += 1;
         self.add_counts(text, &image, shown);
         self.controls += 1;
         if let Some(p) = self.nodes.get_mut(&parent) {
             p.children.push(handle);
         }
-        self.nodes.insert(
-            handle,
-            Node {
-                obj,
-                parent,
-                kind: Some(kind_def.kind),
-                depth,
-                children: Vec::new(),
-                text,
-                image: (!image.is_empty()).then_some(image),
-            },
-        );
+        let mut node = Node::new(obj, parent, Some(kind_def.kind), depth, containers);
+        node.text = text;
+        node.image = (!image.is_empty()).then_some(image);
+        node.held = held;
+        self.nodes.insert(handle, node);
         Ok(())
     }
 
@@ -513,16 +547,27 @@ impl Realm {
 
     fn set(&mut self, vm: &mut Vm, gui: &Gui, r: &mut Reader<'_>) -> Result<(), Violation> {
         let handle = r.u32()?;
-        let (obj, kind, old_text, old_image) = {
+        let (obj, kind, old_text, old_image, held, in_layout) = {
             let n = self.control(handle)?;
-            (n.obj, n.kind, n.text, n.image.clone())
+            (
+                n.obj,
+                n.kind,
+                n.text,
+                n.image.clone(),
+                n.held.clone(),
+                n.containers > 0,
+            )
         };
         let kind = kind.ok_or(Violation("a mod root where a control is needed"))?;
         let given = ui::read_props(r, ui::kind_def(kind))?;
         r.finish()?;
-        let mut props = gui
-            .with_custom_state::<NodeState, _>(obj, |s| s.props.clone())
-            .ok_or(Violation("a control with no state"))?;
+        let container = kind.container().is_some();
+        let mut props = if container {
+            held
+        } else {
+            gui.with_custom_state::<NodeState, _>(obj, |s| s.props.clone())
+                .ok_or(Violation("a control with no state"))?
+        };
         for (prop, value) in &given {
             props.set(*prop, value.clone());
         }
@@ -531,8 +576,16 @@ impl Realm {
         let image = props.text(Prop::Image).to_string();
         self.check_totals(text, &image, old_text, old_image.as_deref())?;
         let shown = self.image_for(&image)?;
+        if container && let Some(n) = self.nodes.get_mut(&handle) {
+            n.held = props.clone();
+        }
+        // A realm group keeps the props too; a container of the layout's class has no state of the realm's to set.
         gui.with_custom_state::<NodeState, _>(obj, |s| s.set_props(props, shown.clone()));
         apply_layout(vm, gui, obj, &given);
+        write_fields(vm, obj, &layout_fields(gui.realm_layout(), kind, &given));
+        if in_layout {
+            mark_layout(gui);
+        }
         self.drop_counts(old_text, old_image.as_deref());
         self.add_counts(text, &image, shown);
         if let Some(n) = self.nodes.get_mut(&handle) {
@@ -555,11 +608,15 @@ impl Realm {
         out
     }
 
-    fn destroy(&mut self, vm: &mut Vm, r: &mut Reader<'_>) -> Result<(), Violation> {
+    fn destroy(&mut self, vm: &mut Vm, gui: &Gui, r: &mut Reader<'_>) -> Result<(), Violation> {
         let handle = r.u32()?;
         r.finish()?;
-        self.control(handle)?;
-        self.remove_subtree(vm, handle)
+        let in_layout = self.control(handle)?.containers > 0;
+        self.remove_subtree(vm, handle)?;
+        if in_layout {
+            mark_layout(gui);
+        }
+        Ok(())
     }
 
     /// Deletes the control `handle` and everything under it.
@@ -592,12 +649,18 @@ impl Realm {
             let n = self.control(handle)?;
             (n.obj, n.parent, n.depth)
         };
-        let (parent_obj, parent_depth) = {
+        let (parent_obj, parent_depth, parent_containers) = {
             let p = self.live(new_parent)?;
             if is_field(p) {
                 return Err(Violation("a control moved under a text field"));
             }
-            (p.obj, p.depth)
+            if p.is_container()
+                && new_parent != old_parent
+                && p.children.len() >= MAX_CONTAINER_CHILDREN
+            {
+                return Err(Violation("a container with more children than the cap"));
+            }
+            (p.obj, p.depth, p.containers)
         };
         let below = self.subtree(handle);
         if below.contains(&new_parent) {
@@ -613,6 +676,16 @@ impl Realm {
         if new_depth + height > MAX_DEPTH {
             return Err(Violation("a control moved past the depth cap"));
         }
+        let old_containers = self.live(old_parent)?.containers;
+        let nested = below
+            .iter()
+            .filter_map(|h| self.nodes.get(h))
+            .map(|n| n.containers - old_containers)
+            .max()
+            .unwrap_or(0);
+        if parent_containers + nested > MAX_CONTAINER_DEPTH {
+            return Err(Violation("containers moved past the nesting cap"));
+        }
         control::add_child(vm, gui, parent_obj, obj)
             .map_err(|_| Violation("a control that could not be moved"))?;
         if let Some(p) = self.nodes.get_mut(&old_parent) {
@@ -624,7 +697,11 @@ impl Realm {
         for h in below {
             if let Some(n) = self.nodes.get_mut(&h) {
                 n.depth = n.depth - old_depth + new_depth;
+                n.containers = n.containers - old_containers + parent_containers;
             }
+        }
+        if old_containers > 0 || parent_containers > 0 {
+            mark_layout(gui);
         }
         if let Some(n) = self.nodes.get_mut(&handle) {
             n.parent = new_parent;
@@ -632,15 +709,18 @@ impl Realm {
         Ok(())
     }
 
-    fn order(&mut self, vm: &mut Vm, r: &mut Reader<'_>) -> Result<(), Violation> {
+    fn order(&mut self, vm: &mut Vm, gui: &Gui, r: &mut Reader<'_>) -> Result<(), Violation> {
         let (handle, front) = (r.u32()?, r.bool()?);
         r.finish()?;
-        let (obj, parent) = {
+        let (obj, parent, in_layout) = {
             let n = self.control(handle)?;
-            (n.obj, self.live(n.parent)?.obj)
+            (n.obj, self.live(n.parent)?.obj, n.containers > 0)
         };
         // The member list starts with the control drawn first.
         vm.objects_mut().move_member(parent, obj, !front);
+        if in_layout {
+            mark_layout(gui);
+        }
         Ok(())
     }
 
@@ -736,6 +816,22 @@ impl Realm {
             if node.depth > MAX_DEPTH || node.depth > MAX_TREE_DEPTH {
                 return Err(format!("handle {handle} is {} deep", node.depth));
             }
+            if node.containers > MAX_CONTAINER_DEPTH {
+                return Err(format!(
+                    "handle {handle} is in {} containers",
+                    node.containers
+                ));
+            }
+            if node.is_container() && node.children.len() > MAX_CONTAINER_CHILDREN {
+                return Err(format!(
+                    "container {handle} has {} children",
+                    node.children.len()
+                ));
+            }
+            let above = self.nodes.get(&node.parent).map_or(0, |p| p.containers);
+            if node.containers != above + usize::from(node.is_container()) {
+                return Err(format!("handle {handle} counts its containers wrong"));
+            }
             if !vm.objects().contains(node.obj) || !gui.is_realm(node.obj) {
                 return Err(format!("handle {handle} has no realm control"));
             }
@@ -778,6 +874,67 @@ pub(crate) fn code_field(vm: &Vm, obj: ObjId) -> Option<&'static str> {
             .field(obj, name.as_bytes(), b"")
             .is_some_and(|v| !v.is_empty())
     })
+}
+
+/// The console fields a layout class reads, for the layout props among `given` of a control of `kind`: the words of CSS the
+/// props make, under the names the layout gave them. None without a layout.
+fn layout_fields(
+    layout: Option<&RealmLayout>,
+    kind: Kind,
+    given: &[(Prop, PropValue)],
+) -> Vec<(&'static str, String)> {
+    let Some(layout) = layout else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (prop, value) in given {
+        if let Some(name) = layout.field(*prop) {
+            out.push((name, ui::field_text(ui::prop_def(*prop), value)));
+        }
+        // A container inside a container is laid out at the size it is given only when the layout is told it: else it follows
+        // its content.
+        if kind.container().is_some()
+            && let (Prop::Size, PropValue::Vec2(w, h)) = (prop, value)
+        {
+            let (wide, tall) = layout.size_fields();
+            out.push((wide, ui::number_text(w.round())));
+            out.push((tall, ui::number_text(h.round())));
+        }
+    }
+    out
+}
+
+/// Something inside a layout container changed: the layouts are checked again for the next frames ([`super::layers::mark_layout`]).
+fn mark_layout(gui: &Gui) {
+    super::layers::mark_layout(gui);
+}
+
+/// Writes console fields to a control.
+fn write_fields(vm: &mut Vm, obj: ObjId, fields: &[(&str, String)]) {
+    for (name, text) in fields {
+        vm.set_object_field(obj, name.as_bytes(), b"", text.as_bytes());
+    }
+}
+
+/// Makes the object of a control of `kind` with `fields` set from the start: a container of the layout's class (then true:
+/// the layout's `update` is the realm's to run), else the realm's class for the kind (a container with no layout is a group).
+fn make_control(
+    vm: &mut Vm,
+    gui: &Gui,
+    kind: Kind,
+    layout: Option<&RealmLayout>,
+    fields: &[(&str, String)],
+) -> Option<(ObjId, bool)> {
+    let raw: Vec<(&[u8], &[u8], &[u8])> = fields
+        .iter()
+        .map(|(name, text)| (name.as_bytes(), &b""[..], text.as_bytes()))
+        .collect();
+    if let (Some(container), Some(layout)) = (kind.container(), layout)
+        && let Some(obj) = make_realm_control(vm, gui, layout.class(container), &raw)
+    {
+        return Some((obj, true));
+    }
+    make_realm_control(vm, gui, class_name(Some(kind)), &raw).map(|obj| (obj, false))
 }
 
 /// Places a new control: the format's defaults for the layout props, then what the op gave.

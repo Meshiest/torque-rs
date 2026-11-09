@@ -622,6 +622,10 @@ pub const CASES: &[Case] = &[
         actions: parity::ui_tree,
     },
     Case {
+        name: "a_layout_tree_comes_out_the_same_on_every_runner",
+        actions: parity::layout_tree,
+    },
+    Case {
         name: "messages_and_calls_come_out_the_same_on_every_runner",
         actions: parity::net,
     },

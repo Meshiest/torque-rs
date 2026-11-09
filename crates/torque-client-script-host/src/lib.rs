@@ -72,6 +72,9 @@
 //!   the guest `just lua-client-web` built for it (the justfile's `client-script-guest-hash` prints the line); the list is empty until a
 //!   release does, so no build runs a server's scripts before that. `RealmGuest::unlisted` is for the tests' own guests.
 //!
+//! **Layout.** A container the guest makes is the GUI's to place (`torque-gui`'s `RealmLayout`, filled by `torque-plugin-gui-layout`);
+//! this crate's flush check sees a `create` of a kind like any other and needs nothing of the layout.
+//!
 //! **Extending.** A tier: the format's ops first, then a cargo feature and its bit in [`HOST_TIERS`], its arm in
 //! `flush::check` and an `Action`, an [`Effects`] method and its `revoke` handling, its cases; it joins [`REVIEWED_TIERS`]
 //! only after its review. A runner: implement [`Runner`] and the `cases` crate feature's `Runners`; pass every case.
