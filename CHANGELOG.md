@@ -180,6 +180,8 @@ different.
   A script handler gets objects and a script call names them (the ghost indexes stay on the wire), a message a peer must refuse
   (a float that is not finite) is never sent, a reply that comes after its call timed out is ignored, what a side sends is held
   to the same rates the other side applies, frames a carrier refuses stay queued, and two RPCs may not share a script handler.
+  An RPC may be marked for client scripts (`RpcBuilder::realm`): only those can be called or heard from a server's Lua. An RPC's
+  message may be as large as a batch (`MAX_RPC_BYTES`, 16 KiB less its length); an RPC asks for what it needs, 256 bytes by default.
 - Permissions (`torque-permissions`, `torque-engine`'s `permissions`): dotted permission names (`props.spawn`), wildcard grants
   (`props.*`, `*`), and flat roles a game defines (the engine defines none); a connection holds roles and direct grants, with caps on
   each, and a check is true when any grant matches. Plugins declare the permissions they check, with a line of description
@@ -342,6 +344,17 @@ different.
   a linear-memory cap, every op checked against the format and the granted tiers (a violation stops the realm), revocation
   that removes a tier's effects in the same frame, a strike rule, teardown on disconnect and a per-frame budget. In no
   default plugin set; no tier is reviewed yet. TGE has none.
+- `torque-plugin-client-script`: server scripts for a game, the part a game fills in around the realm. The player's consent comes
+  first: a global setting (never, until the first abilities are approved), a policy for each ability (ask, always, never), and a
+  per-server choice remembered in a file the engine owns, so that no TorqueScript or Lua can read it; nothing of the realm exists,
+  and no file of the server's is read, before the answer. The question is a slot (`ConsentPrompt`) with stable ability keys and
+  English lines, and the engine ships a plain prompt (`torque-gui`, in the engine layer: it ignores the pointer for half a second
+  and takes no key). A realm's `net.send` and the server's messages are plugin RPCs with every size and rate capped where the
+  bytes arrive; `net.call` reaches only the RPCs a server marked with `RpcBuilder::realm`. The server sees only `declined`,
+  `unavailable` or the abilities granted, and gets `clientScriptOnMessage`, `clientScriptSend`, `clientScriptOnStatus` and an
+  offer built from the mods' `[client_script]` manifest tables. `torque-mods` reads a server's script files for a realm only from
+  the mount that server offered, verified against its hash and not found through cache sharing. The guest is run only if its hash
+  is listed in `ACCEPTED_CLIENT_GUESTS` (empty until a release lists one). In no default plugin set. TGE has none.
 - `torque-bundle` (`just bundle <game crate>`): packages a game for the computer it runs on: its binaries built in release
   with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
   extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders

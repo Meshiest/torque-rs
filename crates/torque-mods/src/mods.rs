@@ -21,7 +21,7 @@ use torque_ts_vm::vm::{Vm, VmError};
 
 use crate::content::{ContentSummary, Hash, content_names, summarize, summarize_files};
 use crate::discover::{Budget, Found, Notes, scan};
-use crate::files::{ALIAS_FOLDER, ModFiles, Mount, MountKind, Table, is_script_path};
+use crate::files::{ALIAS_FOLDER, ModFiles, Mount, MountKind, MountOrigin, Table, is_script_path};
 use crate::info::{ModInfo, check_id};
 use crate::layout::{
     Candidate, ModEnableList, ModLayout, ModNames, ModOrder, ModPrereqs, ModStages, PlainNames,
@@ -945,7 +945,7 @@ impl Mods {
         } else {
             Vec::new()
         };
-        let count = mount_content(&self.table, &self.limits, name, kept)?;
+        let count = mount_content(&self.table, &self.limits, name, kept, None)?;
         self.assets
             .debug_assert_untrusted("files a server sent", &paths);
         Ok(count)
@@ -967,6 +967,86 @@ impl Mods {
     /// answer true here.
     pub fn is_untrusted(&self, path: &str) -> bool {
         self.is_server_file(path)
+    }
+}
+
+/// A required mod whose manifest has `client_script`: what the server tells clients so they can ask the player.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ClientScriptOffer {
+    /// The mod's id.
+    pub mod_id: String,
+    /// The content hash of the mod, which the client's copy must have.
+    pub hash: Hash,
+    /// The entry script's path within the mod.
+    pub entry: String,
+    /// The tier names the scripts ask for.
+    pub tiers: Vec<String>,
+}
+
+impl Mods {
+    /// The required mods whose manifests ask for client scripts, each with the content hash the clients verify. Empty on a
+    /// client and on a server that requires nothing. The entry is part of the content the hash covers.
+    pub fn client_script_offers(&self) -> Vec<ClientScriptOffer> {
+        let state = self.state.borrow();
+        state
+            .required
+            .iter()
+            .filter_map(|required| {
+                let entry = state
+                    .entries
+                    .iter()
+                    .find(|e| e.summary.info.id.eq_ignore_ascii_case(&required.id))?;
+                let spec = entry.summary.info.client_script.as_ref()?;
+                Some(ClientScriptOffer {
+                    mod_id: required.id.clone(),
+                    hash: required.hash,
+                    entry: spec.entry.clone(),
+                    tiers: spec.tiers.clone(),
+                })
+            })
+            .collect()
+    }
+
+    /// Whether the files of mod `mod_id` that `server` offered with content hash `hash` are mounted for this connection and
+    /// hold `entry`, by the rules of [`client_content`](Self::client_content). Nothing is read: a client asks this before it asks
+    /// the player, and reads the files only once the player has allowed them.
+    pub fn client_ready(
+        &self,
+        server: crate::cache::CacheOwner,
+        mod_id: &str,
+        hash: &Hash,
+        entry: &str,
+    ) -> bool {
+        self.table.client_ready(mod_id, server, hash, entry)
+    }
+
+    /// The files of mod `mod_id` as the server `server` sent them on this connection, each as `(mods/<id>/<path>, bytes)`:
+    /// the one opt-in reader of server-sent script files, for a client-script realm.
+    ///
+    /// Only the mount that was offered by `server`, verified against `hash`, and reached the client by that server's own
+    /// download or its own cache entry is read. A mod the player has installed, content another server sent, an entry found
+    /// through cache sharing, a mount made by [`mount_server_files`](Self::mount_server_files) and a hash that differs give
+    /// `None`, and so does a mod with more than [`MAX_CLIENT_FILES`](crate::MAX_CLIENT_FILES) files. `exec`, `read_script` and every other path keep
+    /// refusing these files ([`is_untrusted`](Self::is_untrusted)).
+    pub fn client_content(
+        &self,
+        server: crate::cache::CacheOwner,
+        mod_id: &str,
+        hash: &Hash,
+    ) -> Option<Vec<(String, Arc<[u8]>)>> {
+        self.table.client_content(mod_id, server, hash)
+    }
+
+    /// One script file of that mount ([`client_content`](Self::client_content)'s rules), by its path within the mod. Only a
+    /// `.lua` or `.luau` file.
+    pub fn client_script(
+        &self,
+        server: crate::cache::CacheOwner,
+        mod_id: &str,
+        hash: &Hash,
+        path: &str,
+    ) -> Option<Arc<[u8]>> {
+        self.table.client_script(mod_id, server, hash, path)
     }
 }
 
@@ -1589,6 +1669,7 @@ pub(crate) fn mount_content(
     limits: &ModLimits,
     name: &str,
     files: Vec<(String, Vec<u8>)>,
+    origin: Option<MountOrigin>,
 ) -> Result<usize, ModError> {
     let (held, count) = table.held_except(name);
     let mut limits = *limits;
@@ -1597,12 +1678,9 @@ pub(crate) fn mount_content(
     let package = ModPackage::from_files(files, &limits)?;
     let count = package.len();
     table.remove_server(name);
-    table.push(Rc::new(Mount::new(
-        name.to_string(),
-        MountKind::Server,
-        package,
-        [],
-    )));
+    table.push(Rc::new(
+        Mount::new(name.to_string(), MountKind::Server, package, []).with_origin(origin),
+    ));
     Ok(count)
 }
 

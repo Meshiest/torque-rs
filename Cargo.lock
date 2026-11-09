@@ -4191,6 +4191,7 @@ name = "torque-client-script-host"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "sha2",
  "torque-client-script-format",
  "torque-engine",
  "torque-mods",
@@ -4611,6 +4612,21 @@ dependencies = [
 [[package]]
 name = "torque-plugin-abi"
 version = "0.1.0"
+
+[[package]]
+name = "torque-plugin-client-script"
+version = "0.1.0"
+dependencies = [
+ "torque-client-script-format",
+ "torque-client-script-host",
+ "torque-engine",
+ "torque-ghosts",
+ "torque-gui",
+ "torque-mods",
+ "torque-net",
+ "torque-server",
+ "torque-ts-vm",
+]
 
 [[package]]
 name = "torque-plugin-gamepad"

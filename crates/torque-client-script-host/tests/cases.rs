@@ -25,8 +25,8 @@ impl Runners for Native {
                 .ok_or_else(|| Trap::Fault("no realm guest".into()))?,
             Guest::Wat(text) => {
                 let wasm = wat::parse_str(text()).map_err(|e| Trap::Fault(e.to_string()))?;
-                let guest =
-                    RealmGuest::new(&self.engine, &wasm).map_err(|e| Trap::Fault(e.to_string()))?;
+                let guest = RealmGuest::unlisted(&self.engine, &wasm)
+                    .map_err(|e| Trap::Fault(e.to_string()))?;
                 self.guests.push(guest.clone());
                 guest
             }
@@ -63,7 +63,7 @@ fn every_case_passes_under_wasmtime() {
     let engine = GuestEngine::new(Duration::from_millis(5)).expect("an engine");
     let path = guest_path();
     let realm = match std::fs::read(&path) {
-        Ok(bytes) => Some(RealmGuest::new(&engine, &bytes).expect("the realm guest links")),
+        Ok(bytes) => Some(RealmGuest::unlisted(&engine, &bytes).expect("the realm guest links")),
         Err(error) => {
             assert!(
                 std::env::var_os("TORQUE_CLIENT_GUEST_REQUIRED").is_none(),
@@ -105,4 +105,20 @@ fn every_case_passes_under_wasmtime() {
         CASES.len()
     );
     assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+#[test]
+fn a_guest_off_the_list_is_refused_before_it_is_compiled() {
+    let engine = GuestEngine::new(Duration::from_millis(5)).expect("an engine");
+    let wasm = wat::parse_str("(module)").expect("a module");
+    let error = RealmGuest::new(&engine, &wasm)
+        .err()
+        .expect("no release lists this module");
+    assert!(
+        error.to_string().contains("is not one this build accepts"),
+        "{error}"
+    );
+    // The test constructor skips the list and nothing else.
+    assert!(RealmGuest::unlisted(&engine, &wasm).is_ok());
+    assert!(RealmGuest::unlisted(&engine, b"not a module").is_err());
 }

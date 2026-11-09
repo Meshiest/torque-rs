@@ -33,7 +33,7 @@ use torque_ts_vm::vm::Vm;
 
 use crate::cache::{CacheScope, ContentCache, default_cache_dir};
 use crate::content::{ContentCaps, Hash, encode_content, summarize_files};
-use crate::files::Table;
+use crate::files::{MountOrigin, Table, Way};
 use crate::mods::{Mods, mount_content};
 use crate::offer::{
     BLOCK_BYTES, MAX_REQUEST_BLOCKS, ModOffer, OfferCaps, Request, block_hash, decode_data,
@@ -315,7 +315,7 @@ pub(crate) struct Downloads {
     inner: RefCell<Inner>,
 }
 
-fn mount_name(id: &str) -> String {
+pub(crate) fn mount_name(id: &str) -> String {
     format!("download:{id}")
 }
 
@@ -547,9 +547,23 @@ impl Downloads {
         )
     }
 
-    fn mount(&self, id: &str, files: Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    /// Mounts the verified `files` of mod `id`, whose content hash is `hash`, noting how they reached the client.
+    fn mount(
+        &self,
+        id: &str,
+        hash: Hash,
+        way: Way,
+        files: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), String> {
         let name = mount_name(id);
-        mount_content(&self.table, &self.mod_limits, &name, files)
+        let origin = self
+            .inner
+            .borrow()
+            .cache
+            .scope()
+            .owner
+            .map(|server| MountOrigin { server, hash, way });
+        mount_content(&self.table, &self.mod_limits, &name, files, origin)
             .map_err(|e| format!("The mod {id} could not be mounted: {e}."))?;
         let mut inner = self.inner.borrow_mut();
         if !inner.mounted.contains(&name) {
@@ -566,7 +580,7 @@ impl Downloads {
         let content_caps = self.content_caps(&caps);
         let local = inner.local.as_ref().and_then(Weak::upgrade);
         let mut jobs: Vec<Option<Job>> = Vec::with_capacity(offer.len());
-        let mut cached: Vec<(String, Files)> = Vec::new();
+        let mut cached: Vec<(String, Hash, Way, Files)> = Vec::new();
         let (mut transfer, mut assembled) = (0u64, 0u64);
         // The cache's heads are read once an offer, and the older copies loaded to build from are bounded in all: twice what
         // the offer would download, so an offer cannot make the client read and hash its whole cache.
@@ -587,8 +601,9 @@ impl Downloads {
                 jobs.push(None);
                 continue;
             }
-            if let Some(files) = inner.cache.load(&item.hash, &content_caps) {
-                cached.push((item.id.clone(), files));
+            if let Some((files, own)) = inner.cache.load_entry(&item.hash, &content_caps) {
+                let way = if own { Way::OwnCache } else { Way::SharedCache };
+                cached.push((item.id.clone(), item.hash, way, files));
                 jobs.push(None);
                 continue;
             }
@@ -719,8 +734,8 @@ impl Downloads {
         let (mods, bytes) = (inner.fetching, transfer);
         inner.events.push_back(Event::Started { mods, bytes });
         drop(inner);
-        for (id, files) in cached {
-            self.mount(&id, files)?;
+        for (id, hash, way, files) in cached {
+            self.mount(&id, hash, way, files)?;
         }
         // A mod that matched in pieces and needs nothing more is finished at once.
         let ready: Vec<usize> = {
@@ -794,7 +809,7 @@ impl Downloads {
             ));
         }
         let message = encode_content(&offer.id, &offer.version, &offer.hash, &files);
-        self.mount(&offer.id, files)?;
+        self.mount(&offer.id, offer.hash, Way::Download, files)?;
         let mut inner = self.inner.borrow_mut();
         inner.cache.store(&offer.hash, &message);
         if let Some(Some(job)) = inner.jobs.get_mut(at) {

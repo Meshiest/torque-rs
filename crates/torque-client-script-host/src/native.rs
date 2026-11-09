@@ -88,12 +88,29 @@ pub struct RealmGuest {
 }
 
 impl RealmGuest {
-    /// Compiles a guest's bytes and links its imports.
+    /// Compiles a guest's bytes and links its imports, when this build accepts the guest
+    /// ([`ACCEPTED_CLIENT_GUESTS`](crate::ACCEPTED_CLIENT_GUESTS)).
     ///
     /// # Errors
     ///
-    /// When the bytes are not a module, or it imports anything but the WASI functions this crate answers.
+    /// When the bytes' hash is not listed ([`GuestRejected`](crate::GuestRejected)), they are not a module, or it imports
+    /// anything but the WASI functions this crate answers.
     pub fn new(engine: &GuestEngine, wasm: &[u8]) -> wasmtime::Result<RealmGuest> {
+        crate::check_guest(wasm)?;
+        RealmGuest::link(engine, wasm)
+    }
+
+    /// [`RealmGuest::new`] without the list: for the guest a test has just built, which no release lists.
+    ///
+    /// # Errors
+    ///
+    /// As [`RealmGuest::new`] but for the list.
+    #[cfg(feature = "unreviewed-tiers")]
+    pub fn unlisted(engine: &GuestEngine, wasm: &[u8]) -> wasmtime::Result<RealmGuest> {
+        RealmGuest::link(engine, wasm)
+    }
+
+    fn link(engine: &GuestEngine, wasm: &[u8]) -> wasmtime::Result<RealmGuest> {
         let module = Module::new(engine.engine(), wasm)?;
         let mut linker = Linker::new(engine.engine());
         wasi::link(&mut linker)?;

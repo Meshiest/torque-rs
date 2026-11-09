@@ -154,8 +154,8 @@ Every way a Lua call can make code run later, or write a field the engine runs, 
 Nothing a server sends runs as Lua, exactly as for TorqueScript. A server's files are mounted as content: a `.lua` among
 them can be read as data by a game's loaders, but `exec` refuses it, and `require` cannot load it, whatever its name.
 
-The one way a server's Lua runs on a player's client is a server/client script, in a realm of its own
-(`torque-client-script-host`, not yet in any default plugin set): a WebAssembly guest per connection with only the
+The one way a server's Lua runs on a player's client is a server/client script (see [Server scripts](server-scripts.md)),
+in a realm of its own (`torque-client-script-host`, not yet in any default plugin set): a WebAssembly guest per connection with only the
 abilities the player allowed, none of this page's `ts` bridge. Its time is held to the frame: each callback of a frame
 (an event, a timer, `realm.onFrame`) gets 20,000 steps (about 2 ms) and a file run (a mod's entry and what it
 `require`s) 100,000 (about 11 ms); an entry past 25 ms, or a callback stopped at its steps, is a strike, and three in

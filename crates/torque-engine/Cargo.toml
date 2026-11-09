@@ -28,6 +28,10 @@ torque-permissions = { path = "../torque-permissions" }
 # Client-to-server file transfers (`net().upload`): the server's and the client's state machines. Std and `sha2` only.
 torque-transfer = { path = "../torque-transfer" }
 
+[features]
+# `RpcLink::set_send_limits`: turns off the limits on what a link sends, for the tests of a receiving side. Never a host's.
+testing = []
+
 [dev-dependencies]
 # The resource layer's files, read by an asset loader in a test.
 torque-resource = { path = "../torque-resource" }

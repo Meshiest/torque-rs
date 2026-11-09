@@ -38,6 +38,12 @@ struct Target {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+struct Large {
+    #[net(max_len = 468)]
+    chunks: Vec<[u8; 32]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, NetMessage)]
 struct Blob {
     #[net(max_len = 600)]
     bytes: Vec<u8>,
@@ -949,7 +955,7 @@ fn rpc_registration_is_checked() {
         e.net()
             .rpc::<Echo, ()>("big")
             .to_server()
-            .max_bytes(2000)
+            .max_bytes(MAX_RPC_BYTES + 1)
             .server(|_cx: &mut RpcCx, _r: Echo| Ok(()));
     });
     assert!(big.unwrap_err().contains("max_bytes"));
@@ -1799,4 +1805,331 @@ fn rpc_the_tombstone_order_holds_each_live_id_once() {
     pair.server_to_client().expect("timeout");
     assert_eq!(pair.client.tombstoned_calls(), [0]);
     assert_eq!(pair.client.tombstone_order_len(), 1);
+}
+
+/// RPCs marked for client scripts, beside ones that are not.
+#[derive(PluginId)]
+#[plugin(id = "test.realm")]
+struct RealmSuite;
+
+impl Plugin for RealmSuite {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine
+            .net()
+            .rpc::<Echo, Echoed>("marked")
+            .to_server()
+            .realm()
+            .server(|_cx: &mut RpcCx, req: Echo| Ok(Echoed { text: req.text }));
+        engine
+            .net()
+            .rpc::<Echo, Echoed>("unmarked")
+            .to_server()
+            .server(|_cx: &mut RpcCx, req: Echo| Ok(Echoed { text: req.text }));
+        engine
+            .net()
+            .rpc::<Echo, ()>("marked.note")
+            .to_server()
+            .realm()
+            .server(|_cx: &mut RpcCx, _req: Echo| Ok(()));
+        engine
+            .net()
+            .rpc::<Ping, ()>("heard")
+            .to_client()
+            .realm()
+            .client(|_cx: &mut RpcCx, _req: Ping| Ok(()));
+        engine
+            .net()
+            .rpc::<Ping, ()>("unheard")
+            .to_client()
+            .client(|_cx: &mut RpcCx, _req: Ping| Ok(()));
+        engine
+            .net()
+            .rpc::<Large, ()>("marked.big")
+            .to_server()
+            .realm()
+            .max_bytes(MAX_RPC_BYTES)
+            .rate(1000, 1000)
+            .server(|_cx: &mut RpcCx, _req: Large| Ok(()));
+    }
+}
+
+fn realm_engine() -> crate::Engine {
+    EngineBuilder::new()
+        .add_plugins(RealmSuite)
+        .build()
+        .expect("the engine builds")
+}
+
+/// Hooks that keep what a client hands the realm.
+#[derive(Default)]
+struct RealmHooks(Vec<RealmCall>);
+
+impl RpcHooks for RealmHooks {
+    fn realm(&mut self, _vm: &mut Vm, rpc: &str, values: Vec<torque_ghosts::Value>) {
+        self.0.push(RealmCall {
+            rpc: rpc.to_string(),
+            values,
+        });
+    }
+}
+
+#[test]
+fn rpc_the_realm_mark_is_off_unless_asked_for_and_stays_out_of_the_digest() {
+    let engine = realm_engine();
+    let table = engine.net_rpcs().expect("the table");
+    let realm = |name: &str| table.get(table.id(name).expect(name)).expect(name).realm;
+    assert!(realm("marked") && realm("marked.note") && realm("heard") && realm("marked.big"));
+    assert!(!realm("unmarked") && !realm("unheard"));
+    let digest = |name: &str| table.get(table.id(name).expect(name)).expect(name).digest();
+    // The same layouts and direction give the same digest, marked or not.
+    assert_eq!(digest("marked"), digest("unmarked"));
+    assert_eq!(digest("heard"), digest("unheard"));
+}
+
+#[test]
+fn rpc_a_script_call_waits_for_its_reply_as_script_values() {
+    let engine = realm_engine();
+    let mut pair = Pair::new(&engine);
+    let out: Slot<Vec<torque_ghosts::Value>> = slot();
+    let sink = Rc::clone(&out);
+    pair.client
+        .call_script(
+            "marked",
+            &[b"hi".to_vec(), b"2".to_vec()],
+            &NoGhosts,
+            move |r| *sink.borrow_mut() = Some(r),
+        )
+        .expect("queued");
+    assert!(out.borrow().is_none(), "the reply comes in a later round");
+    pair.round();
+    assert_eq!(
+        out.borrow().clone(),
+        Some(Ok(vec![torque_ghosts::Value::Str(b"hi".to_vec())]))
+    );
+    // A notification is done at once, with nothing to wait for.
+    let done = slot();
+    let sink = Rc::clone(&done);
+    pair.client
+        .call_script("marked.note", &[b"x".to_vec()], &NoGhosts, move |r| {
+            *sink.borrow_mut() = Some(r);
+        })
+        .expect("queued");
+    assert_eq!(done.borrow().clone(), Some(Ok(Vec::new())));
+    // What cannot be sent says why, and `done` never runs.
+    let never = slot();
+    let sink = Rc::clone(&never);
+    assert_eq!(
+        pair.client
+            .call_script("nothing", &[], &NoGhosts, move |r| {
+                *sink.borrow_mut() = Some(r);
+            }),
+        Err(RpcError::Unsupported)
+    );
+    assert!(never.borrow().is_none());
+}
+
+#[test]
+fn rpc_only_a_to_client_call_marked_for_the_realm_reaches_the_realm_hook() {
+    let engine = realm_engine();
+    let mut pair = Pair::new(&engine);
+    for name in ["heard", "unheard"] {
+        let rpc = pair.server.rpc::<Ping, ()>(name).expect("the rpc");
+        pair.server
+            .notify(
+                &rpc,
+                Ping {
+                    at: [1.0, 2.0, 3.0],
+                },
+            )
+            .expect("queued");
+    }
+    pair.server.flush();
+    for (batch, _) in pair.to_client.take() {
+        pair.client.receive(&batch).expect("client reads");
+    }
+    let mut hooks = RealmHooks::default();
+    let mut env = RpcEnv {
+        vm: &mut pair.vm,
+        tick: 0,
+        conn: None,
+        perms: &NoPermissions,
+        ghosts: &NoGhosts,
+        hooks: &mut hooks,
+    };
+    pair.client.dispatch(&mut env);
+    let heard: Vec<&str> = hooks.0.iter().map(|c| c.rpc.as_str()).collect();
+    assert_eq!(heard, ["heard"], "the unmarked one is not the realm's");
+    assert_eq!(hooks.0[0].values.len(), 1, "the message as script values");
+}
+
+#[test]
+fn rpc_the_realm_inbox_keeps_the_newest_calls_within_its_cap() {
+    let inbox = RealmInbox::default();
+    for n in 0..(MAX_REALM_INBOX + 10) {
+        inbox.push(RealmCall {
+            rpc: format!("call{n}"),
+            values: Vec::new(),
+        });
+    }
+    assert_eq!(inbox.dropped(), 10);
+    let taken = inbox.take();
+    assert_eq!(taken.len(), MAX_REALM_INBOX);
+    assert_eq!(taken[0].rpc, "call10", "the oldest went");
+    assert!(inbox.take().is_empty());
+}
+
+#[test]
+fn rpc_a_message_filling_the_largest_frame_is_carried() {
+    let engine = realm_engine();
+    let mut pair = Pair::new(&engine);
+    let rpc = pair.client.rpc::<Large, ()>("marked.big").expect("the rpc");
+    pair.client
+        .notify(
+            &rpc,
+            Large {
+                chunks: vec![[7; 32]; 468],
+            },
+        )
+        .expect("queued");
+    pair.client_to_server().expect("the server reads it");
+    assert_eq!(pair.server.drops("marked.big"), 0);
+    assert_eq!(
+        MAX_RPC_BYTES + 2,
+        MAX_BATCH_BYTES,
+        "a frame fits a batch alone"
+    );
+}
+
+#[derive(PluginId)]
+#[plugin(id = "test.replies")]
+struct Replies {
+    max_bytes: Option<usize>,
+}
+
+impl Plugin for Replies {
+    fn build(&self, engine: &mut EngineBuilder) {
+        let mut net = engine.net();
+        let rpc = net.rpc::<Echo, Blob>("reply").to_server();
+        let rpc = match self.max_bytes {
+            Some(bytes) => rpc.max_bytes(bytes),
+            None => rpc,
+        };
+        rpc.server(|_cx: &mut RpcCx, req: Echo| {
+            Ok(Blob {
+                bytes: vec![7; usize::from(req.count) * 10],
+            })
+        });
+    }
+}
+
+fn replies_engine(max_bytes: Option<usize>) -> crate::Engine {
+    EngineBuilder::new()
+        .add_plugins(Replies { max_bytes })
+        .build()
+        .expect("the engine builds")
+}
+
+#[test]
+fn rpc_the_default_size_is_256_and_a_reply_is_held_to_the_rpcs_own_size() {
+    let narrow = replies_engine(None);
+    let table = narrow.net_rpcs().expect("the table");
+    let entry = table.get(table.id("reply").expect("id")).expect("entry");
+    assert_eq!(entry.max_bytes, 256, "the default stays 256");
+    // An honest handler whose reply is past the RPC's size gets a refusal, not a long frame.
+    let mut pair = Pair::new(&narrow);
+    let rpc = pair.client.rpc::<Echo, Blob>("reply").expect("the rpc");
+    let out = slot::<Blob>();
+    let sink = Rc::clone(&out);
+    pair.client
+        .call(
+            &rpc,
+            Echo {
+                text: String::new(),
+                count: 4,
+            },
+            move |r| *sink.borrow_mut() = Some(r),
+        )
+        .expect("queued");
+    pair.round();
+    assert_eq!(
+        out.borrow().clone().map(|r| r.map(|b| b.bytes.len())),
+        Some(Ok(40))
+    );
+    let over = slot::<Blob>();
+    let sink = Rc::clone(&over);
+    pair.client
+        .call(
+            &rpc,
+            Echo {
+                text: String::new(),
+                count: 50,
+            },
+            move |r| *sink.borrow_mut() = Some(r),
+        )
+        .expect("queued");
+    pair.round();
+    assert!(
+        matches!(over.borrow().clone(), Some(Err(RpcError::Handler(_)))),
+        "the 500-byte reply is refused: {:?}",
+        over.borrow()
+    );
+}
+
+#[test]
+fn rpc_a_reply_past_the_clients_size_for_the_rpc_is_a_protocol_error() {
+    // A server that allows 2,000 bytes answers a client that allows 256: the frame is refused on receipt, whatever the global cap.
+    let wide = replies_engine(Some(2_000));
+    let narrow = replies_engine(None);
+    let to_client = Rc::new(Tap::default());
+    let to_server = Rc::new(Tap::default());
+    let mut server = RpcLink::new(
+        wide.net_rpcs().expect("table"),
+        Side::Server,
+        Some(OWNER),
+        widths(),
+        Rc::clone(&to_client) as Rc<dyn RpcCarrier>,
+        0,
+    );
+    let mut client = RpcLink::new(
+        narrow.net_rpcs().expect("table"),
+        Side::Client,
+        None,
+        widths(),
+        Rc::clone(&to_server) as Rc<dyn RpcCarrier>,
+        0,
+    );
+    server.set_connection_rate(1_000_000, 1_000_000);
+    let rpc = client.rpc::<Echo, Blob>("reply").expect("the rpc");
+    client
+        .call(
+            &rpc,
+            Echo {
+                text: String::new(),
+                count: 50,
+            },
+            |_| {},
+        )
+        .expect("queued");
+    client.flush();
+    for (batch, _) in to_server.take() {
+        server.receive(&batch).expect("the server reads it");
+    }
+    let mut vm = Vm::new();
+    let mut hooks = NoHooks;
+    let mut env = RpcEnv {
+        vm: &mut vm,
+        tick: 0,
+        conn: Some(OWNER),
+        perms: &Holder::default(),
+        ghosts: &NoGhosts,
+        hooks: &mut hooks,
+    };
+    server.dispatch(&mut env);
+    server.flush();
+    let batches = to_client.take();
+    assert_eq!(batches.len(), 1, "the 500-byte reply was sent");
+    assert!(
+        client.receive(&batches[0].0).is_err(),
+        "and the client refuses it"
+    );
 }

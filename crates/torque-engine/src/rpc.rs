@@ -88,6 +88,19 @@
 //! - What a side sends is held to the same buckets the receiver applies, and a refused batch stays queued in order
 //!   (`rpc_what_a_side_sends_is_held_to_the_same_rates`, `rpc_a_refused_batch_stays_queued_in_order_and_replies_count_against_the_queue`).
 //!
+//! - Client scripts reach an RPC only if it is marked [`RpcBuilder::realm`]: the mark is a client-side rule, outside the digest, so
+//!   the wire is what it was (`rpc_the_realm_mark_is_off_unless_asked_for_and_stays_out_of_the_digest`). A `to_client` call is
+//!   passed to the realm through the hooks and the [`RealmInbox`], which keeps the newest calls within a cap
+//!   (`rpc_only_a_to_client_call_marked_for_the_realm_reaches_the_realm_hook`, `rpc_the_realm_inbox_keeps_the_newest_calls_within_its_cap`);
+//!   [`RpcLink::call_script`] hands a script's call its reply as values (`rpc_a_script_call_waits_for_its_reply_as_script_values`).
+//!   The largest frame is a whole batch ([`MAX_RPC_BYTES`], `rpc_a_message_filling_the_largest_frame_is_carried`).
+//! - A reply is held to its RPC's own `max_bytes`, as a request is, on the way out and on receipt (an error to a fixed bound), so
+//!   the batch-sized maximum never widens an RPC that did not ask for it
+//!   (`rpc_the_default_size_is_256_and_a_reply_is_held_to_the_rpcs_own_size`,
+//!   `rpc_a_reply_past_the_clients_size_for_the_rpc_is_a_protocol_error`).
+//! - `RpcLink::set_send_limits` exists only with the `testing` feature (or in this crate's tests): a host cannot turn its link's
+//!   sending limits off.
+//!
 //! **Extension points.** A protocol brings its own `RpcCarrier` (`send` may refuse, `capacity` bounds the queue) and gives batches
 //! to `RpcLink::receive`; the reserved channel is the TGE-mode carrier. `PermissionProvider` (in `permissions.rs`) is the slot for
 //! where grants are kept.
@@ -125,8 +138,8 @@ mod link;
 pub use link::{CallWork, Done, ErrorCode, FrameKind, Reply, RpcEnv, RpcLink, Side, Work};
 
 /// The most bytes one RPC message may encode to (a call's frame, header included): the hard maximum of
-/// [`RpcBuilder::max_bytes`].
-pub const MAX_RPC_BYTES: usize = 1_024;
+/// [`RpcBuilder::max_bytes`], what a batch holds beside its frame's 2-byte length. An RPC's default is far less (256).
+pub const MAX_RPC_BYTES: usize = MAX_BATCH_BYTES - 2;
 /// The most RPCs an engine may register (their ids are indexes in the name-sorted table).
 pub const MAX_RPCS: usize = 256;
 /// The most calls of one RPC awaiting a reply at once.
@@ -363,12 +376,61 @@ pub trait RpcHooks {
         let _ = (vm, caller, function, args);
         Err("no script host".to_string())
     }
+
+    /// A client runs a call of a `to_client` RPC marked [`RpcBuilder::realm`]: hands `values`, the message as script values,
+    /// to whatever hears the server's client scripts. Called before the RPC's own handler runs.
+    fn realm(&mut self, vm: &mut Vm, rpc: &str, values: Vec<Value>) {
+        let _ = (vm, rpc, values);
+    }
 }
 
 /// The hooks of a host that adds nothing.
 pub struct NoHooks;
 
 impl RpcHooks for NoHooks {}
+
+/// The most calls a [`RealmInbox`] holds; past it the oldest is dropped.
+pub const MAX_REALM_INBOX: usize = 256;
+
+/// A call of a `to_client` RPC marked [`RpcBuilder::realm`], waiting for the client scripts' realm.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RealmCall {
+    /// The RPC's name.
+    pub rpc: String,
+    /// The message as script values, one or more for each field in order.
+    pub values: Vec<Value>,
+}
+
+/// The queue between a client's RPC link and the realm of its server's client scripts: the link's hooks push the calls of
+/// `to_client` RPCs marked for the realm ([`RpcHooks::realm`]), and the realm's host takes them each frame. A script engine
+/// has one as an extension when a host wants these calls ([`Vm::set_extension`]); without one they are not queued.
+#[derive(Default)]
+pub struct RealmInbox {
+    queue: std::cell::RefCell<std::collections::VecDeque<RealmCall>>,
+    dropped: std::cell::Cell<u64>,
+}
+
+impl RealmInbox {
+    /// Queues a call; past [`MAX_REALM_INBOX`] the oldest queued call is dropped (and counted).
+    pub fn push(&self, call: RealmCall) {
+        let mut queue = self.queue.borrow_mut();
+        if queue.len() >= MAX_REALM_INBOX {
+            queue.pop_front();
+            self.dropped.set(self.dropped.get().saturating_add(1));
+        }
+        queue.push_back(call);
+    }
+
+    /// Takes the queued calls, oldest first.
+    pub fn take(&self) -> Vec<RealmCall> {
+        self.queue.borrow_mut().drain(..).collect()
+    }
+
+    /// How many calls were dropped for want of room.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.get()
+    }
+}
 
 /// The erased handler of an RPC.
 type NativeHandler = Rc<dyn Fn(&mut RpcCx<'_>, Box<dyn Any>) -> Result<Box<dyn Any>, RpcError>>;
@@ -472,6 +534,9 @@ pub struct RpcEntry {
     pub reply: bool,
     /// Who may call it (checked on the server).
     pub allow: Allow,
+    /// Whether a client script's realm may call it (`to_server`) or hear it (`to_client`): [`RpcBuilder::realm`]. A client-side
+    /// rule; it is not in the manifest's digest, so the wire is what it was.
+    pub realm: bool,
     digest: u64,
     request: MessageCodec,
     response: MessageCodec,
@@ -526,6 +591,7 @@ impl std::fmt::Debug for RpcEntry {
             .field("rate", &(self.rate, self.burst))
             .field("max_bytes", &self.max_bytes)
             .field("reply", &self.reply)
+            .field("realm", &self.realm)
             .finish_non_exhaustive()
     }
 }
@@ -683,6 +749,7 @@ pub struct RpcBuilder<'a, Req, Resp, D> {
     max_bytes: usize,
     allow: Allow,
     default_permission: bool,
+    realm: bool,
     types: PhantomData<fn(Req, Resp, D)>,
 }
 
@@ -705,6 +772,7 @@ impl NetRegistry<'_> {
             max_bytes: 256,
             allow: Allow::Anyone,
             default_permission: false,
+            realm: false,
             types: PhantomData,
         }
     }
@@ -736,8 +804,19 @@ impl<'a, Req, Resp, D> RpcBuilder<'a, Req, Resp, D> {
             max_bytes: self.max_bytes,
             allow: self.allow,
             default_permission: self.default_permission,
+            realm: self.realm,
             types: PhantomData,
         }
+    }
+
+    /// Marks the RPC for client scripts: a `to_server` one may be called from a server's realm (`net.call`), a `to_client` one
+    /// is passed to it (`net.handle`). Off by default, and a client refuses a realm's call of any RPC without it. Marking an
+    /// RPC lets the server's scripts, which are code from the network, send it: its `Allow` and handler must treat the call
+    /// as from a hostile client, as for any client.
+    #[must_use]
+    pub fn realm(mut self) -> Self {
+        self.realm = true;
+        self
     }
 
     /// How the bytes travel: [`Delivery::Reliable`] (the default) or [`Delivery::Unreliable`] (only for a notification).
@@ -986,6 +1065,7 @@ impl<Req: NetMessage, Resp: NetMessage, D> RpcBuilder<'_, Req, Resp, D> {
             max_bytes: self.max_bytes,
             reply: !response.unit,
             allow: self.allow,
+            realm: self.realm,
             digest,
             request,
             response,

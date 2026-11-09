@@ -286,7 +286,7 @@ engine.net().rpc::<SpawnProp, Spawned>("props.spawn")
     .to_server()                            // `.to_client()` for a notification the server sends
     .delivery(Delivery::Reliable)           // or Unreliable (a notification only)
     .rate(4, 8)                             // calls a second, burst: a token bucket counted in server ticks
-    .max_bytes(256)                         // encoded message, header included; at most 1,024
+    .max_bytes(256)                         // encoded message, header included; at most 16,382 (a batch less its length)
     .allow(Allow::Anyone)                   // Allow::permission("props.spawn"), or Allow::check(|cx| ..)|cx| ..)
     .server(|cx: &mut RpcCx, req| -> Result<Spawned, RpcError> { .. });
 ```
@@ -491,7 +491,7 @@ with both predictors, frame by frame.
 | One-shot ropes a client shows, their time, and sent to a client | 32, 30 seconds, 32 a second |
 | Predicted ropes waiting on a client, and their wait | 16, 2 seconds |
 | Plugin ghost classes, datablock classes | 16, 29 (the room Torque's class id widths leave) |
-| RPCs an engine registers, a message, a call's name | 256, 1,024 bytes, 40 bytes |
+| RPCs an engine registers, a message (the most an RPC may ask for), a call's name | 256, 16,382 bytes (256 unless it asks), 40 bytes |
 | Calls of one RPC waiting for a reply, reliable RPC bytes not yet acknowledged | 16, 64 KiB |
 | An RPC's rate unless it says another, all of a connection's | 8 a second (burst 16), 64 a second (burst 128) |
 

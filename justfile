@@ -187,6 +187,20 @@ client-script-host-test:
     cargo clippy -p torque-client-script-host --all-targets -- -D warnings
     cargo fmt -p torque-client-script-host -p torque-test-client-script-web-check --check
 
+# The client-script glue's tests (crates/torque-plugin-client-script: consent, messages), the choices-file and content rules in
+# torque-mods, and the GUI's prompt, with clippy and formatting. No guest needed
+client-script-test:
+    cargo test -p torque-plugin-client-script
+    cargo test -p torque-mods client_script
+    cargo test -p torque-gui client_script
+    cargo clippy -p torque-plugin-client-script -p torque-mods -p torque-gui --all-targets -- -D warnings
+    cargo fmt -p torque-plugin-client-script -p torque-mods -p torque-gui --check
+
+# The SHA-256 of the realm guest `lua-client-web` built, and the line a release adds to ACCEPTED_CLIENT_GUESTS (the engine runs
+# only guests it lists)
+client-script-guest-hash:
+    cargo run -p torque-client-script-host --example guest-hash -- "{{web_target}}/lua-web/torque_lua_client.wasm"
+
 # The client-script host's cases on the web: built for a browser (tests/web/client-script-check), each realm's guest
 # in a Worker of web/client-script.js, run under Node and in headless Chrome from the cursor guard
 # (web/client-script-check.mjs). Needs what `lua-web` needs and Chrome

@@ -19,6 +19,13 @@
 //!
 //! Scripts a server sends never run on a client: [`Mods::mount_server_files`] mounts them as content only.
 //!
+//! **Client scripts.** A mod's manifest may ask for `[client_script]` (an `entry` Lua file of the mod's content and the `tiers` it
+//! asks for, [`ClientScriptSpec`]). The server tells its clients ([`Mods::client_script_offers`], with the content hash the
+//! clients verify), and a client's one opt-in reader of server-sent script files ([`Mods::client_content`],
+//! [`Mods::client_script`], and [`Mods::client_ready`], which reads nothing) gives them only to a sandboxed realm and only for the
+//! mount that this server offered, that was verified against the hash, and that came by this server's own download or its own
+//! cache entry. `exec`, `read_script` and the Lua extension's mod realms keep refusing every file a server sent.
+//!
 //! **Servers that require mods.** A game that opts in ([`ModsPlugin::required_mods`]) lets a server list mods its clients must
 //! have: the handshake carries each required mod's id, version and a SHA-256 of its content, a client with another version or
 //! hash is refused with the reason, and a server may send the content of a mod to a client that lacks it, over a bulk channel
@@ -38,6 +45,15 @@
 //! - A server's offer costs the client no more than it downloads: ids come once and only as a local mod's could be
 //!   (`an_offer_naming_one_id_twice_or_an_id_a_local_mod_could_not_have_is_refused`), the cache's heads are read once an
 //!   offer and older copies only up to twice the offer's download (`an_offer_loads_each_ids_older_copies_once_and_within_a_budget`).
+//! - Client scripts are read from one kind of mount: the one a server offered on this connection, verified against the offered
+//!   hash, from its own download or its own cache entry. A mod the player installed, content another server sent, an entry found
+//!   through cache sharing, a mount the public `mount_server_files` made and a mount another server's connection replaced give
+//!   nothing (`client_script_content_is_read_only_for_the_server_that_sent_it`, `client_script_content_found_through_cache_sharing_is_refused`,
+//!   `client_script_content_from_a_mount_with_no_origin_is_never_read`, `client_script_content_is_gone_when_another_server_replaces_the_mount`,
+//!   `client_script_content_with_more_files_than_the_realm_takes_is_refused`), and asking whether it is there reads no bytes
+//!   (`client_script_ready_looks_without_reading_and_follows_the_same_rules`). The manifest's request is checked and an entry that
+//!   is not content (a stage script, a path that escapes) asks for nothing (`client_script_the_manifest_asks_for_scripts_and_a_bad_request_is_a_warning`,
+//!   `client_script_a_required_mod_is_offered_with_its_entry_tiers_and_content_hash`).
 //! - One server cannot flush the others' cache (`one_server_storing_new_content_cannot_flush_another_servers_entries`), the
 //!   disk cache opens nothing through a link (`a_link_in_the_cache_folder_is_never_read_or_touched_through`), and a server's
 //!   file is never copied to a script's name (`server_sent_script_never_executes_on_a_client`).
@@ -76,8 +92,10 @@ pub use cache::{
     CacheOwner, CacheScope, CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed,
     MAX_ENTRIES, MemoryStore, default_cache_dir, index_of,
 };
+pub use files::MAX_CLIENT_FILES;
 pub use info::{
-    Compare, MAX_LIST, MAX_NAME_LEN, MAX_TEXT_LEN, ModInfo, Requirement, Version, check_id,
+    ClientScriptSpec, Compare, MAX_CLIENT_TIERS, MAX_LIST, MAX_NAME_LEN, MAX_TEXT_LEN, ModInfo,
+    Requirement, Version, check_id,
 };
 pub use layout::{
     Action, Candidate, CandidateKind, DISABLED_PREF, ModEnableList, ModLayout, ModNames, ModOrder,
@@ -85,7 +103,7 @@ pub use layout::{
     PrefsEnableList, PrereqPolicy, Problem, RootPlace, TopologicalOrder,
 };
 pub use manifest::{DEFAULT_FOLDER, MANIFEST, MAX_MANIFEST_BYTES};
-pub use mods::{ModStatus, ModSummary, Mods, RequiredInfo, package_name};
+pub use mods::{ClientScriptOffer, ModStatus, ModSummary, Mods, RequiredInfo, package_name};
 pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};

@@ -2,6 +2,7 @@
 //! the eval-path canary.
 
 mod fuzz;
+mod prompt;
 
 use std::any::Any;
 use std::rc::Rc;
@@ -364,7 +365,11 @@ fn client_script_classes_are_registered_below_gui_control() {
     let objects = rig.vm.objects();
     let parent = objects.classes.find(b"GuiControl").expect("GuiControl");
     let names = class_names();
-    assert_eq!(names.len(), 13, "a root, eleven kinds and the chip");
+    assert_eq!(
+        names.len(),
+        14,
+        "a root, eleven kinds, the chip and the prompt"
+    );
     for name in names {
         assert!(name.starts_with("ClientScript"));
         let class = objects.classes.find(name.as_bytes()).expect(name);

@@ -11,6 +11,67 @@ pub const MAX_LIST: usize = 64;
 /// The longest value of an extra field or a description (bytes).
 pub const MAX_TEXT_LEN: usize = 512;
 
+/// The most tier names a mod's `client_script` may ask for.
+pub const MAX_CLIENT_TIERS: usize = 16;
+
+/// The scripts a mod's server sends to run on its players' clients (the manifest's `client_script`): the entry file and the
+/// abilities (tiers) the scripts ask for. The names are the server's request; the player's choices and the engine's review
+/// decide what a realm gets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClientScriptSpec {
+    /// The entry script's path within the mod: a `.lua` or `.luau` file the mod's content holds.
+    pub entry: String,
+    /// The tier names asked for, each once, in the order the manifest lists them (at most [`MAX_CLIENT_TIERS`]).
+    pub tiers: Vec<String>,
+}
+
+impl ClientScriptSpec {
+    /// The spec of `entry` and `tiers`, checked: the entry is a plain `.lua` or `.luau` path, the names are plain lower-case
+    /// words, each once and few.
+    ///
+    /// # Errors
+    ///
+    /// Why the manifest's request is not one.
+    pub fn new(entry: &str, tiers: &[String]) -> Result<ClientScriptSpec, String> {
+        let lower = entry.to_ascii_lowercase();
+        if !(lower.ends_with(".lua") || lower.ends_with(".luau"))
+            || crate::package::check_path(entry, &crate::package::ModLimits::default()).is_err()
+        {
+            return Err(format!(
+                "the client script entry `{}` is not a plain .lua or .luau path",
+                clean(entry)
+            ));
+        }
+        let mut names: Vec<String> = Vec::new();
+        for tier in tiers {
+            let plain = !tier.is_empty()
+                && tier.len() <= 32
+                && tier
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+            if !plain {
+                return Err(format!(
+                    "the client script tier `{}` is not a plain lower-case name",
+                    clean(tier)
+                ));
+            }
+            if names.contains(tier) {
+                continue;
+            }
+            if names.len() >= MAX_CLIENT_TIERS {
+                return Err(format!(
+                    "the client script asks for more than {MAX_CLIENT_TIERS} tiers"
+                ));
+            }
+            names.push(tier.clone());
+        }
+        Ok(ClientScriptSpec {
+            entry: entry.to_string(),
+            tiers: names,
+        })
+    }
+}
+
 /// A mod's version: one to four dotted whole numbers (`1`, `1.2`, `1.2.3`). Versions compare number by number, a missing
 /// number counting as 0 (`1.2` equals `1.2.0`).
 ///
@@ -224,6 +285,9 @@ pub struct ModInfo {
     pub client_side: bool,
     /// What a server asks of clients for this mod (`None`: the engine's default, required when the mod has content).
     pub share: Option<crate::share::Share>,
+    /// The scripts the mod's server sends to run on clients, when its manifest asks for them. The entry is part of the mod's
+    /// content (its hash), so a client runs only what the server offered.
+    pub client_script: Option<ClientScriptSpec>,
     /// Entry scripts per load stage, in the order they run: `(stage, paths)`. A stage must be one the game declared
     /// ([`ModStages`](crate::ModStages)); a path is relative to the mod's own files.
     pub scripts: Vec<(String, Vec<String>)>,
@@ -252,6 +316,7 @@ impl ModInfo {
             requires_plugins: Vec::new(),
             client_side: false,
             share: None,
+            client_script: None,
             scripts: Vec::new(),
             hidden: Vec::new(),
             extra: BTreeMap::new(),

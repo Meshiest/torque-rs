@@ -9,7 +9,7 @@ import { clientScripts } from './client-script.js';
 /** Runs every case with the cases' module `check` and the realm guest's bytes `guest`: `[{ name, ok, seconds, error }]`. */
 export async function runCases({ check, guest }) {
   await init({ module_or_path: check });
-  const scripts = await clientScripts({ guest });
+  const scripts = await clientScripts({ guest, unchecked: true });
   globalThis.torqueClientScript = scripts;
   const results = [];
   let failed = false;

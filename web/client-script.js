@@ -1,7 +1,7 @@
 // The page's runner of client scripts: each realm's guest (`torque_lua_client.wasm`, `just lua-client-web`) in a Worker of
 // its own (client-script-worker.js), so a script never blocks the game's frame. The game's module reaches it as
 // `globalThis.torqueClientScript` (torque-client-script-host's `WebRunner`), which a page that allows server scripts sets to
-// `await clientScripts({ guest })` before the game starts. Runs in a browser and under Node (worker_threads).
+// `await clientScripts({ guest, accepted })` before the game starts. Runs in a browser and under Node (worker_threads).
 //
 // `open(wasm, deadlineMs, memoryBytes)` makes a realm's Worker over `wasm` (empty: the page's guest): the module's memory
 // maximum is first set to `memoryBytes` (a module that imports its memory, shares it or has more than one is refused), so a
@@ -140,11 +140,35 @@ function spawner(NodeWorker) {
   };
 }
 
+/** The SHA-256 of `bytes` as 64 lower-case hexadecimal digits. */
+async function sha256Hex(bytes) {
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 /**
- * The runner over the page's realm guest `guest` (its bytes). `spawn` (for tests) makes a Worker's interface from its
- * URL, in place of a real Worker.
+ * The runner over the page's realm guest `guest` (its bytes). `accepted` is the build's list of guest hashes
+ * (`torque_client_script_host::accepted_hex()`, as lower-case hexadecimal text): a guest whose SHA-256 is not in it is
+ * refused. A call that passes neither `accepted` nor `unchecked: true` is refused too, so a page that forgets the list does not
+ * run an unlisted guest; `unchecked` is the opt-out for the tests, whose guests no release lists. `spawn` (for tests) makes a
+ * Worker's interface from its URL, in place of a real Worker.
  */
-export async function clientScripts({ guest, workerUrl = new URL('./client-script-worker.js', import.meta.url), spawn }) {
+export async function clientScripts({
+  guest,
+  accepted,
+  unchecked = false,
+  workerUrl = new URL('./client-script-worker.js', import.meta.url),
+  spawn,
+}) {
+  if (!unchecked) {
+    if (!Array.isArray(accepted)) {
+      throw new Error('clientScripts needs the list of accepted guest hashes of the build (`accepted`); server scripts are unavailable');
+    }
+    const hash = await sha256Hex(guest);
+    if (!accepted.includes(hash)) {
+      throw new Error(`the realm guest ${hash} is not one this build accepts; server scripts are unavailable`);
+    }
+  }
   if (!spawn) {
     const NodeWorker = typeof Worker === 'undefined' ? (await import('node:worker_threads')).Worker : null;
     spawn = spawner(NodeWorker);

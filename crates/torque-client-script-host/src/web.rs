@@ -8,6 +8,7 @@ use std::time::Duration;
 use js_sys::{Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
+use crate::guests::{GuestRejected, check_guest};
 use crate::runner::{Entry, InstanceLimits, Outcome, Reply, Runner, Trap, gone};
 
 #[wasm_bindgen]
@@ -44,8 +45,26 @@ pub struct WebRunner {
 }
 
 impl WebRunner {
-    /// A fresh instance of `wasm` (empty: the page's realm guest) within `limits`.
-    pub fn open(wasm: &[u8], limits: InstanceLimits) -> WebRunner {
+    /// A fresh instance of `wasm` (empty: the page's realm guest, which `web/client-script.js` checked against the build's
+    /// list when the page started) within `limits`.
+    ///
+    /// # Errors
+    ///
+    /// [`GuestRejected`] when `wasm` is given and its hash is not one this build accepts.
+    pub fn open(wasm: &[u8], limits: InstanceLimits) -> Result<WebRunner, GuestRejected> {
+        if !wasm.is_empty() {
+            check_guest(wasm)?;
+        }
+        Ok(WebRunner::open_unchecked(wasm, limits))
+    }
+
+    /// [`WebRunner::open`] without the list: for the guest a test has just built.
+    #[cfg(feature = "unreviewed-tiers")]
+    pub fn unlisted(wasm: &[u8], limits: InstanceLimits) -> WebRunner {
+        WebRunner::open_unchecked(wasm, limits)
+    }
+
+    fn open_unchecked(wasm: &[u8], limits: InstanceLimits) -> WebRunner {
         WebRunner {
             realm: Some(open_realm(
                 wasm,

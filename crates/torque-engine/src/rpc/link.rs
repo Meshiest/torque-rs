@@ -23,8 +23,8 @@ use std::rc::Rc;
 
 use super::{
     CarrierFull, DEFAULT_CONN_RATE, DEFAULT_SEND_QUEUE, DEFAULT_TIMEOUT_TICKS, Delivery,
-    GhostResolver, Handler, MAX_BATCH_BYTES, MAX_ERROR_TEXT, MAX_OUTSTANDING, MAX_RPC_BYTES,
-    NetMessage, RpcCarrier, RpcCx, RpcDirection, RpcEntry, RpcError, RpcHooks, RpcRef, RpcTable,
+    GhostResolver, Handler, MAX_BATCH_BYTES, MAX_ERROR_TEXT, MAX_OUTSTANDING, NetMessage,
+    RpcCarrier, RpcCx, RpcDirection, RpcEntry, RpcError, RpcHooks, RpcRef, RpcTable,
 };
 use crate::command::{DropCounter, REPORT_TICKS, TokenBucket};
 use crate::permissions::PermissionView;
@@ -262,6 +262,10 @@ impl CallWork {
     fn invoke(mut self, env: &mut RpcEnv<'_>) -> Result<Box<dyn Any>, RpcError> {
         match &self.entry.handler {
             Handler::Native(handler) => {
+                if self.entry.realm && self.side == Side::Client {
+                    let values = (self.entry.request.values)(self.message.as_ref());
+                    env.hooks.realm(env.vm, &self.entry.name, values);
+                }
                 let mut cx = RpcCx::new(env.vm, env.conn, env.perms, env.tick, env.ghosts);
                 handler(&mut cx, self.message)
             }
@@ -305,7 +309,7 @@ impl CallWork {
                     return Done::nothing();
                 };
                 match (entry.response.encode)(resp.as_ref(), &mut w, widths) {
-                    Ok(()) if w.bytes().len() <= MAX_RPC_BYTES => Some(w.into_bytes()),
+                    Ok(()) if w.bytes().len() <= entry.max_bytes => Some(w.into_bytes()),
                     Ok(()) => {
                         let error = RpcError::Handler("the reply is too large".to_string());
                         error_frame(id_bits, id, call, &error)
@@ -447,9 +451,10 @@ impl RpcLink {
     }
 
     /// Whether what this side sends is held to the RPCs' rates (the default). A test of the receiving side turns it off to
-    /// send what an honest peer would not.
-    #[cfg(test)]
-    pub(crate) fn set_send_limits(&mut self, on: bool) {
+    /// send what an honest peer would not; only with the `testing` feature, and the receiving side holds its peer to the same
+    /// rates anyway.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_send_limits(&mut self, on: bool) {
         self.limit_sends = on;
     }
 
@@ -812,6 +817,41 @@ impl RpcLink {
         self.send_erased(id, message.as_ref(), None)
     }
 
+    /// Calls the `to_server` RPC `name` with a script's arguments (one for each field of the request): `done` runs in a later
+    /// [`take_work`](Self::take_work) with the reply as script values, or the error; for a notification it runs at once with
+    /// no values. Ghost fields go out as with [`send_script`](Self::send_script).
+    ///
+    /// # Errors
+    /// As [`call`](Self::call); nothing is sent and `done` never runs.
+    pub fn call_script(
+        &mut self,
+        name: &str,
+        args: &[Vec<u8>],
+        ghosts: &dyn GhostResolver,
+        done: impl FnOnce(Result<Vec<torque_ghosts::Value>, RpcError>) + 'static,
+    ) -> Result<(), RpcError> {
+        let id = self.table.id(name).ok_or(RpcError::Unsupported)?;
+        let entry = Rc::clone(self.table.get(id).ok_or(RpcError::Unsupported)?);
+        let mut message = (entry.request.from_script)(args);
+        let peer = self.peer;
+        let mapped = (entry.request.map_ghosts)(message.as_mut(), &mut |object| {
+            ghosts.index_of(peer, object)
+        });
+        if !mapped {
+            return Err(RpcError::Invalid);
+        }
+        if !entry.reply {
+            self.send_erased(id, message.as_ref(), None)?;
+            done(Ok(Vec::new()));
+            return Ok(());
+        }
+        let values = entry.response.values;
+        let reply: Reply = Box::new(move |result| {
+            done(result.map(|reply| values(reply.as_ref())));
+        });
+        self.send_erased(id, message.as_ref(), Some(reply))
+    }
+
     /// Hands what is queued to the carrier: the reliable frames in batches of at most [`MAX_BATCH_BYTES`], then the
     /// unreliable ones. Call it once a tick, after the work. A batch the carrier refuses stays queued, with every frame after it
     /// and in order, for the next tick.
@@ -982,7 +1022,13 @@ impl RpcLink {
         if self.side == Side::Server {
             return Err(NetError::Invalid("a reply to a call the server never made"));
         }
-        if len > MAX_RPC_BYTES {
+        // A reply is held to its RPC's own size; an error is a header and at most MAX_ERROR_TEXT bytes of text.
+        let cap = if kind == FrameKind::Error {
+            MAX_ERROR_TEXT + 16
+        } else {
+            entry.max_bytes
+        };
+        if len > cap {
             return Err(NetError::Invalid("an RPC reply over its size"));
         }
         let call = r.read_bits(16)? as u16;

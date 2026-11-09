@@ -13,6 +13,10 @@
 //! client_side = false                     # true: only clients load it
 //! share = "download"                      # what a server asks of clients: none, required or download
 //!
+//! [client_script]                  # Lua the server sends to run on its players' clients, in a sandbox they allow
+//! entry = "client/main.lua"        # a .lua or .luau file of the mod's content (never one of [scripts])
+//! tiers = ["ui", "net"]            # the abilities it asks for
+//!
 //! [scripts]                        # entry scripts per stage; a name or a list
 //! server = "server.cs"
 //! client = ["client.cs", "gui/hud.cs"]
@@ -30,7 +34,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 use torque_engine::Engine;
 
-use crate::info::{ModInfo, Requirement, Version, clean};
+use crate::info::{ClientScriptSpec, ModInfo, Requirement, Version, clean};
 use crate::layout::{Candidate, ModLayout, ModRoot, ModStages};
 use crate::share::Share;
 
@@ -96,7 +100,17 @@ struct Raw {
     client_side: bool,
     share: Option<String>,
     scripts: Option<BTreeMap<String, OneOrMany>>,
+    client_script: Option<RawClientScript>,
     extra: BTreeMap<String, toml::Value>,
+    #[serde(flatten)]
+    unknown: toml::Table,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RawClientScript {
+    entry: Option<String>,
+    tiers: Vec<String>,
     #[serde(flatten)]
     unknown: toml::Table,
 }
@@ -177,6 +191,9 @@ fn parse(bytes: &[u8], candidate: &Candidate<'_>, stages: &ModStages) -> Result<
         };
         info.extra.insert(key, text);
     }
+    if let Some(wanted) = raw.client_script {
+        client_script_of(&mut info, wanted, candidate);
+    }
     match raw.scripts {
         Some(table) => {
             for (stage, paths) in table {
@@ -200,5 +217,46 @@ fn parse(bytes: &[u8], candidate: &Candidate<'_>, stages: &ModStages) -> Result<
             }
         }
     }
+    if let Some(spec) = &info.client_script
+        && info
+            .scripts
+            .iter()
+            .flat_map(|(_, paths)| paths)
+            .any(|path| path.eq_ignore_ascii_case(&spec.entry))
+    {
+        info.warnings.push(format!(
+            "the client script entry `{}` is also a stage script, which is never sent; the server sends no client scripts",
+            clean(&spec.entry)
+        ));
+        info.client_script = None;
+    }
     Ok(info)
+}
+
+/// Reads the `[client_script]` table into `info`; a request that is not one is a warning and no client scripts.
+fn client_script_of(info: &mut ModInfo, wanted: RawClientScript, candidate: &Candidate<'_>) {
+    for key in wanted.unknown.keys() {
+        info.warnings.push(format!(
+            "the key `{}` of [client_script] is not known; skipped",
+            clean(key)
+        ));
+    }
+    let Some(entry) = wanted.entry else {
+        info.warnings
+            .push("[client_script] has no `entry`; the server sends no client scripts".to_string());
+        return;
+    };
+    if !candidate.package.contains(&entry) {
+        info.warnings.push(format!(
+            "the client script entry `{}` is not in the mod; the server sends no client scripts",
+            clean(&entry)
+        ));
+        return;
+    }
+    match ClientScriptSpec::new(&entry, &wanted.tiers) {
+        Ok(spec) => info.client_script = Some(spec),
+        Err(why) => info
+            .warnings
+            .push(format!("{why}; the server sends no client scripts")),
+    }
 }

@@ -26,6 +26,9 @@ use sha2::{Digest, Sha256};
 
 use crate::content::{ContentCaps, Hash, decode_content, from_hex, hex, summarize_files};
 
+/// The files of a cache entry: `(path, bytes)`.
+type CachedFiles = Vec<(String, Vec<u8>)>;
+
 /// The suffix of an entry's file name.
 pub const ENTRY_SUFFIX: &str = ".mod";
 
@@ -82,8 +85,18 @@ impl CacheOwner {
         CacheOwner(key)
     }
 
+    /// The key as 16 lower-case hexadecimal digits: what an entry's name and a remembered choice are keyed by.
+    pub fn to_hex(self) -> String {
+        self.hex()
+    }
+
     fn hex(self) -> String {
         self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// The key from its 16 lower-case hexadecimal digits ([`to_hex`](Self::to_hex)).
+    pub fn parse_hex(text: &str) -> Option<CacheOwner> {
+        CacheOwner::from_hex(text)
     }
 
     fn from_hex(text: &str) -> Option<CacheOwner> {
@@ -194,6 +207,11 @@ impl ContentCache {
         self.scope = scope;
     }
 
+    /// Whose entries the lookups use and whose name the stores go under.
+    pub fn scope(&self) -> CacheScope {
+        self.scope
+    }
+
     /// The entries the current scope may use: the server's own, or all of them when sharing is on.
     fn visible(&self) -> Vec<IndexEntry> {
         let mut entries = self.index();
@@ -282,7 +300,14 @@ impl ContentCache {
     /// The files of the entry for `hash`, read under `caps` and checked: they must hash to `hash`. An entry that does not read or
     /// does not hash right is deleted. A hit counts as a use.
     pub fn load(&mut self, hash: &Hash, caps: &ContentCaps) -> Option<Vec<(String, Vec<u8>)>> {
+        self.load_entry(hash, caps).map(|(files, _)| files)
+    }
+
+    /// [`load`](Self::load), and whether the entry is this server's own (named for the scope's server). An entry from another
+    /// server (sharing on), or from before entries were kept by server, is not.
+    pub fn load_entry(&mut self, hash: &Hash, caps: &ContentCaps) -> Option<(CachedFiles, bool)> {
         let entry = self.entry_for(hash)?;
+        let own = entry.owner.is_some() && entry.owner == self.scope.owner;
         let name = entry_name(hash, entry.owner);
         let limit = caps
             .total_bytes
@@ -301,7 +326,7 @@ impl ContentCache {
         }
         let stamp = self.tick();
         self.store.touch(&name, stamp);
-        Some(files)
+        Some((files, own))
     }
 
     /// Keeps the content message `message` (already checked against `hash` by the receiver) and evicts the entries used least

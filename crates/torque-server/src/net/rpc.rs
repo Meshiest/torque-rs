@@ -34,6 +34,10 @@
 //! - A script's `onRpcCheck` must answer true; script handlers and `rpcToClient`/`rpcToServer` use objects, and the host
 //!   supplies the object/ghost mapping (`RpcServerHost::ghost_object`/`ghost_index`, `ClientRpcHost`).
 //!
+//! - A call of a `to_client` RPC marked for the realm (`RpcBuilder::realm`) goes to the `RealmInbox` the client's host installed
+//!   before its own handler runs (`ClientHooks::realm`); without an inbox it is not queued. `ServerRpc::connections` and
+//!   `conn_of` let a plugin address clients by connection (the client-script plugin's offer and natives).
+//!
 //! Checks: `cargo test -p torque-server --lib net::rpc`, `cargo test -p torque-example-minimal-engine --test rpc`, and the engine's
 //! list in its `rpc` docs.
 
@@ -44,8 +48,8 @@ use std::rc::{Rc, Weak};
 use torque_engine::permissions::{NoPermissions, Permissions, SubjectKey};
 use torque_engine::rpc::{
     CONN_INBOX_CAP, CarrierFull, DEFAULT_SEND_QUEUE, DEFAULT_TIMEOUT_TICKS, Delivery,
-    GhostResolver, NoGhosts, RPC_CHANNEL, Received, RpcCarrier, RpcChannel, RpcEnv, RpcError,
-    RpcHooks, RpcLink, RpcRef, RpcTable, Side,
+    GhostResolver, NoGhosts, RPC_CHANNEL, RealmCall, RealmInbox, Received, RpcCarrier, RpcChannel,
+    RpcEnv, RpcError, RpcHooks, RpcLink, RpcRef, RpcTable, Side,
 };
 use torque_ghosts::codec::NetWidths;
 use torque_net::chunk::Kind;
@@ -429,6 +433,18 @@ impl ServerRpc {
         self.host.object_of(conn)
     }
 
+    /// The connection a `GameConnection` object is.
+    pub fn conn_of(&self, object: ObjId) -> Option<ConnId> {
+        self.host.conn_of(object)
+    }
+
+    /// The connections that have a link now.
+    pub fn connections(&self) -> Vec<ConnId> {
+        let mut conns: Vec<ConnId> = self.links.borrow().keys().copied().collect();
+        conns.sort_by_key(|c| c.0);
+        conns
+    }
+
     /// Runs `f` on `conn`'s link, if the client has one (its channels are on and the pump has seen it).
     pub fn with_link<R>(&self, conn: ConnId, f: impl FnOnce(&mut RpcLink) -> R) -> Option<R> {
         self.links.borrow_mut().get_mut(&conn).map(f)
@@ -772,6 +788,12 @@ impl ClientRpc {
         self.link.borrow_mut().as_mut().map(f)
     }
 
+    /// Which connection the client is on: a number that changes with every new connection (and only then), so a plugin that
+    /// keeps state for a connection can tell a new one from the old even if it never saw the old one end.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.get()
+    }
+
     /// Whether the connection has a link that takes calls.
     pub fn is_ready(&self) -> bool {
         self.link.borrow().is_some()
@@ -896,10 +918,20 @@ impl ClientRpc {
     }
 }
 
-/// The client's script hooks: a script handler is `rpcClient_<name>(..)`.
+/// The client's script hooks: a script handler is `rpcClient_<name>(..)`, and a call of an RPC marked for client scripts also
+/// goes to the [`RealmInbox`] the host installed, when there is one.
 struct ClientHooks;
 
 impl RpcHooks for ClientHooks {
+    fn realm(&mut self, vm: &mut Vm, rpc: &str, values: Vec<torque_ghosts::Value>) {
+        if let Some(inbox) = vm.extension::<RealmInbox>() {
+            inbox.push(RealmCall {
+                rpc: rpc.to_string(),
+                values,
+            });
+        }
+    }
+
     fn script(
         &mut self,
         vm: &mut Vm,

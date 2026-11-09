@@ -23,7 +23,7 @@ impl Runners for Web {
             Guest::Realm => Vec::new(),
             Guest::Wat(text) => wat::parse_str(text()).map_err(|e| Trap::Fault(e.to_string()))?,
         };
-        Ok(Box::new(WebRunner::open(&wasm, limits)))
+        Ok(Box::new(WebRunner::unlisted(&wasm, limits)))
     }
 
     fn live(&self) -> usize {

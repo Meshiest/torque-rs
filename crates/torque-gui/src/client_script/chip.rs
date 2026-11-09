@@ -69,7 +69,7 @@ fn marker(holds: &[&str]) -> String {
 }
 
 /// Draws as much of `text` at `at` as fits in `room` pixels, cut with "..." when it does not all fit: the width drawn.
-fn fitted(
+pub(super) fn fitted(
     d: &mut DrawCtx<'_, '_>,
     face: &str,
     at: (i32, i32),

@@ -65,8 +65,12 @@
 //! - The Lua module's runner (`guest`) checks a text a request names against the C ABI's cap for it before it copies it
 //!   out of the module; one past it is `TORQUE_ERR_RANGE` and reaches no host:
 //!   `texts_past_the_abi_s_caps_are_refused_before_they_are_copied` (`web/lua.js` keeps the same caps: `web/lua.test.mjs`).
-//! - Before the host is wired into a game, the guest must be checked against the build's list of accepted guest hashes
-//!   (`ACCEPTED_CLIENT_GUESTS`): an unlisted guest makes server scripts unavailable.
+//! - The guest is checked against the build's list of accepted hashes ([`ACCEPTED_CLIENT_GUESTS`]) before it is compiled
+//!   (`RealmGuest::new`, `WebRunner::open` for a guest it is given, `web/client-script.js` for the page's own):
+//!   `a_guest_runs_only_if_its_hash_is_listed`, `a_guest_off_the_list_is_refused_before_it_is_compiled`, and
+//!   `a guest runs only if its hash is on the list the build gives` in `web/client-script.test.mjs`. A release lists the hash of
+//!   the guest `just lua-client-web` built for it (the justfile's `client-script-guest-hash` prints the line); the list is empty until a
+//!   release does, so no build runs a server's scripts before that. `RealmGuest::unlisted` is for the tests' own guests.
 //!
 //! **Extending.** A tier: the format's ops first, then a cargo feature and its bit in [`HOST_TIERS`], its arm in
 //! `flush::check` and an `Action`, an [`Effects`] method and its `revoke` handling, its cases; it joins [`REVIEWED_TIERS`]
@@ -86,6 +90,7 @@ mod effects;
 mod events;
 mod flush;
 mod grants;
+mod guests;
 mod pace;
 mod runner;
 mod session;
@@ -108,6 +113,10 @@ mod tests;
 pub use content::{ClientMod, Refused, ServerContent};
 pub use effects::{CallRoute, Effects, LogLevel, Refusal, Stop, Violation};
 pub use grants::{GrantSet, HOST_TIERS, REVIEWED_TIERS, unknown_tiers};
+pub use guests::{
+    ACCEPTED_CLIENT_GUESTS, GuestHash, GuestRejected, accepted_hex, check_against, check_guest,
+    guest_hash, guest_hex,
+};
 pub use runner::{Entry, InstanceLimits, Outcome, Reply, Runner, Trap, Unstarted};
 pub use session::{FrameReport, Session};
 pub use settings::{

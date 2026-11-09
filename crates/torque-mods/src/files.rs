@@ -14,9 +14,13 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use torque_ts_vm::host::{FileHost, FileRead, FileStat};
 use torque_ts_vm::text::fold;
+
+use crate::cache::CacheOwner;
+use crate::content::Hash;
 
 use crate::package::ModPackage;
 
@@ -64,6 +68,34 @@ pub(crate) struct Mount {
     pub(crate) enabled: Cell<bool>,
     /// Folded paths not laid over the game's files (entry scripts, the manifest): only under `mods/<id>/`.
     hidden: HashSet<Vec<u8>>,
+    /// Which server's content a download mount is, and how it got here; `None` for every other mount.
+    origin: Option<MountOrigin>,
+}
+
+/// The most files of one mod a client-script realm is given.
+pub const MAX_CLIENT_FILES: usize = 1_024;
+
+/// Where the content of a download mount came from: the one record the reader that may run server-sent scripts (a
+/// client-script realm) trusts. A mount without one is never read for scripts.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct MountOrigin {
+    /// The server the content was offered by on this connection.
+    pub(crate) server: CacheOwner,
+    /// The content hash the mount was verified against.
+    pub(crate) hash: Hash,
+    /// How the files reached the client.
+    pub(crate) way: Way,
+}
+
+/// How a download mount's files reached the client.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Way {
+    /// Sent by the server this connection is to, and verified against its offer.
+    Download,
+    /// Found in the cache entry that server's own earlier connection stored.
+    OwnCache,
+    /// Found in an entry another server stored (the player turned cache sharing on).
+    SharedCache,
 }
 
 impl Mount {
@@ -79,7 +111,13 @@ impl Mount {
             package,
             enabled: Cell::new(true),
             hidden: hidden.into_iter().map(|p| fold(p.as_bytes())).collect(),
+            origin: None,
         }
+    }
+
+    pub(crate) fn with_origin(mut self, origin: Option<MountOrigin>) -> Mount {
+        self.origin = origin;
+        self
     }
 }
 
@@ -121,6 +159,74 @@ impl Table {
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation.get()
+    }
+
+    /// The download mount of mod `mod_id`, for a client-script realm of `server`: only when the mount was offered by `server`,
+    /// verified against `hash` and did not come through cache sharing.
+    fn client_mount(&self, mod_id: &str, server: CacheOwner, hash: &Hash) -> Option<Rc<Mount>> {
+        crate::info::check_id(mod_id).ok()?;
+        let name = crate::transfer::mount_name(mod_id);
+        let mounts = self.mounts.borrow();
+        mounts
+            .iter()
+            .rev()
+            .find(|m| m.kind == MountKind::Server && m.id == name)
+            .filter(|m| {
+                m.origin.is_some_and(|o| {
+                    o.server == server && o.hash == *hash && o.way != Way::SharedCache
+                })
+            })
+            .map(Rc::clone)
+    }
+
+    /// Whether that mount is there with `entry` among its files: nothing is read.
+    pub(crate) fn client_ready(
+        &self,
+        mod_id: &str,
+        server: CacheOwner,
+        hash: &Hash,
+        entry: &str,
+    ) -> bool {
+        self.client_mount(mod_id, server, hash)
+            .is_some_and(|m| m.package.len() <= MAX_CLIENT_FILES && m.package.contains(entry))
+    }
+
+    /// The files of that mount, each as `mods/<mod_id>/<path>`.
+    pub(crate) fn client_content(
+        &self,
+        mod_id: &str,
+        server: CacheOwner,
+        hash: &Hash,
+    ) -> Option<Vec<(String, Arc<[u8]>)>> {
+        let mount = self.client_mount(mod_id, server, hash)?;
+        if mount.package.len() > MAX_CLIENT_FILES {
+            return None;
+        }
+        mount
+            .package
+            .names()
+            .iter()
+            .map(|name| {
+                let bytes = mount.package.read(name)?;
+                Some((format!("mods/{mod_id}/{name}"), Arc::from(bytes)))
+            })
+            .collect()
+    }
+
+    /// One `.lua` or `.luau` file of that mount, by its path within the mod.
+    pub(crate) fn client_script(
+        &self,
+        mod_id: &str,
+        server: CacheOwner,
+        hash: &Hash,
+        path: &str,
+    ) -> Option<Arc<[u8]>> {
+        let lower = path.to_ascii_lowercase();
+        if !(lower.ends_with(".lua") || lower.ends_with(".luau")) {
+            return None;
+        }
+        let mount = self.client_mount(mod_id, server, hash)?;
+        mount.package.read(path).map(Arc::from)
     }
 
     /// The bytes held by every mount but the server mount `name`, and the files of the server mounts but `name`.

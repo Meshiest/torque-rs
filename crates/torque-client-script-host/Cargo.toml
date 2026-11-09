@@ -38,6 +38,8 @@ cases = ["unreviewed-tiers", "ui", "net", "dep:wat"]
 [dependencies]
 torque-client-script-format = { path = "../torque-client-script-format" }
 web-time = "1.1"
+# The hash of a guest, checked against the build's list.
+sha2 = "0.10"
 torque-engine = { path = "../torque-engine", optional = true }
 torque-plugin-abi = { path = "../torque-plugin-abi", optional = true }
 torque-plugin-loader = { path = "../torque-plugin-loader", optional = true }
@@ -75,6 +77,10 @@ required-features = ["wasmtime"]
 [[test]]
 name = "cases"
 required-features = ["wasmtime", "cases"]
+
+# The hash of a guest and the line a release lists it by (the justfile's `client-script-guest-hash`).
+[[example]]
+name = "guest-hash"
 
 # What the Wasmtime runner adds to a release binary (`realm-gate` builds it with and without the feature).
 [[example]]

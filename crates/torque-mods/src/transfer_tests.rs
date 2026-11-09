@@ -752,3 +752,182 @@ fn a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would() {
         "{runs} runs took {rounds} rounds"
     );
 }
+
+/// A mod with a client script among its files.
+fn scripted(seed: u8) -> Files {
+    let mut files = files(seed);
+    files.push((
+        "client/main.lua".to_string(),
+        b"realm.log('hello')".to_vec(),
+    ));
+    files
+}
+
+fn client_script_reader(r: &Rig, port: u16, hash: &Hash, mod_id: &str) -> Option<Vec<String>> {
+    r.table
+        .client_content(mod_id, CacheOwner::of_server(server_at(port)), hash)
+        .map(|files| files.into_iter().map(|(path, _)| path).collect())
+}
+
+#[test]
+fn client_script_content_is_read_only_for_the_server_that_sent_it() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &scripted(1), true);
+    r.connect_to(7000, false);
+    r.join(std::slice::from_ref(&offer), &[content]);
+    assert_eq!(r.d.phase(), Phase::Done);
+    let paths = client_script_reader(&r, 7000, &offer.hash, "props").expect("the sender's own");
+    assert!(paths.contains(&"mods/props/client/main.lua".to_string()));
+    assert!(paths.contains(&"mods/props/art/big.bin".to_string()));
+    // Another server's key, another hash, another id: nothing.
+    assert!(client_script_reader(&r, 7001, &offer.hash, "props").is_none());
+    assert!(client_script_reader(&r, 7000, &[1; 32], "props").is_none());
+    assert!(client_script_reader(&r, 7000, &offer.hash, "other").is_none());
+    for bad in ["", "..", "a/b", "props\0", "pro ps"] {
+        assert!(
+            client_script_reader(&r, 7000, &offer.hash, bad).is_none(),
+            "{bad:?}"
+        );
+    }
+    let owner = CacheOwner::of_server(server_at(7000));
+    let script = |path: &str| r.table.client_script("props", owner, &offer.hash, path);
+    assert_eq!(
+        &*script("client/main.lua").expect("the entry"),
+        b"realm.log('hello')"
+    );
+    assert!(script("art/big.bin").is_none(), "only Lua files");
+    assert!(script("client/missing.lua").is_none());
+}
+
+#[test]
+fn client_script_ready_looks_without_reading_and_follows_the_same_rules() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &scripted(1), true);
+    r.connect_to(7000, false);
+    r.join(std::slice::from_ref(&offer), &[content]);
+    let owner = CacheOwner::of_server(server_at(7000));
+    let ready =
+        |server, hash: &Hash, entry: &str| r.table.client_ready("props", server, hash, entry);
+    assert!(ready(owner, &offer.hash, "client/main.lua"));
+    assert!(
+        ready(owner, &offer.hash, "CLIENT/main.lua"),
+        "paths fold case as the package does"
+    );
+    assert!(
+        !ready(owner, &offer.hash, "client/missing.lua"),
+        "no entry, not ready"
+    );
+    assert!(!ready(
+        CacheOwner::of_server(server_at(7001)),
+        &offer.hash,
+        "client/main.lua"
+    ));
+    assert!(!ready(owner, &[3; 32], "client/main.lua"));
+}
+
+#[test]
+fn client_script_content_from_a_mount_with_no_origin_is_never_read() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &scripted(1), true);
+    // Files mounted by the public API, and a mount whose cache scope has no server, have no origin.
+    mount_content(
+        &r.table,
+        &ModLimits::default(),
+        &mount_name("props"),
+        content.clone(),
+        None,
+    )
+    .expect("mounts");
+    assert!(client_script_reader(&r, 7000, &offer.hash, "props").is_none());
+    r.d.reset();
+    r.d.receive(&encode_offer(std::slice::from_ref(&offer)));
+    r.join(std::slice::from_ref(&offer), &[content]);
+    assert!(
+        client_script_reader(&r, 7000, &offer.hash, "props").is_none(),
+        "a connection that names no server has no owner to read for"
+    );
+}
+
+#[test]
+fn client_script_content_found_through_cache_sharing_is_refused() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &scripted(1), true);
+    // Server A sent it and the cache keeps it under A's name.
+    r.connect_to(7000, false);
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    // Server B offers the same content. Without sharing it is downloaded again from B (and is B's own); with sharing the
+    // cache's entry of A satisfies it, and B may not run scripts from it.
+    r.connect_to(7001, true);
+    let sent = r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    assert_eq!(sent, 0, "A's entry was used");
+    assert!(
+        client_script_reader(&r, 7001, &offer.hash, "props").is_none(),
+        "content that came from another server's partition"
+    );
+    assert!(
+        client_script_reader(&r, 7000, &offer.hash, "props").is_none(),
+        "and A is not on this connection"
+    );
+    r.d.closed();
+    // Without sharing, B downloads its own copy and the reader gives it.
+    r.connect_to(7001, false);
+    let sent = r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    assert!(sent > 0, "B's partition has nothing");
+    assert!(client_script_reader(&r, 7001, &offer.hash, "props").is_some());
+}
+
+#[test]
+fn client_script_content_from_the_servers_own_cache_entry_is_read() {
+    let r = rig(caps(true));
+    let (offer, content) = offered("props", "1.0", &scripted(1), true);
+    r.connect_to(7000, false);
+    r.join(std::slice::from_ref(&offer), std::slice::from_ref(&content));
+    r.d.closed();
+    r.connect_to(7000, false);
+    let sent = r.join(std::slice::from_ref(&offer), &[content]);
+    assert_eq!(sent, 0, "the cache served it");
+    assert!(client_script_reader(&r, 7000, &offer.hash, "props").is_some());
+}
+
+#[test]
+fn client_script_content_is_gone_when_another_server_replaces_the_mount() {
+    let r = rig(caps(true));
+    let (offer_a, content_a) = offered("props", "1.0", &scripted(1), true);
+    let (offer_b, content_b) = offered("props", "1.0", &scripted(2), true);
+    r.connect_to(7000, false);
+    r.join(std::slice::from_ref(&offer_a), &[content_a]);
+    assert!(client_script_reader(&r, 7000, &offer_a.hash, "props").is_some());
+    // The same mod id mounted by another server's connection takes the mount's place.
+    r.connect_to(7001, false);
+    r.join(std::slice::from_ref(&offer_b), &[content_b]);
+    assert!(client_script_reader(&r, 7000, &offer_a.hash, "props").is_none());
+    assert!(client_script_reader(&r, 7001, &offer_b.hash, "props").is_some());
+}
+
+#[test]
+fn client_script_content_with_more_files_than_the_realm_takes_is_refused() {
+    let r = rig(caps(true));
+    let many: Files = (0..=crate::files::MAX_CLIENT_FILES)
+        .map(|n| (format!("f/{n}.txt"), vec![1u8]))
+        .collect();
+    let (offer, content) = offered("big", "1.0", &many, true);
+    let limits = ModLimits {
+        files: many.len() + 8,
+        ..ModLimits::default()
+    };
+    let owner = CacheOwner::of_server(server_at(7000));
+    mount_content(
+        &r.table,
+        &limits,
+        &mount_name("big"),
+        content,
+        Some(MountOrigin {
+            server: owner,
+            hash: offer.hash,
+            way: Way::Download,
+        }),
+    )
+    .expect("mounts");
+    assert!(r.table.client_content("big", owner, &offer.hash).is_none());
+}

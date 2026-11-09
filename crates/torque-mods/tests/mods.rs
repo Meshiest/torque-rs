@@ -754,3 +754,139 @@ fn a_prefix_read_of_a_zip_mods_file_is_its_start() {
     );
     assert_eq!(host.read_prefix(b"art/none.words", 4), FileRead::Missing);
 }
+
+fn info_of(vm: &Vm, id: &str) -> torque_mods::ModInfo {
+    Mods::of(vm)
+        .expect("the mods")
+        .get(id)
+        .expect("the mod is listed")
+        .info
+}
+
+#[test]
+fn client_script_the_manifest_asks_for_scripts_and_a_bad_request_is_a_warning() {
+    let engine = engine();
+    let mut vm = server(
+        &engine,
+        game(&[
+            (
+                "mods/good/mod.toml",
+                &mod_toml(
+                    "good",
+                    "[client_script]\nentry = \"client/main.lua\"\ntiers = [\"ui\", \"net\", \"ui\"]\n",
+                ),
+            ),
+            ("mods/good/client/main.lua", b"realm.log('x')"),
+            (
+                "mods/missing/mod.toml",
+                &mod_toml("missing", "[client_script]\nentry = \"client/main.lua\"\n"),
+            ),
+            (
+                "mods/escape/mod.toml",
+                &mod_toml("escape", "[client_script]\nentry = \"../x.lua\"\n"),
+            ),
+            ("mods/escape/x.lua", b"x"),
+            (
+                "mods/notlua/mod.toml",
+                &mod_toml("notlua", "[client_script]\nentry = \"client/main.cs\"\n"),
+            ),
+            ("mods/notlua/client/main.cs", b"x"),
+            (
+                "mods/staged/mod.toml",
+                &mod_toml(
+                    "staged",
+                    "[client_script]\nentry = \"main.lua\"\n[scripts]\nserver = \"main.lua\"\n",
+                ),
+            ),
+            ("mods/staged/main.lua", b"x"),
+            (
+                "mods/noentry/mod.toml",
+                &mod_toml("noentry", "[client_script]\ntiers = [\"ui\"]\n"),
+            ),
+            (
+                "mods/oddtier/mod.toml",
+                &mod_toml(
+                    "oddtier",
+                    "[client_script]\nentry = \"m.lua\"\ntiers = [\"UI;\"]\n",
+                ),
+            ),
+            ("mods/oddtier/m.lua", b"x"),
+            (
+                "mods/quirk/mod.toml",
+                &mod_toml(
+                    "quirk",
+                    "[client_script]\nentry = \"m.lua\"\nwhere = \"/etc\"\n",
+                ),
+            ),
+            ("mods/quirk/m.lua", b"x"),
+        ]),
+        "server.cs",
+    );
+    let good = info_of(&vm, "good").client_script.expect("asked for");
+    assert_eq!(good.entry, "client/main.lua");
+    assert_eq!(good.tiers, ["ui", "net"], "each once, in order");
+    for id in [
+        "missing", "escape", "notlua", "staged", "noentry", "oddtier",
+    ] {
+        assert_eq!(info_of(&vm, id).client_script, None, "{id}");
+        assert!(
+            info_of(&vm, id)
+                .warnings
+                .iter()
+                .any(|w| w.contains("no client scripts")),
+            "{id}: {:?}",
+            info_of(&vm, id).warnings
+        );
+    }
+    assert!(info_of(&vm, "quirk").client_script.is_some());
+    let log = console(&mut vm);
+    assert!(
+        log.contains("the key `where` of [client_script] is not known"),
+        "{log}"
+    );
+}
+
+#[test]
+fn client_script_a_required_mod_is_offered_with_its_entry_tiers_and_content_hash() {
+    let engine = EngineBuilder::new()
+        .add_plugins((ModsPlugin::new().required_mods(), WordsPlugin))
+        .build()
+        .expect("the engine builds");
+    let vm = server(
+        &engine,
+        game(&[
+            (
+                "mods/hud/mod.toml",
+                &mod_toml(
+                    "hud",
+                    "[client_script]\nentry = \"client/main.lua\"\ntiers = [\"ui\", \"net\"]\n",
+                ),
+            ),
+            ("mods/hud/client/main.lua", b"realm.log('x')"),
+            ("mods/hud/art/pic.words", b"a b"),
+            ("mods/plain/mod.toml", &mod_toml("plain", "")),
+            ("mods/plain/art/pic.words", b"a b"),
+        ]),
+        "server.cs",
+    );
+    let mods = Mods::of(&vm).expect("the mods");
+    let offers = mods.client_script_offers();
+    assert_eq!(offers.len(), 1, "{offers:?}");
+    let offer = &offers[0];
+    assert_eq!(
+        (offer.mod_id.as_str(), offer.entry.as_str()),
+        ("hud", "client/main.lua")
+    );
+    assert_eq!(offer.tiers, ["ui", "net"]);
+    assert_eq!(
+        offer.hash,
+        mods.content_of("hud").expect("its content").hash,
+        "the hash the clients verify, which covers the entry"
+    );
+    let required = mods.required();
+    assert!(
+        required
+            .iter()
+            .any(|m| m.id == "hud" && m.hash == offer.hash)
+    );
+}

@@ -24,6 +24,12 @@
 //! An engine prompt is modal: while one is up its key responder gets every key but Escape, and the game none (only the
 //! releases of the presses it had).
 //!
+//! **The consent prompt.** `Gui::show_client_script_prompt` shows the engine's default prompt (`prompt`): a modal box in the engine
+//! layer with a row for each ability a server asks for, a "remember" box and three buttons. It ignores the pointer for
+//! [`IGNORE_MS`] after it is shown, needs the press and the release on the same place, and takes no key (Enter does not allow;
+//! Escape is the host's). It never draws or reads anything of the realm, which does not exist until the answer. A game may draw its
+//! own prompt in the engine layer instead; the plugin crate's `ConsentPrompt` is the slot.
+//!
 //! Layout containers (`GuiFlexCtrl`, `GuiGridCtrl`) are not used: format 1 has no props for them, only positions, sizes and the
 //! sizing rules of `GuiControl`.
 //!
@@ -31,7 +37,7 @@
 //!
 //! **Map.** `apply` is the realm's applier and teardown; `controls` the `ClientScript*` classes, their input handlers and hit
 //! test; `paint` how each kind draws (and the kept text layouts); `layers` the layer state, the draw plan, the per-frame holds,
-//! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `events` the events for the
+//! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `prompt` the consent prompt; `events` the events for the
 //! realm and their encoding; `props`, `rich` small helpers. The rest of the crate calls in at these places:
 //! - drawing (`draw.rs`): `draw_canvas` takes `DrawPlan::of`; `Walk::server_layer` draws the layer, `focus_on_top`'s field
 //!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed;
@@ -76,6 +82,10 @@
 //!   `cursorOn`/`cursorOff`: `client_script_giving_the_cursor_back_never_undoes_the_games_call`.
 //! - No game key is left held: `client_script_a_game_keys_release_reaches_the_game_when_the_focus_came_after_its_press`;
 //!   a prompt takes the keys, not Escape: `client_script_a_prompt_takes_the_keys_and_escape_is_the_hosts`.
+//! - The consent prompt ignores the pointer for its first half second, needs press and release on one spot, takes no key, bounds its
+//!   rows and text, and the realm under it hears nothing: `client_script_prompt_ignores_the_pointer_for_its_first_half_second`,
+//!   `client_script_prompt_needs_the_press_and_the_release_on_the_same_spot`, `client_script_prompt_no_key_answers_it`,
+//!   `client_script_prompt_text_is_plain_and_the_rows_are_bounded`, `client_script_the_server_layer_hears_nothing_while_the_prompt_is_up`.
 //! - The content store fails closed, and images are drawn from its bytes alone, never the game's files:
 //!   `client_script_images_are_refused_until_the_host_sets_a_content_check`, `client_script_images_come_from_the_servers_store_alone`.
 //! - Text is measured once a word and its layout kept: `client_script_wrapped_text_is_measured_once_a_word_and_kept`.
@@ -96,6 +106,7 @@ mod controls;
 mod events;
 mod layers;
 mod paint;
+mod prompt;
 mod props;
 mod rich;
 mod route;
@@ -114,6 +125,10 @@ pub use layers::{
 };
 pub(crate) use layers::{focus_on_top, forget, frame};
 pub(crate) use paint::draw_tooltip;
+pub use prompt::{
+    IGNORE_MS, MAX_LINE, MAX_ROWS, PromptAnswer, PromptRow, PromptSpec, PromptSpot, RowLock,
+    prompt_spots,
+};
 pub(crate) use route::{after_canvas, route};
 
 /// Adds the `ClientScript*` control classes to an engine being built.
@@ -131,7 +146,8 @@ pub fn add_controls(builder: &mut EngineBuilder) {
         .add_gui_control::<controls::ScrollCtrl>()
         .add_gui_control::<controls::SliderCtrl>()
         .add_gui_control::<controls::ProgressCtrl>()
-        .add_gui_control::<chip::ChipCtrl>();
+        .add_gui_control::<chip::ChipCtrl>()
+        .add_gui_control::<prompt::PromptCtrl>();
 }
 
 /// The names of the classes [`add_controls`] adds.
@@ -142,6 +158,6 @@ pub fn class_names() -> Vec<&'static str> {
                 .iter()
                 .map(|k| controls::class_name(Some(k.kind))),
         )
-        .chain([chip::CLASS])
+        .chain([chip::CLASS, prompt::CLASS])
         .collect()
 }
