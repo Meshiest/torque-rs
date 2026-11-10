@@ -53,6 +53,7 @@ clearDebug -
 clearModDownloadCache files
 clientCmdRopeFx -
 collapseEscape -
+commandDrops -
 commandToClient -
 commandToServer -
 compile files+code
@@ -291,6 +292,7 @@ jointHinge -
 jointHold -
 jointIsAtLimit -
 jointIsBroken -
+jointRope -
 jointSetBreakForce -
 jointSetLength -
 jointSetLimits -
@@ -432,6 +434,9 @@ ropeSetLength -
 ropeSetLifetime -
 ropeSetTexture -
 ropeSetTextureScroll -
+rpcDrops -
+rpcToClient -
+rpcToServer -
 rtrim -
 ScatterSky::inspectPostApply -
 SceneObject::clearChildren -

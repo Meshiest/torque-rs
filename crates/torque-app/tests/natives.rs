@@ -22,10 +22,21 @@ fn listing(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// The snapshot for the protocol in use: the engine's has the natives of its RPCs too, in `<stem>-engine.txt`.
+fn listing_for_protocol(stem: &str) -> PathBuf {
+    listing(&match protocol_from_env() {
+        ProtocolKind::Engine => format!("{stem}-engine.txt"),
+        _ => format!("{stem}.txt"),
+    })
+}
+
 #[test]
 fn the_bare_client_has_these_natives() {
     let builder = ClientBuilder::new(ClientSetup::default()).expect("the client");
-    check_listing(&listing("client.txt"), &builder.vm.native_listing());
+    check_listing(
+        &listing_for_protocol("client"),
+        &builder.vm.native_listing(),
+    );
 }
 
 /// With the audio plugin turned off, the client has the natives it had before audio joined the defaults.
@@ -41,17 +52,9 @@ fn the_bare_client_without_audio_has_these_natives() {
     let engine = engine.build().expect("the engine builds");
     let builder = ClientBuilder::from_engine(&engine, None, ClientNet::None).expect("the client");
     check_listing(
-        &listing("client-no-audio.txt"),
+        &listing_for_protocol("client-no-audio"),
         &builder.vm.native_listing(),
     );
-}
-
-/// The server's snapshot for the protocol in use: the engine's has the scene hierarchy's natives too, in `server-engine.txt`.
-fn server_listing() -> PathBuf {
-    listing(match protocol_from_env() {
-        ProtocolKind::Engine => "server-engine.txt",
-        _ => "server.txt",
-    })
 }
 
 #[test]
@@ -68,7 +71,10 @@ fn the_bare_server_has_these_natives() {
         },
     )
     .expect("the server starts");
-    check_listing(&server_listing(), &server.vm().native_listing());
+    check_listing(
+        &listing_for_protocol("server"),
+        &server.vm().native_listing(),
+    );
 }
 
 /// A web build installs these on its client's engine when the window is made; the snapshot is made natively.

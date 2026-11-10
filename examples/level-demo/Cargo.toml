@@ -31,8 +31,8 @@ torque-plugin-smooth-prediction = { path = "../../crates/torque-plugin-smooth-pr
 
 [features]
 # A rope the plaza has hung between its front pillars, simulated and drawn by `torque-plugin-rope` (`--rope-shots` draws it; with the
-# feature off, or on a map other than the plaza, the demo is as it was).
-rope = ["dep:torque-plugin-rope"]
+# feature off, or on a map other than the plaza, the demo is as it was). It also turns on the props' `jointRope`.
+rope = ["dep:torque-plugin-rope", "torque-plugin-props/rope"]
 # The smoothed predictor registered beside TGE's (`setPredictor("smooth")` swaps to it; the demo starts with TGE's), and
 # `--correction-shots`, which draws a forced correction with each.
 smooth-prediction = ["dep:torque-plugin-smooth-prediction"]

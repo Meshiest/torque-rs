@@ -7,7 +7,7 @@ use torque_ts_vm::host::MemFiles;
 
 use crate::plugins::{
     GameClassesPlugin, HierarchyPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin,
-    ServerGamePlugin, TerrainPlugin, TgeProtocolPlugin, WaterPlugin,
+    ServerGamePlugin, TerrainPlugin, WaterPlugin, protocol_from_env, protocol_plugin_id,
 };
 use crate::run::DedicatedRunnerPlugin;
 use crate::server::{GameServer, Listen, ServerStart};
@@ -86,7 +86,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerGamePlugin::ID,
             TerrainPlugin::ID,
             WaterPlugin::ID,
-            TgeProtocolPlugin::ID,
+            protocol_plugin_id(protocol_from_env()),
             NetHostPlugin::ID,
             HierarchyPlugin::ID,
             DedicatedRunnerPlugin::ID,
@@ -111,7 +111,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-game",
             "torque.terrain",
             "torque.water",
-            "torque.net.tge",
+            protocol_plugin_id(protocol_from_env()).as_str(),
             "torque.net-host",
             "torque.hierarchy",
             "torque.dedicated-runner",

@@ -67,7 +67,7 @@ pub use torque_app_server::plugins::{
     ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, HierarchyPlugin, MinimalPlugins,
     ModsPlugin, NetHostPlugin, PROTOCOL_ENV, ProtocolPlugins, ServerGamePlugin,
     ServerTransportPlugins, ServerWiring, SimClassesPlugin, TerrainPlugin, TgeProtocolPlugin,
-    WaterPlugin, protocol_from_env, set_protocol,
+    WaterPlugin, protocol_from_env, protocol_plugin_id, set_protocol,
 };
 
 pub use crate::camera_modes::CameraModesPlugin;

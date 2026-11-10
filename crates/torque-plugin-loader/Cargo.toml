@@ -56,7 +56,7 @@ torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }
 # Every native a full engine registers, for the call policy's test (`tests/native_effects.rs`).
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
-torque-plugin-props = { path = "../torque-plugin-props" }
+torque-plugin-props = { path = "../torque-plugin-props", features = ["rope"] }
 torque-plugin-rope = { path = "../torque-plugin-rope" }
 
 [lints.rust]

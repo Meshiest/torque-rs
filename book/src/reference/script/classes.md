@@ -87,8 +87,8 @@ Console classes, with the fields each adds to its parent's. 117 classes.
 | [PlayerData](#playerdata) | [ShapeBaseData](#shapebasedata) | 80 |
 | [Projectile](#projectile) | [GameBase](#gamebase) | 4 |
 | [ProjectileData](#projectiledata) | [GameBaseData](#gamebasedata) | 23 |
-| [Prop](#prop) | [SceneObject](#sceneobject) | 20 |
-| [PropData](#propdata) | [GameBaseData](#gamebasedata) | 15 |
+| [Prop](#prop) | [SceneObject](#sceneobject) | 23 |
+| [PropData](#propdata) | [GameBaseData](#gamebasedata) | 16 |
 | [Rope](#rope) | [SceneObject](#sceneobject) | 29 |
 | [RopeData](#ropedata) | [SimDataBlock](#simdatablock) | 20 |
 | [ScatterSky](#scattersky) | [SceneObject](#sceneobject) | 11 |
@@ -1217,6 +1217,9 @@ No fields of its own.
 |---|---|---|---|---|
 | `dataBlock` | int | `0` |  | The `PropData` datablock's object id. |
 | `slot` | int | `0` |  | The key of its collision shape on both sides (0 to 1,023). |
+| `hullCount` | int | `0` |  | The digest of the hulls it collides as ([`crate::hulls::HullDigest`]; a count of 0: the datablock's box). |
+| `hullPoints` | int | `0` |  |  |
+| `hullVolume` | int | `0` |  |  |
 | `ownerConn` | int | `0` |  | The owner's connection object (0: none, or gone). |
 | `predict` | int | `0` |  | The predict id the owner's client gave it (0: none). |
 | `asleep` | int | `0` |  | 1 while it sleeps, 1 while it is frozen, 1 while a player holds it. |
@@ -1242,7 +1245,8 @@ No fields of its own.
 
 | Field | Type | Default | Range | What it is for |
 |---|---|---|---|---|
-| `shapeFile` | filename |  |  | The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. Collision is `size` or `radius`, not the shape. |
+| `shapeFile` | filename |  |  | The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. What it collides as is `collision`: `size` or `radius` by default, the shape's collision meshes with `collision = "shape"`. |
+| `collision` | string | `box` |  | What the prop collides as in the physics world: `"box"` (the default; the box of `size`, or the ball of `radius`) or `"shape"` (the convex hulls of the `shapeFile`'s collision details, `Collision-1` and on, at `drawScale`; a shape with none collides as its bounds, and one the server refuses ([`crate::hulls`]) as the box). With `"shape"`, `size` is still the box players, placement checks and shots see, and `mass` is the mass of the whole shape. Any other text is `"box"`. |
 | `drawScale` | Point3F | `1 1 1` |  | The scale the shape is drawn at along each axis (0.001 to 256). |
 | `size` | Point3F | `1 1 1` |  | The collision box's full size along each axis, centered on the prop's origin (each 0.02 to 128 units). |
 | `radius` | float | `0` | 0 to 64 | Above 0: the prop collides as a ball of this radius (0.01 to 64) and `size` is not used. |

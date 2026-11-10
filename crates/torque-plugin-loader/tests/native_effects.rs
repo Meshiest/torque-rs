@@ -14,9 +14,9 @@ use torque_app::client::{ClientBuilder, ClientNet};
 use torque_app::gizmos::GizmosPlugin;
 use torque_app::hosting::HostingPlugin;
 use torque_app::page_bridge;
-use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin};
+use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin, set_protocol};
 use torque_app::server::{GameServer, Listen, ServerStart};
-use torque_engine::{Effects, EngineBuilder, PluginGroup};
+use torque_engine::{Effects, EngineBuilder, PluginGroup, ProtocolKind};
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_loader::call_policy::{
     CallKind, CallPolicy, DENIED_EFFECTS, DenyCodeAndFiles, PolicyCall, TGE_EFFECTS,
@@ -29,39 +29,44 @@ use torque_ts_vm::listing::check_listing;
 use torque_ts_vm::vm::Vm;
 
 /// The script engines of a server and a client made from DefaultPlugins and every opt-in plugin with natives, and the
-/// page bridge's, each handed to `each`.
+/// page bridge's, each handed to `each`: once for each protocol, as the natives a protocol adds are the protocol's own.
 fn for_each_script_engine(mut each: impl FnMut(&Vm)) {
-    let mut engine = EngineBuilder::new();
-    // The hierarchy is in DefaultPlugins but on only in engine mode: on here whatever the protocol.
-    engine.add_plugins(DefaultPlugins.set(HierarchyPlugin::always()));
-    engine
-        .add_plugins(GizmosPlugin::default())
-        .add_plugins(ZoomPlugin)
-        .add_plugins(HostingPlugin::default())
-        .add_plugins(RopePlugin::default())
-        .add_plugins(PropsPlugin)
-        .add_plugins(PropPredictionPlugin::default())
-        .add_plugins(GuiLayoutPlugin);
-    let engine = engine.build().expect("the engine builds");
-    let files = MemFiles::new();
-    files.insert("server.cs", b"function startNothing() {}");
-    let server = GameServer::start_engine(
-        &engine,
-        files,
-        &ServerStart {
-            listen: Listen::Memory(SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000))),
-            globals: &[],
-            start: "startNothing",
-            args: &[],
-        },
-    )
-    .expect("the server starts");
-    let client = ClientBuilder::from_engine(&engine, None, ClientNet::None).expect("the client");
-    let mut bridge = Vm::new();
-    page_bridge::install(&mut bridge);
-    each(server.vm());
-    each(&client.vm);
-    each(&bridge);
+    for protocol in [ProtocolKind::Tge, ProtocolKind::Engine] {
+        let mut engine = EngineBuilder::new();
+        // The hierarchy is in DefaultPlugins but on only in engine mode: on here whatever the protocol.
+        engine.add_plugins(DefaultPlugins.set(HierarchyPlugin::always()));
+        engine
+            .add_plugins(GizmosPlugin::default())
+            .add_plugins(ZoomPlugin)
+            .add_plugins(HostingPlugin::default())
+            .add_plugins(RopePlugin::default())
+            .add_plugins(PropsPlugin)
+            .add_plugins(PropPredictionPlugin::default())
+            .add_plugins(GuiLayoutPlugin);
+        // This protocol whatever `TORQUE_NET_PROTOCOL` says.
+        set_protocol(&mut engine, protocol);
+        let engine = engine.build().expect("the engine builds");
+        let files = MemFiles::new();
+        files.insert("server.cs", b"function startNothing() {}");
+        let server = GameServer::start_engine(
+            &engine,
+            files,
+            &ServerStart {
+                listen: Listen::Memory(SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000))),
+                globals: &[],
+                start: "startNothing",
+                args: &[],
+            },
+        )
+        .expect("the server starts");
+        let client =
+            ClientBuilder::from_engine(&engine, None, ClientNet::None).expect("the client");
+        let mut bridge = Vm::new();
+        page_bridge::install(&mut bridge);
+        each(server.vm());
+        each(&client.vm);
+        each(&bridge);
+    }
 }
 
 #[test]

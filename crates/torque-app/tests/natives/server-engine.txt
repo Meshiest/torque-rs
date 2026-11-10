@@ -199,6 +199,7 @@ call 2..* call(function, args...) - calls a global function by name
 cancel 2..2 cancel(scheduleId) - drops a scheduled call
 clearModDownloadCache 1..1 clearModDownloadCache() - deletes the mod content kept from servers; returns the bytes freed
 collapseEscape 2..2 collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for
+commandDrops 3..3 commandDrops(client, command) - how many calls of a server command the client sent that were refused
 commandToClient 3..22
 commandToServer 2..21
 compile 2..2 compile(file) - compiles a script without running it
@@ -306,6 +307,8 @@ removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
 removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
+rpcDrops 3..3 rpcDrops(client, name) - how many calls of an RPC the client sent that were dropped for going over its rate
+rpcToClient 3..* rpcToClient(client, name, fields..) - sends a client the server-to-client RPC `name`, its arguments the message's fields; answers the reason it was not queued, or nothing
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

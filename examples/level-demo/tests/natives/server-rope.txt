@@ -291,6 +291,7 @@ jointHinge 5..6 jointHinge(a, b, point, axis [, owner]) - hinges a prop to anoth
 jointHold 4..5 jointHold(player, prop, offset [, owner]) - makes a player carry a prop and returns the joint's object id
 jointIsAtLimit 2..2 jointIsAtLimit(joint) - whether a tether's ends are at its length (a rope following it is drawn taut)
 jointIsBroken 2..2 jointIsBroken(joint) - whether a joint broke (it holds nothing; delete it when it is done with)
+jointRope 3..3 jointRope(joint, ropeData) - makes a networked rope of `ropeData` that shows a joint (its ends where the joint's are as each client draws them, its length
 jointSetBreakForce 3..3 jointSetBreakForce(joint, force) - sets the force a joint breaks past (a torque counts at one unit; 0: never); true for a joint
 jointSetLength 3..4 jointSetLength(joint, length [, min]) - sets a tether's, a winch's or a grapple's length (0.001 to 200) and, if given, its shortest; true for one of those
 jointSetLimits 2..4 jointSetLimits(joint [, low [, high]]) - holds a hinge's angle between `low` and `high` (radians, from where it was made); with neither given, frees it; true for a

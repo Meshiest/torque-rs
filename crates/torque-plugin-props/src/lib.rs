@@ -364,6 +364,10 @@
 //! `projectile-props` and `hierarchy-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
 //! --bench step` and the `replay-bench` of torque-trace-hash (native and wasm32) under the bench lock.
 
+/// Whether this build has the `rope` feature (`jointRope`, joints drawn as ropes). Features are unified over a build, so a crate that
+/// lists the plugin's natives reads this to know which list it is looking at.
+pub const ROPE: bool = cfg!(feature = "rope");
+
 pub mod client;
 pub mod data;
 pub mod hierarchy;

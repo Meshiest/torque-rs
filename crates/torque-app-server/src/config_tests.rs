@@ -12,6 +12,7 @@ use crate::config::{
 use crate::files::GameFiles;
 use crate::plugins::{
     EngineProtocolPlugin, MinimalPlugins, TerrainPlugin, TgeProtocolPlugin, WaterPlugin,
+    protocol_from_env, protocol_plugin_id,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -299,13 +300,21 @@ fn the_net_protocol_reads_engine_and_tge_and_refuses_anything_else() {
 
 #[test]
 fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
-    // Torque's protocol is what the groups give.
+    // The protocol is what the groups give: Torque's unless `TORQUE_NET_PROTOCOL` names the engine's.
     let engine = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
         .build()
         .unwrap();
-    assert!(engine.is_plugin_added::<TgeProtocolPlugin>());
-    assert_eq!(engine.protocol(), ProtocolKind::Tge);
+    let given = protocol_from_env();
+    assert_eq!(engine.protocol(), given);
+    assert_eq!(
+        engine.is_plugin_added::<EngineProtocolPlugin>(),
+        given == ProtocolKind::Engine
+    );
+    assert_eq!(
+        engine.is_plugin_added::<TgeProtocolPlugin>(),
+        given != ProtocolKind::Engine
+    );
     let config = parse("[net]\nprotocol = \"tge\"\n");
     let engine = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
@@ -343,9 +352,15 @@ fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
 
 #[test]
 fn a_second_plugin_that_sets_the_protocol_fails_the_build_naming_both() {
+    // Turn on the one the group left off.
+    let other = if protocol_from_env() == ProtocolKind::Engine {
+        ProtocolKind::Tge
+    } else {
+        ProtocolKind::Engine
+    };
     let error = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
-        .enable_id("torque.net.engine")
+        .enable_id(protocol_plugin_id(other).as_str())
         .build()
         .unwrap_err();
     assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{error}");

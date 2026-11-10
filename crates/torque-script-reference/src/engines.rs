@@ -5,14 +5,14 @@ use std::net::{Ipv4Addr, SocketAddr};
 use torque_app::client::{ClientBuilder, ClientNet};
 use torque_app::gizmos::GizmosPlugin;
 use torque_app::hosting::HostingPlugin;
-use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin};
+use torque_app::plugins::{DefaultPlugins, HierarchyPlugin, ZoomPlugin, set_protocol};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_client::predict::slot::SLOT_NATIVES;
 use torque_engine::net_classes::{GhostRef, Xf};
 use torque_engine::rpc::{Allow, Delivery, RpcCx, RpcError};
 use torque_engine::{
     Engine, EngineBuilder, NetMessage, Plugin, PluginGroup, PluginGroupBuilder, PluginId,
-    PluginType,
+    PluginType, ProtocolKind,
 };
 use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_props::PropsPlugin;
@@ -174,6 +174,8 @@ fn build(extra: Option<&Optional>) -> Result<Engine, String> {
         Some(group) => engine.add_plugins(group()),
         None => engine.add_plugins(DefaultPlugins),
     };
+    // Torque's protocol whatever `TORQUE_NET_PROTOCOL` says: the committed reference is of this one.
+    set_protocol(&mut engine, ProtocolKind::Tge);
     if let Some(extra) = extra {
         (extra.add)(&mut engine);
     }
@@ -266,6 +268,7 @@ pub fn reference() -> Result<Reference, String> {
 pub(crate) fn add_rpcs(reference: &mut Reference) -> Result<(), String> {
     let mut engine = EngineBuilder::new();
     engine.add_plugins(DefaultPlugins);
+    set_protocol(&mut engine, ProtocolKind::Tge);
     engine.add_plugins(SampleRpcPlugin);
     let engine = engine.build().map_err(|e| e.to_string())?;
     let with = read(&engine)?;

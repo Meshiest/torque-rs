@@ -7,11 +7,11 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use torque_app::GameFiles;
 use torque_app::client::{ClientBuilder, ClientNet, GameClient};
 use torque_app::config::{EngineConfig, GameConfig};
-use torque_app::plugins::DefaultPlugins;
+use torque_app::plugins::{DefaultPlugins, set_protocol};
 use torque_app::server::{GameServer, Listen, ServerStart};
 use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_engine::command::{ArgType, CommandSpec};
-use torque_engine::{Engine, EngineBuilder, Plugin, PluginId, ResMut};
+use torque_engine::{Engine, EngineBuilder, Plugin, PluginId, ProtocolKind, ResMut};
 
 const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
 const BURST: usize = 5;
@@ -81,6 +81,8 @@ impl Rig {
             .add_plugins(DefaultPlugins)
             .config(&config)
             .add_plugins(Commands);
+        // `commandToServer` is Torque's protocol; the engine's protocol sends calls as RPCs.
+        set_protocol(&mut builder, ProtocolKind::Tge);
         let engine = builder.build().expect("the engine builds");
         let server = GameServer::start_engine(
             &engine,
@@ -96,6 +98,7 @@ impl Rig {
         // The client has the default plugins only: the commands are the server's.
         let mut client_builder = EngineBuilder::new();
         client_builder.add_plugins(DefaultPlugins).config(&config);
+        set_protocol(&mut client_builder, ProtocolKind::Tge);
         let client_engine = client_builder.build().expect("the client's engine builds");
         let port = 50_001;
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);

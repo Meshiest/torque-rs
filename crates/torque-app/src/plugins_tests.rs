@@ -9,8 +9,8 @@ use std::rc::Rc;
 use torque_client::conn::tge::TgeConn;
 use torque_client::state::ClientState;
 use torque_engine::{
-    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ServerStage,
-    Stage,
+    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ProtocolKind,
+    ServerStage, Stage,
 };
 use torque_game::scene::container::{Container, ContainerConfig};
 use torque_game::sim_classes::SimClasses;
@@ -25,8 +25,8 @@ use crate::plugins::{
     LivePerfPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin,
     ReflectionsPlugin, RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin,
     ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin,
-    TgeProtocolPlugin, TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin,
-    WindowRunnerPlugin, ZoomPlugin,
+    TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
+    ZoomPlugin, protocol_from_env, protocol_plugin_id,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -130,7 +130,7 @@ fn the_group_lists_its_plugins_in_the_order_the_installs_ran() {
             ServerGamePlugin::ID,
             TerrainPlugin::ID,
             WaterPlugin::ID,
-            TgeProtocolPlugin::ID,
+            protocol_plugin_id(protocol_from_env()),
             NetHostPlugin::ID,
             HierarchyPlugin::ID,
             GuiPlugin::ID,
@@ -178,7 +178,7 @@ fn the_plugin_ids_are_the_stable_names() {
             "torque.server-game",
             "torque.terrain",
             "torque.water",
-            "torque.net.tge",
+            protocol_plugin_id(protocol_from_env()).as_str(),
             "torque.net-host",
             "torque.hierarchy",
             "torque.gui",
@@ -222,7 +222,13 @@ fn each_stage_replays_its_plugins_in_add_order() {
     let server = |stage| at(Stage::Server(stage));
     assert_eq!(server(ServerStage::Classes), ["torque.game-classes"]);
     assert_eq!(server(ServerStage::Prepare), ["torque.mods"]);
-    assert_eq!(server(ServerStage::Game), ["torque.server-game"]);
+    // The scene hierarchy is on in the engine's protocol only.
+    let game: &[&str] = if protocol_from_env() == ProtocolKind::Engine {
+        &["torque.server-game", "torque.hierarchy"]
+    } else {
+        &["torque.server-game"]
+    };
+    assert_eq!(server(ServerStage::Game), game);
     assert_eq!(
         server(ServerStage::World),
         ["torque.terrain", "torque.water"]

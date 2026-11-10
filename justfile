@@ -80,12 +80,22 @@ trace-hash *flags:
 # The suites that must pass in both network protocols: every example's tests, and the rope, mods and props plugins' suites
 net_matrix_packages := "-p torque-example-minimal -p torque-example-minimal-engine -p torque-example-character -p torque-example-level-demo -p torque-example-fps -p torque-example-vehicle-demo -p torque-example-mods-demo -p torque-plugin-rope -p torque-mods -p torque-plugin-props"
 
+# `just test` (the whole workspace, every feature) with the engine's own protocol: `TORQUE_NET_PROTOCOL` makes the plugin groups
+# turn on the engine's protocol, so a test that follows the protocol runs its engine half and one that pins Torque's protocol
+# (with `set_protocol`) keeps it. A test that fails here only is a stale expectation, a missing pin or a bug of the engine's protocol.
+# No package is left out: no test needs a window or a GPU (the examples' pictures are the `*-shots` recipes). `--no-fail-fast`
+# lists every failing test suite. Extra flags go to cargo test (`--release`)
+test-engine *flags:
+    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 --workspace --all-features --no-fail-fast {{flags}}
+
 # The network matrix: the examples' headless runs and the suites above, once with Torque's protocol and once with the engine's
 # (`TORQUE_NET_PROTOCOL` picks the protocol the plugin groups turn on; a game's `[net] protocol` and the tests that pin one
-# keep theirs); each run must end with 0 failures. Extra flags go to cargo test (`--release`)
+# keep theirs); each run must end with 0 failures. The engine's half also runs the whole workspace (`test-engine`), so a test
+# of any crate that does not follow the protocol shows here. Extra flags go to cargo test (`--release`)
 net-matrix *flags:
     $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
     $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    just test-engine {{flags}}
 
 # What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
 # at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails

@@ -291,6 +291,20 @@ impl PluginGroup for ProtocolPlugins {
     }
 }
 
+/// The plugin that sets the protocol `kind`: [`TgeProtocolPlugin`] or [`EngineProtocolPlugin`]. The one place that names which is
+/// which, for a test that must say what a group turns on.
+///
+/// # Panics
+///
+/// On a protocol this build of the engine has no plugin for (the enum is `non_exhaustive`).
+pub fn protocol_plugin_id(kind: ProtocolKind) -> torque_engine::PluginId {
+    match kind {
+        ProtocolKind::Tge => TgeProtocolPlugin::ID,
+        ProtocolKind::Engine => EngineProtocolPlugin::ID,
+        other => panic!("no protocol plugin for {}", other.label()),
+    }
+}
+
 /// Makes the engine `builder` speaks `kind`, whichever protocol plugin it had on: the other one is turned off. For a host or a
 /// test that must speak one protocol whatever [`PROTOCOL_ENV`] says.
 pub fn set_protocol(builder: &mut EngineBuilder, kind: ProtocolKind) -> &mut EngineBuilder {
