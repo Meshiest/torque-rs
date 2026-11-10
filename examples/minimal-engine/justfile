@@ -1,0 +1,16 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The minimal server on the engine (`Engine` of `DefaultPlugins` and a game plugin): the same game as min-server
+server *args:
+    cargo run -p torque-example-minimal-engine --bin min-engine-server -- {{args}}
+
+# The minimal client on the engine: connects to the server and prints the ghosts it is sent
+client *args:
+    cargo run -p torque-example-minimal-engine --bin min-engine-client -- {{args}}
+
+# The minimal client on the engine in a window (`--local` runs the server too)
+window *args:
+    cargo run -p torque-example-minimal-engine --features window --bin example-window-engine -- {{args}}

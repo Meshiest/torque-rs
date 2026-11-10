@@ -3,7 +3,7 @@
 //! rules are checked on the server: a mod that requires another loads after it, and a mod the prefs disable is never mounted.
 //!
 //! These tests need the Lua extension as a library, which they build with cargo (it compiles Luau's C++, so they need a C++
-//! compiler and are ignored by `cargo test`): `just examples/mods-demo-test` runs them. `TORQUE_LUA_LIBRARY` names a library
+//! compiler and are ignored by `cargo test`): `just examples mods-demo test` runs them. `TORQUE_LUA_LIBRARY` names a library
 //! built already.
 
 use std::path::{Path, PathBuf};

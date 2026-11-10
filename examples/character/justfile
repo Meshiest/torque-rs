@@ -1,0 +1,13 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The animated character example in a window (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone, Space jump, F pistol, mouse
+# or Q/E orbit, Esc quit)
+run:
+    cargo run -p torque-example-character --release
+
+# The character example's idle, walk and jump pictures, drawn offscreen into `dir`
+shots dir="../../target/character-shots":
+    cargo run -p torque-example-character --release -- --shots {{dir}}

@@ -8,7 +8,7 @@
 //! for it ([`valley::files`]).
 //!
 //! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
-//! start-up (a few kilobytes, a millisecond), or `just examples/assets <dir>` (the `make-example-assets` tool) writes them
+//! start-up (a few kilobytes, a millisecond), or `just examples assets write <dir>` (the `make-example-assets` tool) writes them
 //! once. The output is the same on every run, so nothing goes stale and no generated file sits in the history.
 //!
 //! Every shape is checked by the tests against torque-shapes' reader: the bytes parse back to the model that was written,

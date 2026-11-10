@@ -6,7 +6,7 @@ takes its scripts out again. You do not write any Rust to make one.
 
 For all of it at once, `examples/mods-demo` is a game mode written in Lua and shipped as a mod that its server requires: clients
 download its content, a second mod requires the first, a third is switched off by the prefs, and networked ropes show the round
-(see its README; `just examples/mods-demo` plays it headless).
+(see its README; `just examples mods-demo run` plays it headless).
 
 ## What a mod looks like
 

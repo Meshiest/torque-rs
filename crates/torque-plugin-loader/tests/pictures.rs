@@ -3,7 +3,7 @@
 //! where the passes draw. A pass that panics disables its extension and the frame is still drawn.
 //!
 //! `TORQUE_NATIVE_EXT_SHOTS=<folder>` (relative: the workspace's) also writes `compiled/sample.png` and `loaded/sample.png` there, for
-//! `just shots-diff <folder>/compiled <folder>/loaded` (`just native-ext-shots` does both).
+//! `just examples shots-diff <folder>/compiled <folder>/loaded` (`just examples native-extension shots` does both).
 
 // The panicking pass is linked in through its entry point.
 #![allow(unsafe_code)]
@@ -78,7 +78,7 @@ fn shot(gpu: &Gpu, engine: &Engine) -> Frame {
 
 fn save(frame: &Frame, side: &str) {
     if let Some(dir) = std::env::var_os("TORQUE_NATIVE_EXT_SHOTS").map(PathBuf::from) {
-        // A relative folder is the workspace's (`just native-ext-shots` passes one).
+        // A relative folder is the workspace's (`just examples native-extension shots` passes one).
         let dir = common::workspace().join(dir).join(side);
         std::fs::create_dir_all(&dir).unwrap();
         write_png(frame, &dir.join("sample.png")).unwrap();
@@ -130,7 +130,7 @@ fn compiled_in_and_loaded_draw_the_same_picture() {
     save(&compiled_frame, "compiled");
     save(&loaded_frame, "loaded");
 
-    // The shots' tolerance (`shots_tolerance` in the justfile): no pixel off by more than 1, at most 32 off at all.
+    // The shots' tolerance (`shots_tolerance` in `examples/justfile`): no pixel off by more than 1, at most 32 off at all.
     let (off, most) = differing(&compiled_frame, &loaded_frame, 0);
     assert!(
         most <= 1 && off <= 32,

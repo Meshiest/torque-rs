@@ -1,0 +1,33 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
+kit-shots dir="../../target/kit-shots":
+    cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
+
+# A clip of the kit's figure walking, running and walking backward (side and three-quarter views), drawn offscreen into
+# `dir` as an mp4 (needs ffmpeg) and a strip of frames
+walk-clip dir="../../target/walk-clip":
+    cargo run -p torque-example-common --release --example walk-clip -- {{dir}}
+
+# A first-person clip of the figure walking and running, before (TGE's eye node) and after the steady eye, drawn offscreen
+# into `dir` as an mp4 (needs ffmpeg)
+eye-clip dir="../../target/eye-clip":
+    cargo run -p torque-example-common --release --example eye-clip -- {{dir}}
+
+# A clip of the figure crouching, lying down, moving in each pose and reacting to hits from four sides and to the head, as
+# another player's client draws it (side and three-quarter views), drawn offscreen into `dir`
+poses-clip dir="../../target/poses-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}}
+
+# The kit's swimming pictures: a sheet of eight moments of each stroke and a clip of each (treading, the breaststroke, backward,
+# to the side, pointing), drawn offscreen into `dir` (the clips need ffmpeg)
+swim-clip dir="../../target/swim-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim
+
+# The blends out of the water onto land at a run and back in, from the side: a clip, one four times slower and a sheet of each
+# blend, drawn offscreen into `dir` (the clips need ffmpeg)
+swim-exit-clip dir="../../target/swim-exit-clip":
+    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim-exit

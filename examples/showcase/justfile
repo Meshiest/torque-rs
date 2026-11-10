@@ -1,0 +1,10 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The front page's pictures, each the world alone at the highest quality (the buggy in a turn, a shot in the arena, the valley,
+# the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
+# pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
+shots dir="../../target/showcase" *args:
+    cargo run -p torque-example-showcase --release --bin showcase -- {{dir}} {{args}}

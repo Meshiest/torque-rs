@@ -6,8 +6,8 @@ its clients; a client reads its ghosts into a world it draws. The `torque-exampl
 loopback address. It is meant to be read: each piece below is a few dozen lines there.
 
 ```
-just examples/min-server           # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
-just examples/min-client           # in another terminal: connects and prints the ghosts it is sent
+just examples minimal server       # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
+just examples minimal client       # in another terminal: connects and prints the ghosts it is sent
 ```
 
 ```

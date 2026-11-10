@@ -1,0 +1,108 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", module_directory() / ".." / ".." / "target")
+
+# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
+default:
+    @just --list
+
+# The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone,
+# Space jump, mouse look, Tab camera, R restart, Esc menu)
+run:
+    cargo run -p torque-example-level-demo --release
+
+# The level demo in a browser (WebGPU): built for the web, then served on http://127.0.0.1:{{port}}/ (`?map=office` starts a map
+# at once). The page shows each loading stage, fetches the files by their list (`files.json`) and keeps them in the browser's
+# cache; its gear opens the settings (the quality, Firefox starting at Low; the frame rate, also F8).
+# Needs rustup's wasm32-unknown-unknown target and Node; wasm-bindgen's command line is installed into the target folder's
+# web-tools the first time
+web port="8080":
+    node ../../web/build.mjs level-demo
+    node ../../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
+
+# The level demo in a browser with its files inside the module (no list, nothing fetched but the page and the module)
+web-embedded port="8080":
+    node ../../web/build.mjs level-demo --embed
+    node ../../web/serve.mjs "{{web_target}}/web/level-demo-embedded" {{port}}
+
+# The web level demo's check (build it first with `web`): headless Chrome with WebGPU loads the office, waits for the
+# figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
+# cache), loads it with a changed file (refused, with the message on the page), then loads the menu; fails on any console
+# error. Installs puppeteer-core into the target folder's web-tools the first time and uses the installed Chrome (`CHROME`
+# names another)
+web-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 cached "?map=office"
+    node ../../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-refused.png" 60 refused "?map=office"
+    node ../../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
+
+# The check of the build with its files inside it (`web-embedded`): the office walked, then the menu
+web-embedded-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-office.png" 90 world "?map=office"
+    node ../../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-menu.png" 60 menu
+
+# The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
+# offscreen into `dir`
+shots dir="../../target/level-demo-shots":
+    cargo run -p torque-example-level-demo --release -- --shots {{dir}}
+
+# The level demo with the rope plugin (the `rope` feature): the plaza's clothesline hung between its front pillars, from behind the figure,
+# from the front, thrown up and swinging, drawn offscreen into `dir`
+rope-shots dir="../../target/level-demo-rope-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-shots {{dir}}
+
+# The level demo's rope styles (the `rope` feature): a ribbon cable and glowing laser lines beside the clothesline, the figure with
+# a laser through and behind it and a ribbon across in front, the camera looking almost along a ribbon, and a thin laser from far
+# away, drawn offscreen into `dir`
+rope-style-shots dir="../../target/level-demo-rope-style-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
+
+# A correction the server forces on the plaza's figure (moved 1.2 units sideways), frame by frame, with TGE's predictor and with
+# the smoothed one (the `smooth-prediction` feature), from beside the figure and from the game's camera, drawn offscreen into
+# `dir` (`correction-strip.png` has the four sequences in rows)
+correction-shots dir="../../target/level-demo-correction-shots":
+    cargo run -p torque-example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
+
+# The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
+# into `dir`
+valley-shots dir="../../target/level-demo-valley-shots":
+    cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
+
+# The figure swimming in the valley's lake (mid-stroke from beside it, from the camera behind it, and treading water), drawn
+# offscreen into `dir`
+swim-shots dir="../../target/level-demo-swim-shots":
+    cargo run -p torque-example-level-demo --release -- --swim-shots {{dir}}
+
+# The figure in the valley from behind and from its eyes, looking down, level and up (`Tab` keeps where the view looks), drawn
+# offscreen into `dir`
+switch-shots dir="../../target/level-demo-switch-shots":
+    cargo run -p torque-example-level-demo --release -- --switch-shots {{dir}}
+
+# The level demo's prop catalog, headless: the office's server requires the catalog mod of its clients, two clients download it, allow its
+# menu and spawn props from it. Builds the realm guest first (`just lua-client-web`: the WASI SDK, named by WASI_SDK_PATH);
+# TORQUE_CLIENT_GUEST names a built one instead
+catalog:
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog
+
+# The catalog's pictures (the consent prompt, the catalog, a label typed and the recent list, a chair in the office, a refusal), drawn
+# offscreen into `dir`
+catalog-shots dir="../../target/level-catalog-shots":
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
+
+# The catalog's end-to-end tests (level-demo's tests/catalog.rs), with the guest `lua-client-web` builds
+catalog-test:
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog -- --include-ignored
+
+# The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
+# offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)
+catalog-icons dir="catalog/icons":
+    cargo run -p torque-example-level-demo --release --example catalog-icons -- {{dir}}

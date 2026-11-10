@@ -1,0 +1,12 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The minimal dedicated server: the bundled game on 127.0.0.1:28000 (`--ticks N` stops it after N ticks)
+server *args:
+    cargo run -p torque-example-minimal --bin min-server -- {{args}}
+
+# The minimal client: connects to the minimal server and prints the ghosts it is sent
+client *args:
+    cargo run -p torque-example-minimal --bin min-client -- {{args}}

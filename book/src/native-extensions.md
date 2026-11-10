@@ -194,7 +194,7 @@ impl Extension for Sample {
 torque_plugin_sdk::export!(Sample);
 ```
 
-Build it with `cargo build --release` (or `just native-ext-sample` for the repository's sample), and copy the library
+Build it with `cargo build --release` (or `just examples native-extension build` for the repository's sample), and copy the library
 and its manifest into the game's `plugins/` folder.
 
 What an extension can declare:
@@ -252,8 +252,8 @@ The [Lua](lua.md) extension is built on this.
 
 An extension's functions have the same names, argument counts and usage texts as the same functions in a compiled
 plugin, so a game can move a plugin between the two forms without its scripts noticing. The loader's tests check this
-on the sample: its natives listing is the compiled twin's line for line, and its picture is the compiled twin's (`just
-native-ext-shots` draws both and compares them with `shots-diff`). A compiled plugin draws the same triangles with
+on the sample: its natives listing is the compiled twin's line for line, and its picture is the compiled twin's (`just examples
+native-extension shots` draws both and compares them with `shots-diff`). A compiled plugin draws the same triangles with
 `torque::extensions::render::TrianglesPass`.
 
 ## Writing an extension in C

@@ -6,9 +6,9 @@ transport, the handshake, the ghost manager, the client's ghost world), this one
 game plugin for the server, the client and the window.
 
 ```text
-just examples/min-engine-server                       # a dedicated server on 127.0.0.1:28000 (--port, --ticks N via cargo run)
-just examples/min-engine-client                       # connects, prints the ghosts it is sent
-just examples/min-engine-window                       # the client in a window; with --local it runs the server too
+just examples minimal-engine server                       # a dedicated server on 127.0.0.1:28000 (--port, --ticks N via cargo run)
+just examples minimal-engine client                       # connects, prints the ghosts it is sent
+just examples minimal-engine window                       # the client in a window; with --local it runs the server too
 ```
 
 ## How much code

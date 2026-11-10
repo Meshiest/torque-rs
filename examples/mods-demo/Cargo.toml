@@ -12,7 +12,7 @@ categories = ["game-development"]
 
 # A server whose game mode is a mod (`game/mods/orbs`: TorqueScript for the datablocks, Lua for the rules) and two clients that
 # download the mod's content when they join. The Lua extension is built apart (`just lua`) and loaded from a `plugins/` folder,
-# as a game loads it; this crate never links it. Run it with `just examples/mods-demo`.
+# as a game loads it; this crate never links it. Run it with `just examples mods-demo run`.
 
 [dependencies]
 torque = { path = "../../crates/torque", default-features = false, features = ["app-core", "renderer", "mods", "native-extensions"] }

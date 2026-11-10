@@ -1,0 +1,121 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", module_directory() / ".." / ".." / "target")
+
+# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
+default:
+    @just --list
+
+# The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
+# `--name`, `--map`, `--ticks N` (stop after N ticks)
+server *args:
+    cargo run -p torque-example-fps --release --bin fps-server -- {{args}}
+
+# The arena shooter's server open to the internet: listens on every interface (0.0.0.0) on UDP 28000 (`--port` changes it), prints
+# this computer's LAN address(es), and players outside the network need that port forwarded to this computer and the firewall to
+# allow it. It registers with no master server: give players your public address.
+server-public *args:
+    cargo run -p torque-example-fps --release --bin fps-server -- --bind 0.0.0.0 --port 28000 {{args}}
+
+# The arena shooter's client in a window: Host (a server in this process, joined at once: LAN only or public) / Join (the LAN list,
+# or an address typed in) / Quit; W A S D move, mouse look, click shoot, R reload, Tab camera, T chat, Esc pause menu. `--bind <LAN address>`
+# picks the LAN game's address, `--name <name>`
+client *args:
+    cargo run -p torque-example-fps --release --bin fps-client -- {{args}}
+
+# The arena shooter's headless check: a host and a second client over 127.0.0.1 meet through the LAN list, one shoots the
+# other (a round spent, a hit), and a chat line reaches the other client
+check:
+    cargo test -p torque-example-fps --test arena
+
+# The arena shooter's review pictures (menu, LAN list, first-person view, another player, a bolt), drawn offscreen into `dir`
+shots dir="../../target/fps-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --shots {{dir}}
+
+# The arena's menus (main, host choice, join) at 1280x720, 1920x1080 and 2560x1080, drawn offscreen into `dir`
+menu-shots dir="../../target/fps-menu-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --menu-shots {{dir}}
+
+# The other player's name over his head in the arena, at 1280x720 and at 640x360 (a browser's half-scale canvas), drawn
+# offscreen into `dir`
+name-shots dir="../../target/fps-name-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --name-shots {{dir}}
+
+# The arena's motion pictures (side steps, the walk backward, the look, the falls, a shot's kick and flash, the reload HUD, the
+# pause menu), drawn offscreen into `dir`
+motion-shots dir="../../target/fps-motion-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --motion-shots {{dir}}
+
+# The arena's polish pictures (a bolt's flight frame by frame into open space and at a wall, the bolts' holes, a hit seen by
+# both players, aiming down the sights), drawn offscreen into `dir`
+polish-shots dir="../../target/fps-polish-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --polish-shots {{dir}}
+
+# The arena's second polish pictures (a shot's flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a
+# wall's middle and edge and in the floor, the sights aimed), drawn offscreen into `dir`
+polish2-shots dir="../../target/fps-polish2-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --polish2-shots {{dir}}
+
+# The arena's hitbox pictures: the other figure's hitboxes, as the server poses them, drawn as lines over it standing, running,
+# stepping aside, looking up and down, jumping, aiming down the sights and falling, offscreen into `dir`
+hitbox-shots dir="../../target/fps-hitbox-shots":
+    cargo run -p torque-example-fps --release --bin fps-client -- --hitbox-shots {{dir}}
+
+# The arena for browsers and desktops in one game: its browser build (join-only), then its dedicated server on UDP and the web
+# on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop `fps-client` joins
+# 127.0.0.1:{{port}}. More of fps-server's switches go after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--map`)
+web port="28000" *args:
+    node ../../web/build.mjs fps
+    cargo run -p torque-example-fps --release --bin fps-server -- --transport both --port {{port}} {{args}}
+
+# The arena's cross-play check (build it first with `web` or `node web/build.mjs fps`): fps-server on UDP and the web, a
+# desktop player with no window joined over UDP, and headless Chrome joining from the server's page; both must hold the other's
+# figure, the browser's walks, and no console error. Pictures into the target folder's `web`
+web-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-join.png" 120
+
+# The arena's data-channel checks (build it first as for `web-check`): the browser joins on a WebRTC data channel
+# beside its game socket (`fps-server --webrtc`); then with 10% of the channel's datagrams dropped both ways, its game
+# messages keep arriving with no stall; then with UDP blocked in the browser it plays over the game socket
+web-rtc-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc.png" 120 rtc
+    node ../../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
+    node ../../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-blocked.png" 120 rtc-blocked
+
+# A room service for player-hosted games on 127.0.0.1:{{port}}, serving the arena's browser build: a desktop host opens
+# a room with `fps-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at
+# http://127.0.0.1:{{port}}/?room=<code> (or host at http://127.0.0.1:{{port}}/?host=1). More switches after the port number
+# (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
+web-rooms port="28100" *args:
+    node ../../web/build.mjs fps
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/fps" {{args}}
+
+# The arena hosted by a player (build it first as for `web-check`): a room service serving the page, then
+# `fps-server --room` with headless Chrome joining by the room's code on a data channel (it walks, then sees the host
+# leave), then a host page whose server runs in a Web Worker with a second page joining it the same way
+web-p2p-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
+    node ../../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
+
+# The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): the
+# page waits at its menu and its canvas follows the page's size; a host page makes the link, a second browser opens it and
+# makes a reply code, the host pastes the reply code, the data channel opens on this computer's own addresses (no STUN
+# server is contacted), the joiner walks, bad codes are refused, a refused join takes a new link pasted in, its Back to the
+# menu shows the game's menu, a failed invite is dismissed, and the joiner leaves back to its own menu, with no page ever
+# loaded again. Then the same with both pages in one browser, an invite on the default server (Cloudflare, not contacted:
+# the pages get no STUN server) and the reply pasted 20 s later. Pictures of the panels into the target folder's
+# `web/invites` and `web/invites-same`
+web-invite-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
+    node ../../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites-same" 120 same

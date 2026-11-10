@@ -1,0 +1,13 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The sample native extension, built on its own as a library
+build:
+    cargo build
+
+# The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
+shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
+    cargo test --manifest-path ../../Cargo.toml -p torque-plugin-loader --features render --test pictures
+    just --justfile ../justfile --working-directory ../.. shots-diff "{{TORQUE_NATIVE_EXT_SHOTS}}/compiled" "{{TORQUE_NATIVE_EXT_SHOTS}}/loaded"

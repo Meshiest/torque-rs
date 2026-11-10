@@ -196,7 +196,7 @@ The justfile's `client-script-check` is the whole suite, and its output is the e
 
 ## An example: the office's prop catalog
 
-`examples/level-demo` has one (`just examples/level-catalog` plays it headless; `src/catalog.rs` and the mod's folder `catalog/` are the
+`examples/level-demo` has one (`just examples level-demo catalog` plays it headless; `src/catalog.rs` and the mod's folder `catalog/` are the
 files). Its server serves the office with a mod, `catalog`, that it requires of its clients; the mod is a menu of the office's
 furniture and desk items, each with a picture and a Spawn button, and a Spawn puts a prop down in front of the player.
 
@@ -249,7 +249,7 @@ it when the player answers.
 characters and uses it only if it has letters, numbers, spaces, `-`, `_` and `.`; else the list says "Player".
 
 The example's tests (`level-demo`'s `tests/catalog.rs`) play the menu through the GUI's own input; they need the guest and are run with
-`--include-ignored` (`just examples/level-catalog-test`).
+`--include-ignored` (`just examples level-demo catalog-test`).
 
 ## What servers cannot do
 

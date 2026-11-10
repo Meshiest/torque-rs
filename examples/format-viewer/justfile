@@ -1,0 +1,9 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The format viewer's command (`list`, `cat`, `sheet`, `model`, `map`, `phy`, `effect`, `sound`, `logic`; see its crate docs),
+# with `TORQUE_SOURCE_GAME_DIR` naming the game folders to read
+run *args:
+    cargo run -p torque-example-format-viewer --release -- {{args}}

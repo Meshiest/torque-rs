@@ -10,7 +10,7 @@
 // `createCDPSession`, `createRequire`, or a `require` or `import` of a name that is not a plain string; `child_process` is
 // allowed only in the scripts listed in `SPAWNERS` (they start cargo, the servers and the checks, never a browser).
 // `web/guard.mjs` itself must still install the pointer-lock block.
-// Usage: node guard-scan.mjs [root]      (run by `just examples/web-guard` and CI)
+// Usage: node guard-scan.mjs [root]      (run by `just web-guard` and CI)
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

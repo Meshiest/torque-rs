@@ -108,7 +108,7 @@ fn ghosts(c: &Catalog) -> [usize; 2] {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn joining_asks_the_player_and_both_clients_download_the_mod_with_its_pictures() {
     let mut c = started("join");
     // Both are asked, and have the mod's files already: downloaded before the prompt, read by nothing until Allow.
@@ -166,7 +166,7 @@ fn super_press(c: &mut Catalog, n: usize) {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn one_client_spawns_a_chair_and_both_see_the_new_prop() {
     let mut c = started("chair");
     both_allow(&mut c);
@@ -193,7 +193,7 @@ fn one_client_spawns_a_chair_and_both_see_the_new_prop() {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn a_valid_label_shows_in_both_recent_lists_and_stays_on_the_prop() {
     let mut c = started("label");
     both_allow(&mut c);
@@ -236,7 +236,7 @@ fn a_valid_label_shows_in_both_recent_lists_and_stays_on_the_prop() {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn a_bad_label_an_unknown_kind_and_a_blocked_place_are_refused_with_their_reasons_and_nothing_spawns()
  {
     let mut c = started("refused");
@@ -287,7 +287,7 @@ fn a_bad_label_an_unknown_kind_and_a_blocked_place_are_refused_with_their_reason
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn the_cap_and_the_rate_limit_refuse_with_their_reasons() {
     let mut c = started("limits");
     both_allow(&mut c);
@@ -337,7 +337,7 @@ fn the_cap_and_the_rate_limit_refuse_with_their_reasons() {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn a_client_that_never_clicks_allow_gets_no_menu_and_cannot_spawn() {
     let mut c = started("silent");
     // Ann allows; Bob's player leaves the prompt alone.
@@ -385,7 +385,7 @@ fn a_client_that_never_clicks_allow_gets_no_menu_and_cannot_spawn() {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn escape_closes_the_menu_q_opens_it_and_shift_escape_ends_the_realm() {
     use torque::client::input::Key;
     let mut c = started("keys");
@@ -438,7 +438,7 @@ fn escape_closes_the_menu_q_opens_it_and_shift_escape_ends_the_realm() {
 }
 
 #[test]
-#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (the level-catalog-test recipe does)"]
+#[ignore = "needs the realm guest: `just lua-client-web`, then run with --include-ignored (`just examples level-demo catalog-test` does)"]
 fn hostile_messages_are_refused_or_taken_as_what_they_are_and_the_server_goes_on() {
     let mut c = started("hostile");
     both_allow(&mut c);

@@ -126,7 +126,7 @@ A client made from an engine of `DefaultPlugins` and the plugin takes the script
 ```
 
 In a game the plugin is added beside the default plugins the same way (`add_plugins((DefaultPlugins, RopePlugin))`), and the game's scripts call `ropeCreate` wherever a rope should hang. The level demo does it behind its `rope` feature (`just
-examples/level-demo-rope-shots` draws the plaza with a rope across it).
+examples level-demo rope-shots` draws the plaza with a rope across it).
 
 ## Step 7: test it
 

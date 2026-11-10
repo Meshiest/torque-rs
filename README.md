@@ -60,8 +60,8 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-app-server` | the server half of `torque-app`: its files, a server, the terrain and water blocks, the dedicated runner and `MinimalPlugins`; no drawing, GUI, audio or window crates (CI checks its dependency tree) |
 | `torque-app` | what a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures (needs a GPU) |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
-| `torque-example-minimal` (`examples/minimal`) | a dedicated server and a client over the loopback address, wired by hand on the lower crates (`just examples/min-server`, `just examples/min-client`) |
-| `torque-example-assets` (`examples/assets`) | the example games' asset kit: a cube, a box figure, a pistol, a buggy, terrains, trees, interiors and their textures, made from code (`just examples/assets`) |
+| `torque-example-minimal` (`examples/minimal`) | a dedicated server and a client over the loopback address, wired by hand on the lower crates (`just examples minimal server`, `just examples minimal client`) |
+| `torque-example-assets` (`examples/assets`) | the example games' asset kit: a cube, a box figure, a pistol, a buggy, terrains, trees, interiors and their textures, made from code (`just examples assets write`) |
 | `torque-example-common` (`examples/common`) | what the example games share beyond `torque::app`: the kit as files, the shared scripts, the prediction over the kit's cubes and interiors |
 | `torque-example-character` (`examples/character`) | an animated box figure in a window, with an orbit camera |
 | `torque-example-level-demo` (`examples/level-demo`) | a singleplayer world: a menu of maps (cubes, a Blockbench office, the valley), native and in the browser |
@@ -112,11 +112,11 @@ and in the browser. In short:
 
 | Example | Native | Web |
 |---|---|---|
-| The level demo (plaza, maze, ramps, towers, office, valley) | `just examples/level-demo` | `just examples/web-level-demo` (`?map=valley`) |
-| The arena shooter | `just examples/fps-client` | `just examples/web-fps` |
-| The vehicle demo | `just examples/vehicle-demo` | `just examples/web-vehicle-demo` |
-| The character | `just examples/character` | |
-| The minimal server and client | `just examples/min-server`, `just examples/min-client` | |
+| The level demo (plaza, maze, ramps, towers, office, valley) | `just examples level-demo run` | `just examples level-demo web` (`?map=valley`) |
+| The arena shooter | `just examples fps client` | `just examples fps web` |
+| The vehicle demo | `just examples vehicle-demo run` | `just examples vehicle-demo web` |
+| The character | `just examples character run` | |
+| The minimal server and client | `just examples minimal server`, `just examples minimal client` | |
 
 ## Building
 

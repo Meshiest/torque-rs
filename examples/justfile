@@ -1,13 +1,23 @@
 set windows-shell := ["powershell", "-NoProfile", "-Command"]
 
-# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
-web_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / ".." / "target")
+# One justfile per example, run as `just examples <example> <recipe>` from the repository root (or `just <recipe>` inside the
+# example's folder). The recipes here run across several examples.
 
-# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
-export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+mod assets
+mod character
+mod common
+mod format-viewer
+mod fps
+mod level-demo
+mod minimal
+mod minimal-engine
+mod mods-demo
+mod native-extension
+mod showcase
+mod vehicle-demo
 
 default:
-    @just --list
+    @just --list --list-submodules
 
 # The headless examples: the umbrella crate's examples and a short run of the minimal server
 headless:
@@ -16,272 +26,6 @@ headless:
     cargo run -p torque --example collide
     cargo run -p torque --example net
     cargo run -p torque-example-minimal --bin min-server -- --port 0 --ticks 64
-
-# The minimal dedicated server: the bundled game on 127.0.0.1:28000 (`--ticks N` stops it after N ticks)
-min-server *args:
-    cargo run -p torque-example-minimal --bin min-server -- {{args}}
-
-# The minimal client: connects to the minimal server and prints the ghosts it is sent
-min-client *args:
-    cargo run -p torque-example-minimal --bin min-client -- {{args}}
-
-# The minimal server on the engine (`Engine` of `DefaultPlugins` and a game plugin): the same game as min-server
-min-engine-server *args:
-    cargo run -p torque-example-minimal-engine --bin min-engine-server -- {{args}}
-
-# The minimal client on the engine: connects to the server and prints the ghosts it is sent
-min-engine-client *args:
-    cargo run -p torque-example-minimal-engine --bin min-engine-client -- {{args}}
-
-# The minimal client on the engine in a window (`--local` runs the server too)
-min-engine-window *args:
-    cargo run -p torque-example-minimal-engine --features window --bin example-window-engine -- {{args}}
-
-# The example games' asset kit (shapes and textures made from code), written into `dir`
-assets dir="../target/example-assets":
-    cargo run -p torque-example-assets -- {{dir}}
-
-# The animated character example in a window (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone, Space jump, F pistol, mouse
-# or Q/E orbit, Esc quit)
-character:
-    cargo run -p torque-example-character --release
-
-# The character example's idle, walk and jump pictures, drawn offscreen into `dir`
-character-shots dir="../target/character-shots":
-    cargo run -p torque-example-character --release -- --shots {{dir}}
-
-# The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone,
-# Space jump, mouse look, Tab camera, R restart, Esc menu)
-level-demo:
-    cargo run -p torque-example-level-demo --release
-
-# The level demo in a browser (WebGPU): built for the web, then served on http://127.0.0.1:{{port}}/ (`?map=office` starts a map
-# at once). The page shows each loading stage, fetches the files by their list (`files.json`) and keeps them in the browser's
-# cache; its gear opens the settings (the quality, Firefox starting at Low; the frame rate, also F8).
-# Needs rustup's wasm32-unknown-unknown target and Node; wasm-bindgen's command line is installed into the target folder's
-# web-tools the first time
-web-level-demo port="8080":
-    node ../web/build.mjs level-demo
-    node ../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
-
-# The level demo in a browser with its files inside the module (no list, nothing fetched but the page and the module)
-web-level-demo-embedded port="8080":
-    node ../web/build.mjs level-demo --embed
-    node ../web/serve.mjs "{{web_target}}/web/level-demo-embedded" {{port}}
-
-# The web pages' loading display, settings, script bridge, browser host and connection codes, tested in Node (no browser)
-web-unit:
-    node --test ../web/loading.test.mjs ../web/settings.test.mjs ../web/bridge.test.mjs ../web/host.test.mjs ../web/files.test.mjs ../web/codes.test.mjs ../web/invites.test.mjs
-
-# Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
-# cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
-web-guard:
-    node ../web/guard-scan.mjs
-
-# `web-guard`, then the guard's test: a page that asks for the pointer lock on click never gets it. Every check recipe runs it
-# first
-web-guard-test: web-guard
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/guard.test.mjs
-
-# The size of each web example's module (`game_bg.wasm` of the level demo, the arena and the vehicle demo, built with their files
-# fetched): `just web-size --out /somewhere/outside/the/repo/sizes.json` writes the sizes (the recipe runs in `examples/`, so
-# give an absolute path), `just web-size --compare /somewhere/outside/the/repo/sizes.json` gives each one's change in percent
-# against that file, and `--limit 1` also fails on more than 1% or on a module the file lacks
-web-size *args:
-    node ../web/size.mjs {{args}}
-
-# The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
-# figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
-# cache), loads it with a changed file (refused, with the message on the page), then loads the menu; fails on any console
-# error. Installs puppeteer-core into the target folder's web-tools the first time and uses the installed Chrome (`CHROME`
-# names another)
-web-level-demo-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-office.png" 90 cached "?map=office"
-    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-refused.png" 60 refused "?map=office"
-    node ../web/check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/level-demo-menu.png" 60 menu
-
-# The check of the build with its files inside it (`web-level-demo-embedded`): the office walked, then the menu
-web-level-demo-embedded-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-office.png" 90 world "?map=office"
-    node ../web/check.mjs "{{web_target}}/web/level-demo-embedded" "{{web_target}}/web/level-demo-embedded-menu.png" 60 menu
-
-# The vehicle demo in a browser (WebGPU), played alone: built for the web, then served on http://127.0.0.1:{{port}}/; its files
-# fetched by their list, the loading stages and the settings as the level demo's
-web-vehicle-demo port="8080":
-    node ../web/build.mjs vehicle-demo
-    node ../web/serve.mjs "{{web_target}}/web/vehicle-demo" {{port}}
-
-# The web vehicle demo's check (build it first with `web-vehicle-demo`): headless Chrome from the cursor guard (`web/guard.mjs`,
-# its pages never take the pointer lock) loads it, waits for the figure on the hills, walks it with W and takes pictures;
-# fails on any console error
-web-vehicle-demo-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-demo-hills.png" 120 world
-
-# The vehicle demo for browsers and desktops in one game: its browser build, then its dedicated server on UDP and the web on
-# 127.0.0.1:{{port}} with WebRTC data channels, serving that build; a browser joins at http://127.0.0.1:{{port}}/?join (the
-# page alone plays alone) and a desktop `vehicle-demo` joins 127.0.0.1:{{port}}. More of vehicle-demo-server's switches go
-# after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--rtc-public-ip`)
-web-vehicle-demo-server port="28000" *args:
-    node ../web/build.mjs vehicle-demo
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo-server -- --transport both --webrtc --port {{port}} {{args}}
-
-# A room service for player-hosted drives on 127.0.0.1:{{port}}, serving the vehicle demo's browser build: a browser hosts from
-# the page's menu or at http://127.0.0.1:{{port}}/?host=1 (its server in a Web Worker, the room's code on the page), others
-# join by the code from the menu or at http://127.0.0.1:{{port}}/?room=<code> (the page never loads again), and
-# `vehicle-demo-server --room ws://127.0.0.1:{{port}}` hosts from a desktop. More
-# switches after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
-web-vehicle-demo-rooms port="28100" *args:
-    node ../web/build.mjs vehicle-demo
-    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/vehicle-demo" {{args}}
-
-# The vehicle demo's two-player checks (build it first with `web-vehicle-demo`): two headless pages join vehicle-demo-server at
-# the page it serves, on data channels; then by a room's code, the server hosting the room; then the second page joins a host
-# page whose server runs in a Web Worker. Each time one drives while the other watches, the other rides as the passenger and
-# then walks, with no console error, and the second page says so when the host goes. With a room service the pages host and
-# join from their menus in place: no page loads again, each address says what it plays, and once the host leaves (from its
-# Esc menu, in the last) each page is back at its own menu and plays alone again. Pictures into the target folder's `web`
-web-vehicle-demo-mp-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-served.png" 120 served vehicle-demo
-    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-desktop.png" 120 desktop vehicle-demo
-    node ../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-browser.png" 120 browser vehicle-demo
-
-# The arena for browsers and desktops in one game: its browser build (join-only), then its dedicated server on UDP and the web
-# on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop `fps-client` joins
-# 127.0.0.1:{{port}}. More of fps-server's switches go after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--map`)
-web-fps port="28000" *args:
-    node ../web/build.mjs fps
-    cargo run -p torque-example-fps --release --bin fps-server -- --transport both --port {{port}} {{args}}
-
-# The arena's cross-play check (build it first with `web-fps` or `node web/build.mjs fps`): fps-server on UDP and the web, a
-# desktop player with no window joined over UDP, and headless Chrome joining from the server's page; both must hold the other's
-# figure, the browser's walks, and no console error. Pictures into the target folder's `web`
-web-fps-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-join.png" 120
-
-# The arena's data-channel checks (build it first as for `web-fps-check`): the browser joins on a WebRTC data channel
-# beside its game socket (`fps-server --webrtc`); then with 10% of the channel's datagrams dropped both ways, its game
-# messages keep arriving with no stall; then with UDP blocked in the browser it plays over the game socket
-web-fps-rtc-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc.png" 120 rtc
-    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-loss.png" 120 rtc-loss
-    node ../web/fps-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-rtc-blocked.png" 120 rtc-blocked
-
-# A room service for player-hosted games on 127.0.0.1:{{port}}, serving the arena's browser build: a desktop host opens
-# a room with `fps-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at
-# http://127.0.0.1:{{port}}/?room=<code> (or host at http://127.0.0.1:{{port}}/?host=1). More switches after the port number
-# (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
-web-fps-rooms port="28100" *args:
-    node ../web/build.mjs fps
-    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/fps" {{args}}
-
-# The arena hosted by a player (build it first as for `web-fps-check`): a room service serving the page, then
-# `fps-server --room` with headless Chrome joining by the room's code on a data channel (it walks, then sees the host
-# leave), then a host page whose server runs in a Web Worker with a second page joining it the same way
-web-fps-p2p-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-desktop.png" 120 desktop
-    node ../web/p2p-check.mjs "{{web_target}}/web/fps" "{{web_target}}/web/fps-p2p-browser.png" 120 browser
-
-# The arena joined by an invite link on its page played alone (build it first with `node web/build.mjs fps --solo`): the
-# page waits at its menu and its canvas follows the page's size; a host page makes the link, a second browser opens it and
-# makes a reply code, the host pastes the reply code, the data channel opens on this computer's own addresses (no STUN
-# server is contacted), the joiner walks, bad codes are refused, a refused join takes a new link pasted in, its Back to the
-# menu shows the game's menu, a failed invite is dismissed, and the joiner leaves back to its own menu, with no page ever
-# loaded again. Then the same with both pages in one browser, an invite on the default server (Cloudflare, not contacted:
-# the pages get no STUN server) and the reply pasted 20 s later. Pictures of the panels into the target folder's
-# `web/invites` and `web/invites-same`
-web-fps-invite-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites" 120
-    node ../web/invite-check.mjs "{{web_target}}/web/fps-solo" "{{web_target}}/web/invites-same" 120 same
-
-# The invite links' connection alone, with no game and no build, in headless Chrome and headless Firefox (Firefox's
-# defaults, mDNS names included; installed where `web/guard.mjs` looks, or `FIREFOX` names it): a small page runs
-# `web/invites.js`, the joiner presses Connect, the reply code is pasted 30 s later (a joiner's browser gives up on a host
-# it cannot reach yet after a few seconds; a Firefox host's addresses answer only once it has the reply), and a message
-# must go each way. One browser with two tabs, two browsers, and each browser hosting the other; then a Firefox invite
-# whose candidates are all refused fails, and its connection details are printed and checked. No STUN server is
-# contacted. Runs the guard's test in Firefox first
-web-invite-link-check: web-guard-test
-    node ../web/guard.test.mjs firefox
-    node ../web/invite-link-check.mjs chrome same 30
-    node ../web/invite-link-check.mjs firefox same 30
-    node ../web/invite-link-check.mjs firefox two 30
-    node ../web/invite-link-check.mjs chrome,firefox two 30
-    node ../web/invite-link-check.mjs firefox,chrome two 30
-    node ../web/invite-link-check.mjs firefox fail 0
-
-# The vehicle demo joined by an invite link, as `web-fps-invite-check` (build it first with `node web/build.mjs vehicle-demo
-# --solo`): its Host with a link starts its server in the worker on the same page. Pictures into the target folder's
-# `web/vehicle-invites`
-web-vehicle-demo-invite-check: web-guard-test
-    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-    node ../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites" 120
-    node ../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites-same" 120 same
-
-# The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
-# offscreen into `dir`
-level-demo-shots dir="../target/level-demo-shots":
-    cargo run -p torque-example-level-demo --release -- --shots {{dir}}
-
-# The level demo with the rope plugin (the `rope` feature): the plaza's clothesline hung between its front pillars, from behind the figure,
-# from the front, thrown up and swinging, drawn offscreen into `dir`
-level-demo-rope-shots dir="../target/level-demo-rope-shots":
-    cargo run -p torque-example-level-demo --release --features rope -- --rope-shots {{dir}}
-
-# The level demo's rope styles (the `rope` feature): a ribbon cable and glowing laser lines beside the clothesline, the figure with
-# a laser through and behind it and a ribbon across in front, the camera looking almost along a ribbon, and a thin laser from far
-# away, drawn offscreen into `dir`
-level-demo-rope-style-shots dir="../target/level-demo-rope-style-shots":
-    cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
-
-# A correction the server forces on the plaza's figure (moved 1.2 units sideways), frame by frame, with TGE's predictor and with
-# the smoothed one (the `smooth-prediction` feature), from beside the figure and from the game's camera, drawn offscreen into
-# `dir` (`correction-strip.png` has the four sequences in rows)
-level-demo-correction-shots dir="../target/level-demo-correction-shots":
-    cargo run -p torque-example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
-
-# The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
-# into `dir`
-level-demo-valley-shots dir="../target/level-demo-valley-shots":
-    cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
-
-# The figure swimming in the valley's lake (mid-stroke from beside it, from the camera behind it, and treading water), drawn
-# offscreen into `dir`
-level-demo-swim-shots dir="../target/level-demo-swim-shots":
-    cargo run -p torque-example-level-demo --release -- --swim-shots {{dir}}
-
-# The figure in the valley from behind and from its eyes, looking down, level and up (`Tab` keeps where the view looks), drawn
-# offscreen into `dir`
-level-demo-switch-shots dir="../target/level-demo-switch-shots":
-    cargo run -p torque-example-level-demo --release -- --switch-shots {{dir}}
-
-# The front page's pictures, each the world alone at the highest quality (the buggy in a turn, a shot in the arena, the valley,
-# the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
-# pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
-showcase dir="../target/showcase" *args:
-    cargo run -p torque-example-showcase --release --bin showcase -- {{dir}} {{args}}
-
-# Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
-kit-shots dir="../target/kit-shots":
-    cargo run -p torque-example-common --release --example kit-shots -- {{dir}}
-
-# A clip of the kit's figure walking, running and walking backward (side and three-quarter views), drawn offscreen into
-# `dir` as an mp4 (needs ffmpeg) and a strip of frames
-walk-clip dir="../target/walk-clip":
-    cargo run -p torque-example-common --release --example walk-clip -- {{dir}}
-
-# A first-person clip of the figure walking and running, before (TGE's eye node) and after the steady eye, drawn offscreen
-# into `dir` as an mp4 (needs ffmpeg)
-eye-clip dir="../target/eye-clip":
-    cargo run -p torque-example-common --release --example eye-clip -- {{dir}}
 
 # The camera's motion frame by frame, as CSV into `dir`: Tab in and out standing, walking, running, mid-turn and pressed again
 # mid-way, the camera behind the figure past walls and glass (level demo, arena), and Tab while driving (vehicle demo), each at
@@ -292,97 +36,6 @@ camera-log dir="../target/camera-log" *args:
     cargo run -p torque-example-fps --release --example arena-camera -- {{dir}}/arena {{args}}
     cargo run -p torque-example-vehicle-demo --release --example vehicle-camera -- {{dir}}/vehicle {{args}}
 
-# A clip of the figure crouching, lying down, moving in each pose and reacting to hits from four sides and to the head, as
-# another player's client draws it (side and three-quarter views), drawn offscreen into `dir`
-poses-clip dir="../target/poses-clip":
-    cargo run -p torque-example-common --release --example poses-clip -- {{dir}}
-
-# The kit's swimming pictures: a sheet of eight moments of each stroke and a clip of each (treading, the breaststroke, backward,
-# to the side, pointing), drawn offscreen into `dir` (the clips need ffmpeg)
-swim-clip dir="../target/swim-clip":
-    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim
-
-# The blends out of the water onto land at a run and back in, from the side: a clip, one four times slower and a sheet of each
-# blend, drawn offscreen into `dir` (the clips need ffmpeg)
-swim-exit-clip dir="../target/swim-exit-clip":
-    cargo run -p torque-example-common --release --example poses-clip -- {{dir}} swim-exit
-
-# The arena shooter's dedicated server (console only): `--bind <your LAN address>` lets others on the network join; `--port`,
-# `--name`, `--map`, `--ticks N` (stop after N ticks)
-fps-server *args:
-    cargo run -p torque-example-fps --release --bin fps-server -- {{args}}
-
-# The arena shooter's server open to the internet: listens on every interface (0.0.0.0) on UDP 28000 (`--port` changes it), prints
-# this computer's LAN address(es), and players outside the network need that port forwarded to this computer and the firewall to
-# allow it. It registers with no master server: give players your public address.
-fps-server-public *args:
-    cargo run -p torque-example-fps --release --bin fps-server -- --bind 0.0.0.0 --port 28000 {{args}}
-
-# The arena shooter's client in a window: Host (a server in this process, joined at once: LAN only or public) / Join (the LAN list,
-# or an address typed in) / Quit; W A S D move, mouse look, click shoot, R reload, Tab camera, T chat, Esc pause menu. `--bind <LAN address>`
-# picks the LAN game's address, `--name <name>`
-fps-client *args:
-    cargo run -p torque-example-fps --release --bin fps-client -- {{args}}
-
-# The arena shooter's headless check: a host and a second client over 127.0.0.1 meet through the LAN list, one shoots the
-# other (a round spent, a hit), and a chat line reaches the other client
-fps-check:
-    cargo test -p torque-example-fps --test arena
-
-# The arena shooter's review pictures (menu, LAN list, first-person view, another player, a bolt), drawn offscreen into `dir`
-fps-shots dir="../target/fps-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --shots {{dir}}
-
-# The arena's menus (main, host choice, join) at 1280x720, 1920x1080 and 2560x1080, drawn offscreen into `dir`
-fps-menu-shots dir="../target/fps-menu-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --menu-shots {{dir}}
-
-# The other player's name over his head in the arena, at 1280x720 and at 640x360 (a browser's half-scale canvas), drawn
-# offscreen into `dir`
-fps-name-shots dir="../target/fps-name-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --name-shots {{dir}}
-
-# The arena's motion pictures (side steps, the walk backward, the look, the falls, a shot's kick and flash, the reload HUD, the
-# pause menu), drawn offscreen into `dir`
-fps-motion-shots dir="../target/fps-motion-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --motion-shots {{dir}}
-
-# The arena's polish pictures (a bolt's flight frame by frame into open space and at a wall, the bolts' holes, a hit seen by
-# both players, aiming down the sights), drawn offscreen into `dir`
-fps-polish-shots dir="../target/fps-polish-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --polish-shots {{dir}}
-
-# The arena's second polish pictures (a shot's flares and smoke frame by frame, a bolt's ribbon from the side, bolt holes at a
-# wall's middle and edge and in the floor, the sights aimed), drawn offscreen into `dir`
-fps-polish2-shots dir="../target/fps-polish2-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --polish2-shots {{dir}}
-
-# The arena's hitbox pictures: the other figure's hitboxes, as the server poses them, drawn as lines over it standing, running,
-# stepping aside, looking up and down, jumping, aiming down the sights and falling, offscreen into `dir`
-fps-hitbox-shots dir="../target/fps-hitbox-shots":
-    cargo run -p torque-example-fps --release --bin fps-client -- --hitbox-shots {{dir}}
-
-# The vehicle demo in a window: host a game or join one, the box figure beside a buggy on green checkerboard hills (W A S D
-# move, Space jump, mouse look, click the buggy to take a seat; driving W throttle, S reverse, A D steer, Space brake, mouse
-# turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
-vehicle-demo *args:
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- {{args}}
-
-# The other player's name over his head in the vehicle demo, on foot and in the passenger's seat, at 1280x720 and at 640x360
-# (a browser's half-scale canvas), drawn offscreen into `dir`
-vehicle-demo-name-shots dir="../target/vehicle-demo-name-shots":
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --name-shots {{dir}}
-
-# The figure on foot in the vehicle demo from behind and from its eyes, looking down, level and up (`Tab` keeps where the view
-# looks), drawn offscreen into `dir`
-vehicle-demo-switch-shots dir="../target/vehicle-demo-switch-shots":
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --switch-shots {{dir}}
-
-# The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
-# passenger's view, the climb up the hill), drawn offscreen into `dir`
-vehicle-demo-shots dir="../target/vehicle-demo-shots":
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --shots {{dir}}
-
 # The HUD of the level demo, the arena and the vehicle demo for review (the view in play with the corner readout, the pause
 # menu and its Controls panel) at 1280x720, 800x600 and 640x480, drawn offscreen into `dir`
 hud-shots dir="../target/hud-shots":
@@ -390,62 +43,42 @@ hud-shots dir="../target/hud-shots":
     cargo run -p torque-example-fps --release --example arena-hud-shots -- {{dir}}
     cargo run -p torque-example-vehicle-demo --release --example vehicle-hud-shots -- {{dir}}
 
-# The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
-# (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
-vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
-    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --cloud-shots {{dir}}
+# What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
+# at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails
+shots_tolerance := "--max-delta 1 --max-pixels 32"
 
-# The vehicle demo's steering and tire tracks as frame sequences (A held and let go at the wheel, then full throttle; on the
-# driver's client and another's) and the pause menu over the view, drawn offscreen into `dir`
-vehicle-demo-steer-clip dir="../target/vehicle-demo-steer-clip":
-    cargo run -p torque-example-vehicle-demo --release --example steer-clip -- {{dir}}
+# Every example's offscreen pictures, each recipe's into its own folder below `dir` (the character, level demo, arena and vehicle
+# demo shots, the arena's name and menu shots, the HUD shots and `showcase --examples`), to compare with `shots-diff` after a
+# change. Not drawn: the clips (they need ffmpeg), the race track pictures and `showcase`'s front-page grid. Run it on the same
+# machine and GPU as the folder it is compared with
+shots-all dir="../target/shots":
+    just --justfile character/justfile shots "{{absolute_path(dir)}}/character"
+    just --justfile level-demo/justfile shots "{{absolute_path(dir)}}/level-demo"
+    just --justfile level-demo/justfile valley-shots "{{absolute_path(dir)}}/level-demo-valley"
+    just --justfile level-demo/justfile swim-shots "{{absolute_path(dir)}}/level-demo-swim"
+    just --justfile level-demo/justfile switch-shots "{{absolute_path(dir)}}/level-demo-switch"
+    just --justfile fps/justfile shots "{{absolute_path(dir)}}/fps"
+    just --justfile fps/justfile menu-shots "{{absolute_path(dir)}}/fps-menu"
+    just --justfile fps/justfile name-shots "{{absolute_path(dir)}}/fps-name"
+    just --justfile fps/justfile motion-shots "{{absolute_path(dir)}}/fps-motion"
+    just --justfile fps/justfile polish-shots "{{absolute_path(dir)}}/fps-polish"
+    just --justfile fps/justfile polish2-shots "{{absolute_path(dir)}}/fps-polish2"
+    just --justfile fps/justfile hitbox-shots "{{absolute_path(dir)}}/fps-hitbox"
+    just --justfile vehicle-demo/justfile shots "{{absolute_path(dir)}}/vehicle-demo"
+    just --justfile vehicle-demo/justfile name-shots "{{absolute_path(dir)}}/vehicle-demo-name"
+    just --justfile vehicle-demo/justfile switch-shots "{{absolute_path(dir)}}/vehicle-demo-switch"
+    just hud-shots "{{absolute_path(dir)}}/hud"
+    just --justfile showcase/justfile shots "{{absolute_path(dir)}}/showcase" --examples
 
-# The vehicle demo's race track, its landforms and forests in pictures (the loop from above, driver's-eye views past the
-# forests, over a crest and along the ridge, up at a forest's edge, trees close up, the kinds of tree, and the low sun at
-# golden hour and sunset), drawn offscreen into `dir`; `vehicle-demo-track-bench` prints the frame times at the start and
-# around the lap instead
-vehicle-demo-track-shots dir="../target/vehicle-demo-track-shots":
-    cargo run -p torque-example-vehicle-demo --release --example track-shots -- {{dir}}
+# Compares two folders drawn by `shots-all`: per picture whether the sizes match, the differing pixels and the largest channel
+# difference; the exit code is 1 when any picture differs. Left out: the top right corner of every picture (160x40 px), where the
+# corner readout shows the frame rate measured on the clock, which differs from run to run. Pictures off by one level on at most 32
+# pixels (`shots_tolerance`) pass as near and are listed apart from the exact matches. Works on the folder of a single example too;
+# a relative folder is relative to `examples/`
+shots-diff a b:
+    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
 
-vehicle-demo-track-bench:
-    cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench
-
-# The mods demo, headless: a server whose game mode is a Lua mod it requires, and two clients that download the mod's content when
-# they join (`--shots <dir>` also draws pictures of the round from the first client). Builds the Lua extension first (`just lua`,
-# a C++ compiler is needed); `--lua <library>` or TORQUE_LUA_LIBRARY names a built one instead
-mods-demo *args:
-    just --justfile ../justfile --working-directory .. lua
-    cargo run -p torque-example-mods-demo --release --bin mods-demo -- {{args}}
-
-# The mods demo's pictures of a round in progress, drawn offscreen into `dir`
-mods-demo-shots dir="../target/mods-demo-shots":
-    just --justfile ../justfile --working-directory .. lua
-    cargo run -p torque-example-mods-demo --release --bin mods-demo -- --shots {{dir}}
-
-# The mods demo's end-to-end tests: download, cache, Lua rounds, ropes and the mods' load rules. They build the Lua extension
-# (Luau's C++), so `cargo test` leaves them out
-mods-demo-test:
-    cargo test -p torque-example-mods-demo --test demo -- --include-ignored
-
-# The level demo's prop catalog, headless: the office's server requires the catalog mod of its clients, two clients download it, allow its
-# menu and spawn props from it. Builds the realm guest first (`just lua-client-web`: the WASI SDK, named by WASI_SDK_PATH);
-# TORQUE_CLIENT_GUEST names a built one instead
-level-catalog:
-    just --justfile ../justfile --working-directory .. lua-client-web
-    cargo run -p torque-example-level-demo --release --example level-catalog
-
-# The catalog's pictures (the consent prompt, the catalog, a label typed and the recent list, a chair in the office, a refusal), drawn
-# offscreen into `dir`
-level-catalog-shots dir="../target/level-catalog-shots":
-    just --justfile ../justfile --working-directory .. lua-client-web
-    cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
-
-# The catalog's end-to-end tests (level-demo's tests/catalog.rs), with the guest `lua-client-web` builds
-level-catalog-test:
-    just --justfile ../justfile --working-directory .. lua-client-web
-    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog -- --include-ignored
-
-# The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
-# offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)
-level-catalog-icons dir="level-demo/catalog/icons":
-    cargo run -p torque-example-level-demo --release --example catalog-icons -- {{dir}}
+# `shots-diff` on one example's folder: `example` is the folder name below the `shots-all` dir (for instance `vehicle-demo`), `a`
+# is the dir a run drew into and `b` the baseline dir
+shots-diff-one example a b:
+    just shots-diff "{{a}}/{{example}}" "{{b}}/{{example}}"

@@ -6,6 +6,12 @@ msrv := "1.88"
 # The build folder: CARGO_TARGET_DIR's, else the workspace's (the site goes into its `site` folder)
 web_target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 
+# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
+# The examples' recipes, one justfile per example: `just examples <example> <recipe>` (see examples/justfile)
+mod examples
+
 default:
     @just --list
 
@@ -71,6 +77,44 @@ site-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
+# The web pages' loading display, settings, script bridge, browser host and connection codes, tested in Node (no browser)
+web-unit:
+    node --test web/loading.test.mjs web/settings.test.mjs web/bridge.test.mjs web/host.test.mjs web/files.test.mjs web/codes.test.mjs web/invites.test.mjs
+
+# Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
+# cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows
+web-guard:
+    node web/guard-scan.mjs
+
+# `web-guard`, then the guard's test: a page that asks for the pointer lock on click never gets it. Every check recipe runs it
+# first
+web-guard-test: web-guard
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node web/guard.test.mjs
+
+# The size of each web example's module (`game_bg.wasm` of the level demo, the arena and the vehicle demo, built with their files
+# fetched): `just web-size --out /somewhere/outside/the/repo/sizes.json` writes the sizes,
+# `just web-size --compare /somewhere/outside/the/repo/sizes.json` gives each one's change in percent
+# against that file, and `--limit 1` also fails on more than 1% or on a module the file lacks
+web-size *args:
+    node web/size.mjs {{args}}
+
+# The invite links' connection alone, with no game and no build, in headless Chrome and headless Firefox (Firefox's
+# defaults, mDNS names included; installed where `web/guard.mjs` looks, or `FIREFOX` names it): a small page runs
+# `web/invites.js`, the joiner presses Connect, the reply code is pasted 30 s later (a joiner's browser gives up on a host
+# it cannot reach yet after a few seconds; a Firefox host's addresses answer only once it has the reply), and a message
+# must go each way. One browser with two tabs, two browsers, and each browser hosting the other; then a Firefox invite
+# whose candidates are all refused fails, and its connection details are printed and checked. No STUN server is
+# contacted. Runs the guard's test in Firefox first
+web-invite-link-check: web-guard-test
+    node web/guard.test.mjs firefox
+    node web/invite-link-check.mjs chrome same 30
+    node web/invite-link-check.mjs firefox same 30
+    node web/invite-link-check.mjs firefox two 30
+    node web/invite-link-check.mjs chrome,firefox two 30
+    node web/invite-link-check.mjs firefox,chrome two 30
+    node web/invite-link-check.mjs firefox fail 0
+
 # The determinism check: the trace-hash scenarios (the figure on foot and the buggy, each a 600-tick scripted run of a server and a
 # predicting client, hashed tick by tick, in each network protocol; and the Rapier world's drop of bodies onto a terrain and an interior) run natively twice and as wasm32-wasip1 under Node's WASI (no browser), and every line
 # they print must be equal, and equal to crates/torque-trace-hash/expected.txt. Needs `rustup target add wasm32-wasip1`; `just trace-hash --release` runs the release profile
@@ -93,48 +137,9 @@ test-engine *flags:
 # keep theirs); each run must end with 0 failures. The engine's half also runs the whole workspace (`test-engine`), so a test
 # of any crate that does not follow the protocol shows here. Extra flags go to cargo test (`--release`)
 net-matrix *flags:
-    $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
-    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples/headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
     just test-engine {{flags}}
-
-# What `shots-diff` accepts as the same: renders are not bit-stable from run to run, so a picture whose differing pixels are off by
-# at most one level in a channel and number at most 32 passes as "near" (listed apart from the exact matches); anything more fails
-shots_tolerance := "--max-delta 1 --max-pixels 32"
-
-# Every example's offscreen pictures, each recipe's into its own folder below `dir` (the character, level demo, arena and vehicle
-# demo shots, the arena's name and menu shots, the HUD shots and `showcase --examples`), to compare with `shots-diff` after a
-# change. Not drawn: the clips (they need ffmpeg), the race track pictures and `showcase`'s front-page grid. Run it on the same
-# machine and GPU as the folder it is compared with
-shots-all dir="target/shots":
-    just examples/character-shots "{{absolute_path(dir)}}/character"
-    just examples/level-demo-shots "{{absolute_path(dir)}}/level-demo"
-    just examples/level-demo-valley-shots "{{absolute_path(dir)}}/level-demo-valley"
-    just examples/level-demo-swim-shots "{{absolute_path(dir)}}/level-demo-swim"
-    just examples/level-demo-switch-shots "{{absolute_path(dir)}}/level-demo-switch"
-    just examples/fps-shots "{{absolute_path(dir)}}/fps"
-    just examples/fps-menu-shots "{{absolute_path(dir)}}/fps-menu"
-    just examples/fps-name-shots "{{absolute_path(dir)}}/fps-name"
-    just examples/fps-motion-shots "{{absolute_path(dir)}}/fps-motion"
-    just examples/fps-polish-shots "{{absolute_path(dir)}}/fps-polish"
-    just examples/fps-polish2-shots "{{absolute_path(dir)}}/fps-polish2"
-    just examples/fps-hitbox-shots "{{absolute_path(dir)}}/fps-hitbox"
-    just examples/vehicle-demo-shots "{{absolute_path(dir)}}/vehicle-demo"
-    just examples/vehicle-demo-name-shots "{{absolute_path(dir)}}/vehicle-demo-name"
-    just examples/vehicle-demo-switch-shots "{{absolute_path(dir)}}/vehicle-demo-switch"
-    just examples/hud-shots "{{absolute_path(dir)}}/hud"
-    just examples/showcase "{{absolute_path(dir)}}/showcase" --examples
-
-# Compares two folders drawn by `shots-all`: per picture whether the sizes match, the differing pixels and the largest channel
-# difference; the exit code is 1 when any picture differs. Left out: the top right corner of every picture (160x40 px), where the
-# corner readout shows the frame rate measured on the clock, which differs from run to run. Pictures off by one level on at most 32
-# pixels (`shots_tolerance`) pass as near and are listed apart from the exact matches. Works on the folder of a single example too
-shots-diff a b:
-    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
-
-# `shots-diff` on one example's folder: `example` is the folder name below the `shots-all` dir (for instance `vehicle-demo`), `a`
-# is the dir a run drew into and `b` the baseline dir
-shots-diff-one example a b:
-    just shots-diff "{{a}}/{{example}}" "{{b}}/{{example}}"
 
 # Writes the C header of the native extension ABI (crates/torque-plugin-abi/include/torque_plugin.h) with cbindgen
 c-header:
@@ -143,10 +148,6 @@ c-header:
 # Fails when the checked-in C header is not what the ABI makes (CI runs the same check)
 c-header-check:
     cargo run --manifest-path crates/torque-plugin-abi/header-gen/Cargo.toml -- --check
-
-# The sample native extension (examples/native-extension), built on its own as a library
-native-ext-sample:
-    cargo build --manifest-path examples/native-extension/Cargo.toml
 
 # The Lua extension (crates/torque-plugin-lua) built on its own as a release library, with the C++ runtime linked in so the
 # library alone is what a plugins folder needs; it builds Luau's C++, so it needs a C++ compiler (the engine never does). It goes
@@ -260,11 +261,6 @@ realm-gate cold="":
     node web/lua-build.mjs
     cargo run --release --jobs 4 -p torque-client-script-host --features wasmtime --example realm-gate -- "{{web_target}}/lua-web/torque_lua.wasm" {{ if cold == "cold" { "--cold" } else { "" } }}
 
-# The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
-native-ext-shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
-    cargo test -p torque-plugin-loader --features render --test pictures
-    just shots-diff "{{TORQUE_NATIVE_EXT_SHOTS}}/compiled" "{{TORQUE_NATIVE_EXT_SHOTS}}/loaded"
-
 # The server crate's dependency tree has no wgpu, winit, naga, cpal, drawing, GUI, audio or client crates (CI runs the same check)
 server-deps:
     $tree = cargo tree -p torque-app-server --all-features --prefix none; if ($LASTEXITCODE -ne 0) { exit 1 }; $bad = $tree | ForEach-Object { ($_ -split ' ')[0] } | Select-String -Pattern '^(wgpu|winit|naga|cpal|raw-window-handle|torque-(render|gui|audio|client|fonts))'; if ($bad) { $bad; exit 1 }
@@ -299,7 +295,7 @@ dif-verify:
 # The glTF import's pass condition: 20 generated glTF files read back as `.dts` (equal node, mesh, vertex and sequence
 # counts; vertices within 1e-4; poses within 1e-3 at rest and 10 times a sequence), the kit's shapes through `.glb` giving the
 # same `.dts` bytes, and 300,000 fuzz cases of the reader with 0 panics. The arena's shots and fps tests with the `.glb`
-# shapes: `ARENA_SHAPES=glb` before `just examples/fps-shots` and `cargo nextest run -p torque-example-fps`.
+# shapes: `ARENA_SHAPES=glb` before `just examples fps shots` and `cargo nextest run -p torque-example-fps`.
 gltf-verify:
     cargo test -p torque-import --test fixtures -- --nocapture
     cargo test -p torque-example-assets every_shape_through_a_glb_makes_the_same_dts
@@ -307,7 +303,7 @@ gltf-verify:
 
 # What CI checks, in one go (rustdoc with warnings as errors is part of it)
 ci: check test deny book
-    just examples/headless
+    just examples headless
     cargo doc --workspace --no-deps --all-features --config "build.rustdocflags=['-D', 'warnings']"
 
 # The script engine's benches: the VM's workloads with the Torque3D executor and with the classic one (calls, loops,

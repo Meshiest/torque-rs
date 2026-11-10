@@ -1,7 +1,7 @@
 # Games in a browser
 
 A game made on `torque::app` runs in a browser on WebGPU: `node web/build.mjs <example>` builds it for the web (the module,
-its page and the game's files), and `just examples/web-level-demo` or `just examples/web-vehicle-demo` builds and serves one
+its page and the game's files), and `just examples level-demo web` or `just examples vehicle-demo web` builds and serves one
 on `http://127.0.0.1:8080/`. Every web build shares one page (`web/index.html`) and one entry (`torque::app::web_page`): the
 page shows each loading stage, and its gear opens the settings (the renderer's quality, the render scale, the frame-rate
 display). The game's canvas fills the browser window and follows it. The game draws at the canvas's device pixels under

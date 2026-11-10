@@ -558,7 +558,7 @@ determinism test per predicted class on native and wasm32; it is not built yet.
 while the server moves it every 75 ticks, four frames drawn a tick and folded in) and `just trace-hash` checks native against
 wasm32. Its `forced_corrections` helper moves a standing figure or buggy on the server and gives back every frame drawn after;
 `crates/torque-trace-hash/tests/forced_correction.rs` uses it to check that the smoothed body never moves more than a sixteenth
-of the jump in a frame while the simulation jumps the whole of it. `just examples/level-demo-correction-shots` draws the same
+of the jump in a frame while the simulation jumps the whole of it. `just examples level-demo correction-shots` draws the same
 with both predictors, frame by frame.
 
 ## Limits

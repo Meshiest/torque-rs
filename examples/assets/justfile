@@ -1,0 +1,8 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The example games' asset kit (shapes and textures made from code), written into `dir`
+write dir="../../target/example-assets":
+    cargo run -p torque-example-assets -- {{dir}}

@@ -1,0 +1,104 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web builds go into its `web` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", module_directory() / ".." / ".." / "target")
+
+# Where the web check's tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
+default:
+    @just --list
+
+# The vehicle demo in a window: host a game or join one, the box figure beside a buggy on green checkerboard hills (W A S D
+# move, Space jump, mouse look, click the buggy to take a seat; driving W throttle, S reverse, A D steer, Space brake, mouse
+# turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
+run *args:
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- {{args}}
+
+# The vehicle demo in a browser (WebGPU), played alone: built for the web, then served on http://127.0.0.1:{{port}}/; its files
+# fetched by their list, the loading stages and the settings as the level demo's
+web port="8080":
+    node ../../web/build.mjs vehicle-demo
+    node ../../web/serve.mjs "{{web_target}}/web/vehicle-demo" {{port}}
+
+# The web vehicle demo's check (build it first with `web`): headless Chrome from the cursor guard (`web/guard.mjs`,
+# its pages never take the pointer lock) loads it, waits for the figure on the hills, walks it with W and takes pictures;
+# fails on any console error
+web-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-demo-hills.png" 120 world
+
+# The vehicle demo for browsers and desktops in one game: its browser build, then its dedicated server on UDP and the web on
+# 127.0.0.1:{{port}} with WebRTC data channels, serving that build; a browser joins at http://127.0.0.1:{{port}}/?join (the
+# page alone plays alone) and a desktop `vehicle-demo` joins 127.0.0.1:{{port}}. More of vehicle-demo-server's switches go
+# after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--rtc-public-ip`)
+web-server port="28000" *args:
+    node ../../web/build.mjs vehicle-demo
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo-server -- --transport both --webrtc --port {{port}} {{args}}
+
+# A room service for player-hosted drives on 127.0.0.1:{{port}}, serving the vehicle demo's browser build: a browser hosts from
+# the page's menu or at http://127.0.0.1:{{port}}/?host=1 (its server in a Web Worker, the room's code on the page), others
+# join by the code from the menu or at http://127.0.0.1:{{port}}/?room=<code> (the page never loads again), and
+# `vehicle-demo-server --room ws://127.0.0.1:{{port}}` hosts from a desktop. More
+# switches after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--stun`, `--turn`, `--turn-secret-file`)
+web-rooms port="28100" *args:
+    node ../../web/build.mjs vehicle-demo
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/vehicle-demo" {{args}}
+
+# The vehicle demo's two-player checks (build it first with `web`): two headless pages join vehicle-demo-server at
+# the page it serves, on data channels; then by a room's code, the server hosting the room; then the second page joins a host
+# page whose server runs in a Web Worker. Each time one drives while the other watches, the other rides as the passenger and
+# then walks, with no console error, and the second page says so when the host goes. With a room service the pages host and
+# join from their menus in place: no page loads again, each address says what it plays, and once the host leaves (from its
+# Esc menu, in the last) each page is back at its own menu and plays alone again. Pictures into the target folder's `web`
+web-mp-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-served.png" 120 served vehicle-demo
+    node ../../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-desktop.png" 120 desktop vehicle-demo
+    node ../../web/p2p-check.mjs "{{web_target}}/web/vehicle-demo" "{{web_target}}/web/vehicle-mp-browser.png" 120 browser vehicle-demo
+
+# The vehicle demo joined by an invite link, as `just examples fps web-invite-check` (build it first with `node web/build.mjs vehicle-demo
+# --solo`): its Host with a link starts its server in the worker on the same page. Pictures into the target folder's
+# `web/vehicle-invites`
+web-invite-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites" 120
+    node ../../web/invite-check.mjs "{{web_target}}/web/vehicle-demo-solo" "{{web_target}}/web/vehicle-invites-same" 120 same
+
+# The other player's name over his head in the vehicle demo, on foot and in the passenger's seat, at 1280x720 and at 640x360
+# (a browser's half-scale canvas), drawn offscreen into `dir`
+name-shots dir="../../target/vehicle-demo-name-shots":
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --name-shots {{dir}}
+
+# The figure on foot in the vehicle demo from behind and from its eyes, looking down, level and up (`Tab` keeps where the view
+# looks), drawn offscreen into `dir`
+switch-shots dir="../../target/vehicle-demo-switch-shots":
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --switch-shots {{dir}}
+
+# The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
+# passenger's view, the climb up the hill), drawn offscreen into `dir`
+shots dir="../../target/vehicle-demo-shots":
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --shots {{dir}}
+
+# The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
+# (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
+cloud-shots dir="../../target/vehicle-demo-cloud-shots":
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --cloud-shots {{dir}}
+
+# The vehicle demo's steering and tire tracks as frame sequences (A held and let go at the wheel, then full throttle; on the
+# driver's client and another's) and the pause menu over the view, drawn offscreen into `dir`
+steer-clip dir="../../target/vehicle-demo-steer-clip":
+    cargo run -p torque-example-vehicle-demo --release --example steer-clip -- {{dir}}
+
+# The vehicle demo's race track, its landforms and forests in pictures (the loop from above, driver's-eye views past the
+# forests, over a crest and along the ridge, up at a forest's edge, trees close up, the kinds of tree, and the low sun at
+# golden hour and sunset), drawn offscreen into `dir`; `track-bench` prints the frame times at the start and
+# around the lap instead
+track-shots dir="../../target/vehicle-demo-track-shots":
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- {{dir}}
+
+track-bench:
+    cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench
