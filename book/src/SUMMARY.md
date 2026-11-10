@@ -2,6 +2,7 @@
 
 [Introduction](introduction.md)
 [Roadmap](roadmap.md)
+[TGE classes not yet in torque-rs](tge-classes.md)
 [Console and scripting](scripting.md)
 [Networked objects](networked-objects.md)
 [Server and client](server-and-client.md)

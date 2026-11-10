@@ -1,6 +1,7 @@
 # Roadmap
 
-What is planned, roughly in order. Items marked *tool* are build-time features.
+What is planned, roughly in order. Items marked *tool* are build-time features. The TGE classes torque-rs does not have yet
+are listed in [TGE classes not yet in torque-rs](tge-classes.md).
 
 ## Done
 
