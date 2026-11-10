@@ -503,3 +503,87 @@ fn client_script_layouts_are_checked_only_after_a_change_inside_one() {
         .check(&rig.vm, &rig.gui)
         .expect("the invariants hold");
 }
+
+#[test]
+fn client_script_a_change_checks_only_the_containers_around_it() {
+    let mut rig = layout_rig(&[Tier::Ui]);
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    // Three top-level columns of four panels; the first has a column of its own inside it.
+    let mut next = 2;
+    let mut columns = Vec::new();
+    for _ in 0..3 {
+        let flex = next;
+        columns.push(flex);
+        ops.create(flex, 1, Kind::Flex, &[(Prop::Size, vec2(200.0, 300.0))]);
+        for item in 1..=4 {
+            ops.create(flex + item, flex, Kind::Panel, &[]);
+        }
+        next += 5;
+    }
+    let (first, second, third) = (columns[0], columns[1], columns[2]);
+    let (inner, leaf) = (next, next + 1);
+    ops.create(inner, first, Kind::Flex, &[])
+        .create(leaf, inner, Kind::Panel, &[]);
+    rig.apply_ok(&ops);
+    rig.frame();
+    rig.frame();
+    let counted = |rig: &Rig| rig.gui.client_script_stats().layout_updates;
+    let settled = counted(&rig);
+    for _ in 0..10 {
+        rig.frame();
+    }
+    assert_eq!(counted(&rig), settled, "an idle realm checks no layout");
+
+    // A change in the second column checks the second column's container and no other, for two frames.
+    let mut one = Ops::default();
+    one.set(second + 1, &[(Prop::Grow, num(1.0))]);
+    rig.apply_ok(&one);
+    rig.frame();
+    rig.frame();
+    rig.frame();
+    assert_eq!(counted(&rig) - settled, 2, "one container, two frames");
+
+    // A change inside the nested column checks it and the column around it, not the others.
+    let before = counted(&rig);
+    let mut nested = Ops::default();
+    nested.set(leaf, &[(Prop::Grow, num(1.0))]);
+    rig.apply_ok(&nested);
+    rig.frame();
+    rig.frame();
+    rig.frame();
+    assert_eq!(counted(&rig) - before, 4, "two containers, two frames");
+
+    // A resize of the screen checks all of them.
+    let before = counted(&rig);
+    rig.gui.set_canvas_size((800, 600));
+    rig.frame();
+    rig.frame();
+    rig.frame();
+    assert_eq!(counted(&rig) - before, 8, "four containers, two frames");
+
+    // A control destroyed or moved checks the containers it leaves and joins, and no others.
+    let before = counted(&rig);
+    let mut moved = Ops::default();
+    moved.parent(second + 2, third);
+    rig.apply_ok(&moved);
+    rig.frame();
+    rig.frame();
+    rig.frame();
+    assert_eq!(
+        counted(&rig) - before,
+        4,
+        "the two columns it left and joined"
+    );
+    let before = counted(&rig);
+    let mut gone = Ops::default();
+    gone.destroy(first + 1);
+    rig.apply_ok(&gone);
+    rig.frame();
+    rig.frame();
+    rig.frame();
+    assert_eq!(counted(&rig) - before, 2, "the first column alone");
+    rig.realm
+        .check(&rig.vm, &rig.gui)
+        .expect("the invariants hold");
+}

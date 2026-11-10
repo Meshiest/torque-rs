@@ -580,3 +580,48 @@ fn an_idle_realm_with_containers_does_no_layout_work() {
     rig.frame();
     assert!(rig.client.host.gui.client_script_stats().layout_updates > settled.layout_updates);
 }
+
+/// Two grids of the same size: a change inside one checks that one alone, and a resize of the screen checks both.
+#[test]
+fn a_change_is_laid_out_in_its_own_container_alone() {
+    let mut rig = Rig::new(true);
+    let mut ops = Ops::default();
+    ops.root(1);
+    let mut next = 2;
+    for _ in 0..2 {
+        ops.create(next, 1, Kind::Flex, &[size(300.0, 300.0)]);
+        for k in 1..=60 {
+            ops.create(next + k, next, Kind::Panel, &[]);
+        }
+        next += 61;
+    }
+    rig.apply(&ops).expect("the flush applies");
+    for _ in 0..4 {
+        rig.frame();
+    }
+    let gui = rig.client.host.gui.clone();
+    let measure = |rig: &mut Rig, act: &dyn Fn(&mut Rig)| {
+        let before = gui.client_script_stats();
+        act(rig);
+        for _ in 0..4 {
+            rig.frame();
+        }
+        let after = gui.client_script_stats();
+        (
+            after.layout_updates - before.layout_updates,
+            after.layout_work - before.layout_work,
+        )
+    };
+    let (updates, one) = measure(&mut rig, &|rig| {
+        let mut ops = Ops::default();
+        ops.set(3, &[grow(1.0)]);
+        rig.apply(&ops).expect("the flush applies");
+    });
+    assert_eq!(updates, 2, "one container, two frames");
+    assert!(one > 0);
+    let (updates, both) = measure(&mut rig, &|rig| {
+        rig.client.host.gui.set_canvas_size((800, 600));
+    });
+    assert_eq!(updates, 4, "both containers, two frames");
+    assert!(both > 0, "both were fingerprinted");
+}

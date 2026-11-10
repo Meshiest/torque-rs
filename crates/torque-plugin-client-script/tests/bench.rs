@@ -128,9 +128,9 @@ impl OfferSource for Source {
 /// Makes a thousand controls, a hundred a frame (a file run of all of them would be past the steps a callback may take), then
 /// (when `MOVING`) moves a window of 250 of them every frame and sends a message every other one. With `CONTAINERS` the first 512
 /// are loose in the root as before and the rest are the items of 16 flex containers, a column each: the realm moves 100 of the loose
-/// ones a frame and resizes a container's item every eighth frame, so that a container lays its items out again. (A change to any item
-/// makes the layout check every container for two frames, which costs the realm about 0.7 ms, so items are not changed every
-/// frame: that cost is the layout's, not the canvas's. With 250 moves a frame beside it the realm's own frame is over 3 ms at p99.)
+/// ones a frame and resizes a container's item every eighth frame, so that a container lays its items out again. (A change to an item
+/// makes the layout check the containers around it for two frames, which is the layout's cost, not the canvas's, so items are not
+/// changed every frame: with 250 moves a frame beside it the realm's own frame is over 3 ms at p99.)
 const SCRIPT: &str = r#"
 local nodes = {}
 local root = ui and ui.root()

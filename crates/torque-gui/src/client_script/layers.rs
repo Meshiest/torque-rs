@@ -1,7 +1,7 @@
 //! The host layers: where the server layer sits in the draw order, which input it may get, what the engine layer and the chip
 //! add, and what the realm holds (the cursor, a focused text field) while it is on screen.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use torque_client_script_format::ui::Prop;
 use torque_client_script_format::{MAX_EVENTS, Tier};
@@ -188,19 +188,34 @@ pub struct LayerState {
     pub(crate) stats: Stats,
     /// The containers of the layout plugin's classes the realm made, oldest first. They are not canvas children, so the GUI's
     /// frame does not reach them: [`frame`] runs their `update` (a layout checks whether its inputs changed there).
-    pub(crate) laid: Vec<ObjId>,
-    /// How many more frames the layouts are to be checked: set by anything that changes what a layout reads (the applier is
-    /// the only writer of a container's fields and of the controls in it), counting down each frame they are checked. Two
-    /// frames: one lays out, the next sees that it has settled. At 0 a frame does no layout work at all.
-    pub(crate) layout_frames: u8,
+    pub(crate) laid: BTreeSet<ObjId>,
+    /// The containers to be checked, with how many more frames each is: set for the containers a change is inside (the applier
+    /// is the only writer of a container's fields and of the controls in it) and for all of them by a resize, counting down
+    /// each frame the container is checked. Two frames: one lays out, the next sees that it has settled. A container not here
+    /// costs a frame nothing, and with none here a frame does no layout work at all.
+    pub(crate) layout_due: BTreeMap<ObjId, u8>,
 }
 
-/// The frames the layouts are checked for after something changed.
+/// The frames a container is checked for after something it reads changed.
 const LAYOUT_FRAMES: u8 = 2;
 
-/// Something a layout reads changed: check the layouts for the next frames.
-pub(crate) fn mark_layout(gui: &Gui) {
-    gui.0.borrow_mut().client_script.layout_frames = LAYOUT_FRAMES;
+/// Something the layouts of these containers read changed: check them for the next frames. Controls that are not the layout's
+/// containers are ignored.
+pub(crate) fn mark_layouts(gui: &Gui, containers: impl IntoIterator<Item = ObjId>) {
+    let l = &mut gui.0.borrow_mut().client_script;
+    for id in containers {
+        if l.laid.contains(&id) {
+            l.layout_due.insert(id, LAYOUT_FRAMES);
+        }
+    }
+}
+
+/// Something every layout reads changed (the layer's size): check all the containers.
+fn mark_all_layouts(gui: &Gui) {
+    let LayerState {
+        laid, layout_due, ..
+    } = &mut gui.0.borrow_mut().client_script;
+    layout_due.extend(laid.iter().map(|id| (*id, LAYOUT_FRAMES)));
 }
 
 impl Default for LayerState {
@@ -232,8 +247,8 @@ impl Default for LayerState {
             screen: (0, 0),
             faces: DEFAULT_FACES.map(str::to_string),
             stats: Stats::default(),
-            laid: Vec::new(),
-            layout_frames: 0,
+            laid: BTreeSet::new(),
+            layout_due: BTreeMap::new(),
         }
     }
 }
@@ -499,7 +514,7 @@ pub(crate) fn frame(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
         let (pos, ext) = control::bounds(vm, id);
         if pos != (0, 0) || ext != size {
             control::resize(vm, gui, id, (0, 0), size);
-            mark_layout(gui);
+            mark_all_layouts(gui);
         }
     }
     if server.is_none() {
@@ -522,28 +537,23 @@ pub(crate) fn frame(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
 /// The layout plugin's per-frame check for the containers the realm made that are on screen. A container inside another does
 /// nothing in its own `update`; the outermost compares what its layout read with what is there now and lays out on a difference.
 fn update_layouts(vm: &mut Vm, gui: &Gui) {
-    {
-        let s = gui.0.borrow();
-        let l = &s.client_script;
-        // An idle realm does nothing here: no fingerprint is read unless something changed (`layout_frames`). A layer that is
-        // not shown keeps what is owed until it is.
-        if l.laid.is_empty() || l.layout_frames == 0 {
-            return;
-        }
-    }
-    if !server_shown(vm, gui) {
+    // An idle realm does nothing here: no fingerprint is read unless something changed (`layout_due`). A layer that is not
+    // shown keeps what is owed until it is.
+    let due: Vec<ObjId> = gui
+        .0
+        .borrow()
+        .client_script
+        .layout_due
+        .keys()
+        .copied()
+        .collect();
+    if due.is_empty() || !server_shown(vm, gui) {
         return;
     }
     let saved = vm.begin_host_budget_with_runs(MAX_FRAME_WORK, MAX_EVENT_STEPS);
     let mut runs = 0;
-    let mut at = 0;
-    loop {
-        // One short borrow a control: `update` runs with none held, and a layout may be removed meanwhile.
-        let next = gui.0.borrow().client_script.laid.get(at).copied();
-        let Some(id) = next else {
-            break;
-        };
-        at += 1;
+    for &id in &due {
+        // No borrow is held across `update`, and a layout may be removed meanwhile.
         if vm.objects().contains(id) && gui.is_awake(id) {
             runs += 1;
             if let Err(error) = custom::update(vm, gui, id) {
@@ -553,7 +563,14 @@ fn update_layouts(vm: &mut Vm, gui: &Gui) {
     }
     let work = vm.end_host_budget(saved);
     let l = &mut gui.0.borrow_mut().client_script;
-    l.layout_frames = l.layout_frames.saturating_sub(1);
+    for id in due {
+        if let Some(frames) = l.layout_due.get_mut(&id) {
+            *frames -= 1;
+            if *frames == 0 {
+                l.layout_due.remove(&id);
+            }
+        }
+    }
     l.stats.layout_updates += runs;
     l.stats.layout_work += work;
 }
@@ -663,7 +680,8 @@ pub(crate) fn forget(gui: &Gui, id: ObjId) {
         }
     }
     l.engine.retain(|e| *e != id);
-    l.laid.retain(|e| *e != id);
+    l.laid.remove(&id);
+    l.layout_due.remove(&id);
     l.visible = None;
     if l.chip == Some(id) {
         l.chip = None;

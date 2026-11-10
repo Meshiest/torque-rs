@@ -139,10 +139,12 @@
 //! `add_controls`, a draw in `paint`, and its cases in the refusal and canary tests. A layout prop is a prop of the format first
 //! (`ITEM` or a container's own), then a row in the layout plugin's `RealmLayout` table; the applier needs no change. The layout's
 //! classes are not canvas children, so the GUI's frame does not reach them: `layers::frame` runs their `update` (`LayerState::laid`), and only
-//! for two frames after something a layout reads changed (`layout_frames`, set by `mark_layout` for every op on a container or on a
-//! control in one, and by a resize of the layer), so an idle realm does no layout work at all, which `Stats::layout_updates` and
-//! `layout_work` count: `client_script_layouts_are_checked_only_after_a_change_inside_one`. The applier is the only writer of what a
-//! layout reads; a new op that writes a container's fields or moves a control must call `mark_layout`. A new drawing hook goes in the list above.
+//! for two frames after something a layout reads changed, and only the containers the change is inside (`layout_due`, set by
+//! `Realm::mark_layouts_from` for the container an op touches and the ones around it up to its mod root; a resize of the layer
+//! marks them all), so an idle realm does no layout work at all and a change checks no other container, which `Stats::layout_updates`
+//! and `layout_work` count: `client_script_layouts_are_checked_only_after_a_change_inside_one` and
+//! `client_script_a_change_checks_only_the_containers_around_it`. The applier is the only writer of what a
+//! layout reads; a new op that writes a container's fields or moves a control must call `mark_layouts_from`. A new drawing hook goes in the list above.
 //! The consent prompt is an engine-layer control: put it in with `Gui::push_engine_layer`; it takes the pointer and the keys
 //! first and is modal, and the server layer takes none while it is up. Never give a realm control a way to run text: no field
 //! writes by name, no `Vm::eval`, no script method calls.

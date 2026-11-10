@@ -470,10 +470,7 @@ impl Realm {
             return Err(Violation("a control that could not be placed"));
         }
         if laid {
-            gui.0.borrow_mut().client_script.laid.push(obj);
-        }
-        if containers > 0 {
-            mark_layout(gui);
+            gui.0.borrow_mut().client_script.laid.insert(obj);
         }
         self.next += 1;
         self.add_counts(text, &image, shown);
@@ -486,6 +483,9 @@ impl Realm {
         node.image = (!image.is_empty()).then_some(image);
         node.held = held;
         self.nodes.insert(handle, node);
+        if containers > 0 {
+            self.mark_layouts_from(gui, handle);
+        }
         Ok(())
     }
 
@@ -585,7 +585,7 @@ impl Realm {
         apply_layout(vm, gui, obj, &given);
         write_fields(vm, obj, &layout_fields(gui.realm_layout(), kind, &given));
         if in_layout {
-            mark_layout(gui);
+            self.mark_layouts_from(gui, handle);
         }
         self.drop_counts(old_text, old_image.as_deref());
         self.add_counts(text, &image, shown);
@@ -594,6 +594,22 @@ impl Realm {
             n.image = (!image.is_empty()).then_some(image);
         }
         Ok(())
+    }
+
+    /// Something at `handle` changed what a layout reads: the containers on the way up from it (itself counted) are checked
+    /// again for the next frames ([`super::layers::mark_layouts`]), and no others.
+    fn mark_layouts_from(&self, gui: &Gui, handle: u32) {
+        let mut containers = Vec::new();
+        let mut at = handle;
+        while let Some(n) = self.nodes.get(&at)
+            && n.kind.is_some()
+        {
+            if n.is_container() {
+                containers.push(n.obj);
+            }
+            at = n.parent;
+        }
+        super::layers::mark_layouts(gui, containers);
     }
 
     /// The handles of `handle` and everything under it, parents first.
@@ -612,10 +628,13 @@ impl Realm {
     fn destroy(&mut self, vm: &mut Vm, gui: &Gui, r: &mut Reader<'_>) -> Result<(), Violation> {
         let handle = r.u32()?;
         r.finish()?;
-        let in_layout = self.control(handle)?.containers > 0;
+        let (parent, in_layout) = {
+            let n = self.control(handle)?;
+            (n.parent, n.containers > 0)
+        };
         self.remove_subtree(vm, handle)?;
         if in_layout {
-            mark_layout(gui);
+            self.mark_layouts_from(gui, parent);
         }
         Ok(())
     }
@@ -695,17 +714,21 @@ impl Realm {
         if let Some(p) = self.nodes.get_mut(&new_parent) {
             p.children.push(handle);
         }
-        for h in below {
+        for &h in &below {
             if let Some(n) = self.nodes.get_mut(&h) {
                 n.depth = n.depth - old_depth + new_depth;
                 n.containers = n.containers - old_containers + parent_containers;
             }
         }
-        if old_containers > 0 || parent_containers > 0 {
-            mark_layout(gui);
-        }
         if let Some(n) = self.nodes.get_mut(&handle) {
             n.parent = new_parent;
+        }
+        if old_containers > 0 || parent_containers > 0 {
+            // The containers it left, the ones it joined, and the ones it carries (their depth below a layout's top changed).
+            self.mark_layouts_from(gui, old_parent);
+            for h in below {
+                self.mark_layouts_from(gui, h);
+            }
         }
         Ok(())
     }
@@ -715,12 +738,13 @@ impl Realm {
         r.finish()?;
         let (obj, parent, in_layout) = {
             let n = self.control(handle)?;
-            (n.obj, self.live(n.parent)?.obj, n.containers > 0)
+            (n.obj, n.parent, n.containers > 0)
         };
+        let parent_obj = self.live(parent)?.obj;
         // The member list starts with the control drawn first.
-        vm.objects_mut().move_member(parent, obj, !front);
+        vm.objects_mut().move_member(parent_obj, obj, !front);
         if in_layout {
-            mark_layout(gui);
+            self.mark_layouts_from(gui, parent);
         }
         Ok(())
     }
@@ -903,11 +927,6 @@ fn layout_fields(
         }
     }
     out
-}
-
-/// Something inside a layout container changed: the layouts are checked again for the next frames ([`super::layers::mark_layout`]).
-fn mark_layout(gui: &Gui) {
-    super::layers::mark_layout(gui);
 }
 
 /// Writes console fields to a control.
