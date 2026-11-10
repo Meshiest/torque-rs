@@ -61,7 +61,7 @@ use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 use torque_engine::net_classes::{
-    ClientGhostLookup, ClientGhosts, DrawnShapes, GhostSinks, RawGhostEvent,
+    ClientGhostLookup, ClientGhosts, DrawnShapes, GhostSinks, PluginStills, RawGhostEvent,
 };
 use torque_engine::{Engine, ProtocolKind};
 use torque_server::net::channels::ClientChannels;
@@ -262,6 +262,7 @@ fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
     world.first_person_clear = old.first_person_clear;
     world.max_view_distance = old.max_view_distance;
     world.plugin_shapes = old.plugin_shapes;
+    world.stills = old.stills;
     world.effect_seq = old.effect_seq;
     world.effects_dropped = old.effects_dropped;
     world.player_move_seq = old.player_move_seq;
@@ -1305,6 +1306,9 @@ impl ConnGame for TgeConn {
         let mut world = TgeWorld::default();
         if let Some(drawn) = vm.extension::<DrawnShapes>() {
             world.records.plugin_shapes = (*drawn).clone();
+        }
+        if let Some(stills) = vm.extension::<PluginStills>() {
+            world.records.stills = (*stills).clone();
         }
         Ok(Started {
             feed,

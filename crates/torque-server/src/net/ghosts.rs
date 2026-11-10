@@ -1460,6 +1460,59 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
         self.0.borrow_mut().reg.clear_pending(obj, bits);
     }
 
+    fn scopes(
+        &self,
+        vm: &torque_ts_vm::vm::Vm,
+        connection: torque_ts_vm::sim::ObjId,
+        objs: &[torque_ts_vm::sim::ObjId],
+    ) -> Vec<bool> {
+        let Some(conn) = self.conn_of_object(connection) else {
+            return vec![false; objs.len()];
+        };
+        let env = SourceEnv {
+            vm,
+            table: None,
+            ghost_bits: self.conn_ghost_bits(conn),
+        };
+        G::with_source(self, env, Some(conn), |src, conns| {
+            let Some(c) = conns.get_mut(&conn) else {
+                return vec![false; objs.len()];
+            };
+            objs.iter()
+                .map(|&obj| c.mgr.scope_would_take(&*src, obj))
+                .collect()
+        })
+    }
+
+    fn scope_varies(
+        &self,
+        vm: &torque_ts_vm::vm::Vm,
+        connection: torque_ts_vm::sim::ObjId,
+    ) -> bool {
+        // A connection the hub has not met yet has no scope in place either.
+        let Some(conn) = self.conn_of_object(connection) else {
+            return true;
+        };
+        let env = SourceEnv {
+            vm,
+            table: None,
+            ghost_bits: self.conn_ghost_bits(conn),
+        };
+        G::with_source(self, env, Some(conn), |src, conns| {
+            // A connection whose scope is not in place yet (no ghosting, no scope object) takes more once it is.
+            conns.get(&conn).is_none_or(|c| !c.mgr.scope_ready())
+                || torque_net::ghost::ObjectSource::scope_stamp(src).is_none()
+        })
+    }
+
+    fn ghost_index_on(
+        &self,
+        connection: torque_ts_vm::sim::ObjId,
+        obj: torque_ts_vm::sim::ObjId,
+    ) -> Option<u32> {
+        self.ghost_index(self.conn_of_object(connection)?, obj)
+    }
+
     fn set_record_mask(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
         GhostHub::set_mask(self, obj, bits);
     }

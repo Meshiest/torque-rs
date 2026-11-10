@@ -95,6 +95,10 @@ pub struct PropBook {
     /// The shape file and draw scale of each datablock of `collision = "shape"` the book has a prop of, by datablock id: what a
     /// prediction takes the prop's collision hulls from ([`HullSource`]).
     sources: BTreeMap<u32, HullSource>,
+    /// The frozen props the server sent over the `props-frozen` channel instead of ghosting them.
+    frozen: crate::frozen::client::FrozenTable,
+    /// Moves whenever a slot gains or loses a ghost: what decides which frozen props are drawn from the table.
+    slots_revision: u64,
 }
 
 /// Where a datablock of `collision = "shape"` takes its hulls from: its shape file and draw scale, as the client has them.
@@ -107,7 +111,32 @@ pub struct HullSource {
 impl PropBook {
     /// The revision of what the book holds: it changes at every record heard, removal and prediction.
     pub fn revision(&self) -> u64 {
-        self.revision
+        self.revision.max(self.frozen.revision())
+    }
+
+    /// The frozen props sent over the channel.
+    pub fn frozen(&self) -> &crate::frozen::client::FrozenTable {
+        &self.frozen
+    }
+
+    pub fn frozen_mut(&mut self) -> &mut crate::frozen::client::FrozenTable {
+        &mut self.frozen
+    }
+
+    /// What the frozen props drawn from the table are (the stills) changes with this: a ghost of a slot came or went, or the
+    /// table changed.
+    pub fn shown_revision(&self) -> u64 {
+        self.slots_revision.max(self.frozen.revision())
+    }
+
+    /// Whether a ghost holds the prop of `slot`.
+    pub fn has_ghost_in(&self, slot: u16) -> bool {
+        self.in_slot(slot).is_some()
+    }
+
+    /// The stills of the frozen props that have no ghost.
+    pub fn shown_stills(&self) -> Vec<(u32, torque_engine::net_classes::Still)> {
+        self.frozen.stills(&|slot| self.has_ghost_in(slot))
     }
 
     pub fn props(&self) -> &BTreeMap<u32, ClientProp> {
@@ -149,6 +178,7 @@ impl PropBook {
             }
             None => {
                 self.by_slot.insert((0, index));
+                self.slots_revision = self.revision;
                 self.props.entry(index).or_insert(ClientProp {
                     data: None,
                     params: None,
@@ -175,6 +205,7 @@ impl PropBook {
             if entry.slot != init.slot {
                 self.by_slot.remove(&(entry.slot, index));
                 self.by_slot.insert((init.slot, index));
+                self.slots_revision = self.revision;
             }
             entry.slot = init.slot;
             entry.hulls = init.hulls;
@@ -197,6 +228,7 @@ impl PropBook {
         self.revision = next_revision();
         if let Some(p) = self.props.remove(&index) {
             self.by_slot.remove(&(p.slot, index));
+            self.slots_revision = self.revision;
         }
     }
 
@@ -228,9 +260,11 @@ impl PropBook {
     /// Every prop forgotten.
     pub fn clear(&mut self) {
         self.revision = next_revision();
+        self.slots_revision = self.revision;
         self.props.clear();
         self.by_slot.clear();
         self.sources.clear();
+        self.frozen.clear();
     }
 
     /// Where datablock `data` takes its collision hulls from, when it asked for them and a prop of it was heard.
@@ -259,6 +293,7 @@ impl PropBook {
             out.extend(p.q.words().map(|w| w as u32));
             out.push(u32::from(p.asleep) | u32::from(p.frozen) << 1 | u32::from(p.mine) << 2);
         }
+        out.extend(self.frozen.state_words());
         out
     }
 }
@@ -275,7 +310,7 @@ impl ClientProps {
 }
 
 /// A client datablock's field as a number.
-fn number(vm: &Vm, id: u32, field: &[u8], index: usize) -> f32 {
+pub(crate) fn number(vm: &Vm, id: u32, field: &[u8], index: usize) -> f32 {
     let text = vm.read_field_of(torque_ts_vm::vm::FieldTarget::Live(id), field, b"");
     let word = text
         .split(|b| *b == b' ' || *b == b'\t')
@@ -421,6 +456,22 @@ impl ClientSource {
     }
 }
 
+impl ClientSource {
+    /// The shape of the frozen prop in `slot` the table holds, when no ghost holds that slot and the client has its datablock.
+    fn frozen_shape(book: &PropBook, slot: u16) -> Option<CollisionShape> {
+        if book.has_ghost_in(slot) {
+            return None;
+        }
+        let held = book.frozen().get(slot)?;
+        let params = book.frozen().params(held.prop.data)?;
+        Some(crate::server::shape_of(
+            slot,
+            &held.prop.q,
+            params.shape.half_extents(),
+        ))
+    }
+}
+
 impl CollisionSource for ClientSource {
     fn shapes(&self, out: &mut Vec<CollisionShape>) {
         let _ = self.book.with(|book| {
@@ -430,6 +481,10 @@ impl CollisionSource for ClientSource {
                 }
                 out.extend(self.shape_of(g, p));
             }
+            // The props sent over the channel stand where their ghosts would: the same slots, the same boxes.
+            for (slot, _) in book.frozen().iter() {
+                out.extend(ClientSource::frozen_shape(book, slot));
+            }
         });
     }
 
@@ -437,9 +492,9 @@ impl CollisionSource for ClientSource {
     fn shape(&self, key: u32) -> Option<CollisionShape> {
         let slot = u16::try_from(key).ok()?;
         self.book
-            .with(|book| {
-                let (g, p) = book.in_slot(slot)?;
-                self.shape_of(g, p)
+            .with(|book| match book.in_slot(slot) {
+                Some((g, p)) => self.shape_of(g, p),
+                None => ClientSource::frozen_shape(book, slot),
             })
             .flatten()
     }

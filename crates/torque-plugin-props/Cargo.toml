@@ -24,6 +24,8 @@ torque-ghost-world = { path = "../torque-ghost-world" }
 # Marking a server object's ghost groups dirty, reading players and map pieces.
 torque-game = { path = "../torque-game" }
 torque-ghosts = { path = "../torque-ghosts" }
+# The hub a server sends bulk channels through, and the scope control its ghosting asks.
+torque-server = { path = "../torque-server" }
 # The tree a prop hung on another is placed from, and the server's view of it.
 torque-hierarchy = { path = "../torque-hierarchy" }
 torque-plugin-hierarchy = { path = "../torque-plugin-hierarchy" }
@@ -44,7 +46,6 @@ criterion = { workspace = true }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
 torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
 torque-app-server = { path = "../torque-app-server" }
-torque-server = { path = "../torque-server" }
 # The floor and the figure of the tests' world.
 torque-example-assets = { path = "../../examples/assets" }
 torque-shapes = { path = "../torque-shapes" }

@@ -595,8 +595,8 @@ impl torque_engine::PluginType for OldProps {
 fn a_client_of_the_older_props_version_is_refused_at_the_manifest() {
     use torque_plugin_props::NET_VERSION;
     assert_eq!(
-        NET_VERSION, 4,
-        "the version moved with the wire format (the hold, the held flag, the datablock's collision mode)"
+        NET_VERSION, 5,
+        "the version moved with the wire format (the hold, the held flag, the datablock's collision mode, a slot of 12 bits, the frozen channel)"
     );
     let files = rig::files();
     let mut rig = Rig::new(&files, &[]);

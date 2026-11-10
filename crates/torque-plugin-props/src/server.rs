@@ -38,14 +38,14 @@ pub struct PropPrefs {
     #[pref(default = 4, range = 1..=8)]
     pub substeps: i32,
     /// The most props one player may own.
-    #[pref(default = 64, range = 1..=1024, name = "MaxPerPlayer")]
+    #[pref(default = 64, range = 1..=4096, name = "MaxPerPlayer")]
     pub max_per_player: i32,
     /// The most props the players of one remote address may own between them, orphans counted (room for players behind one
     /// router; a player who comes back under a new key starts no new quota).
-    #[pref(default = 256, range = 1..=1024, name = "MaxPerAddress")]
+    #[pref(default = 256, range = 1..=4096, name = "MaxPerAddress")]
     pub max_per_address: i32,
     /// The most props on the server.
-    #[pref(default = 1024, range = 1..=1024, name = "MaxProps")]
+    #[pref(default = 1024, range = 1..=4096, name = "MaxProps")]
     pub max_props: i32,
     /// The most props awake at once; past it the farthest from every player sleep.
     #[pref(default = 256, range = 1..=1024, name = "MaxAwake")]
@@ -59,6 +59,10 @@ pub struct PropPrefs {
     /// The share of each packet the props' updates take at most (0.05 to 1).
     #[pref(default = 0.4, range = 0.05..=1.0, name = "NetShare")]
     pub net_share: f32,
+    /// The most frozen props one client is ghosted; the rest of them go to it over the `props-frozen` channel
+    /// ([`crate::frozen`]).
+    #[pref(default = 256, range = 0..=4096, name = "FrozenGhosts")]
+    pub frozen_ghosts: i32,
     /// The most joints one player may own.
     #[pref(default = 64, range = 1..=1024, name = "MaxJointsPerPlayer")]
     pub max_joints_per_player: i32,
@@ -85,7 +89,7 @@ pub struct PropPrefs {
 pub struct NetProp {
     /// The `PropData` datablock's object id.
     data_block: i32,
-    /// The key of its collision shape on both sides (0 to 1,023).
+    /// The key of its collision shape on both sides (0 to 4,095).
     slot: i32,
     /// The digest of the hulls it collides as ([`crate::hulls::HullDigest`]; a count of 0: the datablock's box).
     hull_count: i32,
@@ -151,6 +155,8 @@ pub struct PropServer {
     pub hulls: HullBook,
     /// The datablocks whose note about their hulls has been printed.
     pub(crate) noted: std::collections::BTreeSet<u32>,
+    /// Which frozen props each client is ghosted and which it is sent over the channel ([`crate::frozen::server`]).
+    pub(crate) frozen: crate::frozen::server::FrozenSync,
 }
 
 impl Default for PropServer {
@@ -166,6 +172,7 @@ impl Default for PropServer {
             links: crate::hierarchy::Links::default(),
             hulls: HullBook::default(),
             noted: std::collections::BTreeSet::new(),
+            frozen: crate::frozen::server::FrozenSync::default(),
         }
     }
 }
@@ -229,6 +236,25 @@ impl ServerProps {
     #[must_use]
     pub fn link_stats(&self) -> Option<crate::hierarchy::LinkStats> {
         self.with(|s| s.links.stats())
+    }
+
+    /// Each client's frozen props: how many it is ghosted and how many it is sent over the channel ([`crate::frozen`]).
+    #[must_use]
+    pub fn frozen_counts(&self) -> Vec<crate::frozen::server::ClientCount> {
+        self.with(|s| s.frozen.counts()).unwrap_or_default()
+    }
+
+    /// What the frozen channel has done so far.
+    #[must_use]
+    pub fn frozen_stats(&self) -> crate::frozen::server::FrozenStats {
+        self.with(|s| s.frozen.stats()).unwrap_or_default()
+    }
+
+    /// The slots of the props on the channel for the client whose connection object is `conn`, in any stage of the handover.
+    #[must_use]
+    pub fn frozen_slots(&self, conn: ObjId) -> Vec<u16> {
+        self.with(|s| s.frozen.channel_slots(conn))
+            .unwrap_or_default()
     }
 
     /// Reads the state, if no one is changing it.

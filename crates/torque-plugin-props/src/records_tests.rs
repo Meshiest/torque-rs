@@ -183,7 +183,7 @@ fn what_a_hostile_server_sends_never_panics_and_is_held() {
                 );
             }
             if let Some(init) = record.init {
-                assert!(init.slot < 1024);
+                assert!(init.slot < 4096);
             }
         }
         let mut r = BitReader::new(&bytes);

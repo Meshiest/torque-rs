@@ -5,7 +5,7 @@
 //! GarageGames, LLC) and `sim/netObject.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the
 //! code here is this crate's own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::bits::{BitWriter, bit_length};
 use crate::cap::{NET_GHOST_DEPENDENTS, NET_GHOST_LIMIT, NET_GHOST_REFS};
@@ -443,6 +443,15 @@ pub struct GhostManager<P: GhostPolicy = TorqueGhosts> {
     walking: bool,
     /// What the last full query that ran to its end left true: every object it could ghost has a ghost.
     settled: Option<Settled>,
+    /// The source's [`ObjectSource::scope_hidden_stamp`] as the last scan saw it: the ghosts of the objects hidden since are
+    /// dropped.
+    hidden_seen: u64,
+    /// The scope object and what it rode as the last scan saw them: the veto does not hold for them.
+    protected_seen: Option<(ObjId, Option<ObjId>)>,
+    /// Objects the veto kept from a ghost, to scope again when it is lifted: only a walk that meets an object would otherwise
+    /// bring it back, and the full query does not meet one that is always in scope. It holds no more than the host hides (an
+    /// entry goes when its veto is lifted).
+    vetoed: BTreeSet<ObjId>,
     /// What the full query under way started with ([`Settled`] when it ends), and whether it met something a later one could
     /// not skip (a ghost it could not make).
     walk: Option<Walk>,
@@ -460,6 +469,9 @@ struct Settled {
     stamp: u64,
     scope: ObjId,
     links_let_go: u64,
+    hidden: u64,
+    /// What the scope object rode: the veto does not hold for it.
+    rides: Option<ObjId>,
 }
 
 /// A full query under way: how it started, and whether it left an object without the ghost it could have.
@@ -504,6 +516,9 @@ impl<P: GhostPolicy> GhostManager<P> {
             drop_at: 0,
             walking: false,
             settled: None,
+            hidden_seen: 0,
+            protected_seen: None,
+            vetoed: BTreeSet::new(),
             walk: None,
             items: Vec::new(),
             ids: Vec::new(),
@@ -581,6 +596,12 @@ impl<P: GhostPolicy> GhostManager<P> {
 
     pub fn scope_object(&self) -> Option<ObjId> {
         self.scope_object
+    }
+
+    /// Whether the connection's scope is in place: ghosting is on and it has a scope object. Until then [`GhostManager::scope_would_take`]
+    /// answers no for everything but what is always in scope, and the answer changes with no change of the objects.
+    pub fn scope_ready(&self) -> bool {
+        self.scoping && self.scope_object.is_some()
     }
 
     /// The scope object (the control object): the full query runs around it.
@@ -939,6 +960,12 @@ impl<P: GhostPolicy> GhostManager<P> {
         if nf & net_flags::SCOPE_LOCAL != 0 && !self.cfg.local {
             return Scoped::Refused;
         }
+        // The host's veto beats everything that scopes: ScopeAlways, a script's `scopeToClient`, an object's relatives. It is
+        // not an incomplete walk: the source's stamp moves when the veto does.
+        if self.vetoes(src, obj) {
+            self.vetoed.insert(obj);
+            return Scoped::Refused;
+        }
         if let Some(id) = self.table.id_of(obj) {
             if let Some(g) = self.table.get(id) {
                 let f = g.flags | flags::IN_SCOPE;
@@ -1004,6 +1031,8 @@ impl<P: GhostPolicy> GhostManager<P> {
             stamp: src.scope_stamp()?,
             scope,
             links_let_go: self.table.links_let_go(),
+            hidden: src.scope_hidden_stamp(),
+            rides: src.rides(scope),
         })
     }
 
@@ -1092,6 +1121,7 @@ impl<P: GhostPolicy> GhostManager<P> {
     where
         P: ObjectPolicy<S>,
     {
+        self.drop_hidden(src);
         let Some(scope) = self.scope_object else {
             return false;
         };
@@ -1185,6 +1215,100 @@ impl<P: GhostPolicy> GhostManager<P> {
                 self.recent_cursor = if budget.out { i } else { 0 };
             }
             false
+        }
+    }
+
+    /// Whether the host's veto holds for `obj`: it does not for the connection's own scope object (its control object) nor what
+    /// that rides, which a veto would leave the connection blind without.
+    fn vetoes<S: ObjectSource>(&self, src: &S, obj: ObjId) -> bool {
+        src.scope_hidden(obj)
+            && !self
+                .scope_object
+                .is_some_and(|scope| scope == obj || src.rides(scope) == Some(obj))
+    }
+
+    /// Whether this connection's scope would take `obj` now, as its full query does and apart from the host's veto ([`ObjectSource::scope_hidden`],
+    /// which the host asks itself) and from the room in the table: the object exists, is not kept for a loopback connection
+    /// alone, passes the policy's rule for the query ([`ObjectPolicy::query_visit`]) and is within the source's reach
+    /// ([`ObjectSource::scope_includes`]). An object always in scope is taken. Asked for one object, with no walk. It never
+    /// answers yes where the full query would scope nothing: not while ghosting is off, and with no scope object only an object
+    /// always in scope is taken. A scope object with no camera is queried as the full query does, from a default view.
+    pub fn scope_would_take<S: ObjectSource>(&mut self, src: &S, obj: ObjId) -> bool
+    where
+        P: ObjectPolicy<S>,
+    {
+        if !self.scoping {
+            return false;
+        }
+        let Some(nf) = src.scope_flags(obj) else {
+            return false;
+        };
+        if nf & net_flags::SCOPE_LOCAL != 0 && !self.cfg.local {
+            return false;
+        }
+        if nf & net_flags::SCOPE_ALWAYS != 0 {
+            return true;
+        }
+        let Some(scope) = self.scope_object else {
+            return false;
+        };
+        if !self.policy.query_visit(src, scope, obj) {
+            return false;
+        }
+        let radius = scope_radius_used(src.sky_visible_distance(), &self.policy.radius());
+        let mut cam = src.camera_info(scope).unwrap_or_default();
+        cam.object = scope;
+        cam.visible_distance = radius;
+        src.scope_includes(obj, scope, &cam, radius)
+    }
+
+    /// Drops the ghosts of the objects the host has hidden since the last scan ([`ObjectSource::scope_hidden`]): a ghost is
+    /// killed as if its object had left (even one that is always in scope), and the ghosts linked to it by the host
+    /// ([`ObjectSource::marks_on_ghost`]) are marked, so a child's record is sent without the parent it no longer has.
+    fn drop_hidden<S: ObjectSource>(&mut self, src: &S)
+    where
+        P: ObjectPolicy<S>,
+    {
+        let stamp = src.scope_hidden_stamp();
+        let protected = self.scope_object.map(|scope| (scope, src.rides(scope)));
+        if stamp == self.hidden_seen && protected == self.protected_seen {
+            return;
+        }
+        self.hidden_seen = stamp;
+        self.protected_seen = protected;
+        let mut marks = Vec::new();
+        for obj in self.table.linked_objects(|_| true) {
+            if !self.vetoes(src, obj) {
+                continue;
+            }
+            if let Some(id) = self.table.id_of(obj) {
+                kill_in(&mut self.table, &mut self.policy, id);
+            }
+            self.vetoed.insert(obj);
+            src.marks_on_ghost(obj, &mut marks);
+        }
+        for (obj, bits) in marks {
+            self.set_mask(obj, bits);
+        }
+        // An object whose veto is lifted and that is always in scope is scoped again here: no query walk meets it.
+        let lifted: Vec<ObjId> = self
+            .vetoed
+            .iter()
+            .copied()
+            .filter(|&o| !self.vetoes(src, o))
+            .collect();
+        for obj in lifted {
+            self.vetoed.remove(&obj);
+            if src.net_flags(obj) & net_flags::SCOPE_ALWAYS != 0
+                || src.ghost_always().contains(&obj)
+            {
+                let mut free = |_| true;
+                let mut budget = Budget {
+                    charge: &mut free,
+                    out: false,
+                };
+                self.object_in_scope(src, obj, &mut budget);
+            }
         }
     }
 

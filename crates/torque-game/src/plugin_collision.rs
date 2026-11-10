@@ -6,7 +6,7 @@
 //! has nothing installed and every query is as it was. Script sees each source's type bit as
 //! `$TypeMasks::<Name>ObjectType`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use collide::source::{CollisionSources, PluginCollision, ShapeSet, Side};
@@ -16,6 +16,8 @@ struct Installed {
     sources: Rc<CollisionSources>,
     /// The shapes as the sources had them, and the sim time they were read at.
     snapshot: RefCell<Option<(u32, Rc<ShapeSet>)>>,
+    /// The console has been told that a source went past a cap.
+    warned: Cell<bool>,
 }
 
 /// Gives `vm` the sources of `side` among `entries` and their type bits as globals. Which sources there are depends on the list
@@ -38,6 +40,7 @@ pub fn install(vm: &mut Vm, entries: &[PluginCollision], side: Side) -> Vec<Stri
     vm.set_extension(Rc::new(Installed {
         sources: Rc::new(sources),
         snapshot: RefCell::new(None),
+        warned: Cell::new(false),
     }));
     warnings
 }
@@ -45,6 +48,35 @@ pub fn install(vm: &mut Vm, entries: &[PluginCollision], side: Side) -> Vec<Stri
 /// The sources `vm` was given, if any.
 pub fn sources_of(vm: &Vm) -> Option<Rc<CollisionSources>> {
     vm.extension::<Installed>().map(|i| Rc::clone(&i.sources))
+}
+
+/// Tells the console, once, that a source of `vm` went past a cap ([`collide::source::Overflow`]): a source loses the shapes
+/// past its own cap, and a set whose sources list more than it holds is empty on both sides, so a plugin that grows past it
+/// would lose its collision without a word. A host calls it once a tick.
+pub fn report_overflow(vm: &mut Vm) {
+    let Some(installed) = vm.extension::<Installed>() else {
+        return;
+    };
+    let Some(over) = installed.sources.take_overflow() else {
+        return;
+    };
+    if installed.warned.replace(true) {
+        return;
+    }
+    let message = if over.set_dropped {
+        format!(
+            "plugin collision: the sources list {} shapes, past the {} a set holds: no plugin shape collides",
+            over.listed,
+            collide::source::MAX_SET_SHAPES
+        )
+    } else {
+        format!(
+            "plugin collision: a source lists {} shapes, past the {} it may have: the rest are left out",
+            over.listed,
+            collide::source::MAX_SHAPES_PER_SOURCE
+        )
+    };
+    vm.warn(message);
 }
 
 /// The shapes the sources of `vm` have, read once for each sim time (a tick's objects all see the shapes as the tick began);

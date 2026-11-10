@@ -109,6 +109,46 @@ with it (the group is closed for that packet). Other classes are untouched, and 
 peers see plugin classes, so a TGE peer's packets do not change. Both functions run for each update of each packet, so they
 should only read. The props plugin uses it (see [Props and joints](props-and-joints.md)).
 
+### Keeping an object out of a connection's ghosts
+
+A plugin that has a better way to send an object than a ghost (a bulk channel, a message of its own) asks the server not to ghost it,
+to one connection or to all:
+
+```rust,ignore
+engine.net().scope_control();                       // when the plugin is built
+// in a server hook:
+let scope = ScopeControl::of(vm).expect("asked for above");
+scope.hide(vm, object, Audience::Connection(client))?;  // client: the connection's GameConnection object
+scope.show(object, Audience::Connection(client));   // and back
+```
+
+The server asks the control before it makes a ghost of an object for a connection, so every way an object gets scoped is refused:
+the full query, an object's relatives, the feed of new objects, an always-in-scope object, the ghost-always set and a script's
+`scopeToClient`. A ghost the connection has when the object is hidden is killed at the next packet (no update need be pending), and
+what the scene hierarchy hangs on it is sent again as roots with their own poses; shown again, the object is ghosted by the next
+scan, always-in-scope ones included. Only the server's engine has the control, so a client cannot reach it, and a hide only takes
+something away from what a client is sent, and never the connection's own control object (or what it rides): a hide cannot
+blind a player. A deleted object and a gone connection take their entries with them. A connection is a `GameConnection` (a hide for
+any other object is refused, `HideError::NotAConnection`), and each audience (one connection, or everyone) has up to 16,384 entries
+of the pool's 262,144, so one plugin's hoard cannot take another connection's room; a hide past a cap is refused (`HideError::Full`,
+counted by `ScopeControl::refused`) and changes nothing. A connection's ghosts look again only when what concerns that connection
+changed (`ScopeControl::stamp_for`). The control costs a server that never asks for it nothing, and a
+Torque-protocol peer's packets are as they were. Each plugin hides and shows under its own name (`hide_as`, `show_as`), so one
+plugin's show never undoes another's hide; a plugin that sends an object another way (a bulk channel) asks `is_hidden_by_other`
+and reads `changes_since` to follow the hides of the others without a walk. Handing an object over to the plugin's own channel without a gap is the plugin's
+to do: send the object by the channel first, hide the ghost when the channel's message was acknowledged
+(`ChannelHub::queued_message_len`), and the other way round show the ghost first and remove the channel's copy once the ghost's
+first record was acknowledged; props do exactly this for frozen props ([Props and joints](props-and-joints.md#frozen-props-over-a-channel)).
+
+### Shapes without a ghost
+
+A plugin that sends objects another way can still have the client's renderer draw them: `engine.net().stills()` gives each client a
+`PluginStills`, a set of shapes (file, one scale, position, rotation) the plugin replaces from its client tick hook
+(`vm.extension::<PluginStills>()`). The engine's ghost scene draws each as it draws a resting ghost, as a still copy of its shape's
+static batch (kept on the GPU, culled there, in the cached shadows), so thousands of them cost a frame little. A scene that does
+not keep resting shapes draws none, and a still that is not drawable (no shape, a scale that is not a number or is past 1024) is left
+out; at most 8,192 are kept.
+
 ## The client's side of a ghost
 
 The ghost reaches the client as a record in the connection's world; a plugin that shows or simulates it names a handler for the
@@ -244,7 +284,7 @@ engine.net().channel::<TerrainChannel>("terrain", 100);   // 100 bytes of each p
 
 `ChunkChannel` is the plugin's logic on both sides (`snapshot` on the server, `receive` on the client); the name is listed in the
 manifest, and the server turns the channels on for a connection when it accepts the manifest that lists them. The rope has none:
-its ghost is a few hundred bits. (`examples/minimal-engine/tests/channels.rs` sends 30 KB while the example's ghosts go on.)
+its ghost is a few hundred bits. (`examples/minimal-engine/tests/channels.rs` sends 30 KB while the example's ghosts go on.) The props plugin sends frozen props past a count this way, instead of as ghosts, with [scope control](#keeping-an-object-out-of-a-connections-ghosts) to keep them out of the ghosts.
 
 ### From a client to the server
 
@@ -532,6 +572,7 @@ with both predictors, frame by frame.
 | One-shot ropes a client shows, their time, and sent to a client | 32, 30 seconds, 32 a second |
 | Predicted ropes waiting on a client, and their wait | 16, 2 seconds |
 | Plugin ghost classes, datablock classes | 16, 29 (the room Torque's class id widths leave) |
+| Entries in the scope control (an object hidden from a connection, or from all): in all, for one audience; stills a client keeps | 262,144, 16,384; 8,192 |
 | RPCs an engine registers, a message (the most an RPC may ask for), a call's name | 256, 16,382 bytes (256 unless it asks), 40 bytes |
 | Calls of one RPC waiting for a reply, reliable RPC bytes not yet acknowledged | 16, 64 KiB |
 | An RPC's rate unless it says another, all of a connection's | 8 a second (burst 16), 64 a second (burst 128) |

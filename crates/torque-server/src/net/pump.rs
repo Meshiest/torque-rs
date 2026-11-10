@@ -1337,6 +1337,11 @@ pub fn send_pass<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
     // The tick pass starts with `collapseDirtyList`: the objects marked since the last pass reach the connections' ghosts, most
     // recently first-marked first. Every connection's ghost work credit is full again.
     let hub = shared.borrow().ghosts.clone();
+    // What plugins keep out of connections' ghosts goes with the connections that are gone.
+    if let Some(scope) = torque_engine::scope::ScopeControl::of(vm) {
+        scope.sweep(vm);
+    }
+    torque_game::plugin_collision::report_overflow(vm);
     if let Some(hub) = hub.as_ref() {
         hub.begin_pass();
         hub.collapse();

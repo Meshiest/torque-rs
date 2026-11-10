@@ -192,6 +192,21 @@ impl ChannelHub {
         }
     }
 
+    /// The `GameConnection` object of the accepted connection `conn` (the script's `%client`), for a plugin that keeps its own
+    /// state by connection object and sends through the hub by connection.
+    pub fn object_of(&self, conn: ConnId) -> Option<ObjId> {
+        self.state.borrow().objs.get(&conn).copied()
+    }
+
+    /// The connection whose `GameConnection` object is `obj`.
+    pub fn conn_of(&self, obj: ObjId) -> Option<ConnId> {
+        self.state
+            .borrow()
+            .objs
+            .iter()
+            .find_map(|(conn, o)| (*o == obj).then_some(*conn))
+    }
+
     /// The connections the host has accepted, with channels on or off.
     pub fn connected(&self) -> Vec<ConnId> {
         self.state.borrow().known.clone()

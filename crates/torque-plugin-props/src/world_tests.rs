@@ -72,7 +72,7 @@ fn the_caps_refuse_the_65th_for_a_player_and_the_1025th_for_the_server() {
     );
     // The server's cap, with no owner.
     let mut id = 1_000;
-    while w.len() < MAX_PROPS as usize {
+    while w.len() < DEFAULT_MAX_PROPS as usize {
         let n = w.len() as f32;
         w.spawn(
             id,

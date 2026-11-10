@@ -25,7 +25,7 @@ use torque_net::handshake::ConnectFields;
 use torque_net::huffman::Table;
 use torque_net::profile::{DEFAULT_DATABLOCK_BITS, DEFAULT_GHOST_LIMIT};
 use torque_net::protocol::{Received, Role, reader_at};
-use torque_plugin_props::{PropGhost, PropsPlugin};
+use torque_plugin_props::{PropGhost, PropsPlugin, ServerProps};
 use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
 use torque_server::net::transport::{MemoryEnd, MemoryTransport, SharedTransport};
 use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
@@ -46,6 +46,7 @@ fn game_server() -> (
     Rc<RefCell<NetShared<TorqueNet>>>,
     MemoryEnd,
     PluginClasses,
+    ServerProps,
 ) {
     let engine = EngineBuilder::new()
         .add_plugins(PropsPlugin)
@@ -84,7 +85,11 @@ fn game_server() -> (
         .replay(ServerStage::Net, &mut s.vm)
         .expect("the plugin's script registry");
     state.borrow_mut().allow_connections = true;
-    (s, shared, end, engine.net_classes())
+    let props = engine
+        .resource::<ServerProps>()
+        .expect("the server's props")
+        .clone();
+    (s, shared, end, engine.net_classes(), props)
 }
 
 /// A client of the server: torque-net's handshake and packet layer, a ghost table read with TGE's client codec and the plugin classes
@@ -336,7 +341,7 @@ fn eval(s: &mut NetServer, code: &str) -> String {
 
 #[test]
 fn a_client_that_is_torques_alone_is_never_sent_a_prop_and_one_with_the_plugin_is() {
-    let (mut s, shared, end, plugins) = game_server();
+    let (mut s, shared, end, plugins, _) = game_server();
     assert_eq!(
         plugins.names(Kind::Object).collect::<Vec<_>>(),
         ["Joint", "Prop"]
@@ -391,4 +396,61 @@ new Camera(EyeB) { dataBlock = EyeData; };",
     let props = own.props();
     let state = props[0].state.expect("a state").0;
     assert_eq!(state.position(), [1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn frozen_props_change_nothing_for_a_client_that_is_torques_alone_or_has_no_channel() {
+    let (mut s, shared, end, plugins, props) = game_server();
+    eval(
+        &mut s,
+        "new SimGroup(ClientGroup);
+datablock CameraData(EyeData) {};
+datablock PropData(Crate) { size = \"0.4 0.4 0.4\"; mass = 20; };
+new Camera(EyeA) { dataBlock = EyeData; };
+new Camera(EyeB) { dataBlock = EyeData; };
+$Pref::Props::FrozenGhosts = 0;",
+    );
+    // Every frozen prop would go over the channel, if any client had one.
+    eval(
+        &mut s,
+        "for (%i = 0; %i < 120; %i++) { %p = propSpawn(Crate, (%i % 12) SPC mFloor(%i / 12) SPC 3); propFreeze(%p); }",
+    );
+    let mut tge = TestClient::new(50_001, 7, PluginClasses::default());
+    tge.start(&end);
+    run(&mut s, &end, &mut [&mut tge], 10);
+    let conn_tge = connection_of(&shared, tge.addr);
+    eval(
+        &mut s,
+        &format!("{conn_tge}.setControlObject(EyeA); {conn_tge}.activateGhosting();"),
+    );
+    run(&mut s, &end, &mut [&mut tge], 60);
+    // Torque's client has what a Torque server sends it: no prop, no error, nothing about a channel.
+    assert!(tge.errors.is_empty(), "{:?}", tge.errors);
+    assert_eq!(tge.census(), ["Camera", "Camera"]);
+    // A client of the engine's own without the channel enabled is ghosted every prop (the channel is only for connections that
+    // have it): it is never left short.
+    eval(&mut s, "$Server::EngineClasses = 1;");
+    let mut own = TestClient::new(50_002, 9, plugins);
+    own.start(&end);
+    run(&mut s, &end, &mut [&mut tge, &mut own], 10);
+    let conn_own = connection_of(&shared, own.addr);
+    eval(
+        &mut s,
+        &format!("{conn_own}.setControlObject(EyeB); {conn_own}.activateGhosting();"),
+    );
+    run(&mut s, &end, &mut [&mut tge, &mut own], 400);
+    assert!(own.errors.is_empty(), "{:?}", own.errors);
+    assert_eq!(own.census().iter().filter(|c| **c == "Prop").count(), 120);
+    // The server dealt no client any frozen prop and kept none out of any ghosts.
+    assert!(props.frozen_counts().is_empty());
+    assert_eq!(props.frozen_stats(), Default::default());
+    let scope = torque_engine::scope::ScopeControl::of(&s.vm).expect("a scope control");
+    assert_eq!(
+        scope.hidden_count(torque_engine::scope::Audience::Everyone),
+        0
+    );
+    assert_eq!(
+        scope.hidden_count(torque_engine::scope::Audience::Connection(conn_own)),
+        0
+    );
 }

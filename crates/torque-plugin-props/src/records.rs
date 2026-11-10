@@ -18,8 +18,9 @@ pub const MASK_STATE: u32 = 1 << 1;
 /// The mask bit of the sleep and freeze flags.
 pub const MASK_FLAGS: u32 = 1 << 2;
 
-/// The bits of a prop's slot: the key both sides give its collision shape (the server holds at most 1,024 props).
-pub const SLOT_BITS: u8 = 10;
+/// The bits of a prop's slot: the key both sides give its collision shape (the server holds at most
+/// [`MAX_PROPS`](crate::world::MAX_PROPS) props).
+pub const SLOT_BITS: u8 = 12;
 
 /// The server's console fields the state is kept in, in [`Quantized::words`] order.
 pub const STATE_FIELDS: [&str; 13] = [
@@ -118,7 +119,7 @@ pub fn xf_of(position: [f32; 3], q: [f32; 4]) -> Xf {
 /// What a new ghost is told once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct InitWire {
-    /// The prop's slot on the server (0 to 1,023): the key of its collision shape on both sides.
+    /// The prop's slot on the server (0 to 4,095): the key of its collision shape on both sides.
     pub slot: u16,
     /// Whether the connection it is sent to owns it.
     pub mine: bool,

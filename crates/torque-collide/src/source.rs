@@ -38,7 +38,7 @@
 //! rotation and scale elements), a box with a half-extent that is not finite or past [`MAX_HALF_EXTENT`], and a mesh that is not
 //! a convex solid ([`PluginHull::new`]) are refused.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
@@ -69,11 +69,11 @@ pub const SHAPE_TYPE_BITS: u32 = STATIC | STATIC_SHAPE | STATIC_TS | VEHICLE_BLO
 /// Sources a host takes (cap: one per free type bit).
 pub const MAX_SOURCES: usize = FREE_TYPE_BITS.len();
 /// Shapes one source has in a set (cap), and the keys its shapes may use (`0..MAX_SHAPES_PER_SOURCE`).
-pub const MAX_SHAPES_PER_SOURCE: usize = 1024;
+pub const MAX_SHAPES_PER_SOURCE: usize = 4096;
 /// The first id of a plugin shape. Past it, up to [`MAX_SOURCES`] times [`MAX_SHAPES_PER_SOURCE`] ids.
 pub const PLUGIN_ID_BASE: u32 = 0xE000_0000;
 /// The most shapes a set holds (cap): sources whose lists add up to more leave the set empty.
-pub const MAX_SET_SHAPES: usize = 4096;
+pub const MAX_SET_SHAPES: usize = 8192;
 /// The largest element of a pose's rotation and scale part (a pose past it is refused).
 pub const MAX_POSE_SCALE: f32 = 1.0e3;
 /// The largest coordinate of a pose's translation (a pose past it is refused).
@@ -341,6 +341,17 @@ pub struct CollisionSources {
     bound: Vec<Bound>,
     /// The last set made, with each source's revision then (none when a source keeps no revision).
     last: RefCell<Option<(Vec<u64>, Rc<ShapeSet>)>>,
+    /// A cap the last sets went past, until a host takes it ([`CollisionSources::take_overflow`]).
+    over: Cell<Option<Overflow>>,
+}
+
+/// A cap a source set went past: more shapes than a source or a set holds are dropped (a set that passes its cap holds none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overflow {
+    /// The most shapes a source listed, or all the sources listed, when the cap was passed.
+    pub listed: usize,
+    /// The whole set was dropped ([`MAX_SET_SHAPES`]) rather than a source's last shapes ([`MAX_SHAPES_PER_SOURCE`]).
+    pub set_dropped: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -402,6 +413,7 @@ impl CollisionSources {
             CollisionSources {
                 bound,
                 last: RefCell::new(None),
+                over: Cell::new(None),
             },
             warnings,
         )
@@ -507,6 +519,13 @@ impl CollisionSources {
         set
     }
 
+    /// The cap the sets made since the last call went past, if any (once: a host logs it and the next set that passes a cap
+    /// sets it again). A source past its cap loses its last shapes; sources past the set's lose all of them, on both sides
+    /// alike.
+    pub fn take_overflow(&self) -> Option<Overflow> {
+        self.over.take()
+    }
+
     fn list(&self) -> ShapeSet {
         let mut entries: Vec<Entry> = Vec::new();
         let mut listed = Vec::new();
@@ -514,9 +533,19 @@ impl CollisionSources {
         for b in &self.bound {
             listed.clear();
             b.source.shapes(&mut listed);
+            if listed.len() > MAX_SHAPES_PER_SOURCE {
+                self.over.set(Some(Overflow {
+                    listed: listed.len(),
+                    set_dropped: false,
+                }));
+            }
             listed.truncate(MAX_SHAPES_PER_SOURCE);
             total += listed.len();
             if total > MAX_SET_SHAPES {
+                self.over.set(Some(Overflow {
+                    listed: total,
+                    set_dropped: true,
+                }));
                 return ShapeSet::default();
             }
             let mut mine: Vec<Entry> = listed.drain(..).filter_map(|s| Entry::new(b, s)).collect();

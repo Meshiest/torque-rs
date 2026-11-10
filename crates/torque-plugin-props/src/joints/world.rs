@@ -180,6 +180,7 @@ impl PropWorld {
         let props: Vec<u32> = joint.props().collect();
         let hold = joint.kind == Kind::Hold;
         self.joints.insert(id, joint);
+        self.touched.extend(props.iter().copied());
         for p in props {
             self.rouse(p);
             if hold {
@@ -192,6 +193,7 @@ impl PropWorld {
     /// Takes a joint away (out of the physics world too); the joint, when it was one.
     pub fn remove_joint(&mut self, id: u32) -> Option<Joint> {
         let joint = self.joints.remove(&id)?;
+        self.touched.extend(joint.props());
         let removed = self.physics_mut().remove_joint(JointId(id));
         self.note(&format!("joint {id}"), removed);
         if joint.kind == Kind::Hold

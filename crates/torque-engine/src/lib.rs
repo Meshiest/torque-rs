@@ -100,6 +100,7 @@ pub mod prefs;
 mod recipe;
 pub mod rpc;
 mod run;
+pub mod scope;
 pub mod script;
 mod slots;
 pub mod upload;

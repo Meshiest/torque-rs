@@ -135,6 +135,7 @@ impl PropWorld {
             return;
         };
         let old = std::mem::replace(&mut p.link, new);
+        self.touched.insert(id);
         self.unindex(id, old);
         match new {
             Link::Free => {}

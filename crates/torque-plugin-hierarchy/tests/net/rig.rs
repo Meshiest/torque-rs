@@ -38,11 +38,23 @@ pub fn files() -> GameFiles {
     files
 }
 
+/// A plugin that asks for the scope control, as one that keeps objects out of a connection's ghosts does.
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "test.scope")]
+pub struct WantsScope;
+
+impl torque_engine::Plugin for WantsScope {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.net().scope_control();
+    }
+}
+
 /// An engine of the default plugins with the game's `game.toml` (the engine's own protocol: the hierarchy is on).
 pub fn engine(files: &GameFiles) -> Engine {
     let config = GameConfig::load(files).expect("game.toml");
     let mut builder = EngineBuilder::new();
     builder.add_plugins(DefaultPlugins).config(&config);
+    builder.add_plugins(WantsScope);
     builder.build().expect("the engine builds")
 }
 

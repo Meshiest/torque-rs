@@ -720,3 +720,67 @@ fn a_ghost_record_that_uses_the_blocks_mask_bits_is_refused() {
     let own = PluginClass::ghost::<Glow<{ 1 << 29 }, { 1 << 29 }>>("Glow", Replicate::Interpolated);
     assert!(class(own).is_ok());
 }
+
+fn still(shape: &str, scale: f32) -> Still {
+    Still {
+        shape: shape.to_string(),
+        scale,
+        position: [1.0, 2.0, 3.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn a_still_is_drawable_only_with_a_shape_a_scale_the_renderer_takes_and_a_finite_pose() {
+    assert!(still("a.dts", 1.0).is_drawable());
+    assert!(still("a.dts", super::draw::MAX_SCALE).is_drawable());
+    for bad in [
+        0.0,
+        -1.0,
+        f32::NAN,
+        f32::INFINITY,
+        super::draw::MAX_SCALE * 2.0,
+    ] {
+        assert!(!still("a.dts", bad).is_drawable(), "scale {bad}");
+    }
+    assert!(!still("", 1.0).is_drawable());
+    let mut off = still("a.dts", 1.0);
+    off.position[1] = f32::NAN;
+    assert!(!off.is_drawable());
+    off = still("a.dts", 1.0);
+    off.rotation[3] = f32::INFINITY;
+    assert!(!off.is_drawable());
+}
+
+#[test]
+fn the_stills_of_a_handle_are_the_stills_of_its_clones_and_a_new_set_replaces_the_old() {
+    let stills = PluginStills::default();
+    let shared = stills.clone();
+    assert!(stills.is_empty());
+    shared.replace([
+        (3, still("a.dts", 1.0)),
+        (1, still("b.dts", 2.0)),
+        (2, still("", 1.0)),
+    ]);
+    // The undrawable one is left out, and the rest are in key order.
+    assert_eq!(stills.len(), 2);
+    assert_eq!(
+        stills.with(|m| m.keys().copied().collect::<Vec<_>>()),
+        [1, 3]
+    );
+    assert_eq!(stills, shared);
+    shared.replace([(9, still("c.dts", 1.0))]);
+    assert_eq!(stills.with(|m| m.keys().copied().collect::<Vec<_>>()), [9]);
+    // Two handles with the same stills are equal, whatever they share.
+    let other = PluginStills::default();
+    other.replace([(9, still("c.dts", 1.0))]);
+    assert_eq!(stills, other);
+    assert_ne!(stills, PluginStills::default());
+}
+
+#[test]
+fn a_set_of_stills_is_cut_to_its_cap() {
+    let stills = PluginStills::default();
+    stills.replace((0..super::draw::MAX_STILLS as u32 * 2).map(|k| (k, still("a.dts", 1.0))));
+    assert_eq!(stills.len(), super::draw::MAX_STILLS);
+}

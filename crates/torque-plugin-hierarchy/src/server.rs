@@ -427,6 +427,12 @@ impl ServerHierarchy {
         self.0.classes(vm)
     }
 
+    /// A number that moves whenever a link is made or taken off anywhere in the tree (a local pose set does not move it): a
+    /// reader that only cares about who has a parent or children looks again when it moves.
+    pub fn link_revision(&self) -> u64 {
+        self.0.revision.get()
+    }
+
     /// Starts recording the objects whose link or local pose changes, and gives the cursor to read from: nothing before it is
     /// recorded.
     pub fn track_changes(&self) -> u64 {

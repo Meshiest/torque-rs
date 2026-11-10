@@ -40,7 +40,7 @@ use crate::light::ENGINE_OBJECT_CLASSES;
 use crate::tge::{TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES};
 use crate::{ChargeFn, ObjectView, PackCtx, Value};
 
-pub use draw::{DatablockFields, DrawnShapes, ShapeDraw, ShapeFn};
+pub use draw::{DatablockFields, DrawnShapes, PluginStills, ShapeDraw, ShapeFn, Still};
 pub use field::{DatablockRef, FieldSpec, GhostRef, NetField};
 pub use message::{NetMessage, ScriptArgs};
 

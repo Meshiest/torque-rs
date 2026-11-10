@@ -75,8 +75,8 @@ use torque_ts_vm::vm::Vm;
 pub use torque_ghosts::codec::Xf;
 pub use torque_ghosts::plugin::{
     DatablockCodec, DatablockFields, DatablockRef, DrawnShapes, FieldSpec, GhostRecord, GhostRef,
-    NetField, NetMessage, NetRecord, PluginClass, PluginClasses, Record, Replicate, ShapeDraw,
-    ShapeFn,
+    NetField, NetMessage, NetRecord, PluginClass, PluginClasses, PluginStills, Record, Replicate,
+    ShapeDraw, ShapeFn, Still,
 };
 
 use torque_net::classes::Kind;
@@ -171,6 +171,9 @@ struct DrawnEntry {
 
 /// The marker that the recipe installing the drawn classes into each client is recorded.
 struct DrawInstalls;
+
+/// The marker that the recipe installing the stills into each client is recorded.
+struct StillInstalls;
 
 /// What happened to one ghost of a plugin class on a client, as a handler hears it ([`NetRegistry::on_ghost`]).
 #[derive(Debug)]
@@ -445,6 +448,21 @@ impl NetRegistry<'_> {
             self.engine.insert_resource(ShareInstalls);
             self.engine.server(ServerStage::Classes, |vm, engine| {
                 vm.set_extension(Rc::new(engine.ghost_shares()));
+                Ok(())
+            });
+        }
+        self
+    }
+
+    /// Gives each client a [`PluginStills`] (its script engine's extension, which its world draws): shapes a plugin keeps
+    /// still without a ghost of them, drawn as the client's resting ghosts are, as still copies of one shape's static batch.
+    /// The plugin finds the set with `vm.extension::<PluginStills>()` and replaces it from its client tick hook. A renderer
+    /// that does not keep resting shapes draws no still. Calling it again changes nothing.
+    pub fn stills(&mut self) -> &mut Self {
+        if self.engine.resource::<StillInstalls>().is_none() {
+            self.engine.insert_resource(StillInstalls);
+            self.engine.client(ClientStage::Classes, |vm, _| {
+                vm.set_extension(Rc::new(PluginStills::default()));
                 Ok(())
             });
         }

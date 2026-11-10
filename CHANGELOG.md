@@ -102,6 +102,18 @@ different.
   and the server's ghost adopts it by a bounded per-client id (or it fades out unconfirmed). The book's "Networked plugins" chapter.
 - `engine.net().ghost_share`: a plugin ghost class's updates held to a share of each packet (an update past it waits for a later
   packet) and ordered by the plugin's own priority for each connection; TGE's objects and TGE peers are unchanged.
+- `engine.net().scope_control`: a plugin keeps an object out of one connection's ghosts, or every connection's, and lets it back in
+  (`ScopeControl`, `Audience`). No scope walk makes a ghost of a hidden object (an always-in-scope one and a script's `scopeToClient`
+  included), the ghost it had is killed at the next packet, and what the scene hierarchy hangs on it is sent as roots; a server that
+  never asks for it, and TGE peers, are unchanged. A hide never blinds a connection (its own control object is not hidden from it), only
+  a `GameConnection` is an audience, each audience has its own room of the pool (a refused hide is counted), and a connection looks again
+  only when its own hides changed. Each plugin hides under its own name (`hide_as`, `show_as`, `is_hidden_by_other`) and can read a
+  log of the changes (`changes_since`), so plugins do not undo one another. A plugin collision source that passes its cap, or a set that does, is told on the console once. `engine.net().stills`: shapes a plugin keeps still without a ghost, drawn by the
+  engine's ghost scene as resting ghosts are.
+- `torque-plugin-props`: frozen props past `$Pref::Props::FrozenGhosts` per client go to it over the `props-frozen` bulk channel
+  instead of as ghosts, with a handover that keeps one picture of a prop at every tick, and only to a client whose scope takes the prop
+  and that no other plugin hides it from (a prop leaving the scope is removed, one entering is sent); a server may hold up to 4,096 props
+  (collision sources take up to 4,096 shapes each, 8,192 in a set).
 - `engine.net().drawn_shape`: a plugin ghost class drawn as a shape (a shape file, scale and skin from its record and datablock) by the
   engine's renderer, lit, shadowed and culled as a StaticShape is and in the frame's list of ghosts that ropes and passes anchor to;
   a class marked `Replicate::Interpolated` is shown between the server's updates (a warp of one to three ticks, as a vehicle's).

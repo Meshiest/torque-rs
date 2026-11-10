@@ -77,6 +77,16 @@ pub fn signed_in_engine(files: &GameFiles, name: &'static str) -> Engine {
     builder.build().expect("the engine builds")
 }
 
+/// [`engine`] with the engine's own protocol pinned, whatever the environment says: what the scene hierarchy needs.
+pub fn engine_pinned(files: &GameFiles) -> Engine {
+    let config = GameConfig::load(files).expect("game.toml");
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(DefaultPlugins).config(&config);
+    torque_app_server::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Engine);
+    builder.add_plugins(PropsPlugin);
+    builder.build().expect("the engine builds")
+}
+
 /// Torque's answers, with the game's files for the shapes the client reads.
 #[derive(Debug)]
 struct FilesGame(torque_ts_vm::host::MemFiles);

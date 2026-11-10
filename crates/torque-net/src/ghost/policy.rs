@@ -16,6 +16,14 @@
 //! [`ObjectPolicy::drop_now`]) gets a kill record (the object stays and may come back in scope), a ghost always in scope or
 //! scoped by a script excepted. The pass is resumable under the work budget.
 //!
+//! **The host's veto.** A host may keep an object out of a connection's scope whatever the policy says
+//! ([`ObjectSource::scope_hidden`]): no scope walk makes a ghost of it (an object always in scope, a script's `scopeToClient`
+//! and an object's dependents included), and the ghosts of the objects hidden since the manager last looked
+//! ([`ObjectSource::scope_hidden_stamp`]) are killed at the start of its next scan, whether or not an update is pending, and
+//! the ghosts the host links to them ([`ObjectSource::marks_on_ghost`]) are marked. An always-in-scope object whose veto is
+//! lifted is scoped again at once. The veto never holds for the connection's own scope object, nor for what that rides, which
+//! would leave the connection blind.
+//!
 //! **Order.** The pending ghosts are sent in priority order unless the policy names another ([`GhostPolicy::pending_order`]).
 //!
 //! **Implied class.** A policy whose NewGhost records carry a flag ahead of the class ([`GhostPolicy::implied_class_flag`]) writes

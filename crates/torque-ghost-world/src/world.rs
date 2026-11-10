@@ -622,6 +622,10 @@ pub struct ClientWorld<S: ClientSet> {
     /// sets it from its engine's plugins; empty for a world fed only by records).
     pub plugin_shapes: ghosts::plugin::DrawnShapes,
 
+    /// The shapes plugins keep still without a ghost of them ([`ghosts::plugin::Still`]): the client host hands the world its
+    /// engine's set when a connection starts, and the plugins that own the shapes replace it as their state changes.
+    pub stills: ghosts::plugin::PluginStills,
+
     /// Where the plugin ghosts that are shown between their updates were drawn last ([`ClientWorld::warped_pose`]).
     pub warps: super::warp::PoseWarps,
 
@@ -721,6 +725,7 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             hide_own_items: Default::default(),
             max_view_distance: Default::default(),
             plugin_shapes: Default::default(),
+            stills: Default::default(),
             warps: Default::default(),
             links: Default::default(),
         }

@@ -1216,7 +1216,7 @@ No fields of its own.
 | Field | Type | Default | Range | What it is for |
 |---|---|---|---|---|
 | `dataBlock` | int | `0` |  | The `PropData` datablock's object id. |
-| `slot` | int | `0` |  | The key of its collision shape on both sides (0 to 1,023). |
+| `slot` | int | `0` |  | The key of its collision shape on both sides (0 to 4,095). |
 | `hullCount` | int | `0` |  | The digest of the hulls it collides as ([`crate::hulls::HullDigest`]; a count of 0: the datablock's box). |
 | `hullPoints` | int | `0` |  |  |
 | `hullVolume` | int | `0` |  |  |

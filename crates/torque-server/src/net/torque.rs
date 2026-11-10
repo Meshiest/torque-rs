@@ -39,6 +39,7 @@ use super::hostevent::{GameEvents, ReceiveCx};
 use super::peer::PeerKind;
 use super::{NetGame, NetShared, pump};
 use crate::server::{NetHost, Phase};
+use torque_engine::scope::ScopeControl;
 use torque_game::sim::ProcessHandle;
 use torque_game::sim::pass::{Outcome, advance_objects_within};
 
@@ -134,6 +135,7 @@ impl GhostGame for TgeGhostGame {
             .and_then(|c| hub.conns.get(&c))
             .is_some_and(|c| c.engine_peer);
         let peer = PeerKind::of(env.vm, marked);
+        let hidden = ScopeControl::of(env.vm);
         let always = ghost_always_of(env.vm, &hub.reg);
         let mut controlled: Vec<ObjId> = hub.conns.values().filter_map(|c| c.control).collect();
         controlled.sort_unstable();
@@ -150,6 +152,7 @@ impl GhostGame for TgeGhostGame {
                 .vm
                 .extension::<torque_engine::net_classes::GhostShares>(),
             connection: conn.and_then(|c| hub.conns.get(&c)).map(|c| c.obj),
+            hidden,
             blocks: peer
                 .sees_engine_classes()
                 .then(|| super::blocks::of(env.vm))
@@ -202,6 +205,8 @@ pub struct TgeSource<'a> {
     shares: Option<Rc<torque_engine::net_classes::GhostShares>>,
     /// The `GameConnection` object the source packs for, if it is made for one connection.
     connection: Option<ObjId>,
+    /// What plugins keep out of this connection's ghosts ([`ScopeControl`]), when a plugin asked for the control.
+    hidden: Option<Rc<ScopeControl>>,
     /// What fills the per-ghost block after each record, for a peer of the engine's own on a server that has one
     /// ([`super::blocks`]).
     blocks: Option<Rc<dyn super::blocks::GhostBlocks>>,
@@ -795,6 +800,18 @@ impl ObjectSource for TgeSource<'_> {
         (self.known(entry) && self.vm.objects().contains(obj)).then_some(entry.flags)
     }
 
+    fn scope_hidden(&self, obj: ObjId) -> bool {
+        self.hidden
+            .as_ref()
+            .is_some_and(|scope| scope.is_hidden(obj, self.connection))
+    }
+
+    fn scope_hidden_stamp(&self) -> u64 {
+        self.hidden
+            .as_ref()
+            .map_or(0, |scope| scope.stamp_for(self.connection))
+    }
+
     /// The registry's generation and whether the peer sees the engine's classes: all the full query reads (it visits every
     /// registered object that exists and is known).
     fn scope_stamp(&self) -> Option<u64> {
@@ -910,6 +927,13 @@ impl ObjectSource for TgeSource<'_> {
         None
     }
 
+    /// What a ShapeBase is mounted on (a player on its vehicle): kept out of a veto, so hiding the vehicle cannot blind its
+    /// rider. It is not [`ObjectSource::mount_of`], which would have the full query scope the mount first and change the
+    /// ghosts' order.
+    fn rides(&self, scope: ObjId) -> Option<ObjId> {
+        torque_game::sim::mount::link(self.vm, scope).0
+    }
+
     fn scope_query(
         &self,
         _scope: ObjId,
@@ -945,6 +969,12 @@ impl ObjectSource for TgeSource<'_> {
 
     fn scope_distance(&self, _obj: ObjId, _scope: ObjId) -> Option<f32> {
         None
+    }
+
+    /// Torque's full query takes every object that is not a SceneObject (it has no distance) and a SceneObject within the radius.
+    fn scope_includes(&self, obj: ObjId, scope: ObjId, cam: &CamInfo, radius: f32) -> bool {
+        self.scope_distance(obj, scope).is_none_or(|d| d < radius)
+            || self.reaches_scope(obj, cam.eye, radius)
     }
 
     fn ghost_always(&self) -> &[ObjId] {

@@ -197,7 +197,7 @@ fn a_hostile_servers_records_never_panic_the_client() {
             let mut out = Vec::new();
             source.shapes(&mut out);
             for s in &out {
-                assert!(s.key < 1024);
+                assert!(s.key < MAX_PROPS);
                 assert!(s.pose.iter().all(|v| v.is_finite()), "{:?}", s.pose);
                 let ShapeKind::Box { half } = s.kind else {
                     panic!("a prop is a box");

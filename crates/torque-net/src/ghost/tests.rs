@@ -3128,3 +3128,279 @@ fn a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one
         "the stamped world scoped as many objects: {quiet_walks} fewer asks"
     );
 }
+
+// ---- the host's veto
+
+/// A world of objects 2 (ordinary), 3 (always in scope) and 4 (ghost-always), the scope object 1, ghosting started.
+fn veto_rig() -> Rig {
+    let mut rig = Rig::new();
+    rig.add(1);
+    rig.add(2);
+    rig.world.add(3, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o
+    });
+    rig.add(4);
+    rig.world.always.push(4);
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    rig
+}
+
+fn holds(rig: &Rig, obj: ObjId) -> bool {
+    rig.mgr.view_of(obj).is_some()
+}
+
+#[test]
+fn a_hidden_object_gets_no_ghost_whatever_scopes_it() {
+    let mut rig = veto_rig();
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, true);
+    }
+    rig.mgr.scope_to_client(&rig.world, 2);
+    rig.mgr.object_in_scope_now(&rig.world, 3);
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(holds(&rig, 1));
+    assert!(![2, 3, 4].into_iter().any(|o| holds(&rig, o)));
+    assert_eq!(rig.client.len(), 1);
+    // Let back in, every one is ghosted by the next full query.
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, false);
+    }
+    let s = rig.send();
+    rig.ack(&s);
+    assert!([2, 3, 4].into_iter().all(|o| holds(&rig, o)));
+    assert_eq!(rig.client.len(), 4);
+    rig.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn hiding_an_object_kills_its_ghost_even_when_it_is_always_in_scope() {
+    let mut rig = veto_rig();
+    rig.mgr.object_in_scope_now(&rig.world, 2);
+    rig.mgr.object_in_scope_now(&rig.world, 3);
+    let s = rig.send();
+    rig.ack(&s);
+    assert_eq!(rig.client.len(), 4);
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, true);
+    }
+    // No update is pending for any of them: the kill comes from the veto alone.
+    let s = rig.send();
+    assert_eq!(s.stats.kills, 3);
+    rig.ack(&s);
+    assert_eq!(rig.client.len(), 1);
+    assert!(![2, 3, 4].into_iter().any(|o| holds(&rig, o)));
+    rig.mgr.check_invariants().unwrap();
+    // A script that scopes one again is refused; the veto lifted brings it back as a new ghost.
+    rig.mgr.scope_to_client(&rig.world, 2);
+    assert!(!holds(&rig, 2));
+    rig.world.set_hidden(2, false);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 2));
+    assert_eq!(rig.client.len(), 2);
+}
+
+#[test]
+fn a_veto_changed_after_a_settled_query_is_still_seen() {
+    let mut rig = veto_rig();
+    rig.world.stamp = Some(0);
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(holds(&rig, 2));
+    // The objects are the same ones; only the veto moved.
+    rig.world.set_hidden(2, true);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(!holds(&rig, 2));
+    for _ in 0..2 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(!holds(&rig, 2));
+    rig.world.set_hidden(2, false);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 2));
+    rig.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn the_veto_never_blinds_a_connection_of_its_own_scope_object_or_what_it_rides() {
+    let mut rig = veto_rig();
+    // The scope object (1) rides object 5.
+    rig.add(5);
+    rig.world.objs.get_mut(&1).unwrap().mount = Some(5);
+    rig.mgr.object_in_scope_now(&rig.world, 2);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 1) && holds(&rig, 2) && holds(&rig, 5));
+    for obj in [1, 2, 5] {
+        rig.world.set_hidden(obj, true);
+    }
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    // Object 2 is vetoed; the scope object and its mount keep their ghosts.
+    assert!(
+        holds(&rig, 1) && holds(&rig, 5),
+        "the connection can still see"
+    );
+    assert!(!holds(&rig, 2));
+    // Hidden before it ever had one, the scope object is ghosted all the same.
+    let mut fresh = veto_rig();
+    fresh.world.set_hidden(1, true);
+    let s = fresh.send();
+    fresh.ack(&s);
+    assert!(holds(&fresh, 1));
+    // Once it is no longer the scope object the veto holds for it.
+    fresh.mgr.set_scope_object(Some(2));
+    fresh.world.set_hidden(2, true);
+    fresh.world.set_hidden(3, true);
+    for _ in 0..3 {
+        let s = fresh.send();
+        fresh.ack(&s);
+    }
+    assert!(!holds(&fresh, 1) && !holds(&fresh, 3) && holds(&fresh, 2));
+    fresh.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn a_connections_scope_says_which_objects_it_would_take_without_a_walk() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.add(1);
+    for (obj, x) in [(2, 50.0), (3, 5_000.0)] {
+        rig.world.add(obj, {
+            let mut o = Obj::new(1);
+            o.pos = [x, 0.0, 0.0];
+            o
+        });
+    }
+    // Kept for a loopback connection alone, and always in scope however far.
+    rig.world.add(4, {
+        let mut o = Obj::new(1);
+        o.nflags |= net_flags::SCOPE_LOCAL;
+        o
+    });
+    rig.world.add(5, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o.pos = [9_000.0, 0.0, 0.0];
+        o
+    });
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    let takes = |rig: &mut Rig<Spaced>, obj| rig.mgr.scope_would_take(&rig.world, obj);
+    assert!(takes(&mut rig, 2), "within the radius");
+    assert!(!takes(&mut rig, 3), "past the radius");
+    assert!(!takes(&mut rig, 4), "for a loopback connection alone");
+    assert!(takes(&mut rig, 5), "always in scope");
+    assert!(!takes(&mut rig, 99), "no such object");
+    // The object moves out and in: the answer follows, with no walk and no ghost made.
+    rig.world.objs.get_mut(&2).unwrap().pos = [3_000.0, 0.0, 0.0];
+    assert!(!takes(&mut rig, 2));
+    rig.world.objs.get_mut(&3).unwrap().pos = [10.0, 0.0, 0.0];
+    assert!(takes(&mut rig, 3));
+    assert_eq!(rig.mgr.ghost_count(), 0, "no ghost was made by asking");
+}
+
+#[test]
+fn a_scope_that_would_scope_nothing_takes_nothing_but_what_is_always_in_scope() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.add(1);
+    rig.world.add(2, {
+        let mut o = Obj::new(1);
+        o.pos = [50.0, 0.0, 0.0];
+        o
+    });
+    rig.world.add(5, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o.pos = [9_000.0, 0.0, 0.0];
+        o
+    });
+    let takes = |rig: &mut Rig<Spaced>, obj| rig.mgr.scope_would_take(&rig.world, obj);
+    // Before ghosting is on, the full query scopes nothing: neither does the answer.
+    rig.mgr.set_scope_object(Some(1));
+    assert!(
+        !takes(&mut rig, 2) && !takes(&mut rig, 5),
+        "ghosting is off"
+    );
+    rig.go();
+    // Ghosting is on but the connection has no scope object yet: the full query has nothing to walk from.
+    rig.mgr.set_scope_object(None);
+    assert!(!takes(&mut rig, 2), "no scope object");
+    assert!(
+        takes(&mut rig, 5),
+        "an object always in scope is taken without one"
+    );
+    rig.mgr.set_scope_object(Some(1));
+    assert!(takes(&mut rig, 2));
+}
+
+#[test]
+fn a_scope_object_with_no_camera_is_queried_as_the_full_query_does() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.world.no_camera = true;
+    rig.add(1);
+    for (obj, x) in [(2, 50.0), (3, 5_000.0)] {
+        rig.world.add(obj, {
+            let mut o = Obj::new(1);
+            o.pos = [x, 0.0, 0.0];
+            o
+        });
+    }
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    let (near, far) = (
+        rig.mgr.scope_would_take(&rig.world, 2),
+        rig.mgr.scope_would_take(&rig.world, 3),
+    );
+    // Not "yes to everything": the near object is within the radius and the far one is not, as the query's default view says.
+    assert!(near, "within the radius");
+    assert!(!far, "past the radius");
+    // The full query, run, ghosts what the answer said it would take and no more.
+    for now in [3_000, 3_001, 6_000] {
+        rig.now = now;
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert_eq!(
+        (rig.mgr.holds(2), rig.mgr.holds(3)),
+        (near, far),
+        "the walk agrees with the answer"
+    );
+}
+
+#[test]
+fn an_object_with_no_distance_is_not_taken_unless_the_source_says_so() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.world.no_distance = true;
+    rig.add(1);
+    for obj in [2, 3] {
+        rig.world.add(obj, Obj::new(1));
+    }
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    rig.world.reach.push(3);
+    assert!(
+        !rig.mgr.scope_would_take(&rig.world, 2),
+        "no distance, no reach"
+    );
+    assert!(
+        rig.mgr.scope_would_take(&rig.world, 3),
+        "reached by the source's own rule"
+    );
+}

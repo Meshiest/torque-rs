@@ -107,6 +107,30 @@ pub trait ObjectSource {
         self.exists(obj).then(|| self.net_flags(obj))
     }
 
+    /// Whether the host keeps `obj` out of this connection's scope now (a plugin's veto, [`ObjectSource::scope_hidden_stamp`]).
+    /// No scope walk makes a ghost of it, whatever it is (always in scope, scoped by a script), and the ghost it has is dropped
+    /// when the stamp moves. False for every object by default.
+    fn scope_hidden(&self, obj: ObjId) -> bool {
+        let _ = obj;
+        false
+    }
+
+    /// A number that changes whenever [`ObjectSource::scope_hidden`] may answer another way for any object of this connection.
+    /// The manager drops the ghosts of the objects hidden since it last saw this stamp, at the start of its next scan, and a
+    /// settled full query is not taken for settled any more. 0 (the default) for a source that hides nothing.
+    fn scope_hidden_stamp(&self) -> u64 {
+        0
+    }
+
+    /// Whether the full scope query around `scope` (its view `cam`, over `radius`) takes `obj`: an object with a distance when it or
+    /// its box is within the radius, and, by default, no object without one (a source whose query takes such objects, as Torque's
+    /// takes what is not a SceneObject, says so in its own override, so no source inherits a permissive answer). What a host asks
+    /// without walking the objects ([`crate::ghost::GhostManager::scope_would_take`]).
+    fn scope_includes(&self, obj: ObjId, scope: ObjId, cam: &CamInfo, radius: f32) -> bool {
+        self.scope_distance(obj, scope).is_some_and(|d| d < radius)
+            || self.reaches_scope(obj, cam.eye, radius)
+    }
+
     /// A stamp of everything a full scope query reads from this source to decide which objects it scopes, when that is nothing
     /// but the set of objects (no distance, no view): equal stamps mean the same objects are scoped, in the same order. A source
     /// that answers one lets the manager skip scoping the objects of a query it has run to its end already with the stamp (see
@@ -178,6 +202,12 @@ pub trait ObjectSource {
 
     /// The object the scope object is mounted on (`ShapeBase::mMount`), scoped with it.
     fn mount_of(&self, scope: ObjId) -> Option<ObjId>;
+
+    /// The object the scope object rides, which a veto must not hide from it either ([`ObjectSource::scope_hidden`]). It is
+    /// [`ObjectSource::mount_of`] unless the host scopes that one first (and so in another order) and answers here on its own.
+    fn rides(&self, scope: ObjId) -> Option<ObjId> {
+        self.mount_of(scope)
+    }
 
     /// `ShapeBase::onCameraScopeQuery`'s container walk (`Container::findObjects`): calls `visit` for every object in the box of
     /// half-size `radius` around the camera, in the container's order (the bins y-outer x-inner, then the overflow list; a host

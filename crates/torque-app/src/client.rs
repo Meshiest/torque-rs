@@ -370,6 +370,7 @@ impl ClientPass<TgeConn> for TickedPass {
 
     fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
         self.pass.other(vm, client);
+        torque_game::plugin_collision::report_overflow(vm);
         for tick in &self.ticks {
             tick.run(vm);
         }

@@ -484,9 +484,6 @@ impl Rig {
     }
 }
 
-/// What a window client installs for the engine's channels and RPCs in the engine's protocol: the channels the connection reads
-/// and writes, and the RPCs over the session's lanes (the script commands ride two of them). Torque's protocol installs nothing
-/// here: its runs keep the channels they had.
 /// Runs the client RPCs of `vm` (a client's) due at its tick.
 fn pump_rpcs(vm: &mut Vm) {
     if let Some(rpc) = vm.extension::<ClientRpc>() {
@@ -495,17 +492,21 @@ fn pump_rpcs(vm: &mut Vm) {
     }
 }
 
+/// What a window client installs for the engine's channels (in either protocol) and, in the engine's protocol, its RPCs over
+/// the session's lanes (the script commands ride two of them).
 fn install_rpcs(vm: &mut Vm, engine: &Engine) -> Result<(), String> {
-    if engine.protocol() != ProtocolKind::Engine {
-        return Ok(());
-    }
+    // The channels the engine registers are read from every data packet the server's gate turned them on for, in either
+    // protocol.
     let channels = engine.net_channels().map_err(|e| e.to_string())?;
-    let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
-    if channels.is_empty() || rpcs.is_empty() {
+    if channels.is_empty() {
         return Ok(());
     }
     let channels = Rc::new(ClientChannels::new(&channels));
     vm.set_extension(Rc::clone(&channels));
+    let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+    if engine.protocol() != ProtocolKind::Engine || rpcs.is_empty() {
+        return Ok(());
+    }
     let lanes = Rc::new(RpcLanes::default());
     vm.set_extension(Rc::clone(&lanes));
     let rpc = Rc::new(ClientRpc::over_lanes(rpcs, channels, lanes));

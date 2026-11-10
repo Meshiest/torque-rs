@@ -7,8 +7,9 @@
 //! ([`DatablockFields`]). A draw that says its ghost rests ([`ShapeDraw::rests`]: a sleeping prop) lets a client draw it with
 //! its still geometry until a record says otherwise.
 
+use std::collections::BTreeMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use super::{NetRecord, PluginClass, Record, Replicate};
 use crate::Value;
@@ -169,5 +170,82 @@ impl DrawnShapes {
             .find(|(c, _)| *c == class)?
             .1
             .draw(record, datablocks)
+    }
+}
+
+/// The most stills a client keeps ([`PluginStills::replace`] takes this many and drops the rest).
+pub const MAX_STILLS: usize = 8192;
+
+/// A shape a plugin keeps still on a client without a ghost of it: what a plugin that sends objects another way (a bulk
+/// channel) has the renderer draw as it draws a resting ghost, as a still copy of its shape's static batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Still {
+    /// The shape file, as [`ShapeDraw::shape`] has it.
+    pub shape: String,
+    /// The scale, the same along every axis: a finite value within [`MAX_SCALE`] (a still with any other is not drawn).
+    pub scale: f32,
+    /// Where it stands.
+    pub position: [f32; 3],
+    /// Its turn as a unit quaternion `x, y, z, w` in the form a ghost's transform record gives the renderer (`Xf`: the vector
+    /// part negated, as Torque's quaternion turns the other way from a physics world's).
+    pub rotation: [f32; 4],
+}
+
+impl Still {
+    /// Whether the renderer may draw it: a path, a scale that is finite, above zero and within [`MAX_SCALE`], and a pose that
+    /// is finite.
+    pub fn is_drawable(&self) -> bool {
+        !self.shape.is_empty()
+            && self.scale.is_finite()
+            && self.scale > 0.0
+            && self.scale <= MAX_SCALE
+            && self
+                .position
+                .iter()
+                .chain(&self.rotation)
+                .all(|v| v.is_finite())
+    }
+}
+
+/// The stills a client's plugins keep, by a key of the plugin's choosing: a client's script engine has one as its extension
+/// when a plugin asked for it, and the client's world draws it ([`Still`]). A cheap handle: clones share the stills.
+#[derive(Debug, Clone, Default)]
+pub struct PluginStills(Arc<Mutex<BTreeMap<u32, Still>>>);
+
+impl PluginStills {
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, Still>> {
+        // A panic while the stills were held leaves them whole: they are only ever replaced or read.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Makes `stills` the whole set (the first [`MAX_STILLS`] by key; one that is not drawable is left out).
+    pub fn replace(&self, stills: impl IntoIterator<Item = (u32, Still)>) {
+        let kept: BTreeMap<u32, Still> = stills
+            .into_iter()
+            .filter(|(_, s)| s.is_drawable())
+            .take(MAX_STILLS)
+            .collect();
+        *self.lock() = kept;
+    }
+
+    /// Reads the stills, in key order.
+    pub fn with<R>(&self, read: impl FnOnce(&BTreeMap<u32, Still>) -> R) -> R {
+        read(&self.lock())
+    }
+
+    /// How many stills there are.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+}
+
+impl PartialEq for PluginStills {
+    fn eq(&self, other: &PluginStills) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || *self.lock() == *other.lock()
     }
 }

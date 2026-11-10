@@ -215,9 +215,10 @@ new quota.
 
 | Pref | Default | Past it |
 |---|---|---|
-| `$Pref::Props::MaxPerPlayer` | 64 (1 to 1,024) | the spawn is refused |
-| `$Pref::Props::MaxPerAddress` | 256 (1 to 1,024) | the spawn is refused |
-| `$Pref::Props::MaxProps` | 1,024 (1 to 1,024) | the spawn is refused |
+| `$Pref::Props::MaxPerPlayer` | 64 (1 to 4,096) | the spawn is refused |
+| `$Pref::Props::MaxPerAddress` | 256 (1 to 4,096) | the spawn is refused |
+| `$Pref::Props::MaxProps` | 1,024 (1 to 4,096) | the spawn is refused |
+| `$Pref::Props::FrozenGhosts` | 256 (0 to 4,096) | the frozen props past it go to that client over the `props-frozen` channel instead of as ghosts ([below](#frozen-props-over-a-channel)) |
 | `$Pref::Props::MaxAwake` | 256 (1 to 1,024) | the props farthest from every player (then the highest ids) are put to sleep |
 | `$Pref::Props::StepBudget` | 4,000,000 work units | the step does not run that tick, and the awake cap drops to three quarters of what was awake; it eases back an eighth of the cap a tick |
 
@@ -243,7 +244,56 @@ half a unit of the server's (a test checks it).
 
 **Hostile servers.** Everything a client is sent is held to caps: at most 4,096 props in its book, every state held to the
 wire's ranges, a datablock's numbers clamped as the server's are, a shape file of at most 96 bytes drawn at a scale the renderer
-accepts. A fuzzer (`TORQUE_FUZZ_PROPS=100000 cargo test -p torque-plugin-props`) feeds random records to all of it.
+accepts. A fuzzer (`TORQUE_FUZZ_PROPS=100000 cargo test -p torque-plugin-props`) feeds random records, and random bytes to the frozen channel's table, to all of it.
+
+### Frozen props over a channel
+
+A frozen prop never moves, so a ghost for it is a table entry and a place in every scope walk for nothing, and a connection's
+ghost table is only so large. A client is ghosted at most `$Pref::Props::FrozenGhosts` (256) frozen props; every other frozen
+prop is sent to it once over the `props-frozen` bulk channel (the prop's slot, its datablock, whether the client owns it and its
+pose at the wire's precision, 27 bytes) and kept out of its ghosts through the engine's [scope control](networked-plugins.md#keeping-an-object-out-of-a-connections-ghosts). A server may then hold up to
+4,096 props (`$Pref::Props::MaxProps`) however many of them are frozen.
+
+- **Who gets which.** The first frozen props in id order are a client's ghosts, the rest are on its channel. A place a ghost leaves
+  (its prop is unfrozen or deleted) is taken by a frozen prop that is new to that client, never by one already on the channel, so
+  nothing changes hands for no reason. A prop that is not frozen, hangs in the scene hierarchy (as a child or a parent) or holds a
+  joint is always a ghost: their links and joint ends name ghosts. A client whose channel is off (a client of Torque's protocol
+  alone) is ghosted every prop, as before.
+- **Scope.** A prop is sent over the channel to a client only if that connection's scope takes it (the query the ghosts use) and no
+  other plugin's [scope control](networked-plugins.md#keeping-an-object-out-of-a-connections-ghosts) hide keeps it from the
+  connection. One that leaves a client's scope is removed from its table, one that enters is sent, as ghosts come and go. This is
+  driven by the scope control's change log, not a walk of every prop each tick; a connection whose scope can change by itself looks
+  at a few props a tick in turn (64 over all clients).
+- **The client's side.** The channel's messages fill a table of frozen props by slot, which is held to the same caps as a ghost's
+  records (a slot is below 4,096, so the table holds at most 4,096; a message of at most 221,184 bytes and 8,192 ops; every field
+  checked, a message with one out of range refused whole). Each is drawn as a still copy of its shape's static batch, as a
+  sleeping ghost is, and collides for the client's prediction as a ghost's box does, in the same slot. Only a prop whose shape is
+  drawn at one scale on every axis can be a still (a datablock with an uneven `drawScale` is collision only on the channel).
+- **One picture.** A client that holds a prop both ways draws it from its ghost, so while a prop changes hands there is no tick it
+  is drawn twice, and none it is not drawn at all. A prop that is frozen with the places full is sent over the channel first and
+  its ghost is hidden when the message was acknowledged; a prop that is thawed (or hung, or given a joint) is ghosted again first
+  and its channel entry is removed when the client acknowledged the ghost's first record. A prop deleted is removed from both. A
+  prop no client was ever ghosted (every prop a new client hears of, every one that is frozen when it is made) is hidden from the
+  start, so no ghost is made only to be taken away. The handover is checked tick by tick on a clean and on a lossy link.
+- **Speed.** The channel takes its share of each packet like any channel, so a client first hears of 1,744 props in about
+  47 KB: a few seconds at 32 packets of 450 bytes a second, longer at Torque's default rates. A client sees the props it has
+  ghosts of first.
+- **Cost.** A tick costs what changed. The world logs the props it touched (made, removed, frozen, thawed, hung, given a joint or
+  another owner); the sync looks at those, at every frozen prop when the scene hierarchy's links changed, and each client looks at
+  the props that changed and the ones it still owes a message or an acknowledgement for. A server whose props sit still does no
+  work here. The ghosts a mass thaw waits for are asked about 4,096 a tick at most, without a script call. The scope control's
+  stamp is per connection, so one client's hides do not make the others look again at all their ghosts. Counted at 4,096 frozen
+  props and 64 clients (`cargo test --release -p torque-plugin-props --lib frozen::server -- --nocapture`, one desktop machine,
+  2026-11-09): what the clients owe is spread over ticks, 4,096 props looked at a tick at most over all clients. 64 clients
+  that join at once are each dealt all 4,096 props, 262,144 steps over 64 ticks, the slowest 6.5 ms; a tick of nothing costs 0
+  props looked at, 0 steps and 0 acknowledgements (12 us); one thaw 1 prop and 64 steps (94 us); a mass thaw of every prop 4,095
+  props and 507,777 steps over 124 ticks, with 245,696 acknowledgement checks, the slowest tick 13.3 ms. A prop put off still is
+  hidden before a ghost of it is made, unless the client acknowledged a ghost of it meanwhile (then its ghost is kept until the
+  channel has it).
+- **Running out of room.** The scope control's room is shared (16,384 entries an audience, 262,144 in all). A frozen prop it has no
+  room to hide from a client stays that client's ghost; the server prints one console line and counts the refusals
+  (`ScopeControl::refused`, `FrozenStats::hide_refused`). A plugin collision source that passes its cap (4,096 shapes a source,
+  8,192 a set; a set past it holds none, on both sides) prints one console line on the server and on the client.
 
 ## Joints
 
@@ -458,7 +508,7 @@ office (197 props, all asleep) that took a frame from about 7.7 to 4.1 ms in its
 `cargo test -p torque-plugin-props`: the quantization's precision and stability, the records' wire form and hostile bytes, the
 caps, sleep, freeze, pushes and the budget in the world alone; a server and two clients over the memory transport (states that
 match the server's, sleepers that cost nothing, the share of each packet, the command's checks and rate, orphans, a client
-without the plugin refused); a client that speaks only Torque's protocol; and the fuzzers. The `props-drop` scenario of
+without the plugin refused); a client that speaks only Torque's protocol (it is sent no prop, frozen or not, and a client with no channel is ghosted every prop); `--test frozen` (2,000 frozen props reach a client as 256 ghosts and 1,744 channel entries, each drawn once and collided with once; a prop handed between ghost and channel in both directions with one picture every tick, on a clean and a lossy link; a late client; a client that leaves), `--test frozen_predict` (a figure walks into a wall of channel props and stops where the server stops it with as few corrections as against ghosts, where a client blind to the table is pulled back over and over), `--test scope` and `--test frozen_messages` (a hostile server's bytes); and the fuzzers. The `props-drop` scenario of
 `just trace-hash` (64 crates dropped and walked through, a server and a predicting client) prints the same hash native and wasm32.
 
 Joints: `--test joints` (in the world alone: a hard tether under a 10 unit/s pull stays within 1 cm of its length every tick over

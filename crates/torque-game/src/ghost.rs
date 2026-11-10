@@ -46,6 +46,29 @@ pub trait GhostLink {
     fn ghosted_everywhere(&self, obj: ObjId) -> bool {
         self.ghosted(obj)
     }
+    /// The wire index of the ghost the connection whose `GameConnection` object is `connection` holds of `obj`, once its
+    /// first record was acknowledged (`NetConnection::getGhostID`, without the script call). None for a layer that keeps no
+    /// connections.
+    fn ghost_index_on(&self, connection: ObjId, obj: ObjId) -> Option<u32> {
+        let _ = (connection, obj);
+        None
+    }
+    /// Whether the scope of the connection whose `GameConnection` object is `connection` would take each of `objs` into its ghosts now, as its full
+    /// query does, apart from what a plugin keeps out of it (a scope control) and the room in its table: the object exists, the
+    /// connection's peer knows its class, it is not kept for a loopback connection, and the game's rules for the query (distance, its
+    /// policy) take it. True for a layer that keeps no scopes.
+    fn scopes(&self, vm: &Vm, connection: ObjId, objs: &[ObjId]) -> Vec<bool> {
+        let _ = (vm, connection);
+        vec![true; objs.len()]
+    }
+
+    /// Whether what the connection's scope takes can change without the objects changing (a game whose query goes by distance
+    /// or by its own rules, or a connection whose scope is not in place yet): a host that keeps something by the scope looks
+    /// again from time to time. False for a layer whose scope is the set of the objects.
+    fn scope_varies(&self, vm: &Vm, connection: ObjId) -> bool {
+        let _ = (vm, connection);
+        false
+    }
     /// `setMaskBits` in the record's own numbering, for bits no class simulation marks (the per-ghost block's).
     fn set_record_mask(&self, obj: ObjId, bits: u32) {
         let _ = (obj, bits);

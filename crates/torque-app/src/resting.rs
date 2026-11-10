@@ -28,6 +28,10 @@ use crate::view::{MAX_RESTING_SHAPES, RESTING_BATCHES, SceneShape, WorldView};
 
 type World = ClientWorld<TgeClientSet>;
 
+/// Where the keys of the stills a plugin keeps ([`torque_ghosts::plugin::PluginStills`]) start among the copies of a shape's
+/// batch: above every ghost index, so a still is never taken for a ghost the frame's moving shapes leave out.
+const STILL_KEYS: u32 = 1 << 31;
+
 /// One shape's batch: its id, its mesh (none for a shape that did not load), its copies as laid out last, and whether the view
 /// holds all of them.
 struct Kept {
@@ -177,6 +181,17 @@ pub(crate) fn wanted(world: &World) -> BTreeMap<String, BTreeMap<u32, Mat>> {
             .or_default()
             .insert(index, scale_columns(&m, [s; 3]));
     }
+    world.stills.with(|stills| {
+        for (&key, still) in stills {
+            let mut m = Mat::from_quat(still.rotation);
+            m.set_column3(still.position);
+            let shape = still.shape.replace('\\', "/");
+            want.entry(shape).or_default().insert(
+                STILL_KEYS + key % STILL_KEYS,
+                scale_columns(&m, [still.scale; 3]),
+            );
+        }
+    });
     want
 }
 
@@ -253,5 +268,40 @@ mod tests {
         // The datablock names another file (a backslashed one), again with no update of the ghost.
         w.datablocks.insert(3, datablock(r"art\barrel.dts"));
         assert_eq!(wanted(&w).keys().collect::<Vec<_>>(), ["art/barrel.dts"]);
+    }
+
+    #[test]
+    fn a_plugins_stills_are_copies_of_their_shapes_batches_beside_the_resting_ghosts() {
+        use torque_ghosts::plugin::Still;
+        let mut w = world();
+        w.datablocks.insert(3, datablock("art/crate.dts"));
+        let still = |x: f32, shape: &str| Still {
+            shape: shape.to_string(),
+            scale: 2.0,
+            position: [x, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0, 1.0],
+        };
+        w.stills.replace([
+            (5, still(10.0, "art/crate.dts")),
+            (6, still(20.0, r"art\crate.dts")),
+            (7, still(30.0, "art/barrel.dts")),
+            // Not drawable: no shape.
+            (8, still(40.0, "")),
+        ]);
+        let want = wanted(&w);
+        assert_eq!(want.len(), 2);
+        // The ghost and the two stills of the crate share one batch, the still keys above every ghost index.
+        let crates = &want["art/crate.dts"];
+        assert_eq!(
+            crates.keys().copied().collect::<Vec<_>>(),
+            [1, STILL_KEYS + 5, STILL_KEYS + 6]
+        );
+        assert_eq!(
+            want["art/barrel.dts"].keys().copied().collect::<Vec<_>>(),
+            [STILL_KEYS + 7]
+        );
+        // The scale is in the copy's transform.
+        let m = &crates[&(STILL_KEYS + 5)];
+        assert!((m.column(3)[0] - 10.0).abs() < 1e-6);
     }
 }

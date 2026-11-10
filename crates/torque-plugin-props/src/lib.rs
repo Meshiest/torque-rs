@@ -16,6 +16,10 @@
 //! - the `Prop` ghost class ([`PropGhost`]), its updates ordered and held to a share of each packet, and each client's book of
 //!   the props it was sent ([`client::PropBook`]), drawn as shapes, a sleeping or frozen one resting ([`client::draw`]: a
 //!   client draws it as a still copy of its shape's static batch, not every frame);
+//! - frozen props past a count over a bulk channel ([`frozen`]): a client is ghosted at most `$Pref::Props::FrozenGhosts`
+//!   frozen props, and every other frozen prop is sent to it over the `props-frozen` channel (id, datablock, quantized pose,
+//!   owner: 27 bytes once) and kept out of its ghosts, so a server may hold thousands of frozen props whatever a connection's
+//!   ghost table holds; the client draws them as still copies of their shapes' batches and collides with them as with ghosts;
 //! - joints ([`joints`]): tethers (hard or soft), winches, welds, hinges, grapples and holds between props, the world and
 //!   players, in the same physics world, made with the server's `joint*` functions (no client entry point), the `Joint` ghost
 //!   class ([`JointGhost`]) and each client's book of them ([`JointBook`]); a grapple pulls its player inside the Player's own
@@ -62,19 +66,24 @@
 //!
 //! # Limits
 //!
-//! Props per player (`$Pref::Props::MaxPerPlayer`, 64), per server (`$Pref::Props::MaxProps`, 1,024) and awake at once
-//! (`$Pref::Props::MaxAwake`, 256), and per remote address of the owners (`$Pref::Props::MaxPerAddress`, 256), whoever asked
-//! for the spawn. A spawn past a cap is refused with a console error; past the awake cap the props farthest from every player
-//! sleep first. The step is charged to a budget
-//! (`$Pref::Props::StepBudget`): a step past it does not run, and the awake cap is lowered until the step fits again. A shape of
-//! `collision = "shape"` gives at most [`hulls::MAX_HULLS`] hulls of [`hulls::MAX_HULL_VERTICES`] points each, within
+//! Props per player (`$Pref::Props::MaxPerPlayer`, 64), per server (`$Pref::Props::MaxProps`, 1,024, at most 4,096) and awake
+//! at once (`$Pref::Props::MaxAwake`, 256, at most 1,024), and per remote address of the owners
+//! (`$Pref::Props::MaxPerAddress`, 256), whoever asked for the spawn. A client is ghosted at most
+//! `$Pref::Props::FrozenGhosts` (256) frozen props; the others go over a channel ([`frozen`]). A spawn past a cap is refused
+//! with a console error; past the awake cap the props farthest from every player sleep first. The step is charged to a budget
+//! (`$Pref::Props::StepBudget`): a step past it does not run, and the awake cap is lowered until the step fits again. A shape
+//! of `collision = "shape"` gives at most [`hulls::MAX_HULLS`] hulls of [`hulls::MAX_HULL_VERTICES`] points each, within
 //! [`hulls::MAX_COORD`] units of its origin, and a server holds [`hulls::MAX_SERVER_VERTICES`] points of shapes in all.
 //!
 //! # Network
 //!
-//! A server and a client must both have the plugin (the handshake refuses a client without it before any ghost). A TGE-protocol
-//! peer is never sent a prop. A prop's updates take at most `$Pref::Props::NetShare` (40%) of each packet, the ones that matter most
-//! to that client first ([`server::priority`]); asleep and frozen props cost nothing after their last update.
+//! A server and a client must both have the plugin (the handshake refuses a client without it before any ghost). A
+//! TGE-protocol peer is never sent a prop. A prop's updates take at most `$Pref::Props::NetShare` (40%) of each packet, the
+//! ones that matter most to that client first ([`server::priority`]); asleep and frozen props cost nothing after their last
+//! update. A frozen prop past a client's `$Pref::Props::FrozenGhosts` is not ghosted to it at all: it is sent over the
+//! `props-frozen` bulk channel ([`frozen`]), a message of ops that set or remove a prop by its slot, in the channel's share
+//! of each packet (a client first hears of 1,700 props in about 50 KB). Which way a prop goes is the server's alone; a client
+//! holds a prop both ways for a moment while it changes hands and draws it from its ghost then.
 //!
 //! # Maintaining
 //!
@@ -89,18 +98,21 @@
 //! `a_games_own_owner_key_still_wins_over_the_account`, `anonymous_players_are_new_players_on_every_connection`). The
 //! per-address caps are unchanged and count orphans whatever the key.
 //!
-//! **Modules.** [`natives`]: the server's console functions and the placement checks. [`tick`]: the server's tick hook (owners,
-//! statics, pushes, the step, the writeback). [`world`]: the physics world and every rule about props, with no script engine.
-//! [`quant`]: the wire's precision. [`hulls`]: a shape's collision hulls (the caps, the server's loader and book, the client's
-//! reading of the same file). [`records`], [`data`], [`client`]: what goes on the net (the ghost and datablock records) and
-//! what a client does with it. [`server`]: the state, spawning, the collision source and the update priority. [`joints`]: the
-//! joint kinds and caps (`mod.rs`), their rules in the world (`world.rs`, an `impl PropWorld`), the `Joint` class and the server's
-//! tethers (`server.rs`), the console functions (`natives.rs`), the record (`records.rs`), a client's book and tethers
-//! (`client.rs`), and the ropes (`rope.rs`, feature `rope`). [`hits`]: the impulses of a projectile's hit and of an explosion,
-//! on both sides. [`predict`]: a client's prediction (`mod.rs`: the config, the shared state, the client functions;
-//! `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots). [`hierarchy`]: what the server reads of
-//! the scene hierarchy before each step (`hierarchy::reconcile`) and the rule that refuses a prop with joints as a child
-//! ([`hierarchy::PropRule`]); the world's side of a child is `world/children.rs` ([`world::Link`], `impl PropWorld`).
+//! **Modules.** [`natives`]: the server's console functions and the placement checks. [`tick`]: the server's tick hook
+//! (owners, statics, pushes, the step, the writeback). [`world`]: the physics world and every rule about props, with no
+//! script engine. [`quant`]: the wire's precision. [`hulls`]: a shape's collision hulls (the caps, the server's loader and
+//! book, the client's reading of the same file). [`records`], [`data`], [`client`]: what goes on the net (the ghost and
+//! datablock records) and what a client does with it. [`server`]: the state, spawning, the collision source and the update
+//! priority. [`joints`]: the joint kinds and caps (`mod.rs`), their rules in the world (`world.rs`, an `impl PropWorld`), the
+//! `Joint` class and the server's tethers (`server.rs`), the console functions (`natives.rs`), the record (`records.rs`), a
+//! client's book and tethers (`client.rs`), and the ropes (`rope.rs`, feature `rope`). [`hits`]: the impulses of a
+//! projectile's hit and of an explosion, on both sides. [`predict`]: a client's prediction (`mod.rs`: the config, the shared
+//! state, the client functions; `part.rs`: the slot's part, its world, the restore and replay, the drawing, the shots).
+//! [`hierarchy`]: what the server reads of the scene hierarchy before each step (`hierarchy::reconcile`) and the rule that
+//! refuses a prop with joints as a child ([`hierarchy::PropRule`]); the world's side of a child is `world/children.rs`
+//! ([`world::Link`], `impl PropWorld`). [`frozen`]: the `props-frozen` channel: its messages (`messages.rs`), the server's
+//! dealing of frozen props and the handover between ghost and channel (`server.rs`, once a tick after the step), and a
+//! client's table, the channel's logic and the stills it publishes (`client.rs`).
 //!
 //! **One tick.** During the process list each grappled Player's own step asks the server's tether source
 //! ([`joints::server::ServerTethers`]) for its tether and reports the pull back. After the process list, the hook writes the
@@ -172,6 +184,28 @@
 //! props' own caps bound it, and `MaxPerPlayer` bounds what one client's commands can make. The physics step charges a contact pair by the hulls of both
 //! shapes. A client keeps at most 256 shapes' hulls and starts over past it. The physics crate's `Shape::Compound` makes each hull as a `Shape::Hull` and places it at its middle (a
 //! hull that cannot be made is its box; a compound of more than `Limits::max_compound_hulls` hulls is the box of all its points).
+//!
+//! **Frozen props over the channel** (`frozen::server::sync`, the last thing the tick hook does). Needs the hub the server sends
+//! bulk channels through and the scope control (`engine.net().scope_control()`); a server without a channel for a connection (a
+//! client of Torque's protocol alone, a connection whose channels are not on) deals it nothing and ghosts it every prop as before.
+//! `Snapshot::refresh` keeps the frozen props that may go over the channel (frozen, no parent or child in the scene hierarchy, no
+//! joint) from the world's log of touched props, looking at those only (every frozen prop when the hierarchy's links changed),
+//! and appends what changed to a log each client reads from its own place; no more than
+//! [`frozen::server::DEAL_STEPS_PER_TICK`] props are looked at a tick over all clients (they take turns first), so a client that
+//! joins, or a mass thaw, is spread over the ticks. A client is ghosted its first `$Pref::Props::FrozenGhosts` frozen props; the
+//! rest go over the channel and are hidden from its ghosts. A prop that no client was ever ghosted (every one a new client hears
+//! of, every one that is frozen when it first exists) is hidden at once, also when its deal was put off, unless the client
+//! acknowledged a ghost of it meanwhile; one that may have a ghost keeps it until the channel's message is acknowledged
+//! (`ChannelHub::queued_message_len`) and is hidden then. A prop that goes back (thawed, hung, given a joint) is shown again and
+//! its remove op is sent when the client acknowledged its ghost (`GhostLink::ghost_index_on`, asked about a bounded number a
+//! tick: [`frozen::server::ACK_CHECKS_PER_TICK`]). A client holds a prop both ways during either handover and draws it from its
+//! ghost ([`frozen::client::FrozenTable::stills`] leaves out the slots that have ghosts, and so does the collision source), so
+//! every tick has one picture of it. A message the hub refuses is tried again at the next tick; nothing of a client's state moves
+//! until its message was queued. The client's tick reads the datablocks the table's props name (and lets go of those none names;
+//! one the client lacks is not remembered), makes a still of each prop it shows from the table and hands them to the renderer
+//! (`engine.net().stills()`: the client's world draws them as it draws resting ghosts, as copies of one static batch a shape). The
+//! server's half is written against `frozen::server::Port`, so its work is counted without a network
+//! (`a_tick_costs_what_changed_at_4096_props_and_64_clients`).
 //!
 //! **Invariants**, each with the test that guards it:
 //! - The state written back is the wire's, so a client restores the server's bits and native equals wasm32:
@@ -245,6 +279,31 @@
 //!   `hierarchy-props` line of `just trace-hash` (engine mode) is equal native and wasm32.
 //! - A poisoned world is made again: `a_stopped_world_is_made_again_from_the_props_states`,
 //!   `a_prop_lost_when_the_physics_world_is_made_again_is_deleted_everywhere`.
+//! - 2,000 frozen props reach a client as 256 ghosts and 1,744 table entries, each drawn once and collided with once, none
+//!   sent both ways, no ghost made for a prop that is hidden at once:
+//!   `two_thousand_frozen_props_reach_a_client_as_ghosts_under_the_threshold_and_over_the_channel` (`tests/frozen.rs`); a
+//!   client that joins later is dealt what is there: `a_client_that_joins_later_is_dealt_the_props_that_are_there`.
+//! - A prop changes between a ghost and the channel, both ways, on a clean and on a lossy link, with exactly one picture on
+//!   every tick; a deleted one goes from the table and the stills; a prop the hierarchy holds is a ghost:
+//!   `a_prop_changes_between_a_ghost_and_the_channel_without_a_frame_drawn_twice_or_not_at_all`,
+//!   `a_prop_that_is_frozen_and_hung_on_a_parent_is_a_ghost_and_one_set_free_is_sent_again`.
+//! - A client's prediction collides with the props the channel gave it:
+//!   `a_figure_walks_into_frozen_props_sent_over_the_channel_and_stops_where_the_server_stops_it`
+//!   (`tests/frozen_predict.rs`).
+//! - A server's bytes never panic a client or leave a value out of range, a message is taken whole or not at all, and the
+//!   table holds one prop a slot (at most [`world::MAX_PROPS`]):
+//!   `hostile_bytes_never_panic_and_never_leave_a_value_out_of_range`, `a_table_holds_one_prop_a_slot_whatever_it_is_sent`,
+//!   `every_field_is_checked_and_a_refused_message_gives_no_op`, `a_message_is_held_to_its_size_and_its_count`
+//!   (`tests/frozen_messages.rs`, `TORQUE_FUZZ_PROPS` for more).
+//! - A client with no channel, and one that is Torque's alone, is sent what it always was:
+//!   `frozen_props_change_nothing_for_a_client_that_is_torques_alone_or_has_no_channel`.
+//! - A client that leaves takes what was hidden from it: `a_client_that_leaves_takes_its_hidden_props_with_it`.
+//! - A tick costs what changed: nothing when nothing did, one step a client for one thaw, and a mass thaw asks about at most
+//!   [`frozen::server::ACK_CHECKS_PER_TICK`] ghosts a tick: `a_tick_costs_what_changed_at_4096_props_and_64_clients`.
+//! - A server cannot grow a client's datablock cache by naming ids it never sent:
+//!   `a_server_naming_datablock_ids_it_never_sent_cannot_fill_the_tables_cache`.
+//! - A hide that finds the scope control full leaves its prop a ghost, with one console line and a count:
+//!   `ScopeControl::refused` (torque-engine's `an_audience_cannot_take_the_room_of_the_others_and_a_refusal_is_counted`).
 //! - This crate has no client entry point: `a_client_sending_the_old_spawn_command_gets_nothing`, and for joints
 //!   `the_natives_refuse_bad_ends_and_hold_values_to_their_ranges` (its client commands do nothing).
 //! - A joint goes with its prop (or a grapple with its player), stays through a freeze, and a world made again takes every joint
@@ -350,7 +409,22 @@
 //!   record fields with the object looked up once ([`torque_game::scene::access::set_fields`]). The benches:
 //!   `cargo bench -p torque-plugin-props --bench step` and torque-trace-hash's `server` (64 AIPlayers among 1,024 props).
 //!
-//! **Extension points.** `engine.net().ghost_share` (the props' share of each packet and their [`server::priority`]); the
+//! **The scope gate** (`frozen::server`'s `step`, `rewatch_scope`). A prop goes over a client's channel only if the connection's
+//! scope takes it (the query the ghost manager uses, asked through `GhostLink::scopes`, many props in one call) and no other
+//! scope-control user keeps it from the connection (`ScopeControl::is_hidden_by_other`). A prop the gate refuses is in the
+//! client's `unseen` set and is not sent; one it holds that leaves is removed at once, and one that enters is sent, as a ghost
+//! comes and goes. It is incremental: the scope control's change log (read from `FrozenSync::scope_cursor`; all of it when the log
+//! forgot some) puts the props it names on the client's list, and when the connection's scope can vary by itself
+//! (`GhostLink::scope_varies`, a scope object that moves) a share of at most [`frozen::server::GATE_SWEEP_PER_TICK`] props a tick
+//! over all clients is looked at again in turn. A server with nothing changed and a fixed scope looks at nothing. A connection whose scope is not in place yet (ghosting off, no scope object) takes nothing but what is always in scope, and counts as varying: when it settles, every prop it holds or is kept from is looked at once more. The tests: a
+//! prop out of a client's scope is never sent or ghosted, one hidden by another user is never sent and is removed when hidden later,
+//! and the props are sent when shown again
+//! (`the_channel_never_sends_a_frozen_prop_the_clients_scope_does_not_take`, and in `frozen::server_tests`
+//! `a_prop_out_of_a_clients_scope_is_never_sent_one_that_leaves_is_removed_and_one_that_enters_is_sent` and
+//! `a_prop_another_plugin_keeps_from_a_client_is_never_sent_to_it_and_follows_the_plugins_hides`).
+//!
+//! **Extension points.** `engine.net().scope_control()` and `engine.net().stills()` (the engine seams the channel stands on,
+//! not about props), `engine.net().ghost_share` (the props' share of each packet and their [`server::priority`]); the
 //! collision sources ([`server::ServerSource`], [`client::ClientSource`]) other movers meet props through;
 //! [`ServerProps::check_placement`] (`propCheckPlacement`) and `jointCheck`, which a game's own rate-limited, permission-checked
 //! server commands call before `propSpawn` and the `joint*` functions; the tether sources ([`torque_game::player_tether`]) a
@@ -370,6 +444,7 @@ pub const ROPE: bool = cfg!(feature = "rope");
 
 pub mod client;
 pub mod data;
+pub mod frozen;
 pub mod hierarchy;
 pub mod hits;
 pub mod hulls;
@@ -398,7 +473,7 @@ pub use server::{PropPrefs, ServerProps};
 pub use world::{Link, PropLimits, PropWorld};
 
 /// The network version of the props plugin: a client and a server must run the same.
-pub const NET_VERSION: u32 = 4;
+pub const NET_VERSION: u32 = 5;
 
 /// The name of the ghost class a prop is.
 pub const GHOST_CLASS: &str = "Prop";
@@ -478,11 +553,22 @@ impl Plugin for PropsPlugin {
             .on_ghost::<PropGhost>(GHOST_CLASS, move |vm, event| {
                 client::heard(vm, &heard, event)
             });
-        // Where each prop is in the scene hierarchy, found after the client's other work each tick.
+        // Where each prop is in the scene hierarchy, found after the client's other work each tick, and the frozen props sent
+        // over the channel made ready to draw.
         let placed = book.clone();
         engine.push(ClientTick::new(move |vm| {
             client::refresh_places(vm, &placed)
         }));
+        let published = (book.clone(), std::cell::Cell::new(0));
+        engine.push(ClientTick::new(move |vm| {
+            frozen::client::publish(vm, &published.0, &published.1)
+        }));
+        let frozen_book = book.clone();
+        engine.net().scope_control().stills().channel_with(
+            frozen::CHANNEL,
+            frozen::limits(),
+            move || frozen::client::FrozenChannel::new(frozen_book.clone()),
+        );
         engine.push(PluginCollision::server(
             COLLISION_NAME,
             Rc::new(server::ServerSource(server.clone())),

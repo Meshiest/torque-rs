@@ -40,7 +40,11 @@ pub const SLEEP_TICKS: u16 = 16;
 /// How far (in 1/1024 units) a sleeping prop may be nudged along an axis and still be put back to sleep.
 const WAKE_STEPS: u32 = 2;
 /// The most props a server holds (the slots of the collision source and the wire).
-pub const MAX_PROPS: u32 = 1024;
+pub const MAX_PROPS: u32 = 4096;
+/// The most props a server holds unless its prefs say more (`$Pref::Props::MaxProps`).
+pub const DEFAULT_MAX_PROPS: u32 = 1024;
+/// The most props awake at once.
+pub const MAX_AWAKE: u32 = 1024;
 /// The smallest half-extent of a pusher's kinematic box (units).
 const MIN_HALF: f32 = 0.01;
 /// The largest half-extent of a pusher's kinematic box (units): a box past it is no player or vehicle (a record is not trusted) and
@@ -61,12 +65,12 @@ mod children;
 /// The caps a server holds its props to (its prefs, each held to its range).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PropLimits {
-    /// Props one owner may have (1 to 1,024).
+    /// Props one owner may have (1 to 4,096).
     pub per_player: u32,
-    /// Props the owners of one remote address may have between them, orphans counted (1 to 1,024): a player who comes back
+    /// Props the owners of one remote address may have between them, orphans counted (1 to 4,096): a player who comes back
     /// under a new key starts no new quota.
     pub per_address: u32,
-    /// Props on the server (1 to 1,024).
+    /// Props on the server (1 to 4,096).
     pub per_server: u32,
     /// Props awake at once (1 to 1,024).
     pub awake: u32,
@@ -81,7 +85,7 @@ impl Default for PropLimits {
         PropLimits {
             per_player: 64,
             per_address: 256,
-            per_server: MAX_PROPS,
+            per_server: DEFAULT_MAX_PROPS,
             awake: 256,
             step_budget: 4_000_000,
             orphan_ticks: 120 * 1000 / 32,
@@ -96,7 +100,7 @@ impl PropLimits {
             per_player: self.per_player.clamp(1, MAX_PROPS),
             per_address: self.per_address.clamp(1, MAX_PROPS),
             per_server: self.per_server.clamp(1, MAX_PROPS),
-            awake: self.awake.clamp(1, MAX_PROPS),
+            awake: self.awake.clamp(1, MAX_AWAKE),
             step_budget: self.step_budget.clamp(1_000, 1_000_000_000),
             orphan_ticks: self.orphan_ticks.min(3600 * 1000 / 32),
         }
@@ -162,7 +166,7 @@ pub struct Prop {
     pub params: PropParams,
     /// The hulls it collides as, when its datablock asked for the shape's and they were built ([`PropShape::Hulls`]).
     pub hulls: Option<Rc<PropHulls>>,
-    /// The key of its collision shape on both sides (0 to 1,023).
+    /// The key of its collision shape on both sides (0 to 4,095).
     pub slot: u16,
     pub owner: Option<Owner>,
     /// The predict id the owner's client gave it (0: none).
@@ -427,6 +431,9 @@ pub struct PropWorld {
     build_spent: u64,
     /// Props the world could not put back after a change that failed, taken out for the tick to report.
     dropped: Vec<u32>,
+    /// Props that were made or removed, frozen or thawed, owned by another, hung or let go, or had a joint made or taken
+    /// since the last [`PropWorld::take_touched`]: what the frozen channel looks at again ([`crate::frozen`]).
+    pub(crate) touched: BTreeSet<u32>,
     /// Props whose ghost groups change for a reason of the hierarchy (made a child, freed), for the next tick to report.
     changed: Vec<(u32, u32)>,
     /// The joints taken out because a body at an end went, with their ropes, for the caller to delete their objects.
@@ -571,6 +578,7 @@ impl PropWorld {
             joints: BTreeMap::new(),
             kids: children::Kids::default(),
             dirty_roots: Vec::new(),
+            touched: BTreeSet::new(),
             build_spent: 0,
             dropped: Vec::new(),
             changed: Vec::new(),
@@ -644,6 +652,11 @@ impl PropWorld {
 
     pub fn len(&self) -> usize {
         self.props.len()
+    }
+
+    /// The props touched since the last call ([`PropWorld::touched`] field docs), taken.
+    pub(crate) fn take_touched(&mut self) -> BTreeSet<u32> {
+        std::mem::take(&mut self.touched)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -747,6 +760,7 @@ impl PropWorld {
         if self.props.len() as u32 >= self.limits.per_server {
             return Err(SpawnError::PerServer);
         }
+        self.touched.insert(id);
         if let Some(o) = &owner {
             self.may_own(o, data, &params)?;
         }
@@ -816,6 +830,7 @@ impl PropWorld {
         if !self.props.contains_key(&id) {
             return false;
         }
+        self.touched.insert(id);
         // What is a part of this prop's body leaves it as a body of its own, where it is, at the speed its point had.
         self.free_parts(id, false);
         self.dirty_roots.push(id);
@@ -904,6 +919,7 @@ impl PropWorld {
         if p.rest.is_frozen() || !p.params.can_freeze || p.link.is_child() {
             return None;
         }
+        self.touched.insert(id);
         if !self.rebuild(id, Motion::Fixed) {
             return None;
         }
@@ -922,6 +938,7 @@ impl PropWorld {
         if !p.rest.is_frozen() {
             return None;
         }
+        self.touched.insert(id);
         if !self.rebuild(id, Motion::Dynamic) {
             return None;
         }
@@ -1029,6 +1046,7 @@ impl PropWorld {
     /// Changes who owns a prop (the init group goes again, so each client hears whether it is its own).
     pub fn set_owner(&mut self, id: u32, owner: Option<Owner>) -> Option<u32> {
         let p = self.props.get_mut(&id)?;
+        self.touched.insert(id);
         p.owner = owner;
         Some(MASK_INIT)
     }

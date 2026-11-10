@@ -456,3 +456,47 @@ fn a_childs_first_record_ahead_of_its_parents_is_linked_once_the_parent_is_scope
     hub.set_work_per_tick(torque_server::net::ghosts::NET_GHOST_WORK_PER_TICK);
     ends_up_on_its_parent(&mut rig, parent, child, 200);
 }
+
+/// Keeps `obj` out of the client's ghosts (or lets it back in) through the server's scope control.
+fn hide_from_client(rig: &mut Rig, obj: ObjId, hidden: bool) {
+    use torque_engine::scope::{Audience, ScopeControl};
+    let scope = ScopeControl::of(rig.server.vm()).expect("a scope control");
+    if hidden {
+        scope
+            .hide(rig.server.vm(), obj, Audience::Everyone)
+            .expect("room to hide");
+    } else {
+        assert!(scope.show(obj, Audience::Everyone));
+    }
+}
+
+#[test]
+fn a_parent_kept_out_of_a_connections_ghosts_leaves_its_child_a_root_drawn_where_the_server_has_it()
+{
+    let mut rig = Rig::new(0.0);
+    let parent = rig.object("return cube(\"0 0 2\", \"1 1 1\");");
+    let child = rig.object("return box(\"2 0 2\");");
+    assert_eq!(
+        rig.eval(&format!("return {child}.setParent({parent});")),
+        "1"
+    );
+    ends_up_on_its_parent(&mut rig, parent, child, 200);
+    let ghost = rig.ghost(child).expect("the child's ghost");
+    // The parent hidden while it moves: its ghost goes and the child, which kept its own ghost, is a root at once.
+    hide_from_client(&mut rig, parent, true);
+    for _ in 0..120 {
+        let t = rig.ticks;
+        rig.move_to(parent, &root_pose(t));
+        rig.step();
+    }
+    assert_eq!(rig.ghost(parent), None, "the parent is not sent");
+    assert_eq!(rig.ghost(child), Some(ghost), "the child keeps its ghost");
+    assert!(rig.links(|l| l.parent(ghost).is_none() && !l.is_waiting(ghost)));
+    let drawn = rig.client_world(ghost).expect("drawn");
+    assert_eq!(drawn, rig.record_world(ghost).unwrap());
+    let off = error(&drawn, &rig.server_world(child)).0;
+    assert!(off <= MILLIMETRE, "{off}");
+    // Let back in: a new ghost for the parent, and the child hangs on it again.
+    hide_from_client(&mut rig, parent, false);
+    ends_up_on_its_parent(&mut rig, parent, child, 300);
+}

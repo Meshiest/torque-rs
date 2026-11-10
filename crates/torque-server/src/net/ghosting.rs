@@ -27,6 +27,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use torque_engine::scope::ScopeControl;
 use torque_net::handshake::ConnId;
 use torque_ts_vm::classes::EngineClass;
 use torque_ts_vm::sim::ObjId;
@@ -58,8 +59,11 @@ impl<G: NetGame> EngineClass for NetObjectClass<G> {
         Ok(true)
     }
 
-    fn on_remove(&self, _vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+    fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
         self.hub.removed(id);
+        if let Some(scope) = ScopeControl::of(vm) {
+            scope.forget_object(id);
+        }
         Ok(())
     }
 }

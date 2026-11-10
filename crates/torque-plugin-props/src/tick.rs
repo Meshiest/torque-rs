@@ -143,6 +143,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         }
     }
     refresh_controls(vm, props);
+    crate::frozen::server::sync(vm, props);
     // A prop a projectile hit is told so (after the projectile's own `onCollision`, which ran in its tick).
     for h in hit {
         let args = [

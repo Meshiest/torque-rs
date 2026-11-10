@@ -246,13 +246,14 @@ fn a_query_is_filtered() {
 
 #[test]
 fn a_set_over_the_cap_holds_none_on_either_side() {
-    // Four sources of a full 1024 are more than a set holds: the set is empty, as it is for the client and the server alike.
+    // Three sources of a full set of shapes are more than a set holds: the set is empty, as it is for the client and the
+    // server alike.
     let many = |n: usize| -> Vec<CollisionShape> {
         (0..n as u32)
             .map(|k| boxed(k, at(k as f32 * 4.0, 0.0, 0.0), [1.0; 3]))
             .collect()
     };
-    let names = ["A", "B", "C", "D", "E"];
+    let names = ["A", "B", "C"];
     let entries: Vec<PluginCollision> = names
         .iter()
         .flat_map(|n| {
@@ -266,9 +267,9 @@ fn a_set_over_the_cap_holds_none_on_either_side() {
     for side in [Side::Server, Side::Client] {
         let src = sources(&entries, side);
         assert_eq!(src.snapshot().len(), 0, "{side:?}");
-        // Four are the most that fit.
-        let four = &entries[..8];
-        assert_eq!(sources(four, side).snapshot().len(), MAX_SET_SHAPES);
+        // Two are the most that fit.
+        let two = &entries[..4];
+        assert_eq!(sources(two, side).snapshot().len(), MAX_SET_SHAPES);
     }
 }
 
@@ -605,4 +606,44 @@ fn a_shape_lets_only_the_mover_it_names_pass() {
     let ray = |exclude| set.cast_ray([-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], STATIC_SHAPE, exclude);
     assert!(ray(Some(ObjectId(7))).is_none());
     assert!(ray(Some(ObjectId(8))).is_some());
+}
+
+#[test]
+fn a_cap_a_source_goes_past_is_told_once_to_the_host_that_asks() {
+    let many = |n: usize| -> Vec<CollisionShape> {
+        (0..n as u32)
+            .map(|k| boxed(k, at(k as f32 * 4.0, 0.0, 0.0), [1.0; 3]))
+            .collect()
+    };
+    // A source past its own cap loses its last shapes, and says so.
+    let entries = [PluginCollision::server(
+        "P",
+        source(many(MAX_SHAPES_PER_SOURCE + 5)),
+    )];
+    let src = sources(&entries, Side::Server);
+    assert_eq!(src.take_overflow(), None);
+    assert_eq!(src.snapshot().len(), MAX_SHAPES_PER_SOURCE);
+    assert_eq!(
+        src.take_overflow(),
+        Some(Overflow {
+            listed: MAX_SHAPES_PER_SOURCE + 5,
+            set_dropped: false
+        })
+    );
+    assert_eq!(src.take_overflow(), None, "told once");
+    // Sources past the set's cap leave it empty, and say so.
+    let s = source(many(MAX_SHAPES_PER_SOURCE));
+    let entries: Vec<PluginCollision> = ["A", "B", "C"]
+        .into_iter()
+        .map(|n| PluginCollision::server(n, s.clone()))
+        .collect();
+    let src = sources(&entries, Side::Server);
+    assert_eq!(src.snapshot().len(), 0);
+    assert_eq!(
+        src.take_overflow(),
+        Some(Overflow {
+            listed: MAX_SET_SHAPES + MAX_SHAPES_PER_SOURCE,
+            set_dropped: true
+        })
+    );
 }
