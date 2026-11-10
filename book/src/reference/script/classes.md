@@ -2,7 +2,7 @@
 
 # Classes
 
-Console classes, with the fields each adds to its parent's. 117 classes.
+Console classes, with the fields each adds to its parent's. 119 classes.
 
 | Class | Parent | Fields |
 |---|---|---|
@@ -63,6 +63,7 @@ Console classes, with the fields each adds to its parent's. 117 classes.
 | [GuiTextListCtrl](#guitextlistctrl) | [GuiArrayCtrl](#guiarrayctrl) | 5 |
 | [GuiTSCtrl](#guitsctrl) | [GuiControl](#guicontrol) | 3 |
 | [GuiWindowCtrl](#guiwindowctrl) | [GuiTextCtrl](#guitextctrl) | 8 |
+| [HTTPObject](#httpobject) | [TCPObject](#tcpobject) | 0 |
 | [InteriorInstance](#interiorinstance) | [SceneObject](#sceneobject) | 5 |
 | [Item](#item) | [ShapeBase](#shapebase) | 3 |
 | [ItemData](#itemdata) | [ShapeBaseData](#shapebasedata) | 12 |
@@ -111,6 +112,7 @@ Console classes, with the fields each adds to its parent's. 117 classes.
 | [StaticShape](#staticshape) | [ShapeBase](#shapebase) | 0 |
 | [StaticShapeData](#staticshapedata) | [ShapeBaseData](#shapebasedata) | 2 |
 | [Sun](#sun) | [NetObject](#netobject) | 4 |
+| [TCPObject](#tcpobject) | [SimObject](#simobject) | 0 |
 | [TerrainBlock](#terrainblock) | [SceneObject](#sceneobject) | 9 |
 | [TimeOfDay](#timeofday) | [SceneObject](#sceneobject) | 8 |
 | [Trigger](#trigger) | [GameBase](#gamebase) | 1 |
@@ -856,6 +858,12 @@ No fields of its own.
 | `canMaximize` | bool |  |  |
 | `minSize` | Point2I |  |  |
 | `closeCommand` | string |  |  |
+
+## HTTPObject
+
+*goes below `TCPObject`; server and client; needs `torque.tcp`*
+
+No fields of its own.
 
 ## InteriorInstance
 
@@ -1628,6 +1636,12 @@ No fields of its own.
 | `elevation` | float |  |  |
 | `color` | ColorF |  |  |
 | `ambient` | ColorF |  |  |
+
+## TCPObject
+
+*goes below `SimObject`; server and client; needs `torque.tcp`*
+
+No fields of its own.
 
 ## TerrainBlock
 

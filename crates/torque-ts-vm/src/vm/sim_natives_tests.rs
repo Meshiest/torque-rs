@@ -76,3 +76,48 @@ fn an_object_made_from_rust_is_the_declarations_object() {
     // An unknown class makes nothing.
     assert_eq!(vm.new_object(b"NoSuchClass", &[]).unwrap(), None);
 }
+
+/// A class that takes constructor arguments sees them in its behaviour's `process_arguments`, which may refuse them; one that
+/// does not take them fails any declaration with arguments, as before.
+#[test]
+fn constructor_arguments_reach_the_behaviour_that_may_refuse_them() {
+    struct Count;
+    impl crate::classes::EngineClass for Count {
+        fn process_arguments(
+            &self,
+            _: &crate::sim::Objects,
+            object: &mut crate::sim::SimObject,
+            args: &[Vec<u8>],
+        ) -> bool {
+            object.ext = Some(Box::new(args.len()));
+            args.len() == 1
+        }
+        fn on_add(&self, vm: &mut Vm, id: ObjId) -> Result<bool, VmError> {
+            let seen = vm
+                .objects_mut()
+                .get_mut(id)
+                .and_then(|o| o.ext.take())
+                .and_then(|ext| ext.downcast::<usize>().ok())
+                .map_or(0, |n| *n);
+            vm.set_global_text(b"$seen", seen.to_string().as_bytes());
+            Ok(true)
+        }
+    }
+    let mut vm = Vm::new();
+    let class = vm
+        .register_class("Takes", "SimObject", &[])
+        .expect("registers");
+    vm.objects_mut()
+        .classes
+        .get_mut(class)
+        .expect("the class")
+        .takes_arguments = true;
+    vm.set_class_behaviour("Takes", std::rc::Rc::new(Count));
+    vm.register_class("Plain", "SimObject", &[])
+        .expect("registers");
+    let made = vm
+        .eval(b"$a = new Takes(A, 7); $b = new Takes(B, 1, 2); $c = new Plain(C, 1); return isObject($a) SPC isObject($b) SPC isObject($c) SPC $seen;")
+        .expect("runs");
+    // One argument is taken; two are refused (after the behaviour saw them), and a class without arguments refuses any.
+    assert_eq!(made, b"1 0 0 1");
+}

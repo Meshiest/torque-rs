@@ -144,6 +144,12 @@ different.
 
 #### Web and networking
 
+- `torque-plugin-tcp`: TGE's `TCPObject` and `HTTPObject` (`TcpPlugin`, not in `DefaultPlugins`; nothing in web builds). Lookups,
+  connects and TLS handshakes never block a tick, and each script engine is capped (`TcpLimits`: connections, listen sockets,
+  accepted connections waiting, connects under way, bytes read and sent per tick, send queue, line length, callbacks per tick);
+  a refused connect reports
+  `onConnectFailed`, a peer that sends an over-long line is disconnected. HTTPS for `https://` addresses through rustls, and
+  `post` sends a real POST.
 - `torque-transfer` and `NetRegistry::upload`: files a client sends a server, taken by a plugin's sink under limits the server
   sets (size, quota per player, uploads at once, staged bytes, rate, a permission). The server pulls the file in 64 KiB blocks,
   asks for each run and checks every block and the whole content against hashes before the sink sees it as read-only untrusted

@@ -1,0 +1,46 @@
+[package]
+name = "torque-plugin-tcp"
+description = "TCPObject and HTTPObject for torque-rs: TorqueScript's TCP connections, listen sockets and HTTP requests, bounded per script engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "torquescript", "tcp", "http", "plugin"]
+categories = ["game-development", "network-programming"]
+
+# The console classes TCPObject and HTTPObject on every server and client script engine: outbound connections, listen sockets
+# and HTTP requests (HTTPS through rustls), polled once a tick with caps on sockets, lookups, bytes and line length. Nothing
+# here exists in a web build: on wasm32 the plugin adds nothing.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+torque-engine = { path = "../torque-engine" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+# HTTPS for HTTPObject (the `https` feature): rustls with the ring provider, as the server's web transport uses, and the
+# system's trusted roots.
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+
+# On wasm32 the plugin is an empty one: the engine crate still names its type.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+torque-engine = { path = "../torque-engine" }
+
+[features]
+default = ["https"]
+# `https://` addresses for HTTPObject.
+https = ["dep:rustls", "dep:rustls-native-certs"]
+
+[dev-dependencies]
+# The HTTPS tests: a certificate made for the test, and the server's side of TLS.
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"] }
+# The tick hooks of a real server and client.
+torque-app = { path = "../torque-app", default-features = false }
+
+[[test]]
+name = "https"
+required-features = ["https"]
+
+[lints]
+workspace = true

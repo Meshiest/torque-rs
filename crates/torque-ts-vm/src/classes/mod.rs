@@ -128,6 +128,21 @@ pub trait EngineClass {
         let _ = (objects, object);
     }
 
+    /// `processArguments`: the constructor arguments of a declaration (`new Class(name, args...)`, the words after the
+    /// name), for a class that takes them (`ClassDef::takes_arguments`; a class that does not fails a declaration with
+    /// any). Run after [`on_construct`](Self::on_construct), root class first, only when there are arguments; the first
+    /// `false` fails the declaration without a message, as TGE's does. Like `on_construct` it runs no script and only
+    /// `object`, not yet registered, changes (a behaviour keeps what it read in [`SimObject::ext`] for its `on_add`).
+    fn process_arguments(
+        &self,
+        objects: &Objects,
+        object: &mut SimObject,
+        args: &[Vec<u8>],
+    ) -> bool {
+        let _ = (objects, object, args);
+        true
+    }
+
     /// A declaration nested in this object (`new Group() { new Child(); }`) put the child in it: the group's own
     /// `addObject` beyond the set's (a scroll control recomputes its sizes). Called for the GROUP's class chain, root
     /// first, after the child joined it; the child's own `on_add` ran before. Runs with no borrow held, like the other

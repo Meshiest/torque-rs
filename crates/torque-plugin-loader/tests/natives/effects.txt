@@ -263,6 +263,8 @@ GuiTextListCtrl::setSelectedById -
 GuiTextListCtrl::setSelectedRow -
 GuiTextListCtrl::sort -
 GuiTextListCtrl::sortNumerical -
+HTTPObject::get network
+HTTPObject::post network
 initContainerBoxSearch -
 initContainerRadiusSearch -
 isEventPending -
@@ -593,6 +595,10 @@ strreplace -
 strstr -
 strToPlayerName -
 strupr -
+TCPObject::connect network
+TCPObject::disconnect -
+TCPObject::listen network
+TCPObject::send network
 TimeOfDay::addTimeOfDayEvent -
 TimeOfDay::animate -
 TimeOfDay::setDayLength -

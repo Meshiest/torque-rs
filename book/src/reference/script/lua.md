@@ -524,6 +524,11 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:sort(int columnID, bool increasing=false)` *1 to 2; client*
 - `obj:sortNumerical(int columnID, bool increasing=false)` *1 to 2; client*
 
+### HTTPObject
+
+- `obj:get(string address, string path, string query)` *2 to 3; server and client; needs `torque.tcp`*
+- `obj:post(string address, string path, string query, string body)` *4; server and client; needs `torque.tcp`*
+
 ### Item
 
 - `obj:getLastStickyNormal()` *none; server and client*
@@ -708,6 +713,13 @@ The same functions and methods as the other pages, as a script of the Lua extens
 
 - `obj:inspectPostApply()` *none; server and client*
 - `obj:setLightEnabled(bool state)` *1; server and client*
+
+### TCPObject
+
+- `obj:connect(string address)` *1; server and client; needs `torque.tcp`*
+- `obj:disconnect()` *none; server and client; needs `torque.tcp`*
+- `obj:listen(int port)` *1; server and client; needs `torque.tcp`*
+- `obj:send(string text, ...)` *at least 1; server and client; needs `torque.tcp`*
 
 ### TimeOfDay
 

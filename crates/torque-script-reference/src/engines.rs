@@ -18,6 +18,7 @@ use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
 use torque_plugin_rope::RopePlugin;
+use torque_plugin_tcp::TcpPlugin;
 use torque_ts_vm::host::MemFiles;
 
 use crate::collect::{SideVm, collect};
@@ -34,7 +35,7 @@ struct Optional {
 
 /// The opt-in plugins that add script surface and that need nothing from the game to do it. (`LivePerfPlugin` names its
 /// console function and pref by its arguments, so it has nothing fixed to list.)
-fn optional_plugins() -> [Optional; 8] {
+fn optional_plugins() -> [Optional; 9] {
     [
         Optional {
             id: HierarchyPlugin::ID.as_str(),
@@ -87,6 +88,14 @@ fn optional_plugins() -> [Optional; 8] {
             what: "prop prediction on a client: the props its own Player holds, stands on or pushes drawn where they will be, and the client functions that show a push or a spawn at once (never sent to the server)",
             add: |engine| {
                 engine.add_plugins((PropsPlugin, PropPredictionPlugin::default()));
+            },
+            group: None,
+        },
+        Optional {
+            id: TcpPlugin::ID.as_str(),
+            what: "TCP and HTTP from script: the TCPObject class (connect, listen, send and the line callbacks) and the HTTPObject class (get and post, HTTPS too), with caps on sockets and bytes per tick",
+            add: |engine| {
+                engine.add_plugins(TcpPlugin::default());
             },
             group: None,
         },

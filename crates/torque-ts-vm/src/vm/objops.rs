@@ -228,8 +228,16 @@ impl Vm {
             .classes
             .get(class)
             .is_some_and(|c| c.takes_arguments);
-        if argv.len() > 3 && !takes_arguments {
-            return Ok(fail);
+        if argv.len() > 3 {
+            if !takes_arguments {
+                return Ok(fail);
+            }
+            let args = &argv[3..];
+            for behaviour in self.objects.classes.behaviours(class) {
+                if !behaviour.process_arguments(&self.objects, &mut object, args) {
+                    return Ok(fail);
+                }
+            }
         }
         if let Some(creating) = self.creating_mut() {
             creating.object = Some(NewObject::Pending(Box::new(object)));

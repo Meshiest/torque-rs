@@ -24,6 +24,7 @@ use torque_plugin_loader::call_policy::{
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
 use torque_plugin_rope::RopePlugin;
+use torque_plugin_tcp::TcpPlugin;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::listing::check_listing;
 use torque_ts_vm::vm::Vm;
@@ -42,7 +43,8 @@ fn for_each_script_engine(mut each: impl FnMut(&Vm)) {
             .add_plugins(RopePlugin::default())
             .add_plugins(PropsPlugin)
             .add_plugins(PropPredictionPlugin::default())
-            .add_plugins(GuiLayoutPlugin);
+            .add_plugins(GuiLayoutPlugin)
+            .add_plugins(TcpPlugin::default());
         // This protocol whatever `TORQUE_NET_PROTOCOL` says.
         set_protocol(&mut engine, protocol);
         let engine = engine.build().expect("the engine builds");

@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-307 entries in 34 classes.
+313 entries in 36 classes.
 
 | Class | Entries |
 |---|---|
@@ -30,6 +30,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [GuiTextCtrl](#guitextctrl) | 2 |
 | [GuiTextEditCtrl](#guitexteditctrl) | 3 |
 | [GuiTextListCtrl](#guitextlistctrl) | 20 |
+| [HTTPObject](#httpobject) | 2 |
 | [Item](#item) | 5 |
 | [MessageVector](#messagevector) | 12 |
 | [NetConnection](#netconnection) | 4 |
@@ -40,6 +41,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [SimObject](#simobject) | 12 |
 | [SimSet](#simset) | 10 |
 | [SpotLight](#spotlight) | 2 |
+| [TCPObject](#tcpobject) | 4 |
 | [TimeOfDay](#timeofday) | 5 |
 | [WheeledVehicle](#wheeledvehicle) | 5 |
 
@@ -392,6 +394,13 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 1 to 2; client*
 - `obj.sortNumerical(int columnID, bool increasing=false)`
   *arguments: 1 to 2; client*
+
+## HTTPObject
+
+- `obj.get(string address, string path, string query)` - Sends a GET for path?query once connected (address as connect's, or http:// or https://); each line of the answer's body is onLine.
+  *arguments: 2 to 3; server and client; needs `torque.tcp`*
+- `obj.post(string address, string path, string query, string body)` - Sends a POST of the form body for path?query once connected; each line of the answer's body is onLine.
+  *arguments: 4; server and client; needs `torque.tcp`*
 
 ## Item
 
@@ -747,6 +756,17 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: none; server and client*
 - `obj.setLightEnabled(bool state)`
   *arguments: 1; server and client*
+
+## TCPObject
+
+- `obj.connect(string address)` - Connects to \`\[ip:\]host\[:port\]\` (port 28000 when none is given): onDNSResolved or onDNSFailed for a name, then onConnected or onConnectFailed.
+  *arguments: 1; server and client; needs `torque.tcp`*
+- `obj.disconnect()` - Closes the connection, the listen socket or the connect under way, if any (no callback).
+  *arguments: none; server and client; needs `torque.tcp`*
+- `obj.listen(int port)` - Listens for connections on that port: onConnectRequest(address, id) for each; \`new TCPObject(name, id)\` takes one.
+  *arguments: 1; server and client; needs `torque.tcp`*
+- `obj.send(string text, ...)` - Sends each argument as it is, in order, on the open connection.
+  *arguments: at least 1; server and client; needs `torque.tcp`*
 
 ## TimeOfDay
 

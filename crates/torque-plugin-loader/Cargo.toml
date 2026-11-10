@@ -58,6 +58,7 @@ torque-render-scene = { path = "../torque-render-scene" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-plugin-props = { path = "../torque-plugin-props", features = ["rope"] }
 torque-plugin-rope = { path = "../torque-plugin-rope" }
+torque-plugin-tcp = { path = "../torque-plugin-tcp" }
 
 [lints.rust]
 # `deny`, not the workspace's `forbid`: the `ffi` module allows it, for the calls across the C ABI and the library loading.
