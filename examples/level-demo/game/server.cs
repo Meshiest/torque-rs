@@ -90,10 +90,11 @@ function WorldFigureData::onDisabled(%this, %obj, %state)
 
 $World::HoldReach = 2.5;
 $World::HoldMaxMass = 15;
-// Where a held prop hangs, in the figure's own frame: right of its middle, its near face in front of the figure's box, its
-// top at the hand.
+// Where a held prop hangs with the figure looking level, in its own frame: right of its middle, its near face this far in front
+// of the figure's middle (its box reaches half a unit from it), its top at the hand. The props plugin swings it about the figure's eyes with
+// the view (looking up raises it, down lowers it) and keeps it clear of the box whatever the view.
 $World::HoldRight = 0.3;
-$World::HoldFront = 0.6;
+$World::HoldFront = 0.85;
 $World::HoldHand = 1.35;
 
 // The commands run so far: the engine holds them to the plugin's declared rate (4 a second after a burst of 8) before they

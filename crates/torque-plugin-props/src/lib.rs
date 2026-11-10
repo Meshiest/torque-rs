@@ -241,13 +241,19 @@
 //!   nothing and only its holder's collision passes through its prop ([`server::ServerSource`] and [`client::ClientSource`]
 //!   name the holder, torque-collide's `a_shape_lets_only_the_mover_it_names_pass`); one holder a prop and one prop a holder;
 //!   a holder that goes lets go: `a_hold_carries_its_prop_upright_at_its_point_through_a_walk_and_lets_go_when_deleted`. A
-//!   frozen prop cannot be held, freezing breaks a hold, a prop stuck past [`joints::HOLD_BREAK`] breaks it, and the drive
+//!   frozen prop cannot be held, freezing breaks a hold, a prop stuck past [`joints::HOLD_BREAK`] (making less than [`joints::HOLD_CATCH_UP`] of the ground its speed allows toward its point in a step, so a view flicked from straight down to straight up keeps its hold: `a_view_flicked_from_straight_down_to_straight_up_keeps_the_hold_and_the_prop_catches_up`) breaks it, and the drive
 //!   keeps a held prop out of other players' boxes: `a_hold_breaks_when_frozen_or_stuck_and_keeps_out_of_other_players`,
 //!   `the_holder_alone_passes_through_its_held_prop`. Every pusher's box (a player's, a vehicle's) is a frictionless kinematic
 //!   body of the props' world, placed where its box is and never given a speed, so no prop (shoved by a held one, let go
 //!   inside one, fallen on one) stays inside a player: `a_held_prop_shoves_a_free_one_into_no_players_box`. The
-//!   holder's client predicts the held prop from each move's box and facing ([`world::PlayerAt::of_box`], read the same way as
-//!   the server's): the level demo's `a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_click_drops_it`.
+//!   holder's client predicts the held prop from each move's box, facing and head pitch ([`world::PlayerAt::of_box`] and
+//!   [`world::PlayerAt::looking`], read the same way as the server's). The pose is [`world::PlayerAt::hold_point`]: the offset is
+//!   where the prop hangs with the view level; it swings about the holder's eyes ([`world::HOLD_PIVOT`] of its height) with the
+//!   view's elevation, then moves straight ahead until its box is [`joints::HOLD_CLEARANCE`] clear of the holder's box (at any
+//!   height, so it moves smoothly). `a_held_prop_stays_clear_of_its_holders_box_at_every_pitch_and_heading` and
+//!   `the_view_raises_and_lowers_a_held_prop_along_the_view` (`world_tests.rs`) check both, and
+//!   `a_held_prop_follows_the_view_and_never_presses_into_its_holder_on_a_walk_and_turn` (`tests/joints.rs`) walks, turns and
+//!   tilts the view in the world. The level demo's office: `a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_click_drops_it`.
 //! - A prop hung on a non-prop or a frozen prop is a kinematic body within a millimeter of the pose the tree resolved, every tick of
 //!   600 under a parent that slides and turns, and a prop resting on it is carried:
 //!   `a_kinematic_child_is_within_a_millimeter_of_its_resolved_pose_every_tick`,

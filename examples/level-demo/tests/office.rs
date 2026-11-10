@@ -979,7 +979,26 @@ fn a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_clic
     // it within a few centimeters once the walk ends.
     let mut worst = 0.0f32;
     let mut predicted = 0;
-    game.set_global("$mvPitch", "-0.6");
+    game.set_global("$mvPitch", "0");
+    // Look level first (the click was made looking down at the chair): a held chair hangs at the hand with the view level, and
+    // the lowest view puts its point under the floor it rests on.
+    for _ in 0..80 {
+        let eye = server_eval(&mut game, &format!("return {figure}.getEyeVector();"));
+        let z: f32 = eye
+            .split_whitespace()
+            .nth(2)
+            .and_then(|z| z.parse().ok())
+            .unwrap_or(0.0);
+        if z.abs() < 0.02 {
+            break;
+        }
+        game.set_global("$mvPitch", &(z * 0.5).clamp(-0.2, 0.2).to_string());
+        game.step(32);
+    }
+    game.set_global("$mvPitch", "0");
+    for _ in 0..30 {
+        game.step(32);
+    }
     for (key, ms) in [(Key::A, 900), (Key::S, 600), (Key::D, 900)] {
         game.key(key, true);
         for _ in 0..ms / 32 {
@@ -1010,6 +1029,25 @@ fn a_click_picks_up_the_chair_it_looks_at_carries_it_on_a_walk_and_a_second_clic
     // Upright still, and the figure walked: its held chair did not push it.
     let (q, _) = server_props(&game)[&id];
     assert!(upright(q.rotation()) > 0.99);
+    // A mouse flick from the lowest view to the highest and back moves the hold point about two units in a few ticks: the hold
+    // is kept, the chair upright, and it follows.
+    for pitch in ["-0.6", "0.6", "-0.6"] {
+        game.set_global("$mvPitch", pitch);
+        for _ in 0..8 {
+            game.step(32);
+        }
+        game.set_global("$mvPitch", "0");
+        for _ in 0..30 {
+            game.step(32);
+        }
+        let (held_by, _) = holder(&mut game, id);
+        assert_eq!(held_by, figure, "the flick of {pitch} dropped the chair");
+        let (q, _) = server_props(&game)[&id];
+        assert!(
+            upright(q.rotation()) > 0.99,
+            "tilted after a flick of {pitch}"
+        );
+    }
     // A second click drops it: it falls to the floor and sleeps, held by no one.
     game.call("grab", &["1"]).expect("the click");
     for _ in 0..120 {

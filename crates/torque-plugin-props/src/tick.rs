@@ -288,15 +288,13 @@ fn grappled_players(vm: &Vm, world: &PropWorld) -> BTreeMap<u32, PlayerAt> {
         .collect()
 }
 
-/// Where Player `id` is for the joints at it: its position and the way its transform faces (a client's prediction reads its
-/// predicted Player from its box's floor, the same point to a float's last bits, and the same transform).
+/// Where Player `id` is for the joints at it: its box, the way its transform faces and where its head points (a client's
+/// prediction reads its predicted Player the same way, from the same fields).
 fn player_at(vm: &Vm, id: u32) -> Option<PlayerAt> {
     let s = torque_game::sim::player::state(vm, id)?;
     let m = &s.obj_to_world;
-    Some(PlayerAt::facing(
-        torque_game::sim::player::position(vm, id)?,
-        [m[1], m[5]],
-    ))
+    // A head's pitch is positive looking down.
+    Some(PlayerAt::of_box(s.world_box.min, s.world_box.max, [m[1], m[5]]).looking(-s.head[0]))
 }
 
 /// The object each owner's connection controls now, for the priority of the next packets.

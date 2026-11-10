@@ -675,3 +675,86 @@ fn a_bystander_whose_box_turns_hostile_loses_its_body() {
         assert_eq!(w.box_rejected, before + 1);
     }
 }
+
+/// A player standing at the origin in a 1 by 1 by 2 box, facing `heading` (radians, from +y) and looking `elevation` up.
+fn holder(heading: f32, elevation: f32) -> PlayerAt {
+    PlayerAt::of_box(
+        [-0.5, -0.5, 0.0],
+        [0.5, 0.5, 2.0],
+        [-heading.sin(), heading.cos()],
+    )
+    .looking(elevation)
+}
+
+#[test]
+fn a_held_prop_stays_clear_of_its_holders_box_at_every_pitch_and_heading() {
+    // Crates of three sizes held by the level-view offset a hand carries them at (right, forward, up from the feet).
+    for half in [[0.2; 3], [0.25, 0.4, 0.3], [0.5; 3]] {
+        let offset = [0.3, 0.6 + half[1], 1.35 - half[2]];
+        for h in 0..24 {
+            let heading = h as f32 * std::f32::consts::TAU / 24.0;
+            for e in -14..=14 {
+                let elevation = e as f32 * 0.1;
+                let at = holder(heading, elevation);
+                let (center, turn) = PropWorld::hold_pose(&at, offset, half);
+                let world = world_half(half, turn);
+                let apart = (0..2).any(|k| (center[k] - at.position[k]).abs() >= 0.5 + world[k])
+                    || center[2] - world[2] >= 2.0
+                    || center[2] + world[2] <= 0.0;
+                assert!(
+                    apart,
+                    "half {half:?} at heading {heading} and elevation {elevation} is in the holder's box: {center:?}"
+                );
+                let gap = (0..2)
+                    .map(|k| (center[k] - at.position[k]).abs() - 0.5 - world[k])
+                    .fold(f32::MIN, f32::max);
+                let above = center[2] - world[2] - 2.0;
+                assert!(
+                    gap.max(above) >= crate::joints::HOLD_CLEARANCE - 1.0e-4
+                        || center[2] + world[2] <= 0.0,
+                    "half {half:?} at heading {heading} and elevation {elevation} is {gap} from the box"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_view_raises_and_lowers_a_held_prop_along_the_view() {
+    let half = [0.2; 3];
+    let offset = [0.0, 1.6, 1.4];
+    let pivot = 2.0 * HOLD_PIVOT;
+    let at_view = |e: f32| PropWorld::hold_pose(&holder(0.0, e), offset, half).0;
+    let level = at_view(0.0);
+    assert_eq!(
+        level,
+        [0.0, 1.6, 1.4],
+        "a level view hangs it at its offset"
+    );
+    // The point's elevation about the eyes is the level one plus the view's, as far as the clearance leaves it be.
+    let angle = |p: [f32; 3]| (p[2] - pivot).atan2(p[1]);
+    let base = angle(level);
+    let mut last = f32::MIN;
+    for e in [-0.4f32, -0.2, 0.0, 0.2, 0.4] {
+        let p = at_view(e);
+        assert!(p[2] > last, "looking higher raises it: {p:?}");
+        last = p[2];
+        assert!(
+            (angle(p) - (base + e)).abs() < 1.0e-3,
+            "at {e} it is {} about the eyes, not {}",
+            angle(p),
+            base + e
+        );
+        let reach = (p[1] * p[1] + (p[2] - pivot).powi(2)).sqrt();
+        let level_reach = (level[1] * level[1] + (level[2] - pivot).powi(2)).sqrt();
+        assert!((reach - level_reach).abs() < 1.0e-3, "its distance is kept");
+        assert_eq!(p[0], 0.0, "sideways stays put");
+    }
+}
+
+#[test]
+fn a_player_with_no_box_keeps_its_prop_where_the_offset_says() {
+    let (offset, half) = ([0.2, 0.5, 1.0], [0.3; 3]);
+    let (p, _) = PropWorld::hold_pose(&PlayerAt::at([1.0, 2.0, 3.0]), offset, half);
+    assert_eq!(p, [1.2, 2.5, 4.0]);
+}

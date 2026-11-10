@@ -1150,9 +1150,12 @@ impl Cx<'_> {
     ) -> Result<(), OverBudget> {
         self.fill_pre();
         let pusher = motion.map(|mo| pusher_of(player.unwrap_or(0), &mo));
-        let at = player
-            .zip(motion)
-            .map(|(p, mo)| (p, PlayerAt::of_box(mo.min, mo.max, mo.forward)));
+        let at = player.zip(motion).map(|(p, mo)| {
+            (
+                p,
+                PlayerAt::of_box(mo.min, mo.max, mo.forward).looking(mo.elevation),
+            )
+        });
         self.s.world.set_players(at.into_iter().collect());
         if let Some(p) = player
             && let Some(prop) = self.grappled(p)

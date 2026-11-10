@@ -100,7 +100,7 @@ const OFFICE_CORNER: [f32; 2] = [-18.0, -12.0];
 /// The office level's pictures at `size` into `dir`: the outside from above, the figure walked in at the front door (the camera
 /// behind it), views from a standing figure's eyes (1.7 units up) of the lobby, the desks, the meeting room and the kitchen, a
 /// view out through a window, the camera behind the figure once it has backed up to the front wall, and a chair the figure
-/// pushed along its row (`office-chair-pushed`), then picked up and held out (`office-chair-held`).
+/// pushed along its row (`office-chair-pushed`), then picked up and held out while the figure looks level, up and down (`office-chair-held-level`, `-up`, `-down`).
 pub fn write_office(
     files: GameFiles,
     dir: &Path,
@@ -196,23 +196,56 @@ pub fn write_office(
     seat.run(&gpu, 300)?;
     seat.game.call("grab", &["1"])?;
     seat.run(&gpu, 300)?;
-    seat.game.set_global("$mvPitch", "-0.6");
-    seat.run(&gpu, 600)?;
-    let at = seat
-        .game
-        .server
-        .as_ref()
-        .and_then(|s| s.figure_position())
-        .ok_or("the office has no figure")?;
-    picture(
-        &mut seat,
-        Some(eye(
-            [at[0] + 2.6, at[1] + 2.4, 1.9],
-            [at[0] + 0.5, at[1], 1.1],
-        )),
-        "office-chair-held",
-    )?;
+    // Held, from the figure's right while it looks level, up and down: the chair follows the view.
+    for (name, head) in [
+        ("office-chair-held-level", 0.0),
+        ("office-chair-held-up", -1.0),
+        ("office-chair-held-down", 1.0),
+    ] {
+        aim_head(&mut seat, &gpu, head)?;
+        let at = seat
+            .game
+            .server
+            .as_ref()
+            .and_then(|s| s.figure_position())
+            .ok_or("the office has no figure")?;
+        picture(
+            &mut seat,
+            Some(eye(
+                [at[0] + 2.9, at[1] - 1.8, 2.4],
+                [at[0] + 0.7, at[1] - 0.4, 1.2],
+            )),
+            name,
+        )?;
+    }
     Ok(shots.paths)
+}
+
+/// Turns the figure's head to `target` (the head's pitch, positive looking down) with the mouse's pitch, a move at a time.
+fn aim_head(
+    seat: &mut Seat<LevelDemo>,
+    gpu: &torque_render_core::Gpu,
+    target: f32,
+) -> Result<(), String> {
+    for _ in 0..80 {
+        let head = seat
+            .game
+            .server
+            .as_ref()
+            .and_then(|s| s.figure())
+            .and_then(|id| torque::game::sim::player::state(seat.game.server.as_ref()?.vm(), id))
+            .map(|s| s.head[0])
+            .ok_or("the office has no figure")?;
+        let left = target - head;
+        if left.abs() < 0.02 {
+            break;
+        }
+        seat.game
+            .set_global("$mvPitch", &(left * 0.5).clamp(-0.2, 0.2).to_string());
+        seat.run(gpu, 40)?;
+    }
+    seat.game.set_global("$mvPitch", "0");
+    seat.run(gpu, 400)
 }
 
 /// The plaza's rope (the `rope` feature) at `size` into `dir`: the camera behind the figure as it walks up to the stage (`rope-behind`),

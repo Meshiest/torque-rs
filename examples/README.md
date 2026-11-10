@@ -37,7 +37,7 @@ TorqueScript mission files (`level-demo/game/missions/`). The plaza, the maze, t
 The office is a Blockbench model (`game/levels/office.bbmodel`) built when the game starts: the building into interiors,
 with glass and ceiling lights, and every chair, desk, table, sofa, cabinet, plant and desk item into a prop
 (`torque-plugin-props`) that the figure pushes when it walks into it, and a left click picks up a light one (a chair, a
-plant, a monitor) and carries it, arm held out; a second click drops it. The demo speaks the engine's own network protocol,
+plant, a monitor) and carries it, arm held out, in front of the figure and following where it looks up or down; a second click drops it. The demo speaks the engine's own network protocol,
 which carries the props. The valley is a terrain with a lake (below).
 
 **Controls:** 1 to 9 pick a map on the menu; W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space

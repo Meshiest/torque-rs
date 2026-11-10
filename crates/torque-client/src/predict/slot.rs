@@ -261,6 +261,8 @@ pub struct BodyMotion {
     pub mass: f32,
     /// The way it faces across the ground: its transform's forward axis, x and y (what a prop it holds is carried along).
     pub forward: [f32; 2],
+    /// The elevation of its view in radians, positive looking up (a Player's head, pitched the other way; a vehicle's is 0).
+    pub elevation: f32,
 }
 
 /// A map piece near a point, as the client's collision world has it ([`TickStep::statics_near`]): a terrain or an interior by
@@ -561,6 +563,7 @@ pub(super) fn motion_of_predicted(pr: &super::Predicted) -> BodyMotion {
             wish: s.rigid.lin_vel,
             mass: s.mass,
             forward: [s.obj_to_world[1], s.obj_to_world[5]],
+            elevation: 0.0,
         };
     }
     let s = &pr.player.s;
@@ -575,6 +578,7 @@ pub(super) fn motion_of_predicted(pr: &super::Predicted) -> BodyMotion {
         wish: [wish[0], wish[1], 0.0],
         mass: s.mass,
         forward: [m[1], m[5]],
+        elevation: -s.head[0],
     }
 }
 

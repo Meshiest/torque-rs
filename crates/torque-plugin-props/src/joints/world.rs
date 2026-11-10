@@ -396,10 +396,12 @@ impl PropWorld {
         }
     }
 
-    /// Where the hold on a player at `at` carries its prop: the point `offset` of the player's frame, upright, facing where
-    /// the player faces.
-    pub fn hold_pose(at: &PlayerAt, offset: [f32; 3]) -> ([f32; 3], [f32; 4]) {
-        (at.point(offset), at.turn())
+    /// Where the hold on a player at `at` carries a prop whose box is `half` (its half sizes in its own frame): the point
+    /// `offset` of the player's frame with the view level, swung up and down with the view and kept clear of the player's
+    /// own box ([`PlayerAt::hold_point`]), upright, facing where the player faces.
+    pub fn hold_pose(at: &PlayerAt, offset: [f32; 3], half: [f32; 3]) -> ([f32; 3], [f32; 4]) {
+        let turn = at.turn();
+        (at.hold_point(offset, world_half(half, turn)), turn)
     }
 
     /// The tether the grapple on `player` puts on it: none when it has none, it broke, or its far end is nowhere.
@@ -630,6 +632,7 @@ impl PropWorld {
                 _ => None,
             })
             .collect();
+        self.hold_from.clear();
         for (prop, player, offset) in holds {
             let (Some(at), Some(now)) = (
                 self.players.get(&player).copied(),
@@ -640,17 +643,17 @@ impl PropWorld {
             if self.get(prop).is_none_or(|p| p.rest.is_frozen()) {
                 continue;
             }
+            self.hold_from.insert(prop, now.position);
             self.rouse(prop);
-            let (mut target, turn) = PropWorld::hold_pose(&at, offset);
-            if let Some(half) = self
+            let local = self
                 .get(prop)
-                .map(|p| world_half(p.params.shape.half_extents(), turn))
-                && self.bodies.iter().any(|&(id, min, max)| {
-                    id != player
-                        && (0..3)
-                            .all(|k| target[k] + half[k] > min[k] && target[k] - half[k] < max[k])
-                })
-            {
+                .map_or([0.0; 3], |p| p.params.shape.half_extents());
+            let (mut target, turn) = PropWorld::hold_pose(&at, offset, local);
+            let half = world_half(local, turn);
+            if self.bodies.iter().any(|&(id, min, max)| {
+                id != player
+                    && (0..3).all(|k| target[k] + half[k] > min[k] && target[k] - half[k] < max[k])
+            }) {
                 target = now.position;
             }
             let linvel = clamp(
@@ -676,6 +679,32 @@ impl PropWorld {
         }
     }
 
+    /// How far the held prop of hold `j` is from the point its holder's pose gives it, and that point; none when the hold's ends
+    /// or its player are not there.
+    fn hold_gap(&self, j: &super::Joint) -> Option<(f32, [f32; 3])> {
+        let (End::Player { id, offset }, Some(p)) = (j.a, j.b.prop().and_then(|p| self.get(p)))
+        else {
+            return None;
+        };
+        let at = self.players.get(&id)?;
+        let (target, _) = PropWorld::hold_pose(at, offset, p.params.shape.half_extents());
+        let now = p.q.position();
+        Some((length(std::array::from_fn(|k| now[k] - target[k])), target))
+    }
+
+    /// Whether the prop of hold `j` made at least [`super::HOLD_CATCH_UP`] of the ground its speed cap allows toward its point
+    /// this step: it is far behind (its holder flicked the view) but on its way, not stuck behind something.
+    fn hold_catching_up(&self, j: &super::Joint) -> bool {
+        let (Some(from), Some((gap, target))) = (
+            j.b.prop().and_then(|p| self.hold_from.get(&p)),
+            self.hold_gap(j),
+        ) else {
+            return false;
+        };
+        let before = length(std::array::from_fn(|k| from[k] - target[k]));
+        before - gap >= super::HOLD_CATCH_UP * super::HOLD_SPEED * TICK
+    }
+
     /// After the step: each joint's distance and force read, a joint past its break force broken, the limit flags set.
     pub(crate) fn joints_after_step(&mut self, report: &mut TickReport) {
         let ids: Vec<u32> = self.joints.keys().copied().collect();
@@ -686,17 +715,7 @@ impl PropWorld {
             let (distance, force, torque) = match j.kind {
                 Kind::Hold if j.status.broken => (j.status.distance, 0.0, 0.0),
                 Kind::Hold => {
-                    let d = match (j.a, j.b.prop().and_then(|p| self.get(p))) {
-                        (End::Player { id, offset }, Some(p)) => match self.players.get(&id) {
-                            Some(at) => {
-                                let (target, _) = PropWorld::hold_pose(at, offset);
-                                let now = p.q.position();
-                                length(std::array::from_fn(|k| now[k] - target[k]))
-                            }
-                            None => j.status.distance,
-                        },
-                        _ => j.status.distance,
-                    };
+                    let d = self.hold_gap(j).map_or(j.status.distance, |(gap, _)| gap);
                     (d, 0.0, 0.0)
                 }
                 Kind::Grapple { .. } => {
@@ -714,7 +733,10 @@ impl PropWorld {
             };
             let at_limit =
                 !j.status.broken && j.kind.reach().is_some_and(|r| distance >= r.max - AT_LIMIT);
-            let stuck = j.kind == Kind::Hold && !j.status.broken && distance > super::HOLD_BREAK;
+            let stuck = j.kind == Kind::Hold
+                && !j.status.broken
+                && distance > super::HOLD_BREAK
+                && !self.hold_catching_up(j);
             let breaks = stuck
                 || !j.status.broken
                     && j.break_force > 0.0

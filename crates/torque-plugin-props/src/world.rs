@@ -271,15 +271,25 @@ impl Pusher {
     }
 }
 
-/// Where a player at a joint's end is ([`PropWorld::set_players`]): its feet and the way it faces across the ground, from its
-/// transform on the server and from its predicted box and transform in a client's prediction ([`PlayerAt::of_box`]).
+/// Where a player at a joint's end is ([`PropWorld::set_players`]): its feet, the way it faces across the ground, where its view
+/// points and the size of its box, from its transform and head on the server and from its predicted box and transform in a
+/// client's prediction ([`PlayerAt::of_box`], [`PlayerAt::looking`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerAt {
     /// The middle of its box's floor.
     pub position: [f32; 3],
     /// The way it faces across the ground, a unit vector.
     pub forward: [f32; 2],
+    /// The sine and the cosine of the elevation of its view, which is positive looking up: `[0, 1]` for a level view.
+    pub view: [f32; 2],
+    /// Half the width of its box along x and along y, and its height. A height of 0 is a player with no box
+    /// ([`PlayerAt::facing`]), which a held prop keeps no distance from.
+    pub half: [f32; 2],
+    pub height: f32,
 }
+
+/// The height a hold swings its prop about when the view tilts, as a share of the holder's height above its feet (its eyes).
+pub const HOLD_PIVOT: f32 = 0.9;
 
 impl PlayerAt {
     /// A player at `position` facing `forward` across the ground (made unit; straight along +y when it is not a direction).
@@ -290,22 +300,49 @@ impl PlayerAt {
         } else {
             [0.0, 1.0]
         };
-        PlayerAt { position, forward }
+        PlayerAt {
+            position,
+            forward,
+            view: [0.0, 1.0],
+            half: [0.0; 2],
+            height: 0.0,
+        }
     }
 
     /// A player whose box is `min..max` (its position the middle of the box's floor), facing `forward` ([`PlayerAt::facing`]):
     /// how a client's prediction reads its Player from a move.
     pub fn of_box(min: [f32; 3], max: [f32; 3], forward: [f32; 2]) -> PlayerAt {
         let floor = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5, min[2]];
-        PlayerAt::facing(floor, forward)
+        PlayerAt::facing(floor, forward).with_box(
+            [(max[0] - min[0]) * 0.5, (max[1] - min[1]) * 0.5],
+            max[2] - min[2],
+        )
+    }
+
+    /// This player with a box `half` wide along x and along y (each way from its position) and `height` tall.
+    #[must_use]
+    pub fn with_box(self, half: [f32; 2], height: f32) -> PlayerAt {
+        PlayerAt {
+            half,
+            height,
+            ..self
+        }
+    }
+
+    /// This player with its view `elevation` radians above the level (below it when negative). The angle goes through
+    /// torque-collide's table, so a server and a client read the same sine and cosine.
+    #[must_use]
+    pub fn looking(self, elevation: f32) -> PlayerAt {
+        let m = torque_collide::math::set_euler([elevation, 0.0, 0.0]);
+        PlayerAt {
+            view: [m[6], m[5]],
+            ..self
+        }
     }
 
     /// A player standing at `position`, facing +y.
     pub fn at(position: [f32; 3]) -> PlayerAt {
-        PlayerAt {
-            position,
-            forward: [0.0, 1.0],
-        }
+        PlayerAt::facing(position, [0.0, 1.0])
     }
 
     /// The point `offset` of its own frame (right, forward, up from its feet) in the world.
@@ -317,6 +354,45 @@ impl PlayerAt {
             self.position[1] - fx * r + fy * f,
             self.position[2] + u,
         ]
+    }
+
+    /// Where a hold carries a prop whose box is `half` (its half sizes along the world's axes, as it sits) at `offset` of the
+    /// player's frame: the offset is where it hangs with the view level, and it swings about the player's eyes with the
+    /// view's elevation, so it follows the view up and down. Then it is moved straight ahead, along the way the player faces,
+    /// until its box is [`super::joints::HOLD_CLEARANCE`] clear of the player's box (at any height, so the push is smooth as the
+    /// view tilts), so it never presses into it at any elevation or heading; a prop already clear is not moved.
+    pub fn hold_point(&self, offset: [f32; 3], half: [f32; 3]) -> [f32; 3] {
+        let [r, f, u] = offset;
+        let [sin, cos] = self.view;
+        let pivot = self.height * HOLD_PIVOT;
+        let up = u - pivot;
+        let mut p = self.point([r, f * cos - up * sin, pivot + f * sin + up * cos]);
+        let push = self.push_clear(p, half);
+        p[0] += push * self.forward[0];
+        p[1] += push * self.forward[1];
+        p
+    }
+
+    /// How far along `forward` a box of half sizes `half` at `at` must move to be clear of the player's box; 0 when it is
+    /// clear of it already (or the player has no box). Meant for a hold point in front of the player: one behind it is pushed
+    /// forward through the box.
+    fn push_clear(&self, at: [f32; 3], half: [f32; 3]) -> f32 {
+        let gap = super::joints::HOLD_CLEARANCE;
+        if self.height <= 0.0 {
+            return 0.0;
+        }
+        let along = |k: usize| {
+            let reach = self.half[k] + half[k] + gap;
+            let (d, f) = (at[k] - self.position[k], self.forward[k]);
+            if d.abs() >= reach {
+                0.0
+            } else if f.abs() < 1.0e-6 {
+                f32::INFINITY
+            } else {
+                (reach.copysign(f) - d) / f
+            }
+        };
+        along(0).min(along(1))
     }
 
     /// Its turn about the up axis: the unit quaternion (`x, y, z, w`) that takes +y to where it faces, with no trigonometry
@@ -440,6 +516,9 @@ pub struct PropWorld {
     pub(crate) gone_joints: Vec<(u32, u32)>,
     /// Where each player at a grapple's or a hold's end is, given before each tick.
     pub(crate) players: BTreeMap<u32, PlayerAt>,
+    /// Where each held prop was when this tick's drive set its speed (by prop): what tells a hold that is catching up from one that is
+    /// stuck ([`PropWorld::hold_catching_up`]). Made and read inside one tick, so it is never part of a world's state.
+    pub(crate) hold_from: BTreeMap<u32, [f32; 3]>,
     /// Props whose flags (held) changed since the last tick, for the next to report.
     pub(crate) reflag: Vec<u32>,
     /// Holds broken since the last tick (their props were frozen), for the next to report.
@@ -584,6 +663,7 @@ impl PropWorld {
             changed: Vec::new(),
             gone_joints: Vec::new(),
             players: BTreeMap::new(),
+            hold_from: BTreeMap::new(),
             reflag: Vec::new(),
             broken_holds: Vec::new(),
             bodies: Vec::new(),

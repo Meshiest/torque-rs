@@ -13,12 +13,14 @@
 //!   It pulls inside the Player's own tick ([`torque_game::player_tether`]), so a client's prediction replays it exactly; a prop
 //!   at the far end takes the equal and opposite impulse the next step.
 //! - a **hold** carries a prop at a point of a player's own frame (its offset: right, forward and up from its feet, turned
-//!   with its heading), upright and facing where the player faces: before each step the prop is driven to reach that pose by
+//!   with its heading, and swung about the player's eyes with the elevation of its view: looking up raises the prop, looking
+//!   down lowers it, and it is kept [`HOLD_CLEARANCE`] clear of the player's own box at any view, [`crate::world::PlayerAt::hold_point`]),
+//!   upright and facing where the player faces: before each step the prop is driven to reach that pose by
 //!   the step's end ([`HOLD_SPEED`] and [`HOLD_SPIN`] at most), so walls and other props still stop it, and never into
 //!   another player's box. Nothing pulls the player, and only the holder's own collision passes through its held prop
 //!   ([`torque_collide::source::CollisionShape::passes`]), so a held prop never pushes its holder and every other player meets
 //!   it. A player holds at most one prop and a prop has at most one holder; a frozen prop cannot be held; a held prop never
-//!   sleeps. A hold breaks when its prop is frozen or ends a step more than [`HOLD_BREAK`] from its point (stuck behind a
+//!   sleeps. A hold breaks when its prop is frozen or ends a step more than [`HOLD_BREAK`] from its point and is not on its way to it ([`HOLD_CATCH_UP`]; stuck behind a
 //!   wall). Every player's and vehicle's box is a kinematic body of the props' world, so no prop (held, let go or shoved by
 //!   one) ends up inside a player.
 //!
@@ -70,8 +72,15 @@ pub const MAX_MOTOR_SPEED: f32 = 50.0;
 pub const HOLD_SPEED: f32 = 10.0;
 /// The fastest a hold turns its prop to face where its holder faces (radians a second).
 pub const HOLD_SPIN: f32 = 20.0;
-/// How far a held prop may end a step from its point before its hold breaks (units).
+/// How far a hold's prop must come toward its point in a step, as a share of the ground [`HOLD_SPEED`] allows, to be on its way
+/// rather than stuck: a prop far from its point is only dropped while it makes less than this (a holder's view can move the point
+/// faster than the prop follows).
+pub const HOLD_CATCH_UP: f32 = 0.25;
+/// How far a held prop may end a step from its point, without coming nearer it ([`HOLD_CATCH_UP`]), before its hold breaks (units).
 pub const HOLD_BREAK: f32 = 1.0;
+/// The gap a held prop keeps from its holder's box, whatever way the holder looks or faces (units): a prop a step behind its point
+/// still clears it.
+pub const HOLD_CLEARANCE: f32 = 0.15;
 /// The most joints a server holds (the cap of its pref).
 pub const MAX_JOINTS: u32 = 1024;
 /// How near its length a tether's ends must be to count as at its limit (units).

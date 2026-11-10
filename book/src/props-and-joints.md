@@ -313,21 +313,24 @@ be left empty for the world.
 | weld | `jointWeld(a, b [, owner])` | two props (or a prop and the world) at the pose they have to each other now |
 | hinge | `jointHinge(a, b, point, axis [, owner])` | two props (or a prop and the world) about `axis` through `point`; `jointSetLimits(j, low, high)` (radians) and `jointSetMotor(j, speed, maxTorque)` |
 | grapple | `jointGrapple(player, target, length [, owner])` | a player at most `length` from a point or a prop (`%player SPC "0 0 1.2"` holds it at an offset from its position) |
-| hold | `jointHold(player, prop, offset [, owner])` | a prop carried at `offset` in the player's own frame (right, forward, up from its feet), upright and facing where the player faces |
+| hold | `jointHold(player, prop, offset [, owner])` | a prop carried at `offset` in the player's own frame (right, forward, up from its feet) when it looks level, upright and facing where the player faces; it follows the view up and down, and stays clear of the player's own box |
 
 A tether's spring (`jointSetSpring(j, stiffness, damping)`: force a unit past the length, and a unit a second) pulls only past the
 length and never pushes; a stiffness of 0 makes it hard again. A hanging load stretches it by its weight over the stiffness.
 
-**Holds.** A hold carries a prop for a player: before each step the prop is given the speed and spin that take it to its
+**Holds.** A hold carries a prop for a player: its point is the offset with the view level, swung about the player's eyes (nine tenths of
+its height) by the elevation of its view, so looking up raises the prop and looking down lowers it along the view, and then moved straight
+ahead until the prop's box is 0.15 units clear of the player's own box, so it never presses into its holder at any view or heading.
+Before each step the prop is given the speed and spin that take it to its
 point by the step's end (at most 10 units and 20 radians a second, so a fast turn never flings it through a wall), the step's
 fall made up, so walls and other props still stop it, and never into another player's box. Nothing pulls the player, and
 only the holder's own collision passes through its held prop (a plugin collision shape's `passes`: the server's object or
 the client's ghost of the holder), so a held prop never pushes or launches its holder while every other player meets it. A
 player holds one prop, a prop has one holder, a frozen prop cannot be held, and a held prop never sleeps. A hold breaks
-(`onBreak`) when its prop is frozen or ends a step more than a unit from its point (stuck behind a wall). Every player's and
+(`onBreak`) when its prop is frozen or ends a step more than a unit from its point without coming nearer it (stuck behind a wall; a view flicked fast only leaves it behind for a few ticks). Every player's and
 vehicle's box is a frictionless kinematic body of the props' world (placed, never given a speed), so no prop, held, let go
 or shoved by a held one, stays inside a player: the solver pushes it out, walls and other props in its way. The holder's own client predicts it from where each move leaves its Player (the move's
-box and facing), so it is drawn at the hand with no lag. `jointDelete` lets go; a holder that goes lets go too. Who may pick up
+box, facing and head pitch), so it is drawn at the hand with no lag. `jointDelete` lets go; a holder that goes lets go too. Who may pick up
 what, from how far, is the game's: the level demo's office lets a click pick up a prop of at most 15 kg that the figure looks
 at within 2.5 units (`propRayCast`, with nothing in front by `containerRayCast`), its arm held out (`setArmThread("hold")`).
 

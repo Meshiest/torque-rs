@@ -758,7 +758,7 @@ fn a_hold_carries_its_prop_upright_at_its_point_through_a_walk_and_lets_go_when_
             "a held prop never sleeps"
         );
         if t > 10 {
-            let (target, _) = PropWorld::hold_pose(&at, offset);
+            let (target, _) = PropWorld::hold_pose(&at, offset, [0.5; 3]);
             worst = worst.max(distance(w.get(100).unwrap().q.position(), target));
             let [x, y, _, _] = w.get(100).unwrap().q.rotation();
             assert!(1.0 - 2.0 * (x * x + y * y) > 0.999, "upright");
@@ -1070,5 +1070,96 @@ fn a_hold_made_against_a_wall_neither_explodes_nor_jitters_nor_pushes_the_holder
         // Nowhere inside the wall or deep into the holder's box.
         assert!(last[1] < 5.0, "{last:?}");
         assert!(depth_in(&w, 100, &holder) < 0.05, "{last:?}");
+    }
+}
+
+#[test]
+fn a_held_prop_follows_the_view_and_never_presses_into_its_holder_on_a_walk_and_turn() {
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 1.5, 0.5], 12.0);
+    let offset = [0.3, 1.1, 1.1];
+    w.add_joint(500, hold_of(7, 100, offset)).unwrap();
+    let (mut worst, mut lowest, mut highest) = (0.0f32, f32::MAX, f32::MIN);
+    for t in 0..360 {
+        // The holder walks along +x, turns steadily and looks from straight down to straight up and back.
+        let turn = t as f32 * 0.04;
+        let elevation = 1.4 * (t as f32 * 0.05).sin();
+        let x = t as f32 * 0.1;
+        let (min, max) = ([x - 0.5, -0.5, 0.0], [x + 0.5, 0.5, 2.0]);
+        let at = PlayerAt::of_box(min, max, [-turn.sin(), turn.cos()]).looking(elevation);
+        let holder = torque_plugin_props::world::Pusher {
+            id: 7,
+            min,
+            max,
+            velocity: [1.0, 0.0, 0.0],
+            mass: 90.0,
+        };
+        w.set_players([(7, at)].into());
+        w.tick(&[holder], &near);
+        assert_eq!(w.holder_of(100), Some(7), "the hold broke at tick {t}");
+        let p = w.get(100).unwrap().q.position();
+        assert!(
+            !overlaps(&w, 100, &holder),
+            "the prop pressed into its holder at tick {t}: {p:?}"
+        );
+        let (target, _) = PropWorld::hold_pose(&at, offset, [0.5; 3]);
+        // Upright at every view: only its place follows the pitch, its turn is the holder's heading.
+        let [rx, ry, _, _] = w.get(100).unwrap().q.rotation();
+        if t > 20 {
+            assert!(
+                1.0 - 2.0 * (rx * rx + ry * ry) > 0.999,
+                "tilted at tick {t}, elevation {elevation}"
+            );
+            worst = worst.max(distance(p, target));
+            lowest = lowest.min(p[2]);
+            highest = highest.max(p[2]);
+        }
+    }
+    assert!(worst < 0.3, "the held prop strayed {worst} from its point");
+    assert!(
+        highest - lowest > 0.8,
+        "the view moved it {lowest} to {highest}"
+    );
+}
+
+#[test]
+fn a_view_flicked_from_straight_down_to_straight_up_keeps_the_hold_and_the_prop_catches_up() {
+    let mut w = world();
+    spawn(&mut w, 100, [0.0, 1.5, 0.5], 12.0);
+    let offset = [0.3, 1.1, 1.1];
+    w.add_joint(500, hold_of(7, 100, offset)).unwrap();
+    let (min, max) = ([-0.5, -0.5, 0.0], [0.5, 0.5, 2.0]);
+    let holder = torque_plugin_props::world::Pusher {
+        id: 7,
+        min,
+        max,
+        velocity: [0.0; 3],
+        mass: 90.0,
+    };
+    let mut broke = Vec::new();
+    // Each flick sets the view to the other end in one tick; the prop is given a second to catch up before the next.
+    for (n, elevation) in [-1.4f32, 1.4, -1.4, 1.4, 0.0].into_iter().enumerate() {
+        let at = PlayerAt::of_box(min, max, [0.0, 1.0]).looking(elevation);
+        let (target, _) = PropWorld::hold_pose(&at, offset, [0.5; 3]);
+        let mut far = 0.0f32;
+        for t in 0..40 {
+            w.set_players([(7, at)].into());
+            w.tick(&[holder], &near);
+            far = far.max(distance(position(&w, 100), target));
+            if w.holder_of(100) != Some(7) {
+                broke.push((n, t));
+                break;
+            }
+        }
+        assert!(broke.is_empty(), "the hold broke on flick {n}: {broke:?}");
+        assert!(
+            far > 0.9 || n < 2,
+            "flick {n} was no flick: it moved the point {far}"
+        );
+        let gap = distance(position(&w, 100), target);
+        assert!(
+            gap < 0.05,
+            "the prop is {gap} from its point after flick {n}"
+        );
     }
 }
