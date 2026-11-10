@@ -24,6 +24,7 @@ const SPAWNERS = new Set([
   'web/site.mjs',
   'web/fps-check.mjs',
   'web/p2p-check.mjs',
+  'web/soccer-check.mjs',
   'web/trace-hash.mjs',
   'web/lua-build.mjs',
   'web/size.mjs',

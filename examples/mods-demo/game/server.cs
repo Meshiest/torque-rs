@@ -3,6 +3,15 @@
 
 exec("prefs.cs");
 
+// What the network's list of games shows of this server (the game mode keeps the player counts).
+$Server::GameType = "Soccer";
+$Server::MissionType = "One a team";
+$Server::MissionName = "The pitch";
+$Server::PlayerCount = 0;
+$Pref::Server::MaxPlayers = 8;
+if ($Pref::Server::Name $= "")
+   $Pref::Server::Name = "Soccer";
+
 datablock CameraData(ObserverData)
 {
    mode = "Observer";

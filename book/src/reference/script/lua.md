@@ -331,6 +331,20 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:save([fileName], [append])` *0 to 2; client*
 - `obj:unbind(device, action)` *2; client*
 
+### AIPlayer
+
+- `obj:clearAim()` *none; server and client*
+- `obj:getAimLocation()` *none; server and client*
+- `obj:getAimObject()` *none; server and client*
+- `obj:getMoveDestination()` *none; server and client*
+- `obj:getMoveSpeed()` *none; server and client*
+- `obj:setAimLocation(Point3F target)` *1; server and client*
+- `obj:setAimObject(GameBase obj, Point3F offset)` *1 to 2; server and client*
+- `obj:setMoveDestination(Point3F goal, bool slowdown)` *1 to 2; server and client*
+- `obj:setMoveSpeed(float speed)` *1; server and client*
+- `obj:setMoveTolerance(float tolerance)` *1; server and client*
+- `obj:stop()` *none; server and client*
+
 ### Camera
 
 - `obj:getPosition()` *none; server and client*

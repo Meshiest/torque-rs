@@ -15,12 +15,22 @@ categories = ["game-development"]
 # `plugins/` folder, as a game loads it; this crate never links it. Run it with `just examples mods-demo run`.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app-core", "renderer", "mods", "native-extensions"] }
+# `web` and `webrtc`: the server's web transport and data channels natively, the client's game socket over WebSocket with a
+# data channel beside it in a browser; `p2p`: a server hosted through a room service, and a page that joins it by its code.
+torque = { path = "../../crates/torque", default-features = false, features = ["app-core", "renderer", "mods", "web", "webrtc", "p2p"] }
 torque-example-assets = { path = "../assets" }
 # The ball: a prop the players' boxes push.
 torque-plugin-props = { path = "../../crates/torque-plugin-props" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+
+# Natively: the Lua extension the server's game mode runs on, loaded from `plugins/`.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["native-extensions"] }
+
+# Built for the web: the functions the page calls (`torque::app::web_exports!`).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
 
 [features]
 default = ["gizmos"]

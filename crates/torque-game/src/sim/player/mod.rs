@@ -18,6 +18,7 @@
 //! `T3D/aiPlayer.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
 //! crate's own.
 
+pub mod ai;
 pub mod ground;
 pub mod methods;
 pub mod poses;
@@ -670,6 +671,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
     );
     vm.set_class_behaviour("ShapeBase", Rc::new(ShapeBaseClass));
     methods::register(vm);
+    ai::register(vm);
     super::mount::register(vm);
     super::vitals::register(vm);
 }

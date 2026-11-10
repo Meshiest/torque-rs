@@ -7,50 +7,17 @@
 //! compiler and are ignored by `cargo test`): `just examples mods-demo test` runs them. `TORQUE_LUA_LIBRARY` names a library
 //! built already.
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::OnceLock;
 
 use torque::app::server::GameServer;
 use torque::mods::Mods;
-use torque_example_mods_demo::{Lua, Session, assets, library_file_name, lua_library};
+use torque_example_mods_demo::{Lua, Session, assets, library_file_name};
+
+use common::library;
 use torque_plugin_props::data::PropShape;
-
-/// The build folder: the one `cargo test` was given, else the workspace's.
-fn target_dir() -> PathBuf {
-    Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .parent()
-        .expect("a build folder")
-        .to_path_buf()
-}
-
-/// The extension's library: the file `TORQUE_LUA_LIBRARY` names, else built by cargo once (a build of its own workspace, as the
-/// extension's own tests build it).
-fn library() -> &'static Path {
-    static LIBRARY: OnceLock<PathBuf> = OnceLock::new();
-    LIBRARY.get_or_init(|| {
-        if let Some(library) = lua_library() {
-            return library;
-        }
-        let manifest =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/torque-plugin-lua/Cargo.toml");
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .args(["build", "--quiet", "--lib", "--manifest-path"])
-            .arg(&manifest)
-            .arg("--target-dir")
-            .arg(target_dir())
-            .status()
-            .expect("cargo runs");
-        assert!(status.success(), "the Lua extension builds");
-        let library = target_dir()
-            .join("debug")
-            .join(library_file_name("torque_lua"));
-        assert!(library.is_file(), "{} is built", library.display());
-        library
-    })
-}
 
 fn work(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("mods-demo-{name}"))
@@ -177,19 +144,23 @@ fn two_clients_download_the_mod_and_play_a_match() {
             assert!(!mods.is_server_file(file), "client {n} has {file}");
         }
     }
-    // The content is the mod's generated files and its Lua module (`lib/rules.lua`: Lua files are content, kept as data);
-    // not `server.cs`, `server.lua` or `mod.toml`.
+    // The content is the mod's generated files and its Lua modules (`lib/rules.lua` and `lib/bots.lua`: Lua files are
+    // content, kept as data); not `server.cs`, `server.lua` or `mod.toml`.
     let generated: u64 = assets::soccer()
         .unwrap()
         .iter()
         .map(|(_, b)| b.len() as u64)
         .sum();
-    let module = std::fs::metadata(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("game/mods/soccer/lib/rules.lua"),
-    )
-    .unwrap()
-    .len();
-    assert_eq!(content, generated + module);
+    let modules: u64 = ["rules", "bots"]
+        .iter()
+        .map(|name| {
+            let path = format!("game/mods/soccer/lib/{name}.lua");
+            std::fs::metadata(Path::new(env!("CARGO_MANIFEST_DIR")).join(path))
+                .unwrap()
+                .len()
+        })
+        .sum();
+    assert_eq!(content, generated + modules);
     // One player a team.
     assert_eq!(
         [

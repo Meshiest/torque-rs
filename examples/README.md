@@ -24,7 +24,7 @@ installs wasm-bindgen's command line into the target folder.
 </tr>
 </table>
 
-Also, without a picture: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the minimal example on the engine](#the-minimal-example-on-the-engine), the same game with the engine doing the wiring; [the mods demo](#the-mods-demo), a game mode shipped as a mod that the server requires; [the native extension](#the-native-extension), a plugin built apart from the engine; [the format viewer](#the-format-viewer), pictures of Source engine content.
+Also, without a picture: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the minimal example on the engine](#the-minimal-example-on-the-engine), the same game with the engine doing the wiring; [the mods demo](#the-mods-demo), a soccer match whose game mode is a mod the server sends to players who join; [the native extension](#the-native-extension), a plugin built apart from the engine; [the format viewer](#the-format-viewer), pictures of Source engine content.
 
 ## The level demo
 
@@ -240,14 +240,34 @@ code. The engine's server and client also send the datablocks and give each clie
 
 ## The mods demo
 
-A small soccer match written in Lua and shipped as a mod the server requires, run headless: a server and two clients over the
-memory transport. A client that joins downloads the mod's content (the pitch, the players and the ball, a picture each and a
-sound, made from code) through the pull transfer, mounts it and then enters; the mod's Lua runs only on the server, keeps the
-score and the clock, and puts the ball back on the center spot after a goal. The ball is a prop of the props plugin that the
-players push and kick; each client's player is steered by a simple bot. A second mod requires the first (load order) and plays
-the match with a bigger ball; a third is switched off by the prefs and never mounts. `just examples mods-demo run` plays it,
-`just examples mods-demo shots` draws it, `just examples mods-demo test` checks it. The details are in
-[`mods-demo/README.md`](mods-demo/README.md).
+A small soccer match, one player a team, whose game mode is written in Lua and shipped as a mod the server requires. A player
+who joins has none of it: the server sends the mod's content (the pitch, the players and the ball, a picture each and a sound,
+made from code), and the client shows it downloading (the mod, its files and size, a bar), checks it, mounts it and then
+enters the match; a second join finds it in the cache and downloads nothing. The mod's Lua runs only on the server: it keeps
+the score and the clock, and its bots take the places nobody has taken and leave as people join, so one person always has a
+match. The ball is a prop of the props plugin that the players push and kick. A second mod requires the first (load order)
+and plays the match with a bigger ball; a third is switched off by the prefs and never mounts.
+
+People join it the way they join the arena: the window's menu hosts a match or lists the network's matches (or takes an
+address), and browsers join from the server's own page over WebSocket, on a WebRTC data channel beside it, or by a room's code
+through `torque-rooms`, with the same download screen.
+
+**Controls:** W A S D run (the camera looks across the pitch, your team attacking to the right), Esc the menu.
+
+**Run it:**
+
+| | Recipe |
+|---|---|
+| Server (UDP; the web with `--transport both`) | `just examples mods-demo server` |
+| Window client (an address after it joins at once) | `just examples mods-demo client [address]` |
+| A match hosted here, in a window | `just examples mods-demo play` |
+| Browsers and desktops in one match | `just examples mods-demo web` (http://127.0.0.1:28000/) |
+| Hosted through a room service | `just examples mods-demo web-rooms`, then `mods-demo-server --room ws://127.0.0.1:28100` |
+| Headless: two client bots play two rounds | `just examples mods-demo run` |
+| Pictures | `just examples mods-demo client-shots`, `just examples mods-demo shots` |
+| Checks | `just examples mods-demo test`, `web-check`, `web-rtc-check`, `web-p2p-check` |
+
+The details are in [`mods-demo/README.md`](mods-demo/README.md).
 
 ## The native extension
 

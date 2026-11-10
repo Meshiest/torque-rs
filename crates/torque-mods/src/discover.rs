@@ -40,9 +40,11 @@ pub(crate) struct Notes {
     pub(crate) warnings: Vec<String>,
 }
 
-/// The warnings one scan keeps; past them one line says more were left out.
+/// The warnings one scan keeps; past them one line says more were left out. Only a scan of the disk warns (none on the web).
+#[cfg(not(target_family = "wasm"))]
 pub(crate) const MAX_WARNINGS: usize = 64;
 
+#[cfg(not(target_family = "wasm"))]
 impl Notes {
     /// Keeps `line`, unless [`MAX_WARNINGS`] are kept already: then one last line says the rest were left out.
     pub(crate) fn warn(&mut self, line: String) {

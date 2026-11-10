@@ -87,6 +87,47 @@ function soccerFigure(%client, %data)
    return %player;
 }
 
+// How many bots may play when nobody has taken their places (one player a team); a server's prefs or command line may
+// set it before the mod loads.
+if ($Pref::Soccer::Bots $= "")
+   $Pref::Soccer::Bots = 2;
+
+// A bot: a player of %data that no client steers. The rules steer it (soccerSteer).
+function soccerBot(%data)
+{
+   if (!isObject(MissionCleanup))
+      new SimGroup(MissionCleanup);
+   %bot = new AIPlayer()
+   {
+      dataBlock = %data;
+   };
+   MissionCleanup.add(%bot);
+   return %bot;
+}
+
+// The bot %bot runs to %x %y at %speed of its full speed, looking up the pitch from %from toward the goal it attacks
+// (%attack: 1 at +y, -1 at -y), so it faces that goal as a player does.
+function soccerSteer(%bot, %x, %y, %from, %attack, %speed)
+{
+   %bot.setMoveSpeed(%speed);
+   %bot.setMoveDestination(%x SPC %y SPC 0, false);
+   %bot.setAimLocation(%from SPC %attack * 40 SPC 1.6);
+}
+
+function soccerHold(%bot)
+{
+   %bot.stop();
+}
+
+// A bot that reaches where it was sent waits for its next order (the rules send it somewhere at every step).
+function PlayerData::onReachDestination(%this, %bot)
+{
+}
+
+function PlayerData::onMoveStuck(%this, %bot)
+{
+}
+
 function soccerPlace(%player, %x, %y, %yaw)
 {
    %player.setTransform(%x SPC %y SPC "0.05 0 0 1" SPC %yaw);

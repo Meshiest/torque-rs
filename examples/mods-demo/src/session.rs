@@ -6,11 +6,14 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
 
 use torque::app::client::{ClientNet, GameClient, carry_between};
-use torque::app::server::GameServer;
+use torque::app::server::{GameServer, Listen};
 use torque::engine::Engine;
+use torque::mods::CacheChoice;
 use torque_plugin_props::client::ClientProp;
 
-use crate::{Lua, Role, SERVER, ball_of, bot, client, client_files, engine, server, server_files};
+use crate::{
+    Lua, Role, SERVER, ball_of, bot, client, client_files, engine, server_files, start_server,
+};
 
 /// The server's tick, and each client's step (ms).
 pub const TICK_MS: u32 = 32;
@@ -36,7 +39,8 @@ impl Session {
         let files = server_files().map_err(|e| e.to_string())?;
         let engine = engine(&files, Role::Server, lua.as_ref())?;
         Ok(Session {
-            server: server(&engine)?,
+            // The clients are the players: no bot of the mode's takes a place.
+            server: start_server(&engine, Listen::Memory(SERVER), 0)?,
             clients: Vec::new(),
             engines: vec![engine],
             cache,
@@ -59,7 +63,7 @@ impl Session {
         let engine = engine(
             &files,
             Role::Client {
-                cache: self.cache_of(n),
+                cache: CacheChoice::Folder(self.cache_of(n)),
             },
             lua,
         )?;

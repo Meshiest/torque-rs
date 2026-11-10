@@ -4,11 +4,12 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-313 entries in 36 classes.
+324 entries in 37 classes.
 
 | Class | Entries |
 |---|---|
 | [ActionMap](#actionmap) | 12 |
+| [AIPlayer](#aiplayer) | 11 |
 | [Camera](#camera) | 3 |
 | [FlyingVehicle](#flyingvehicle) | 1 |
 | [GameBase](#gamebase) | 2 |
@@ -71,6 +72,31 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 0 to 2; client*
 - `actionMap.unbind( device, action )`
   *arguments: 2; client*
+
+## AIPlayer
+
+- `obj.clearAim()`
+  *arguments: none; server and client*
+- `obj.getAimLocation()`
+  *arguments: none; server and client*
+- `obj.getAimObject()`
+  *arguments: none; server and client*
+- `obj.getMoveDestination()`
+  *arguments: none; server and client*
+- `obj.getMoveSpeed()`
+  *arguments: none; server and client*
+- `obj.setAimLocation(Point3F target)`
+  *arguments: 1; server and client*
+- `obj.setAimObject(GameBase obj, Point3F offset)`
+  *arguments: 1 to 2; server and client*
+- `obj.setMoveDestination(Point3F goal, bool slowdown)`
+  *arguments: 1 to 2; server and client*
+- `obj.setMoveSpeed(float speed)`
+  *arguments: 1; server and client*
+- `obj.setMoveTolerance(float tolerance)`
+  *arguments: 1; server and client*
+- `obj.stop()`
+  *arguments: none; server and client*
 
 ## Camera
 

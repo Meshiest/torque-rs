@@ -1,20 +1,26 @@
 -- The soccer game mode. It runs on the server only: a client is told the score and the clock, steers its own player and sees what
 -- the server ghosts to it, and never sees this file run (a server cannot make a client run code).
 --
--- Each player who enters joins the team with fewer players and gets a player on the pitch. The ball is a prop: a player's box
--- pushes it, and a player that comes up to it kicks it toward the goal it attacks (rules.kick). A ball in a goal scores for the
--- team that attacks it; after a short pause both players go back to their places and the team that conceded kicks off. A ball
--- that leaves the pitch or sticks in a corner is put back on the center spot. A round ends at WIN goals or when its clock runs
--- out; the result is shown for a moment and the next round starts at 0 - 0.
+-- Each player who enters joins the team with fewer players and gets a player on the pitch. Bots fill the places nobody has taken
+-- (at most $Pref::Soccer::Bots of them), and a bot leaves when a person comes in, so one person always has a match. The ball is a
+-- prop: a player's box pushes it, and a player that comes up to it kicks it toward the goal it attacks (rules.kick). A ball in a
+-- goal scores for the team that attacks it; after a short pause both players go back to their places and the team that conceded
+-- kicks off. A ball that leaves the pitch or sticks in a corner is put back on the center spot. A round ends at WIN goals or when
+-- its clock runs out; the result is shown for a moment and the next round starts at 0 - 0.
 
 local rules = require("lib.rules")
+local bots = require("lib.bots")
 
 local TEAMS = {
     { name = "Blue", data = "BlueFigureData", attack = 1 },
     { name = "Red", data = "RedFigureData", attack = -1 },
 }
 
-local players = {} -- client id -> { figure, team, kicked }
+-- The places on the pitch: one player a team.
+local PLACES = 2
+
+local players = {} -- client id (a bot's is below 0) -> { figure, team, bot, kicked }
+local last_bot = 0
 local score = { 0, 0 }
 local round = 1
 local phase = "play" -- "play", "goal" (the pause after one) or "over" (between rounds)
@@ -74,6 +80,82 @@ local function place(player)
     local team = TEAMS[player.team]
     local x, y, yaw = rules.kickoff_spot(team.attack, player.team == kicksOff)
     ts.call("soccerPlace", player.figure, x, y, yaw)
+end
+
+-- A new player for client `id` (a bot when `bot`), on the team with fewer players, at its place.
+local function add_player(id, bot)
+    local count = { 0, 0 }
+    for _, player in pairs(players) do
+        count[player.team] = count[player.team] + 1
+    end
+    local team = count[2] < count[1] and 2 or 1
+    local figure = bot and ts.call("soccerBot", TEAMS[team].data) or ts.call("soccerFigure", id, TEAMS[team].data)
+    local player = { figure = tonumber(figure), team = team, bot = bot }
+    players[id] = player
+    place(player)
+    return player
+end
+
+local function remove_player(id)
+    local player = players[id]
+    players[id] = nil
+    local object = player and ts.object(player.figure)
+    if object then
+        object:delete()
+    end
+    return player
+end
+
+-- Bots in the places nobody has, as many as the prefs let play beside the people there and `coming` more: the newest bot
+-- leaves first.
+local function fill_bots(coming)
+    local people, mine = coming, {}
+    for id, player in pairs(players) do
+        if player.bot then
+            mine[#mine + 1] = id
+        else
+            people = people + 1
+        end
+    end
+    table.sort(mine)
+    local wanted = bots.count(tonumber(ts.global("$Pref::Soccer::Bots")) or 0, people, PLACES)
+    for i = 1, #mine - wanted do
+        local player = remove_player(mine[i])
+        print("soccer: the " .. TEAMS[player.team].name .. " bot leaves")
+    end
+    for _ = #mine + 1, wanted do
+        last_bot = last_bot - 1
+        local player = add_player(last_bot, true)
+        print("soccer: a bot plays for " .. TEAMS[player.team].name)
+    end
+    local count = 0
+    for _, player in pairs(players) do
+        if player.bot then
+            count = count + 1
+        end
+    end
+    ts.setGlobal("$Soccer::Bots", count)
+    -- What the network's list of games shows.
+    ts.setGlobal("$Server::PlayerCount", people)
+    ts.setGlobal("$Server::BotCount", count)
+end
+
+-- Each bot runs where lib/bots.lua says, facing the goal it attacks; outside play they stand.
+local function steer_bots(bx, by)
+    for _, id in ipairs(sorted_ids()) do
+        local player = players[id]
+        local object = player.bot and ts.object(player.figure)
+        if object then
+            if phase == "play" and bx then
+                local p = numbers(object:getPosition())
+                local attack = TEAMS[player.team].attack
+                local tx, ty = bots.target(p[1], p[2], bx, by, attack)
+                ts.call("soccerSteer", player.figure, tx, ty, p[1], attack, bots.SPEED)
+            else
+                ts.call("soccerHold", player.figure)
+            end
+        end
+    end
 end
 
 local function kickoff()
@@ -174,7 +256,9 @@ local function publish()
     local left = math.max(0, math.ceil(((phase == "over" and phaseEnds or roundEnds) - now()) / 1000))
     local text = table.concat({ round, phase, left, score[1], score[2], message }, "\t")
     for _, id in ipairs(sorted_ids()) do
-        ts.call("soccerAnnounce", id, text)
+        if not players[id].bot then
+            ts.call("soccerAnnounce", id, text)
+        end
     end
     ts.setGlobal("$Soccer::Score", TEAMS[1].name .. " " .. score[1] .. " " .. TEAMS[2].name .. " " .. score[2])
     ts.setGlobal("$Soccer::Round", round)
@@ -188,6 +272,7 @@ ts.define("soccerTick", function()
     local t = now()
     -- The first round starts at the first tick, once every mod is loaded: a later mod's soccerBallData is in place by then.
     if not roundEnds then
+        fill_bots(0)
         start_round()
     end
     if phase == "play" then
@@ -209,6 +294,10 @@ ts.define("soccerTick", function()
         round = round + 1
         start_round()
     end
+    if ball then
+        local x, y = ball_position()
+        steer_bots(x, y)
+    end
     ticks = ticks + 1
     if ticks % 2 == 0 then
         publish()
@@ -221,31 +310,26 @@ ts.define("GameConnection::onEnterGame", function(client)
     if players[id] then
         return
     end
-    local count = { 0, 0 }
-    for _, player in pairs(players) do
-        count[player.team] = count[player.team] + 1
+    if roundEnds then
+        fill_bots(1)
     end
-    local team = count[2] < count[1] and 2 or 1
-    local player = { figure = tonumber(ts.call("soccerFigure", id, TEAMS[team].data)), team = team }
-    players[id] = player
-    place(player)
-    ts.call("soccerTeam", id, TEAMS[team].name, TEAMS[team].attack)
-    print("soccer: " .. TEAMS[team].name .. " enters (client " .. id .. ")")
+    local player = add_player(id, false)
+    local team = TEAMS[player.team]
+    ts.call("soccerTeam", id, team.name, team.attack)
+    print("soccer: " .. team.name .. " enters (client " .. id .. ")")
     publish()
 end)
 
 ts.define("GameConnection::onLeaveGame", function(client)
     local id = tonumber(client)
-    local player = players[id]
-    if not player then
+    if not players[id] then
         return
     end
-    players[id] = nil
-    local object = ts.object(player.figure)
-    if object then
-        object:delete()
-    end
+    local player = remove_player(id)
     print("soccer: " .. TEAMS[player.team].name .. " leaves")
+    if roundEnds then
+        fill_bots(0)
+    end
 end)
 
 for _, piece in ipairs(rules.pitch()) do

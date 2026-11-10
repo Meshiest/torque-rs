@@ -12,6 +12,17 @@ ActionMap::save files
 ActionMap::unbind -
 activatePackage engine
 addTaggedString -
+AIPlayer::clearAim -
+AIPlayer::getAimLocation -
+AIPlayer::getAimObject -
+AIPlayer::getMoveDestination -
+AIPlayer::getMoveSpeed -
+AIPlayer::setAimLocation -
+AIPlayer::setAimObject -
+AIPlayer::setMoveDestination -
+AIPlayer::setMoveSpeed -
+AIPlayer::setMoveTolerance -
+AIPlayer::stop -
 alGetListener3f -
 alGetListeneri -
 alGetString -

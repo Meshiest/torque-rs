@@ -51,5 +51,10 @@ webrtc = ["web", "torque-server/webrtc"]
 # `net::web::p2p`).
 p2p = ["webrtc", "torque-server/p2p"]
 
+[dev-dependencies]
+# The AIPlayer test's floor and figure.
+torque-example-assets = { path = "../../examples/assets" }
+torque-shapes = { path = "../torque-shapes" }
+
 [lints]
 workspace = true

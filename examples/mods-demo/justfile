@@ -1,7 +1,44 @@
 set windows-shell := ["powershell", "-NoProfile", "-Command"]
 
+# The build folder: CARGO_TARGET_DIR's, else the workspace's (the web build goes into its `web` folder)
+web_target := env_var_or_default("CARGO_TARGET_DIR", module_directory() / ".." / ".." / "target")
+
+# Where the web checks' tools (puppeteer-core) are installed; exported so the recipes need no shell-specific syntax
+export TORQUE_WEB_TOOLS := web_target / "web-tools" / "node"
+
 default:
     @just --list
+
+# The soccer server people join (console only): the Lua game mode, the soccer mod sent to players who lack it, bots in the
+# places nobody has taken. `--bind <your LAN address>` lets others on the network join; `--port`, `--name`, `--bots`,
+# `--ticks N`, and the web's switches (`--transport both`, `--webrtc`, `--room`). Builds the Lua extension first (`just lua`,
+# a C++ compiler is needed)
+server *args:
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-server -- {{args}}
+
+# The soccer server open to the internet: every interface (0.0.0.0) on UDP 28000 (`--port` changes it); players outside the
+# network need that port forwarded to this computer and the firewall to allow it
+server-public *args:
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-server -- --bind 0.0.0.0 --port 28000 {{args}}
+
+# The game in a window: Host a match / Join a match (the network's list, or an address typed in) / Quit; an address after
+# the recipe joins that server at once. W A S D run, Esc the menu. Hosting needs the Lua extension, built first
+client *args:
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-client -- {{args}}
+
+# A match hosted here and joined in a window, in one command (LAN only: others on the network can join it too)
+play *args:
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-client -- --host {{args}}
+
+# The window client's pictures (the menu, the list of games, the download part way, the match, its Esc menu, a second join
+# with nothing to download), drawn offscreen into `dir`
+client-shots dir="../../target/mods-demo-client-shots":
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-client -- --shots {{dir}}
 
 # The mods demo, headless: a server whose game mode, a small soccer match, is a Lua mod it requires, and two clients that download
 # the mod's content when they join and play it, steered by bots (`--shots <dir>` draws pictures of the first round from the first
@@ -11,13 +48,54 @@ run *args:
     just --justfile ../../justfile --working-directory ../.. lua
     cargo run -p torque-example-mods-demo --release --bin mods-demo -- {{args}}
 
-# The mods demo's pictures of a match (the kickoff, a shot on goal, a goal, the end of the round and a goal close up), drawn
+# The headless demo's pictures of a match (the kickoff, a shot on goal, a goal, the end of the round and a goal close up), drawn
 # offscreen into `dir`
 shots dir="../../target/mods-demo-shots":
     just --justfile ../../justfile --working-directory ../.. lua
     cargo run -p torque-example-mods-demo --release --bin mods-demo -- --shots {{dir}}
 
-# The mods demo's end-to-end tests: download, cache, a match with goals and rounds, and the mods' load rules. They build the Lua
-# extension (Luau's C++), so `cargo test` leaves them out
+# The mods demo's end-to-end tests: download, cache, a match with goals and rounds, the mods' load rules, and the game people
+# play (the list of games, the download screen, a bot's place taken, the keys, browsers' downloads over WebSocket and a data
+# channel). They build the Lua extension (Luau's C++), so `cargo test` leaves them out
 test:
-    cargo test -p torque-example-mods-demo --test demo -- --include-ignored
+    cargo test -p torque-example-mods-demo --test demo --test multiplayer -- --include-ignored
+
+# The game for browsers and desktops in one match: its browser build (join-only), then the soccer server on UDP and the web
+# on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop client joins
+# 127.0.0.1:{{port}}. More of the server's switches go after the port number (`--bind`, `--webrtc`, `--tls-cert`/`--tls-key`)
+web port="28000" *args:
+    node ../../web/build.mjs mods-demo
+    just --justfile ../../justfile --working-directory ../.. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo-server -- --transport both --port {{port}} {{args}}
+
+# The browser check (build it first with `web` or `node web/build.mjs mods-demo`): the server on UDP and the web, headless
+# Chrome from the cursor guard joining from its page: the download screen with the soccer mod part way, the match, the
+# player running, a second join with nothing to download, no console error. Pictures into the target folder's `web`
+web-check:
+    just --justfile ../../justfile web-guard-test
+    just --justfile ../../justfile --working-directory ../.. lua
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/soccer-check.mjs "{{web_target}}/web/mods-demo" "{{web_target}}/web/mods-demo-join.png" 120 join
+
+# The browser check on a WebRTC data channel (`--webrtc`): the same, with the datagrams, the download among them, on the
+# channel
+web-rtc-check:
+    just --justfile ../../justfile web-guard-test
+    just --justfile ../../justfile --working-directory ../.. lua
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/soccer-check.mjs "{{web_target}}/web/mods-demo" "{{web_target}}/web/mods-demo-rtc.png" 120 rtc
+
+# A room service for matches hosted on a desktop, on 127.0.0.1:{{port}}, serving the browser build: a desktop hosts with
+# `mods-demo-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at
+# http://127.0.0.1:{{port}}/?room=<code>. More switches after the port number (`--bind`, `--tls-cert`/`--tls-key`, `--stun`)
+web-rooms port="28100" *args:
+    node ../../web/build.mjs mods-demo
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/mods-demo" {{args}}
+
+# A match hosted through a room service (build it first as for `web-check`): `mods-demo-server --room`, and headless Chrome
+# joining by the room's code on a data channel, with the same download screen
+web-p2p-check:
+    just --justfile ../../justfile web-guard-test
+    just --justfile ../../justfile --working-directory ../.. lua
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/soccer-check.mjs "{{web_target}}/web/mods-demo" "{{web_target}}/web/mods-demo-room.png" 120 room

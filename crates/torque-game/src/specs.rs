@@ -419,7 +419,7 @@ pub static CLASSES: &[ClassSpec] = &[
         sim_object: true,
         inherits_fields: true,
         fields: &[],
-        methods: &[],
+        methods: AIPLAYER_METHODS,
         defaults: None,
     },
     ClassSpec {
@@ -1914,6 +1914,32 @@ const PLAYER_METHODS: &[MethodSpec] = &[
         Returns::Bool,
     ),
     method("getDamageLocation", 3, 3, "(Point3F pos)", Returns::String),
+];
+
+const AIPLAYER_METHODS: &[MethodSpec] = &[
+    method("stop", 2, 2, "()", Returns::Void),
+    method("clearAim", 2, 2, "()", Returns::Void),
+    method("setMoveSpeed", 3, 3, "(float speed)", Returns::Void),
+    method("getMoveSpeed", 2, 2, "()", Returns::Float),
+    method("setMoveTolerance", 3, 3, "(float tolerance)", Returns::Void),
+    method(
+        "setMoveDestination",
+        3,
+        4,
+        "(Point3F goal, bool slowdown)",
+        Returns::Void,
+    ),
+    method("getMoveDestination", 2, 2, "()", Returns::String),
+    method("setAimLocation", 3, 3, "(Point3F target)", Returns::Void),
+    method("getAimLocation", 2, 2, "()", Returns::String),
+    method(
+        "setAimObject",
+        3,
+        4,
+        "(GameBase obj, Point3F offset)",
+        Returns::Void,
+    ),
+    method("getAimObject", 2, 2, "()", Returns::Int),
 ];
 
 const ITEM_METHODS: &[MethodSpec] = &[

@@ -4096,6 +4096,7 @@ dependencies = [
  "torque-collide",
  "torque-content",
  "torque-engine",
+ "torque-example-assets",
  "torque-game",
  "torque-mapcore",
  "torque-maps",
@@ -4104,6 +4105,7 @@ dependencies = [
  "torque-plugin-hierarchy",
  "torque-resource",
  "torque-server",
+ "torque-shapes",
  "torque-sim",
  "torque-ts-vm",
  "web-time",
@@ -4365,6 +4367,7 @@ dependencies = [
  "torque-plugin-props",
  "torque-render-core",
  "torque-render-scene",
+ "wasm-bindgen",
 ]
 
 [[package]]

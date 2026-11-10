@@ -1,7 +1,8 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed] [--solo] [--lua]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
+// Usage: node build.mjs <example> [--embed] [--solo] [--lua]      (level-demo, fps, vehicle-demo, mods-demo; vehicle-demo and
+// mods-demo fetch their files only)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
@@ -28,6 +29,8 @@ const EXAMPLES = {
   'level-demo': { package: 'torque-example-level-demo', bin: 'example-level-demo', embed: true },
   fps: { package: 'torque-example-fps', bin: 'fps-client', embed: true },
   'vehicle-demo': { package: 'torque-example-vehicle-demo', bin: 'vehicle-demo', embed: false },
+  // The soccer game's join-only client: the page carries none of the server's mods, it downloads them when it joins.
+  'mods-demo': { package: 'torque-example-mods-demo', bin: 'mods-demo-client', embed: false },
 };
 
 const name = process.argv[2];
