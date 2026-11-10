@@ -283,6 +283,41 @@ impl torque_ts_vm::host::Compiler for CountingCompiler {
     }
 }
 
+/// Rebuilds the classic compiler's results with `Compiled`'s constructors, as a compiler outside this crate must (the struct is
+/// non-exhaustive).
+struct Rebuilt(classic::ClassicCompiler);
+
+impl torque_ts_vm::host::Compiler for Rebuilt {
+    fn compile(
+        &self,
+        source: &[u8],
+        name: Option<&[u8]>,
+        purpose: Purpose,
+    ) -> torque_ts_vm::host::Compiled {
+        let inner = self.0.compile(source, name, purpose);
+        match inner.code {
+            Some(code) if !inner.syntax_error => torque_ts_vm::host::Compiled::ok(code),
+            _ => torque_ts_vm::host::Compiled::error(inner.report),
+        }
+    }
+}
+
+#[test]
+fn a_compiler_outside_the_crate_runs_code_and_reports_errors() {
+    let mut vm = classic_vm();
+    vm.set_compiler(Rebuilt(classic::ClassicCompiler::default()));
+    let files = torque_ts_vm::host::MemFiles::new();
+    files.insert("clean.cs", b"echo(\"clean\");");
+    files.insert("broken.cs", b"if (;");
+    vm.set_file_host(files);
+    assert!(vm.exec_file(b"clean.cs", false).unwrap());
+    let ran = levels(&mut vm);
+    assert!(ran.iter().any(|(_, t)| t == "clean"));
+    assert!(!ran.iter().any(|(l, _)| *l == Level::Error));
+    vm.exec_file(b"broken.cs", false).unwrap();
+    assert!(levels(&mut vm).iter().any(|(l, _)| *l == Level::Error));
+}
+
 #[test]
 fn exec_compiles_a_clean_source_once_and_a_broken_one_twice() {
     let mut vm = classic_vm();

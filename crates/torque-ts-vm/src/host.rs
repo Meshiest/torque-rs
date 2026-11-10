@@ -988,6 +988,27 @@ pub struct Compiled {
     pub same_as_run: bool,
 }
 
+impl Compiled {
+    /// `code` compiled with nothing to report (no work counted: a compiler that counts sets [`Compiled::work`]).
+    #[must_use]
+    pub fn ok(code: DsoFile) -> Compiled {
+        Compiled {
+            code: Some(code),
+            ..Compiled::default()
+        }
+    }
+
+    /// A syntax error with `report`'s messages and no code.
+    #[must_use]
+    pub fn error(report: Vec<LogLine>) -> Compiled {
+        Compiled {
+            report,
+            syntax_error: true,
+            ..Compiled::default()
+        }
+    }
+}
+
 /// Turns source text into bytecode. `name` is the file name the messages name (None for `eval`'d text);
 /// `purpose` is TGE's entry point: [`Purpose::Check`] for `compile()` and the first of `exec`'s two
 /// compiles of a source, [`Purpose::Run`] for the second and for `eval`.
@@ -1006,19 +1027,11 @@ impl Compiler for NoCompiler {
             || "<input>".to_string(),
             |n| String::from_utf8_lossy(n).into_owned(),
         );
-        Compiled {
-            report: vec![LogLine {
-                level: Level::Error,
-                text: format!(
-                    "{shown}: cannot compile TorqueScript source: no compiler is installed"
-                )
+        Compiled::error(vec![LogLine {
+            level: Level::Error,
+            text: format!("{shown}: cannot compile TorqueScript source: no compiler is installed")
                 .into_bytes(),
-            }],
-            syntax_error: true,
-            code: None,
-            work: 0,
-            same_as_run: false,
-        }
+        }])
     }
 }
 

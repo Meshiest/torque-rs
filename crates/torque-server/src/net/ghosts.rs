@@ -358,6 +358,15 @@ pub struct ConnGhost<P: GhostPolicy, C = ()> {
     pub engine_peer: bool,
 }
 
+impl<P: GhostPolicy, C> ConnGhost<P, C> {
+    /// The control object (`setControlObject`), which is also the scope object. Written only through the hub, so that its
+    /// control index stays in step ([`HubState`]).
+    #[must_use]
+    pub fn control(&self) -> Option<ObjId> {
+        self.control
+    }
+}
+
 /// One connection's ghost state with the game `G`'s part.
 pub type Conns<G> = ConnGhost<<G as GhostGame>::Policy, <G as GhostGame>::Conn>;
 
