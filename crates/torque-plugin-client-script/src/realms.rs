@@ -236,10 +236,10 @@ pub struct Realms {
 
 impl Realms {
     /// Realms that remember choices in `choices` and instance their guest with `runner` (`None`: this client cannot run server
-    /// scripts). The setting is [`Setting::Never`] until the game turns it on; the prompt is the engine's.
+    /// scripts). The setting is [`Setting::Ask`] until the game or the player sets it; the prompt is the engine's.
     pub fn new(choices: Choices, runner: Option<Box<dyn RunnerFactory>>) -> Realms {
         Realms {
-            setting: Setting::Never,
+            setting: Setting::default(),
             policies: Policies::default(),
             reduce_motion: false,
             offerable: Grants(REVIEWED_TIERS.0 & HOST_TIERS.0),
@@ -398,7 +398,7 @@ impl Realms {
         }
         if unknown > 0 {
             vm.warn(format!(
-                "server scripts: {address} asked for {unknown} ability name(s) this game does not know; ignored"
+                "server scripts: {address} asked for {unknown} thing(s) this game does not know; ignored"
             ));
         }
         let pending = Pending {

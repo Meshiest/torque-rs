@@ -17,7 +17,7 @@ fn row(key: &str, on: bool, lock: RowLock) -> PromptRow {
 fn spec() -> PromptSpec {
     PromptSpec {
         heading: "A Server (10.0.0.1:28000)".into(),
-        detail: "wants to run its own scripts in your game. It asks to:".into(),
+        detail: "10.0.0.1:28000".into(),
         rows: vec![
             row("client_script.ability.ui", true, RowLock::Free),
             row("client_script.ability.net", true, RowLock::Free),
@@ -198,4 +198,60 @@ fn client_script_the_server_layer_hears_nothing_while_the_prompt_is_up() {
         !rig.events().is_empty(),
         "and the realm hears again after it"
     );
+}
+
+fn cursor_on(rig: &Rig) -> bool {
+    rig.gui.0.borrow().cursor_on
+}
+
+#[test]
+fn client_script_a_mouse_look_client_can_answer_the_prompt_and_gets_its_cursor_back() {
+    let mut rig = Rig::new(&[]);
+    rig.game("Canvas.cursorOff();");
+    assert!(!cursor_on(&rig), "a world played with the mouse");
+    let id = shown(&mut rig);
+    assert!(cursor_on(&rig), "the prompt turns the cursor on");
+    // The world goes on turning the cursor off as it starts (a call of the game's own): the prompt is still answerable.
+    rig.game("Canvas.cursorOff();");
+    assert!(cursor_on(&rig), "and keeps it on");
+    // The half second of ignoring the pointer still holds with the cursor on.
+    click(&mut rig, center(Spot::Allow, 3));
+    assert_eq!(rig.gui.take_client_script_prompt(&mut rig.vm, id), None);
+    rig.vm.advance_time(600);
+    click(&mut rig, center(Spot::Allow, 3));
+    assert!(matches!(
+        rig.gui.take_client_script_prompt(&mut rig.vm, id),
+        Some(PromptAnswer::Allow { .. })
+    ));
+    assert!(!cursor_on(&rig), "the cursor is back as the game had it");
+}
+
+#[test]
+fn client_script_a_prompt_taken_down_unanswered_puts_the_cursor_back_and_the_games_own_call_stands()
+{
+    let mut rig = Rig::new(&[]);
+    rig.game("Canvas.cursorOff();");
+    let id = shown(&mut rig);
+    assert!(cursor_on(&rig));
+    rig.gui.close_client_script_prompt(&mut rig.vm, id);
+    assert!(!cursor_on(&rig), "taken down without an answer");
+    // A game that turns the cursor on itself while the prompt is up keeps it on.
+    let id = shown(&mut rig);
+    rig.game("Canvas.cursorOn();");
+    rig.gui.close_client_script_prompt(&mut rig.vm, id);
+    assert!(cursor_on(&rig), "the game's own call is the game's");
+}
+
+#[test]
+fn client_script_a_prompt_deleted_without_closing_it_gives_the_cursor_back() {
+    let mut rig = Rig::new(&[]);
+    rig.game("Canvas.cursorOff();");
+    let id = shown(&mut rig);
+    assert!(cursor_on(&rig));
+    let _ = rig.vm.delete_object_quiet(id);
+    rig.frame();
+    assert!(!cursor_on(&rig), "the prompt took its hold with it");
+    // A frame later it is still the game's: nothing holds the cursor on any more.
+    rig.frame();
+    assert!(!cursor_on(&rig));
 }

@@ -426,3 +426,26 @@ mods-demo-shots dir="../target/mods-demo-shots":
 # (Luau's C++), so `cargo test` leaves them out
 mods-demo-test:
     cargo test -p torque-example-mods-demo --test demo -- --include-ignored
+
+# The level demo's prop catalog, headless: the office's server requires the catalog mod of its clients, two clients download it, allow its
+# menu and spawn props from it. Builds the realm guest first (`just lua-client-web`: the WASI SDK, named by WASI_SDK_PATH);
+# TORQUE_CLIENT_GUEST names a built one instead
+level-catalog:
+    just --justfile ../justfile --working-directory .. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog
+
+# The catalog's pictures (the consent prompt, the catalog, a label typed and the recent list, a chair in the office, a refusal), drawn
+# offscreen into `dir`
+level-catalog-shots dir="../target/level-catalog-shots":
+    just --justfile ../justfile --working-directory .. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
+
+# The catalog's end-to-end tests (level-demo's tests/catalog.rs), with the guest `lua-client-web` builds
+level-catalog-test:
+    just --justfile ../justfile --working-directory .. lua-client-web
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog -- --include-ignored
+
+# The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
+# offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)
+level-catalog-icons dir="level-demo/catalog/icons":
+    cargo run -p torque-example-level-demo --release --example catalog-icons -- {{dir}}

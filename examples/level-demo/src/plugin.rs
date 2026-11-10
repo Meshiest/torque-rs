@@ -13,9 +13,7 @@ use torque::app::plugins::{
     ClientGamePlugin, DefaultPlugins, GuiPlugin, ServerQueryPlugin, set_protocol,
 };
 use torque::engine::command::CommandSpec;
-use torque::engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup as _, PluginId, ProtocolKind,
-};
+use torque::engine::{ClientStage, EngineBuilder, Plugin, PluginGroup, PluginId, ProtocolKind};
 use torque_example_common::prediction::CubeClient;
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
@@ -28,6 +26,9 @@ pub struct Level {
     pub files: Rc<GameFiles>,
     pub maps: Vec<MapEntry>,
     pub cube: Rc<CubeClient>,
+    /// Files only the server has (a path and its bytes each): the mods it requires of its clients, which they download. None
+    /// in [`level_engine`].
+    pub server_mods: Vec<(String, Vec<u8>)>,
 }
 
 /// The game's part of the engine: the menu's maps as globals of every client, and the client game that predicts the figure
@@ -39,7 +40,15 @@ pub struct LevelPlugin {
 
 impl LevelPlugin {
     /// The plugin over `files`, the levels and the valley added to them.
-    pub fn new(mut files: GameFiles) -> Result<LevelPlugin, String> {
+    pub fn new(files: GameFiles) -> Result<LevelPlugin, String> {
+        LevelPlugin::with_mods(files, Vec::new())
+    }
+
+    /// [`LevelPlugin::new`], the server also holding the files `server_mods` (a path and its bytes each).
+    pub fn with_mods(
+        mut files: GameFiles,
+        server_mods: Vec<(String, Vec<u8>)>,
+    ) -> Result<LevelPlugin, String> {
         crate::levels::add_levels(&mut files)?;
         crate::files::add_valley(&mut files)?;
         #[cfg(feature = "rope")]
@@ -52,6 +61,7 @@ impl LevelPlugin {
                 files: Rc::new(files),
                 maps,
                 cube,
+                server_mods,
             }),
         })
     }
@@ -84,15 +94,24 @@ impl Plugin for LevelPlugin {
 /// Name the game on it ([`EngineRun::app`](torque::app::run::EngineRun::app)) to run it, or build it for
 /// [`LevelDemo::from_engine`](crate::client::LevelDemo::from_engine).
 pub fn level_engine(files: GameFiles) -> Result<EngineBuilder, String> {
-    let mut engine = EngineBuilder::new();
-    engine.add_plugins(
+    engine_of(
+        LevelPlugin::new(files)?,
         DefaultPlugins
             .set(GuiPlugin { layout_fonts: true })
             .disable::<ServerQueryPlugin>(),
-    );
+    )
+}
+
+/// [`level_engine`] with `plugins` as its default plugins and `level` as the game.
+pub(crate) fn engine_of(
+    level: LevelPlugin,
+    plugins: impl PluginGroup,
+) -> Result<EngineBuilder, String> {
+    let mut engine = EngineBuilder::new();
+    engine.add_plugins(plugins);
     set_protocol(&mut engine, ProtocolKind::Engine);
     engine.add_plugins((PropsPlugin, PropPredictionPlugin::default()));
-    engine.add_plugins(LevelPlugin::new(files)?);
+    engine.add_plugins(level);
     #[cfg(feature = "rope")]
     engine.add_plugins(
         torque_plugin_rope::RopePlugin::default().with_frame_anchors(crate::ropes::Mounts),

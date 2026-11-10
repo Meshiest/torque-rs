@@ -34,15 +34,15 @@ pub fn from_key(key: &str) -> Option<Tier> {
 /// The English line for an ability, in player words.
 pub fn english(tier: Tier) -> &'static str {
     match tier {
-        Tier::Ui => "Show its own menus and HUD",
-        Tier::Net => "Send messages to its own server",
-        Tier::State => "See the players and objects your game already shows",
+        Tier::Ui => "Show menus",
+        Tier::Net => "Talk to the server",
+        Tier::State => "See what your game already shows",
         Tier::Draw => "Draw markers and lines in the world",
         Tier::Effects => "Play sounds and effects",
-        Tier::Input => "Add its own keys to your controls",
+        Tier::Input => "Add keys to your controls",
         Tier::Camera => "Move your camera for short scenes",
-        Tier::Local => "Show objects only you can see",
-        Tier::Predict => "Use its own rules to smooth your player's movement",
+        Tier::Local => "Show things only you can see",
+        Tier::Predict => "Help smooth your movement",
         Tier::Realm => "",
     }
 }
@@ -56,9 +56,9 @@ pub fn default_on(tier: Tier, reduce_motion: bool) -> bool {
 /// The key of the line a game shows beside the option that grants the basic abilities without asking.
 pub const BASICS_KEY: &str = "client_script.basics_without_asking";
 
-/// The English line for that option. It names what [`is_basic`] covers, which is more than menus: a script may also message
-/// its own server and read the game state the player's client already holds.
-pub const BASICS_ENGLISH: &str = "Allow without asking: menus, HUD, markers and sounds. These scripts can also send messages to their own server and read the players and objects your game already shows.";
+/// The English line for that option. It names what [`is_basic`] covers, which is more than menus: a script may also talk to its
+/// server and see the game state the player's client already holds.
+pub const BASICS_ENGLISH: &str = "Allow menus, talking to the server, markers and sounds without asking. They can also see what your game already shows.";
 
 /// Whether an ability is one of the basic ones the "allow without asking" option covers: `ui` (menus and HUD), `net` (messages
 /// to the script's own server), `state` (read-only views of replicated game state), `draw` (markers and lines) and `effects`
@@ -82,10 +82,15 @@ mod tests {
             [Tier::Ui, Tier::Net, Tier::State, Tier::Draw, Tier::Effects]
         );
         for word in [
-            "menus", "HUD", "markers", "sounds", "messages", "server", "read",
+            "menus", "talking", "server", "markers", "sounds", "see", "game",
         ] {
             assert!(BASICS_ENGLISH.contains(word), "{word}");
         }
         assert!(english(Tier::Net).contains("server"));
+        for tier in ABILITIES {
+            for word in ["its own", "tier", "realm", "asks to"] {
+                assert!(!english(tier).contains(word), "{tier:?}: {word}");
+            }
+        }
     }
 }

@@ -223,6 +223,11 @@ pub fn route<G: ConnGame>(
     client: &Rc<RefCell<ClientState<G>>>,
     ev: &InputEvent,
 ) -> Result<Taken, VmError> {
+    // The Escape filter of a server's scripts comes before any action map: a game's binding of Escape (its menu) must not see the key
+    // the engine takes to close a server's menu, or to stop its scripts.
+    if gui.client_script_escape(ev) {
+        return Ok(Taken::Canvas);
+    }
     let maps: Vec<u32> = vm
         .objects()
         .find(b"ActiveActionMapSet")

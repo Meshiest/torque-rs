@@ -79,6 +79,8 @@ pub fn camera_rig() -> Rig {
 pub struct LevelDemo {
     pub client: GameClient<WorldServer>,
     pub files: Rc<GameFiles>,
+    /// Files only the map's server has (the mods it requires of its clients).
+    server_mods: Vec<(String, Vec<u8>)>,
     engine: Engine,
     pub maps: Vec<MapEntry>,
     scene: WorldScene,
@@ -153,6 +155,7 @@ impl LevelDemo {
             client,
             engine: engine.clone(),
             files: Rc::clone(&level.files),
+            server_mods: level.server_mods.clone(),
             maps: level.maps.clone(),
             scene: WorldScene::default(),
             playing: None,
@@ -166,6 +169,11 @@ impl LevelDemo {
             ground_changed: false,
             cloud_clock: 0.0,
         })
+    }
+
+    /// The files only a server of this game has (the mods it requires of its clients).
+    pub fn server_mods(&self) -> &[(String, Vec<u8>)] {
+        &self.server_mods
     }
 
     /// The engine this client and its servers are made by.
@@ -183,6 +191,22 @@ impl LevelDemo {
 
     /// Starts map `index`: its server, and the client joins it.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
+        let map = self.prepare_map(index)?;
+        let server =
+            WorldServer::start_with(&self.engine, &self.files, &self.server_mods, &map.path)?;
+        self.client.start_hosting(server);
+        self.enter_map(index, &map)
+    }
+
+    /// Joins map `index` as served by a server another part of the process runs (at [`SERVER_ADDR`], started over a copy of this
+    /// client's files with [`WorldServer::start_with`]): the client plays it as it does a map of its own server.
+    pub fn join_map(&mut self, index: usize) -> Result<(), String> {
+        let map = self.prepare_map(index)?;
+        self.enter_map(index, &map)
+    }
+
+    /// The client left any map it was in, and has the ground map `index` has.
+    fn prepare_map(&mut self, index: usize) -> Result<MapEntry, String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
         let text =
@@ -192,8 +216,15 @@ impl LevelDemo {
         self.cube.set_water(&self.ground.waters);
         self.scene.set_water(&self.ground.waters);
         self.ground_changed = true;
-        let server = WorldServer::start(&self.engine, &self.files, &map.path)?;
-        self.client.start_hosting(server);
+        Ok(map)
+    }
+
+    // The map's name hangs the plaza's rope (the `rope` feature).
+    fn enter_map(
+        &mut self,
+        index: usize,
+        #[cfg_attr(not(feature = "rope"), allow(unused_variables))] map: &MapEntry,
+    ) -> Result<(), String> {
         self.playing = Some(index);
         self.call("connectTo", &[SERVER_ADDR.to_string().as_str()])?;
         #[cfg(feature = "rope")]

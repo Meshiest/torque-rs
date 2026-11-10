@@ -53,11 +53,19 @@ restart, Esc back to the menu.
 | Web, online | [the gallery](https://reheatedcake.io/torque-rs/): the plaza, the office and the valley | `just site` |
 | Pictures | `just examples/level-demo-shots`, `just examples/level-demo-valley-shots` | `cargo run -p torque-example-level-demo --release -- --shots <dir>` |
 | With a rope across the plaza (`torque-plugin-rope`) | `just examples/level-demo-rope-shots` (pictures) | `cargo run -p torque-example-level-demo --release --features rope` |
+| The office's prop catalog (a server-sent menu; native only) | `just examples/level-catalog` (plays it headless), `just examples/level-catalog-shots` (pictures), `just examples/level-catalog-test` | `cargo run -p torque-example-level-demo --release --example level-catalog` |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
 interiors and terrain; interiors and props built from a Blockbench model (nearest-sampled textures, see-through glass,
 furniture the figure pushes, predicted on the client); spot lights with shadows; the camera blend; the web build with its
 files fetched by a list and kept in the browser's cache.
+
+**The prop catalog** (`level-demo/catalog/`, `src/catalog.rs`): the office's server requires a mod of its clients, a menu of the office's
+props with a picture and a Spawn button each, and a field for an optional label. A client downloads the mod (the Lua and the pictures)
+with the mods' download, asks its player before anything of it runs, and the menu sends what the player does back to the server, whose
+own script checks it (a known kind, a label, a cap, a rate limit, `propCheckPlacement`) and spawns the prop with `propSpawn`, owned by the
+player. The pictures are drawn from the props' own shapes (`just examples/level-catalog-icons`). It needs the realm guest (`just lua-client-web`; `WASI_SDK_PATH` names the WASI SDK) and is not in the window or the web build.
+The [server scripts chapter](../book/src/server-scripts.md) walks through it.
 
 ### The valley
 

@@ -1,4 +1,4 @@
-//! The chip: what the realm holds, then "Server scripts: `address`" and the server's name, in a fixed corner over every layer,
+//! The chip: what the realm holds, then "Server scripts on" and the server's address, in a fixed corner over every layer,
 //! with a menu of per-tier toggles, "Hide for now" and "Turn off for this server". The server layer is neither drawn nor hit in
 //! the chip's column ([`super::LayerState`]), which holds the chip at its widest and its menu open.
 
@@ -15,6 +15,22 @@ use crate::draw::DrawCtx;
 /// The chip's class name.
 pub(crate) const CLASS: &str = "ClientScriptChip";
 
+/// An ability in the words the chip's menu shows it by.
+fn ability_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Ui => "Menus",
+        Tier::Net => "Talking to the server",
+        Tier::State => "Seeing what your game shows",
+        Tier::Draw => "Markers and lines",
+        Tier::Effects => "Sounds and effects",
+        Tier::Input => "Extra keys",
+        Tier::Camera => "Camera",
+        Tier::Local => "Objects only you see",
+        Tier::Predict => "Movement smoothing",
+        Tier::Realm => "",
+    }
+}
+
 const HEADER: i32 = 22;
 const ROW: i32 = 20;
 const MARGIN: i32 = 8;
@@ -25,15 +41,14 @@ const CHAR_WIDTH: i32 = 7;
 /// The room between the holds, the address and the name.
 const GAP: i32 = 8;
 const MAX_ADDRESS: usize = 48;
-const MAX_NAME: usize = 64;
 const BACK: [u8; 4] = [20, 22, 26, 235];
 const EDGE: [u8; 4] = [52, 120, 220, 255];
 const TEXT: [u8; 4] = [235, 238, 242, 255];
 const DIM: [u8; 4] = [140, 146, 158, 255];
 /// The color of the holds.
 pub(crate) const HOLD: [u8; 4] = [255, 196, 64, 255];
-/// The holds' marker with every hold, the widest it gets.
-const ALL_HOLDS: &str = "[cursor, camera, keys, typing]";
+/// The side of the dot that says the realm holds something.
+const DOT: i32 = 8;
 
 /// A line of the open menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,21 +66,12 @@ pub(crate) enum Row {
 pub(crate) struct ChipState {
     /// What the realm holds, by name.
     pub(super) holds: Vec<&'static str>,
-    /// "Server scripts: " and the server's address.
+    /// "Server scripts on".
     pub(super) label: String,
     /// The server's name, plain text.
     pub(super) name: String,
     open: bool,
     rows: Vec<Row>,
-}
-
-/// The holds' marker: "[cursor, typing]", or nothing.
-fn marker(holds: &[&str]) -> String {
-    if holds.is_empty() {
-        String::new()
-    } else {
-        format!("[{}]", holds.join(", "))
-    }
 }
 
 /// Draws as much of `text` at `at` as fits in `room` pixels, cut with "..." when it does not all fit: the width drawn.
@@ -138,12 +144,10 @@ impl GuiControlClass for ChipCtrl {
         // The holds first, at a fixed place: the server's text is cut to the room they leave, never the other way.
         let (y, right) = (rect[1] + 4, rect[0] + rect[2] - 6);
         let mut x = rect[0] + 6;
-        let holds = marker(&st.holds);
-        if !holds.is_empty() {
-            x += d
-                .text(&face, FACE_SIZE, (x, y), holds.as_bytes(), HOLD)
-                .unwrap_or(0)
-                + GAP;
+        // A dot while the realm holds the cursor, the camera, keys or typing: it says that something is held, and Escape lets go.
+        if !st.holds.is_empty() {
+            d.fill([x, y + 3, DOT, DOT], HOLD);
+            x += DOT + GAP;
         }
         x += fitted(d, &face, (x, y), right - x, &st.label, TEXT) + GAP;
         fitted(d, &face, (x, y), right - x, &st.name, DIM);
@@ -152,10 +156,20 @@ impl GuiControlClass for ChipCtrl {
         }
         for (i, row) in st.rows.iter().enumerate() {
             let (label, color) = match row {
-                Row::Tier(tier, on) => (
-                    format!("[{}] {}", if *on { "x" } else { " " }, tier.name()),
-                    if *on { TEXT } else { DIM },
-                ),
+                Row::Tier(tier, on) => {
+                    // A check box and the ability in player words.
+                    let top = rect[1] + HEADER + i as i32 * ROW;
+                    let hot = super::prompt::pointer_in(d, [rect[0], top, rect[2], ROW]);
+                    super::prompt::check_box(d, (rect[0] + 6, top + 2), *on, false, hot);
+                    d.text(
+                        &face,
+                        FACE_SIZE,
+                        (rect[0] + 6 + super::prompt::BOX_ROOM, top + 4),
+                        ability_name(*tier).as_bytes(),
+                        if *on { TEXT } else { DIM },
+                    );
+                    continue;
+                }
                 Row::Hide(hidden) => (
                     if *hidden {
                         "Show again"
@@ -240,8 +254,9 @@ pub(super) fn layout(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
         let (Some(chip), Some(view)) = (l.chip, l.view.as_ref()) else {
             return;
         };
-        let label = format!("Server scripts: {}", plain(&view.address, MAX_ADDRESS));
-        let name = plain(&view.name, MAX_NAME);
+        let label = "Server scripts on".to_string();
+        // The address is what the engine knows of the server; the name a server calls itself is left to the prompt.
+        let name = plain(&view.address, MAX_ADDRESS);
         let holds: Vec<&'static str> = [
             (l.holds.cursor, "cursor"),
             (l.holds.camera, "camera"),
@@ -258,18 +273,14 @@ pub(super) fn layout(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
     };
     let chars = |s: &str| s.chars().count() as i32;
     let text = chars(&label) + if name.is_empty() { 0 } else { 2 + chars(&name) };
-    let width_with = |holds: &str| {
-        let extra = if holds.is_empty() {
-            0
-        } else {
-            chars(holds) + 2
-        };
-        ((text + extra) * CHAR_WIDTH + 12)
+    let width_with = |dot: bool| {
+        let extra = if dot { DOT + GAP } else { 0 };
+        (text * CHAR_WIDTH + 12 + extra)
             .clamp(MIN_WIDTH, MAX_WIDTH)
             .min((size.0 - 2 * MARGIN).max(1))
     };
-    let width = width_with(&marker(&holds));
-    let widest = width_with(ALL_HOLDS);
+    let width = width_with(!holds.is_empty());
+    let widest = width_with(true);
     let menu = HEADER + rows.len() as i32 * ROW;
     let open = gui
         .with_custom_state::<ChipState, _>(chip, |st| {

@@ -128,7 +128,7 @@ new GameTSCtrl(PlayGui)
       };
       new GuiTextCtrl(PlayStats)
       {
-         profile = StatsProfile; position = "640 6"; extent = "150 18"; horizSizing = "left"; visible = true; enabled = true;
+         profile = StatsProfile; position = "180 6"; extent = "150 18"; horizSizing = "right"; visible = true; enabled = true;
          text = "";
       };
    };
@@ -217,6 +217,17 @@ function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Re
 // rules: serverCmdPropGrab).
 function grab(%v) { if (%v && isObject(ServerConnection)) commandToServer('PropGrab'); }
 PlayMap.bind(mouse, button0, grab);
+// Q: the menu of a mod the server sends (the game's own key for it: a server's menu binds no keys). The server's script hears the
+// command and answers its menu; the host is told the player asked, so the menu may take the cursor again after an Escape.
+function catalogKey(%v)
+{
+   if (%v && isObject(ServerConnection))
+   {
+      $World::CatalogKey++;
+      commandToServer('Catalog');
+   }
+}
+PlayMap.bind(keyboard, q, catalogKey);
 PlayMap.bind(keyboard, w, moveForward);
 PlayMap.bind(keyboard, s, moveBack);
 PlayMap.bind(keyboard, a, moveLeft);

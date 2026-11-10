@@ -45,6 +45,67 @@ const MUTED: [u8; 4] = [140, 146, 158, 255];
 const BUTTON: [u8; 4] = [44, 52, 70, 255];
 const ALLOW: [u8; 4] = [38, 96, 62, 255];
 const NEVER: [u8; 4] = [104, 44, 44, 255];
+const BOX_BACK: [u8; 4] = [12, 14, 18, 255];
+/// A check box's side, and the room it takes with the gap to its label.
+const BOX: i32 = 16;
+pub(super) const BOX_ROOM: i32 = 24;
+/// The accent of a ticked box (the blue of the prompt's outline), lighter under the pointer; a locked box is muted.
+const BOX_ON: [u8; 4] = [52, 120, 220, 255];
+const BOX_ON_HOT: [u8; 4] = [84, 146, 238, 255];
+const BOX_HOT: [u8; 4] = [96, 156, 240, 255];
+const BOX_LOCKED: [u8; 4] = [78, 84, 96, 255];
+/// The check mark's corners from the box's top left corner: down to the bottom of the tick, then up to the far end.
+const TICK: [(i32, i32); 3] = [(4, 8), (7, 11), (12, 5)];
+
+/// A line from `a` to `b` drawn with squares `width` pixels on a side.
+fn stroke(d: &mut DrawCtx<'_, '_>, a: (i32, i32), b: (i32, i32), width: i32, color: [u8; 4]) {
+    let steps = (b.0 - a.0).abs().max((b.1 - a.1).abs()).max(1);
+    for i in 0..=steps {
+        let x = a.0 + (b.0 - a.0) * i / steps;
+        let y = a.1 + (b.1 - a.1) * i / steps;
+        d.fill([x - width / 2, y - width / 2, width, width], color);
+    }
+}
+
+/// A check box at `at`: a rounded square with a 1 pixel border, empty when `on` is false and filled with the accent and a thick
+/// white check mark when it is true. `hot` (the pointer is over its row) lightens it. A locked box (a row a policy or an earlier
+/// answer decided) is muted and takes no hover.
+pub(super) fn check_box(
+    d: &mut DrawCtx<'_, '_>,
+    at: (i32, i32),
+    on: bool,
+    locked: bool,
+    hot: bool,
+) {
+    let rect = [at.0, at.1, BOX, BOX];
+    let hot = hot && !locked;
+    let (fill, border) = match (on, locked) {
+        (true, true) => (BOX_LOCKED, BOX_LOCKED),
+        (true, false) => (if hot { BOX_ON_HOT } else { BOX_ON }, BOX_HOT),
+        (false, true) => (BOX_BACK, BOX_LOCKED),
+        (false, false) => (BOX_BACK, if hot { BOX_HOT } else { EDGE }),
+    };
+    d.rounded_box(rect, fill, border);
+    if on {
+        let mark = if locked { MUTED } else { [255, 255, 255, 255] };
+        for pair in TICK.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            stroke(
+                d,
+                (at.0 + a.0, at.1 + a.1),
+                (at.0 + b.0, at.1 + b.1),
+                2,
+                mark,
+            );
+        }
+    }
+}
+
+/// Whether the pointer is inside `rect` (the GUI's cursor).
+pub(super) fn pointer_in(d: &DrawCtx<'_, '_>, rect: [i32; 4]) -> bool {
+    let p = d.gui().0.borrow().cursor_pos;
+    (rect[0]..rect[0] + rect[2]).contains(&p.0) && (rect[1]..rect[1] + rect[3]).contains(&p.1)
+}
 
 /// Whether a row can be changed in the prompt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,36 +305,35 @@ impl GuiControlClass for PromptCtrl {
         );
         for (spot, rect) in &layout.spots {
             let rect = at_rect(*rect);
-            let (label, boxed, color, fill) = match spot {
+            // A row and the remember box have a check box before their label: (checked, locked).
+            let (label, boxed, color, fill, check) = match spot {
                 Spot::Row(i) => {
                     let row = &spec.rows[*i];
                     let tick = st.on.get(*i).copied().unwrap_or(false);
-                    let mark = format!("[{}]", if tick { "x" } else { " " });
-                    let color = if row.lock == RowLock::Locked {
-                        MUTED
-                    } else {
-                        TEXT
-                    };
-                    (format!("{mark} {}", row.label), false, color, None)
+                    let locked = row.lock == RowLock::Locked;
+                    let color = if locked { MUTED } else { TEXT };
+                    (row.label.clone(), false, color, None, Some((tick, locked)))
                 }
                 Spot::Remember => (
-                    format!(
-                        "[{}] {}",
-                        if st.remember { "x" } else { " " },
-                        spec.remember
-                    ),
+                    spec.remember.clone(),
                     false,
                     TEXT,
                     None,
+                    Some((st.remember, false)),
                 ),
-                Spot::Allow => (spec.allow.clone(), true, TEXT, Some(ALLOW)),
-                Spot::NotNow => (spec.not_now.clone(), true, TEXT, Some(BUTTON)),
-                Spot::Never => (spec.never.clone(), true, TEXT, Some(NEVER)),
+                Spot::Allow => (spec.allow.clone(), true, TEXT, Some(ALLOW), None),
+                Spot::NotNow => (spec.not_now.clone(), true, TEXT, Some(BUTTON), None),
+                Spot::Never => (spec.never.clone(), true, TEXT, Some(NEVER), None),
             };
             if let Some(fill) = fill {
                 d.fill(rect, fill);
             }
-            let inset = if boxed { 8 } else { 0 };
+            let mut inset = if boxed { 8 } else { 0 };
+            if let Some((on, locked)) = check {
+                let hot = pointer_in(d, rect);
+                check_box(d, (rect[0], rect[1] + (rect[3] - BOX) / 2), on, locked, hot);
+                inset = BOX_ROOM;
+            }
             fitted(
                 d,
                 &face,
@@ -348,7 +408,8 @@ impl GuiControlClass for PromptCtrl {
 
 impl Gui {
     /// Shows the default consent prompt for `spec` in the engine layer: modal, over every dialog, taking the pointer after
-    /// [`IGNORE_MS`]. `None` when the layer is full or the control cannot be made. Take the answer with
+    /// [`IGNORE_MS`]. The cursor is on while it is up, whatever the game had, and goes back as it was when the prompt is taken down
+    /// (unless the game turned it on or off meanwhile). `None` when the layer is full or the control cannot be made. Take the answer with
     /// [`take_client_script_prompt`](Self::take_client_script_prompt).
     pub fn show_client_script_prompt(&self, vm: &mut Vm, spec: PromptSpec) -> Option<ObjId> {
         let id = make_realm_control(vm, self, CLASS, &[])?;
@@ -392,6 +453,7 @@ impl Gui {
             let _ = vm.delete_object_quiet(id);
             return None;
         }
+        super::layers::take_prompt_cursor(self);
         Some(id)
     }
 
@@ -407,6 +469,7 @@ impl Gui {
     /// Takes the prompt `id` down without an answer.
     pub fn close_client_script_prompt(&self, vm: &mut Vm, id: ObjId) {
         self.pop_engine_layer(vm, id);
+        super::layers::give_back_prompt_cursor(self);
         let _ = vm.delete_object_quiet(id);
     }
 

@@ -195,6 +195,8 @@ fn client_script_without_a_layout_a_container_is_a_plain_group() {
     assert_eq!(field(&rig, 3, "flexGrow"), "");
     // The child stays where its own props put it, and a click on it still arrives.
     assert_eq!(bounds(&rig.vm, rig.object(3)), ((10, 10), (100, 30)));
+    // The first frame told the realm the screen; that is not what is looked for here.
+    assert!(matches!(rig.events().as_slice(), [UiEvent::Screen(..)]));
     assert!(rig.click_at(20, 20));
     assert!(matches!(rig.events().as_slice(), [UiEvent::Press(3)]));
     // The group is not a thing to click: a click on it is no event.
@@ -234,6 +236,7 @@ fn client_script_a_container_is_transparent_to_input_and_adds_no_look() {
             ],
         );
     rig.apply_ok(&ops);
+    assert!(matches!(rig.events().as_slice(), [UiEvent::Screen(..)]));
     assert!(rig.click_at(20, 20));
     assert!(matches!(rig.events().as_slice(), [UiEvent::Press(2)]));
     assert!(rig.click_at(20, 110));

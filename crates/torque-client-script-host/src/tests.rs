@@ -408,7 +408,21 @@ fn a_request_gets_only_reviewed_tiers_the_player_allowed() {
     let all = Grants(Grants::VALID);
     let asked = ["ui", "net", "telepathy"];
     assert_eq!(GrantSet::from_request(asked, all).grants(), REVIEWED_TIERS);
+    assert_eq!(
+        REVIEWED_TIERS, UI_NET,
+        "the base, `ui` and `net` have passed"
+    );
     assert_eq!(GrantSet::from_request(asked, Grants(0)).grants(), Grants(1));
+    assert_eq!(
+        GrantSet::from_request(asked, Grants::of(&[Tier::Net])).grants(),
+        Grants::of(&[Tier::Net]),
+        "a tier the player did not allow is left out"
+    );
+    // Tiers the host has no module of, or no review passed, are never granted, whatever is asked or allowed.
+    let beyond = [
+        "state", "draw", "effects", "input", "camera", "local", "predict",
+    ];
+    assert_eq!(GrantSet::from_request(beyond, all).grants(), Grants(1));
     assert_eq!(unknown_tiers(asked), ["telepathy"]);
     let unreviewed = GrantSet::unreviewed(all).grants();
     assert_eq!(

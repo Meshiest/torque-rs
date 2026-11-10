@@ -272,10 +272,18 @@ fn button(st: &NodeState, d: &mut DrawCtx<'_, '_>, rect: [i32; 4]) {
     let face = Face::of(st, d);
     let mut inner = rect;
     if let Some(image) = &st.image {
-        let side = rect[3] - 8;
-        d.realm_image(image, [rect[0] + 4, rect[1] + 4, side, side], 1, [255; 4]);
-        inner[0] += side + 8;
-        inner[2] -= side + 8;
+        if rect[3] > rect[2] {
+            // A button taller than it is wide is a tile: the picture across the top, the label below it.
+            let side = rect[2] - 8;
+            d.realm_image(image, [rect[0] + 4, rect[1] + 4, side, side], 1, [255; 4]);
+            inner[1] += side + 8;
+            inner[3] -= side + 8;
+        } else {
+            let side = rect[3] - 8;
+            d.realm_image(image, [rect[0] + 4, rect[1] + 4, side, side], 1, [255; 4]);
+            inner[0] += side + 8;
+            inner[2] -= side + 8;
+        }
     }
     let label = st.props.text(Prop::Text);
     let w = face.width(d, label);

@@ -128,6 +128,9 @@ pub(crate) fn route(vm: &mut Vm, gui: &Gui, ev: &InputEvent) -> Result<bool, VmE
         return Ok(escape(gui, ev));
     }
     let prompt = prompt_up(gui);
+    if prompt {
+        super::layers::hold_prompt_cursor(gui);
+    }
     if ev.device == KEYBOARD_DEVICE && prompt {
         return prompt_key(vm, gui, ev);
     }
@@ -156,7 +159,7 @@ pub(crate) fn route(vm: &mut Vm, gui: &Gui, ev: &InputEvent) -> Result<bool, VmE
 /// prompt does not get it, nor does the game under it. Escape with the realm holding focus, the cursor or the camera drops the
 /// holds and tells the realm `closed`. A press taken here has its release and repeats taken too; with nothing held and no
 /// prompt the key goes to the game. The realm never gets it.
-fn escape(gui: &Gui, ev: &InputEvent) -> bool {
+pub(crate) fn escape(gui: &Gui, ev: &InputEvent) -> bool {
     let (active, held, prompt, swallowing) = {
         let s = gui.0.borrow();
         let l = &s.client_script;

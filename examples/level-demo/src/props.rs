@@ -453,11 +453,39 @@ fn identifier(level: &str) -> String {
 /// `props` of level `level` built (module docs): their shapes written into the kit of `files`, and the script that takes the
 /// map's [`PROPS`] line (the datablocks, then the spawns).
 pub fn build(files: &mut GameFiles, level: &str, props: &[LevelProp]) -> Result<String, String> {
+    build_kinds(files, level, props).map(|built| built.script)
+}
+
+/// A kind's first datablock in a level: the one a catalog spawns a prop of that kind from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindShape {
+    pub kind: PropKind,
+    /// The datablock's name (`officeProp3`).
+    pub datablock: String,
+    /// Its shape's path in the kit (`kit/office_prop_3.dts`).
+    pub shape: String,
+}
+
+/// [`build`]'s script and the first datablock of each kind, which the script also names in the global `$Level::PropData[<kind word>]`
+/// (a game's script spawns a prop of a kind from it).
+pub struct Built {
+    pub script: String,
+    pub kinds: Vec<KindShape>,
+}
+
+/// [`build`], with the datablock of each kind it made.
+pub fn build_kinds(
+    files: &mut GameFiles,
+    level: &str,
+    props: &[LevelProp],
+) -> Result<Built, String> {
     let id = identifier(level);
     let mut script = String::new();
     let mut spawns = String::new();
     // Each shape built once a kind: its datablock's name.
     let mut datablocks: BTreeMap<(PropKind, Vec<u8>), String> = BTreeMap::new();
+    // The first datablock made of each kind, with its shape's file.
+    let mut first: BTreeMap<PropKind, KindShape> = BTreeMap::new();
     for prop in props {
         let shape = dts::to_dts(&prop.shape).map_err(|e| format!("{level}: {}: {e}", prop.name))?;
         let bytes = torque::shapes::write::write_dts(&shape);
@@ -483,6 +511,11 @@ pub fn build(files: &mut GameFiles, level: &str, props: &[LevelProp]) -> Result<
                     size[2],
                     prop.kind.mass(size)
                 );
+                first.entry(prop.kind).or_insert_with(|| KindShape {
+                    kind: prop.kind,
+                    datablock: name.clone(),
+                    shape: format!("kit/{file}"),
+                });
                 name
             });
         let [x, y, z] = prop.position;
@@ -492,8 +525,18 @@ pub fn build(files: &mut GameFiles, level: &str, props: &[LevelProp]) -> Result<
             "propSleep(propSpawn({data}, \"{x} {y} {z} {ax} {ay} {az} {angle}\"));"
         );
     }
+    // The first datablock of each kind, in the order of [`PropKind::ALL`].
+    let kinds: Vec<KindShape> = first.into_values().collect();
+    for k in &kinds {
+        let _ = writeln!(
+            script,
+            "$Level::PropData[\"{}\"] = {};",
+            k.kind.word(),
+            k.datablock
+        );
+    }
     script.push_str(&spawns);
-    Ok(script)
+    Ok(Built { script, kinds })
 }
 
 #[cfg(test)]

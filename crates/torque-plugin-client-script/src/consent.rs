@@ -106,8 +106,13 @@ impl ConsentPrompt for EnginePrompt {
             .map(|l| (l.key.clone(), l.tier))
             .collect();
         let spec = PromptSpec {
-            heading: format!("{} ({})", request.server_name, request.address),
-            detail: "wants to run its own scripts in your game. It asks to:".to_string(),
+            heading: format!("{} wants to run scripts in your game.", request.server_name),
+            // The address is what the engine knows of the server (its name is the server's own word); shown once.
+            detail: if request.server_name == request.address {
+                String::new()
+            } else {
+                request.address.clone()
+            },
             rows: request
                 .lines
                 .iter()
@@ -125,7 +130,7 @@ impl ConsentPrompt for EnginePrompt {
             allow: "Allow".to_string(),
             not_now: "Not now".to_string(),
             never: "Never for this server".to_string(),
-            remember: "Remember".to_string(),
+            remember: "Remember my choice".to_string(),
             remember_on: true,
         };
         self.up = gui.show_client_script_prompt(vm, spec);

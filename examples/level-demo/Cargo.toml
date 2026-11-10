@@ -40,6 +40,15 @@ smooth-prediction = ["dep:torque-plugin-smooth-prediction"]
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []
 
+# The prop catalog (`catalog`, native builds only): a server-offered mod whose menu runs in the realm of each client. Not built for the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The mods the catalog's server requires of its clients.
+torque = { path = "../../crates/torque", default-features = false, features = ["mods"] }
+torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["wasmtime"] }
+torque-client-script-format = { path = "../../crates/torque-client-script-format" }
+torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script" }
+torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
+
 # Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"

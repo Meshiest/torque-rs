@@ -17,6 +17,8 @@ categories = ["game-engines", "network-programming"]
 # game's to supply, so this crate has no Wasmtime in its tree. It is in no default plugin set.
 
 [features]
+# `ui` and `net` have passed their review, so a build offers them unless it turns the defaults off.
+default = ["ui", "net"]
 # The host modules of the tiers (see `torque-client-script-host`): without one, a server's request for that tier is not offered.
 ui = ["torque-client-script-host/ui"]
 net = ["torque-client-script-host/net"]
@@ -25,7 +27,7 @@ unreviewed-tiers = ["torque-client-script-host/unreviewed-tiers"]
 
 [dependencies]
 torque-client-script-format = { path = "../torque-client-script-format" }
-torque-client-script-host = { path = "../torque-client-script-host" }
+torque-client-script-host = { path = "../torque-client-script-host", default-features = false }
 torque-engine = { path = "../torque-engine" }
 torque-ghosts = { path = "../torque-ghosts" }
 torque-gui = { path = "../torque-gui" }

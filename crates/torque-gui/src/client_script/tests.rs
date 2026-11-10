@@ -1212,8 +1212,8 @@ fn client_script_the_chip_names_the_server_and_opens_per_tier_toggles() {
         .gui
         .with_custom_state::<super::chip::ChipState, _>(chip, |s| (s.label.clone(), s.name.clone()))
         .expect("chip state");
-    assert_eq!(label, "Server scripts: 10.0.0.1:28000");
-    assert_eq!(name, "A Server");
+    assert_eq!(label, "Server scripts on");
+    assert_eq!(name, "10.0.0.1:28000");
     // Clicking the header opens the menu; the first row is `ui`.
     assert!(rig.click_at(rect[0] + 5, rect[1] + 5));
     rig.frame();
@@ -1934,7 +1934,7 @@ fn client_script_the_chip_shows_a_servers_name_without_hidden_characters() {
         .view
         .as_mut()
         .unwrap()
-        .name = "Safe\u{202e}tab\nline\u{2028}x\u{2067}".to_string();
+        .address = "Safe\u{202e}tab\nline\u{2028}x\u{2067}".to_string();
     rig.frame();
     let (_, chip) = chip_rect(&rig);
     let text = rig
@@ -2072,8 +2072,16 @@ fn client_script_a_field_in_the_chips_column_takes_no_focus() {
     assert_eq!(applied.focus_refused, 1);
     rig.click_at(590, 20);
     assert!(rig.focus().is_none(), "nor does a click there focus it");
+    // Partly in the column: it starts 50 pixels before the column does.
+    let left = Rig::new(&[Tier::Ui])
+        .gui
+        .0
+        .borrow()
+        .client_script
+        .column
+        .expect("the column")[0];
     let edge = [
-        (Prop::Pos, vec2(100.0, 60.0)),
+        (Prop::Pos, vec2(f64::from(left - 50), 60.0)),
         (Prop::Size, vec2(100.0, 20.0)),
     ];
     let (_, applied) = ask_focus(&field(3, 1, &edge), 3);
@@ -2111,7 +2119,7 @@ fn client_script_the_typing_marker_stays_inside_the_chip() {
         .view
         .as_mut()
         .unwrap()
-        .name = "W".repeat(64);
+        .address = "W".repeat(64);
     rig.gui.client_script_hold(Hold::Camera, true);
     rig.gui.client_script_hold(Hold::Key, true);
     rig.apply_ok(&field_ops());
@@ -2120,15 +2128,14 @@ fn client_script_the_typing_marker_stays_inside_the_chip() {
     assert_eq!(chip_holds(&rig), ["camera", "keys", "typing"]);
     let (chip, _) = chip_rect(&rig);
     let glyphs = textured(&rig.batches(), "font:");
-    let marker: Vec<_> = glyphs
+    // One dot says something is held (no words: the chip does not spell out what).
+    let batches = rig.batches();
+    let marker: Vec<_> = batches
         .iter()
+        .flat_map(|b| b.quads.iter())
         .filter(|q| q.color == super::chip::HOLD)
         .collect();
-    assert_eq!(
-        marker.len(),
-        "[camera, keys, typing]".len(),
-        "every glyph of the marker is drawn"
-    );
+    assert_eq!(marker.len(), 1, "a dot, and no glyph of it");
     assert!(marker.iter().all(|q| inside(q, chip)), "{chip:?}");
     let name: Vec<_> = glyphs
         .iter()
@@ -2189,7 +2196,39 @@ fn client_script_after_escape_the_realm_waits_for_the_player_to_take_the_cursor(
     assert_eq!(rig.apply(&again).unwrap().interactive_refused, 0);
     rig.game("Canvas.pushDialog(DialogOne);");
     rig.game("Canvas.popLayer(0);");
+    // The action was a while ago: it lets nothing through now.
+    rig.gui.set_client_script_clock(10_000_000);
     assert_eq!(rig.apply(&again).unwrap().interactive_refused, 1);
+}
+
+#[test]
+fn client_script_one_action_lets_the_cursor_back_only_for_a_moment() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut ops = button_ops();
+    ops.interactive(true);
+    rig.apply_ok(&ops);
+    assert!(escape(&mut rig, SI_MAKE, 0));
+    escape(&mut rig, SI_BREAK, 0);
+    let mut again = Ops::default();
+    again.interactive(true);
+    // The game's key was pressed, but the realm asks long after it: refused, and so it stays until the next action.
+    rig.gui.set_client_script_clock(1_000_000);
+    rig.gui.client_script_player_asked();
+    rig.gui
+        .set_client_script_clock(1_000_000 + torque_client_script_format::ui::ACTIVATION_US + 1);
+    assert_eq!(rig.apply(&again).unwrap().interactive_refused, 1);
+    rig.frame();
+    assert!(!rig.gui.client_script_holds().cursor);
+    assert_eq!(
+        rig.apply(&again).unwrap().interactive_refused,
+        1,
+        "still refused, with no action"
+    );
+    // A request that follows an action closely is let through, and the cursor is the realm's as it asked.
+    rig.gui.client_script_player_asked();
+    assert_eq!(rig.apply(&again).unwrap().interactive_refused, 0);
+    rig.frame();
+    assert!(rig.gui.client_script_holds().cursor);
 }
 
 #[test]
@@ -2754,4 +2793,161 @@ fn client_script_image_decodes_past_the_burst_wait_for_the_rate() {
         "it refills to the burst and no more"
     );
     assert!(!allowance.take(1_000_000, 1));
+}
+
+#[test]
+fn client_script_controls_lists_what_is_shown_in_tree_order() {
+    use torque_client_script_format::ui::Kind;
+    let mut rig = Rig::new(&[Tier::Ui]);
+    assert!(rig.gui.client_script_controls(&rig.vm).is_empty());
+    let mut ops = button_ops();
+    ops.create(
+        3,
+        1,
+        Kind::Text,
+        &[
+            (Prop::Pos, vec2(10.0, 50.0)),
+            (Prop::Size, vec2(100.0, 20.0)),
+            (Prop::Text, text("Hello")),
+        ],
+    )
+    .create(
+        4,
+        1,
+        Kind::Panel,
+        &[
+            (Prop::Pos, vec2(200.0, 10.0)),
+            (Prop::Size, vec2(100.0, 100.0)),
+            (Prop::Visible, PropValue::Bool(false)),
+        ],
+    )
+    .create(
+        5,
+        4,
+        Kind::Text,
+        &[(Prop::Text, text("Hidden under a hidden panel"))],
+    );
+    rig.apply_ok(&ops);
+    let shown = rig.gui.client_script_controls(&rig.vm);
+    let summary: Vec<(Kind, &str, [i32; 4])> = shown
+        .iter()
+        .map(|c| (c.kind, c.text.as_str(), c.rect))
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            (Kind::Button, "Go", [10, 10, 100, 30]),
+            (Kind::Text, "Hello", [10, 50, 100, 20]),
+        ],
+        "a hidden control hides what is under it, and the order is the tree's"
+    );
+}
+
+#[test]
+fn client_script_a_set_after_the_player_typed_keeps_the_books() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut ops = button_ops();
+    ops.create(
+        3,
+        1,
+        Kind::TextField,
+        &[
+            (Prop::Pos, vec2(10.0, 60.0)),
+            (Prop::Size, vec2(100.0, 20.0)),
+            (Prop::Placeholder, text("Title")),
+        ],
+    );
+    rig.apply_ok(&ops);
+    rig.click_at(20, 70);
+    // The player types more than the realm ever set: the field's text is theirs to change.
+    for c in "Harbor lights".chars() {
+        let ascii = c as u16;
+        assert!(rig.key(0x30, ascii, SI_MAKE, 0));
+        rig.key(0x30, ascii, SI_BREAK, 0);
+    }
+    assert!(!rig.events().is_empty(), "the field told the realm");
+    // The realm clears the field, as a form does after it sends: the books take it, with the placeholder still counted.
+    let mut clear = Ops::default();
+    clear.set(3, &[(Prop::Text, text(""))]);
+    rig.apply_ok(&clear);
+    rig.realm
+        .check(&rig.vm, &rig.gui)
+        .expect("the books match the controls");
+    let mut again = Ops::default();
+    again.set(
+        3,
+        &[(Prop::Text, text("Fern")), (Prop::Tooltip, text("A name"))],
+    );
+    rig.apply_ok(&again);
+    rig.realm.check(&rig.vm, &rig.gui).expect("and again");
+}
+
+#[test]
+fn client_script_the_realm_is_told_the_screen_at_its_first_frame_and_then_only_when_it_changes() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    assert!(matches!(
+        rig.events().as_slice(),
+        [UiEvent::Screen(w, h, _)] if (*w, *h) == (640.0, 480.0)
+    ));
+    rig.frame();
+    assert!(rig.events().is_empty(), "nothing changed");
+    rig.gui.set_canvas_size((800, 600));
+    rig.frame();
+    assert!(matches!(
+        rig.events().as_slice(),
+        [UiEvent::Screen(w, h, _)] if (*w, *h) == (800.0, 600.0)
+    ));
+}
+
+#[test]
+fn client_script_escape_is_filtered_for_a_host_that_takes_input_first_and_the_games_key_gives_the_cursor_back()
+ {
+    let escape = |action: u8, modifier: u8| InputEvent {
+        device: KEYBOARD_DEVICE,
+        obj_type: SI_KEY,
+        obj_inst: KEY_ESCAPE,
+        action,
+        modifier,
+        ..InputEvent::default()
+    };
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut ops = button_ops();
+    ops.interactive(true);
+    rig.apply_ok(&ops);
+    rig.frame();
+    rig.events();
+    assert!(rig.gui.client_script_holds().cursor);
+    // The first Escape is taken (a game's own binding of it never sees the key), the realm is told, and the release is taken too.
+    assert!(rig.gui.client_script_escape(&escape(SI_MAKE, 0)));
+    assert!(!rig.gui.client_script_holds().cursor);
+    assert!(rig.events().iter().any(|e| matches!(e, UiEvent::Closed)));
+    assert!(rig.gui.client_script_escape(&escape(SI_BREAK, 0)));
+    // With nothing held the key is the game's.
+    assert!(!rig.gui.client_script_escape(&escape(SI_MAKE, 0)));
+    assert!(!rig.gui.client_script_escape(&escape(SI_BREAK, 0)));
+    // The realm asks for the cursor again: refused, until the player acts. A key the game chose for the menu is such an action.
+    let mut again = Ops::default();
+    again.interactive(true);
+    rig.apply_ok(&again);
+    rig.frame();
+    assert!(
+        !rig.gui.client_script_holds().cursor,
+        "refused after Escape"
+    );
+    rig.gui.client_script_player_asked();
+    rig.apply_ok(&again);
+    rig.frame();
+    assert!(rig.gui.client_script_holds().cursor, "after the game's key");
+    // Shift+Escape stops server scripts for the connection.
+    assert!(rig.gui.client_script_escape(&escape(SI_MAKE, SI_SHIFT)));
+    assert!(
+        rig.gui
+            .take_client_script_actions()
+            .iter()
+            .any(|a| matches!(a, LayerAction::Stop))
+    );
+    // Other keys are no business of it.
+    let mut other = escape(SI_MAKE, 0);
+    other.obj_inst = KEY_RETURN;
+    assert!(!rig.gui.client_script_escape(&other));
 }

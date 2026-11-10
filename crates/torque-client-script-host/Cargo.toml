@@ -15,6 +15,8 @@ categories = ["game-engines", "wasm"]
 # this crate.
 
 [features]
+# `ui` and `net` have passed their review, so a build has their host modules unless it turns the defaults off.
+default = ["ui", "net"]
 # The Wasmtime runners: `NativeRealm` for the realm's guest, and `WasmtimeLuaModule`, the Lua extension's WebAssembly module
 # (`just lua-web`) as the engine's `web_lua::LuaModule`.
 wasmtime = [
@@ -26,10 +28,12 @@ wasmtime = [
 ]
 # The web runner, `WebRunner`: the guest in a Worker of the page's (web/client-script.js), for wasm32 builds.
 web = ["dep:wasm-bindgen", "dep:js-sys"]
-# The host modules of the tiers: without its feature a tier cannot be granted, and its ops stop the realm.
+# The host modules of the tiers: without its feature a tier cannot be granted, and its ops stop the realm. A tier is on by
+# default only once its review has passed.
 ui = []
 net = []
-# `GrantSet::unreviewed`: tiers granted before their review, for tests and for working on a tier.
+# `GrantSet::unreviewed` and `RealmGuest::unlisted`: tiers granted before their review and a guest no release lists, for
+# tests and for working on a tier. Builds with debug assertions only.
 unreviewed-tiers = []
 # The cases every runner passes (`cases`), run natively by `tests/cases.rs` and on the web by
 # tests/web/client-script-check.

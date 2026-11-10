@@ -17,8 +17,8 @@ pub const HOST_TIERS: Grants = Grants(
 );
 
 /// The tiers a security review passed: only these are ever granted to a server's request. A tier joins once its
-/// review reports clean and the owner approves it.
-pub const REVIEWED_TIERS: Grants = Grants(1);
+/// review reports clean and the owner approves it. The base, `ui` and `net` have passed; the others are not offered.
+pub const REVIEWED_TIERS: Grants = Grants(1 | (1 << Tier::Ui as u32) | (1 << Tier::Net as u32));
 
 /// The tiers one realm holds: never more than [`HOST_TIERS`], always the base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +41,7 @@ impl GrantSet {
     }
 
     /// `grants` with the review left out: for tests and for working on a tier before its review, never for a server's
-    /// request.
+    /// request. While every tier this build has a host module of is reviewed, it gives what a request does.
     #[cfg(feature = "unreviewed-tiers")]
     pub fn unreviewed(grants: Grants) -> GrantSet {
         GrantSet(Grants((grants.0 & HOST_TIERS.0) | 1))

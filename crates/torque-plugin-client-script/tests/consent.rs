@@ -9,9 +9,9 @@ use torque_client_script_host::{GrantSet, HOST_TIERS, REVIEWED_TIERS};
 use torque_plugin_client_script::abilities::{self, ABILITIES};
 use torque_plugin_client_script::messages::Status;
 use torque_plugin_client_script::policy::{
-    AskRow, Decision, Inputs, Policies, Policy, Remembered, Setting, Why, answer, asked, decide,
+    AskRow, Decision, Inputs, Policies, Policy, Remembered, Setting, answer, asked, decide,
 };
-use torque_plugin_client_script::{Choices, ConsentAnswer, RealmState};
+use torque_plugin_client_script::{Choices, ConsentAnswer, RealmState, Realms};
 use torque_ts_vm::host::DirHost;
 
 fn ui_net() -> Grants {
@@ -60,7 +60,7 @@ fn no_realm_instance_and_no_file_read_before_allow() {
         keys,
         ["client_script.ability.ui", "client_script.ability.net"]
     );
-    assert_eq!(request.lines[0].english, "Show its own menus and HUD");
+    assert_eq!(request.lines[0].english, "Show menus");
     assert!(request.lines.iter().all(|l| l.on && l.locked.is_none()));
     // Allow: now, and only now, the realm exists.
     allow(&w, &[(Tier::Ui, true), (Tier::Net, true)], true);
@@ -222,25 +222,51 @@ fn the_server_learns_declined_unavailable_or_the_granted_abilities_only() {
 }
 
 #[test]
-fn an_unreviewed_tier_is_never_granted_to_a_request() {
-    // The release request: reviewed tiers only. This build lists none beyond the base.
-    let all = Grants(Grants::VALID);
-    let granted = GrantSet::from_request(["ui", "net", "camera"], all);
-    assert_eq!(granted.grants().0 & !REVIEWED_TIERS.0, 0);
-    // So a game built as released offers nothing, whatever a server asks.
-    let released = Grants(REVIEWED_TIERS.0 & HOST_TIERS.0);
-    assert_eq!(released.0 & !1, 0, "no tier is reviewed yet");
+fn a_request_gets_only_the_reviewed_tiers_and_the_default_setting_asks() {
+    assert_eq!(Setting::default(), Setting::Ask);
     assert_eq!(
-        decide(&Inputs {
-            setting: Setting::Ask,
-            policies: &Policies::default(),
-            remembered: None,
-            requested: &[Tier::Ui, Tier::Net],
-            offerable: released,
-            reduce_motion: false,
-        }),
-        Decision::Off(Why::NothingAsked)
+        Realms::new(Choices::in_memory(), None).setting,
+        Setting::Ask
     );
+    // This release has reviewed the base, `ui` and `net`: whatever else a request names is left out.
+    assert_eq!(REVIEWED_TIERS, ui_net());
+    let all = Grants(Grants::VALID);
+    let granted = GrantSet::from_request(["ui", "net", "state", "draw", "camera", "predict"], all);
+    assert_eq!(granted.grants(), ui_net());
+    // A build that offers what it reviewed asks about them, with a line for each and nothing granted before the answer.
+    let released = Grants(REVIEWED_TIERS.0 & HOST_TIERS.0);
+    assert_eq!(released, ui_net(), "the host has the modules of both");
+    let Decision::Ask { rows, always } = decide(&Inputs {
+        setting: Setting::default(),
+        policies: &Policies::default(),
+        remembered: None,
+        requested: &[Tier::Ui, Tier::Net, Tier::Camera],
+        offerable: released,
+        reduce_motion: false,
+    }) else {
+        panic!("a request for reviewed tiers is asked about");
+    };
+    assert_eq!(
+        rows.iter().map(|r| r.tier).collect::<Vec<_>>(),
+        [Tier::Ui, Tier::Net]
+    );
+    assert_eq!(always, Grants(1));
+    // The same through a whole join with the release's rule for grants: nothing runs before Allow, then the realm holds `ui`
+    // and `net` and the server hears so.
+    let mut w = World::new(Setting::default(), released, Choices::in_memory());
+    w.realms.set_grant_set(|requested, allowed| {
+        GrantSet::from_request(requested.iter().copied(), allowed)
+    });
+    w.files.here.set(true);
+    w.offer(&["ui", "net", "camera"]);
+    w.frames(5);
+    assert_eq!(w.realms.state(), RealmState::Asking);
+    assert_eq!(w.script.instances.get(), 0, "no guest before Allow");
+    allow(&w, &[(Tier::Ui, true), (Tier::Net, true)], false);
+    w.frames(3);
+    w.up();
+    assert_eq!(w.realms.state(), RealmState::Running);
+    assert_eq!(w.status(), Some(Status::Allowed(vec![Tier::Ui, Tier::Net])));
 }
 
 #[test]

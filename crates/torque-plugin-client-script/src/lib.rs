@@ -5,7 +5,7 @@
 //! the part a game fills in around them.
 //!
 //! - **Consent** ([`policy`], [`consent`], [`choices`], [`abilities`]). A server's request becomes a [`policy::Decision`]: no
-//!   scripts, a realm, or a question. The global setting (never until the feature is approved, then ask), the per-ability policies
+//!   scripts, a realm, or a question. The global setting (ask, or never for a player who wants no server scripts), the per-ability policies
 //!   (ask, always, never) and the player's remembered choice for that server decide. The question is a slot a game fills
 //!   ([`consent::ConsentPrompt`]): it gets the abilities with stable keys (`client_script.ability.ui`) and English lines, and
 //!   answers with the boxes ticked; [`consent::EnginePrompt`] is the plain one that ships. What is remembered lives in an
@@ -21,9 +21,9 @@
 //! use torque_plugin_client_script::{Choices, RealmState, Realms, Setting};
 //!
 //! let mut realms = Realms::new(Choices::in_memory(), None);
-//! assert_eq!(realms.setting, Setting::Never, "off until the owner turns it on");
+//! assert_eq!(realms.setting, Setting::Ask, "a server that asks is asked about");
 //! assert_eq!(realms.offerable.0 & !REVIEWED_TIERS.0, 0, "nothing unreviewed is offered");
-//! realms.setting = Setting::Ask;
+//! realms.setting = Setting::Never;
 //! assert_eq!(realms.state(), RealmState::Idle);
 //! ```
 //!
@@ -53,7 +53,7 @@
 //!   (`consent::never_is_remembered_across_a_reconnect_with_no_prompt_and_no_instance`).
 //! - The grant set is the same for every setting, policy and remembered choice, in a table of every ability against every policy
 //!   (`consent::grants_for_every_policy_and_remembered_choice`), and a tier no review passed is never granted
-//!   (`consent::an_unreviewed_tier_is_never_granted_to_a_request`).
+//!   (`consent::a_request_gets_only_the_reviewed_tiers_and_the_default_setting_asks`).
 //! - The choices file is read and written by `Choices` alone: no pref, global, native, console function or file function of a
 //!   script engine reaches it (`consent::the_choices_file_is_beyond_every_script_file_function`,
 //!   `consent::no_script_reads_the_remembered_choices`). The path is the game's to choose and must be a folder only the player can

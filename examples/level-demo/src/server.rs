@@ -27,9 +27,24 @@ impl WorldServer {
     /// A server `engine` makes over `files`, that has run `server.cs` and started the map `mission` (a path under the game
     /// folder, `missions/plaza.mis`).
     pub fn start(engine: &Engine, files: &GameFiles, mission: &str) -> Result<WorldServer, String> {
+        WorldServer::start_with(engine, files, &[], mission)
+    }
+
+    /// [`WorldServer::start`] with `extra` files (a path and its bytes each) added to the server's alone: what a server has that
+    /// its clients do not, such as the mods it requires of them.
+    pub fn start_with(
+        engine: &Engine,
+        files: &GameFiles,
+        extra: &[(String, Vec<u8>)],
+        mission: &str,
+    ) -> Result<WorldServer, String> {
+        let mem = files.mem_files();
+        for (path, bytes) in extra {
+            mem.insert(path, bytes);
+        }
         GameServer::start_engine(
             engine,
-            files.mem_files(),
+            mem,
             &ServerStart {
                 listen: Listen::Memory(SERVER_ADDR),
                 globals: &[],

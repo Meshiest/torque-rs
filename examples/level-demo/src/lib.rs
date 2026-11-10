@@ -8,6 +8,8 @@
 //! - [`props`]: a level's furniture and desk items, built into props a figure pushes.
 //! - `ropes` (the `rope` feature): the plaza's clothesline, made by the rope plugin.
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on an in-memory transport.
+//! - `catalog` (native builds): the office's prop catalog, a mod the server requires of its clients whose menu runs in a client-script realm
+//!   on each (see `catalog/` and the book's server scripts chapter).
 //! - [`client`]: the client host, the server of the map being played, the link between them, and a frame for the world view.
 //! - [`scene`]: the client's ghosts as the world view's objects (the cubes and the figures).
 //! - [`showcase`]: pictures of the world alone at the highest quality: the valley's views and the front page's pictures.
@@ -51,9 +53,13 @@
 
 use torque::sim::player::PoseData;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod catalog;
 pub mod client;
 pub mod files;
 pub mod ground;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod icons;
 pub mod levels;
 pub mod plugin;
 pub mod props;

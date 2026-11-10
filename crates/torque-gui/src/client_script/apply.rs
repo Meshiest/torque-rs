@@ -196,24 +196,30 @@ impl TextUse {
         }
     }
 
-    /// The text of a control of `kind` that has `self` over props `base`, once `given` is set: only the props given are read
-    /// (as [`TextUse::of`] would count them), so the work is what the op carries.
+    /// The text of a control of `kind` that has `self` over props `base`, once `given` is set. A rich text's markup and a list's
+    /// rows are what the op gives (nothing else sets them). The plain text is counted afresh from the props as they stand over
+    /// `base`, not by taking away what `base` held of a prop: a text field's text is also the player's to change by typing, so
+    /// what `base` holds of it need not be what `self` counted, and taking that away from `self` could go below nothing. Only the
+    /// three small props are read, and only when the op sets one of them.
     fn after(self, kind: Kind, base: &dyn Lookup, given: &[(Prop, PropValue)]) -> TextUse {
         let mut text = self;
-        for (at, (prop, value)) in given.iter().enumerate() {
-            let before = Given(&given[..at])
-                .lookup(*prop)
-                .or_else(|| base.lookup(*prop))
-                .map_or(0, ui::text_bytes);
-            let now = ui::text_bytes(value);
+        let mut plain = false;
+        for (prop, value) in given {
             match prop {
-                Prop::Tooltip | Prop::Placeholder | Prop::Text => {
-                    text.plain = text.plain - before + now;
-                }
-                Prop::RichText if kind == Kind::RichText => text.rich = now,
-                Prop::Rows => text.rows = now,
+                Prop::Tooltip | Prop::Placeholder | Prop::Text => plain = true,
+                Prop::RichText if kind == Kind::RichText => text.rich = ui::text_bytes(value),
+                Prop::Rows => text.rows = ui::text_bytes(value),
                 _ => {}
             }
+        }
+        if plain {
+            let view = Over {
+                top: &Given(given),
+                base,
+            };
+            text.plain = text_of(&view, Prop::Tooltip).len()
+                + text_of(&view, Prop::Placeholder).len()
+                + text_of(&view, Prop::Text).len();
         }
         text
     }
@@ -293,7 +299,9 @@ impl Realm {
             l.server = Some(server);
             l.chip = Some(chip);
             l.view = Some(view);
-            l.screen = size;
+            // The realm has not been told the screen yet: its first frame sends it (`ui.screen()` would read 0 until the screen
+            // changed otherwise).
+            l.screen = (0, 0);
         }
         Some(Realm {
             grants,
@@ -468,9 +476,13 @@ impl Realm {
                 let on = r.bool()?;
                 r.finish()?;
                 let l = &mut gui.0.borrow_mut().client_script;
-                if on && l.interactive_blocked {
+                if on && l.interactive_blocked && !l.activated() {
+                    // After an Escape the cursor comes back only for a request that follows the player's own action closely.
                     applied.interactive_refused += 1;
                 } else {
+                    if on {
+                        l.interactive_blocked = false;
+                    }
                     l.interactive = on;
                 }
                 Ok(())
@@ -795,7 +807,7 @@ impl Realm {
         gui.0.borrow_mut().client_script.stats.refused_images += 1;
         if self.refused_images == 1 {
             vm.warn(format!(
-                "server scripts: an image past the realm's {} MiB of decoded images is not shown",
+                "server scripts: an image past the {} MiB of pictures a server may show is not shown",
                 MAX_IMAGE_BYTES >> 20
             ));
         }

@@ -5,9 +5,9 @@ use super::*;
 use crate::draw::{GuiBlend, GuiDraws};
 
 /// The hash pinned for the picture of [`scene`] drawn at the screen's 640 x 480 (see [`the_realm_controls_look_as_pinned`]).
-const PINNED_HASH: u64 = 0xc26d2e0e0a356829;
+const PINNED_HASH: u64 = 0x69558109d6da7353;
 /// The same for [`container_scene`] (see [`the_realm_containers_look_as_pinned`]).
-const PINNED_CONTAINERS_HASH: u64 = 0xe106f4c14b0b8c2d;
+const PINNED_CONTAINERS_HASH: u64 = 0x14581a845abcc78d;
 
 /// The pixels (RGBA, rows top to bottom) of `draws`: every quad in order, nearest-sampled and cut by its batch's clip, blended
 /// over opaque black.

@@ -68,9 +68,10 @@ different.
   typed applier that checks every op against the op format, the grants and the caps (a violation stops the realm). The
   controls have no names, commands, variables, accelerators or script callbacks, and scripts cannot read or write them. They
   live in a server layer the canvas does not own: drawn after the content and before the dialogs, only over the screens the
-  game names, never moved by `setContent`, `pushDialog` or `popLayer`. An engine layer and a chip ("Server scripts:
-  <address>", with per-tier toggles) are drawn over the dialogs and get input first; Escape is the host's, and the realm is
-  given text and navigation only in its focused text field.
+  game names, never moved by `setContent`, `pushDialog` or `popLayer`. An engine layer and a chip ("Server scripts on",
+  and the address, with a check box for each ability) are drawn over the dialogs and get input first; Escape is the host's, and the realm is
+  given text and navigation only in its focused text field. `Gui::client_script_controls` lists what the
+  realm's controls show (kind, text, image path, rectangle), read-only and out of reach of scripts, for a game's tests. The consent prompt turns the cursor on while it is up and draws real check boxes; a host that takes input before its action maps asks the Escape filter first (`Gui::client_script_escape`), and a game's own key for a server's menu is told to the engine with `Gui::client_script_player_asked` (Rust only).
 - `torque-client`: input sources (`InputSource`, `add_input_source`): devices a plugin adds that the client polls once per
   drawn frame (once per client pass without a window) and that reach the action maps as TGE's `joystick<N>` buttons, axes and hats (`bind(joystick0, xaxis, f)`); a device
   that goes lets go of what it held. TGE reads only DirectInput devices. A source can stamp events (`InputQueue`, `axis_at`) and the
@@ -380,9 +381,9 @@ different.
   (a WebAssembly guest) per connection, under Wasmtime natively and in a Worker on the web: a wall-clock deadline per entry,
   a linear-memory cap, every op checked against the format and the granted tiers (a violation stops the realm), revocation
   that removes a tier's effects in the same frame, a strike rule, teardown on disconnect and a per-frame budget. In no
-  default plugin set; no tier is reviewed yet. TGE has none.
+  default plugin set. `ui` and `net` have passed their security review (`REVIEWED_TIERS`) and are on by default (the `ui` and `net` cargo features); no other tier is offered. TGE has none.
 - `torque-plugin-client-script`: server scripts for a game, the part a game fills in around the realm. The player's consent comes
-  first: a global setting (never, until the first abilities are approved), a policy for each ability (ask, always, never), and a
+  first: a global setting (ask by default, or never), a policy for each ability (ask, always, never), and a
   per-server choice remembered in a file the engine owns, so that no TorqueScript or Lua can read it; nothing of the realm exists,
   and no file of the server's is read, before the answer. The question is a slot (`ConsentPrompt`) with stable ability keys and
   English lines, and the engine ships a plain prompt (`torque-gui`, in the engine layer: it ignores the pointer for half a second

@@ -187,8 +187,11 @@ function startWorld(%file)
 
 // ---- a client's way in
 
+// The name a client connected with ($Pref::Player::Name, when it has one) is the name its figure shows and a game's scripts list.
 function GameConnection::onClientConnect(%client, %name)
 {
+   if (%name !$= "")
+      %client.name = %name;
    echo("Client" SPC %client SPC "connected");
 }
 

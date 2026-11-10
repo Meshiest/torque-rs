@@ -176,6 +176,9 @@ pub struct LayerState {
     pub(crate) interactive_blocked: bool,
     /// How the cursor was before the realm turned it on.
     pub(crate) cursor_saved: Option<SavedCursor>,
+    /// How the cursor was before the consent prompt turned it on (a prompt is modal and takes the pointer only while the cursor is
+    /// on, which a world played with the mouse has off).
+    pub(crate) prompt_cursor: Option<SavedCursor>,
     pub(crate) focus: Option<ObjId>,
     pub(crate) hover: Option<ObjId>,
     pub(crate) captured: Option<ObjId>,
@@ -284,6 +287,7 @@ impl Default for LayerState {
             interactive: false,
             interactive_blocked: false,
             cursor_saved: None,
+            prompt_cursor: None,
             focus: None,
             hover: None,
             captured: None,
@@ -330,10 +334,10 @@ impl LayerState {
         self.events.push_back(event);
     }
 
-    /// The player acted on a control of the realm: `ui.focus` is let through for a while, and `ui.interactive(true)` again.
+    /// The player acted on a control of the realm (or pressed the game's key for its menu): `ui.focus` is let through for a while,
+    /// and so is `ui.interactive(true)` after an Escape took the cursor ([`LayerState::activated`]).
     pub(crate) fn activate(&mut self) {
         self.activation_us = Some(self.now_us);
-        self.interactive_blocked = false;
     }
 
     /// Drops the focus. The keys the field took stay taken: their releases are not the game's.
@@ -535,6 +539,45 @@ fn take_cursor(gui: &Gui) {
     l.holds.cursor = true;
 }
 
+/// Turns the cursor on for the consent prompt, remembering how it was.
+pub(crate) fn take_prompt_cursor(gui: &Gui) {
+    let mut s = gui.0.borrow_mut();
+    let s = &mut *s;
+    if s.client_script.prompt_cursor.is_some() {
+        return;
+    }
+    s.client_script.prompt_cursor = Some(SavedCursor {
+        on: s.cursor_on,
+        calls: s.cursor_calls,
+    });
+    s.cursor_on = true;
+}
+
+/// Keeps the cursor on while the prompt is up. A game that turns the cursor off meanwhile (a world played with the mouse does, as
+/// it starts) is heard: what it asked for is what comes back when the prompt goes.
+pub(crate) fn hold_prompt_cursor(gui: &Gui) {
+    let mut s = gui.0.borrow_mut();
+    let s = &mut *s;
+    if let Some(saved) = s.client_script.prompt_cursor.as_mut() {
+        if s.cursor_calls != saved.calls {
+            saved.on = s.cursor_on;
+            saved.calls = s.cursor_calls;
+        }
+        s.cursor_on = true;
+    }
+}
+
+/// Puts the cursor back as it was before the prompt, unless the game turned it on or off since.
+pub(crate) fn give_back_prompt_cursor(gui: &Gui) {
+    let mut s = gui.0.borrow_mut();
+    let s = &mut *s;
+    restore_cursor(
+        &mut s.cursor_on,
+        s.cursor_calls,
+        s.client_script.prompt_cursor.take(),
+    );
+}
+
 /// Gives back the cursor the realm took.
 fn give_back_cursor(gui: &Gui) {
     let mut s = gui.0.borrow_mut();
@@ -559,6 +602,7 @@ pub(crate) fn turn_off(gui: &Gui, action: LayerAction) {
 /// One frame of the host layers: the layers sized to the canvas, the realm told the screen size, the chip laid out, and the
 /// holds checked against what is on screen.
 pub(crate) fn frame(vm: &mut Vm, gui: &Gui, size: (i32, i32)) {
+    hold_prompt_cursor(gui);
     let (server, engine) = {
         let s = gui.0.borrow();
         (s.client_script.server, s.client_script.engine.clone())
@@ -730,14 +774,22 @@ pub(crate) fn visible_chain(vm: &Vm, id: ObjId) -> bool {
 
 /// A control left the model: the layers forget it.
 pub(crate) fn forget(gui: &Gui, id: ObjId) {
-    let mut s = gui.0.borrow_mut();
+    let mut state = gui.0.borrow_mut();
+    let s = &mut *state;
     let l = &mut s.client_script;
     for slot in [&mut l.focus, &mut l.hover, &mut l.captured] {
         if *slot == Some(id) {
             *slot = None;
         }
     }
+    let was_prompt = l.engine.contains(&id);
     l.engine.retain(|e| *e != id);
+    // A prompt that goes any way but `close_client_script_prompt` takes its hold on the cursor with it.
+    if was_prompt && l.engine.is_empty() {
+        let saved = l.prompt_cursor.take();
+        restore_cursor(&mut s.cursor_on, s.cursor_calls, saved);
+    }
+    let l = &mut s.client_script;
     l.laid.remove(&id);
     l.layout_due.remove(&id);
     l.visible = None;
@@ -802,6 +854,23 @@ impl Gui {
             Hold::Camera => holds.camera = on,
             Hold::Key => holds.key = on,
         }
+    }
+
+    /// The Escape filter of the host layers for `ev`, for a host that takes input before the canvas (an action map's binding of
+    /// Escape would otherwise see the key first): true when the key is taken here (Shift+Escape stops server scripts; Escape with
+    /// the realm holding the cursor, a focus or the camera drops them and tells it `closed`; an engine prompt takes it). A key this
+    /// does not take goes on to the game as usual.
+    pub fn client_script_escape(&self, ev: &crate::input::InputEvent) -> bool {
+        ev.device == crate::keys::KEYBOARD_DEVICE
+            && ev.obj_inst == crate::keys::KEY_ESCAPE
+            && super::route::escape(self, ev)
+    }
+
+    /// The player pressed a key the game bound to open the realm's menu: the realm may ask for the cursor again (`ui.interactive(true)`),
+    /// which Escape had taken from it until the player acted on its controls, and may focus a field for a second. Only the game's own
+    /// code calls this, from the key it chose; no script reaches it and a server cannot make it happen.
+    pub fn client_script_player_asked(&self) {
+        self.0.borrow_mut().client_script.activate();
     }
 
     /// Takes the events made for the realm since the last call.

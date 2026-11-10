@@ -11,10 +11,10 @@ use crate::abilities::{ABILITIES, default_on, is_basic};
 /// The global "Server scripts" setting.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Setting {
-    /// No server runs scripts in this game. The default until the feature is approved.
-    #[default]
+    /// No server runs scripts in this game. A game offers this to a player who wants no server scripts at all.
     Never,
-    /// A server that asks is asked about.
+    /// A server that asks is asked about. The default.
+    #[default]
     Ask,
 }
 

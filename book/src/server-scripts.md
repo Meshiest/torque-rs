@@ -6,8 +6,12 @@ inside WebAssembly, one for each connection), and it can only do what the player
 messages and what a game has to wire up; the sandbox and its caps are in the [Lua](lua.md) chapter and the crates'
 documentation.
 
-Server scripts are off in every build until the engine's review of the first abilities (`ui` and `net`) is approved. A game that
-turns them on today does so with the `ui` and `net` cargo features of `torque-client-script-host` and tests, not with a release.
+The first two abilities, `ui` and `net`, have passed the engine's security review, so a build offers them and the global setting
+starts at ask: the player is asked before any script of a server runs, and nothing of the realm exists until they allow it. A game
+that wants no server scripts sets the setting to never (`Realms::setting`), and a build with the default cargo features of
+`torque-plugin-client-script` turned off offers no ability. The other abilities are not offered by any build until each has passed
+its own review. The `unreviewed-tiers` feature, for debug builds only, is for tests and for working on an ability before its review;
+today it changes nothing, as every ability with a host module has passed.
 
 ## What a server asks for
 
@@ -30,21 +34,21 @@ server hears `unavailable`.
 
 ## What the player sees
 
-Before anything of the realm exists, the engine decides from three things: the global setting (never, until the first abilities
-are approved, then ask), the player's policy for each ability (ask, always or never), and what the player decided before for this
+Before anything of the realm exists, the engine decides from three things: the global setting (ask, or never for a
+player who wants no server scripts), the player's policy for each ability (ask, always or never), and what the player decided before for this
 server.
 
 - Never for the setting, or never remembered for this server: nothing runs and nothing is asked.
 - Every ability asked for is decided already: the realm runs with the ones that were allowed, and nothing is asked.
 - Otherwise a prompt lists the abilities the server asks for that are not decided, each with a box. An ability whose policy is
   always is granted without a line, one whose policy is never shows grayed and unticked, and one decided for this server before
-  shows as decided. The buttons are Allow, Not now and Never for this server, and "Remember" is ticked unless the player clears it.
+  shows as decided. The buttons are Allow, Not now and Never for this server, and "Remember my choice" is ticked unless the player clears it.
 
 The "allow without asking" option grants the basic abilities whenever a server asks for them: `ui` (menus and HUD), `net`
 (messages to the script's own server and its replies), `state` (read-only views of the players and objects the game already
 shows), `draw` (markers and lines in the world) and `effects` (sounds and effects). It does not cover the abilities that act on
-the player's input, camera, local objects or movement. A game that shows the option says all of that, not only "menus, HUD,
-markers and sounds": `torque_plugin_client_script::abilities::BASICS_ENGLISH` is the English line and `BASICS_KEY` its key. The engine ships no settings screen: a game's own settings UI shows this line beside the option, and the library does not draw it.
+the player's input, camera, local objects or movement. A game that shows the option says all of that, not only "menus and
+talking to the server": `torque_plugin_client_script::abilities::BASICS_ENGLISH` is the English line and `BASICS_KEY` its key. The engine ships no settings screen: a game's own settings UI shows this line beside the option, and the library does not draw it.
 
 The prompt ignores the pointer for half a second after it appears, needs the press and the release on the same button, and takes
 no key, so a click the player was making or a Return a game dialog was waiting for cannot answer it. It is drawn in the engine
@@ -189,6 +193,63 @@ The justfile's `client-script-check` is the whole suite, and its output is the e
   wall clock has none. A change that moves a number on purpose is written back with `TORQUE_PARITY_BLESS=1`.
 - **Budgets** (the justfile's `client-script-bench ui,net`): a hostile realm at its caps keeps the frame within 3 ms of the scene alone at
   p99, and an idle realm with 1,024 controls costs at most 0.3 ms at p50, both counting the canvas drawing the realm's controls.
+
+## An example: the office's prop catalog
+
+`examples/level-demo` has one (`just examples/level-catalog` plays it headless; `src/catalog.rs` and the mod's folder `catalog/` are the
+files). Its server serves the office with a mod, `catalog`, that it requires of its clients; the mod is a menu of the office's
+furniture and desk items, each with a picture and a Spawn button, and a Spawn puts a prop down in front of the player.
+
+**The manifest** asks for the two abilities the menu needs:
+
+```toml
+share = "download"
+
+[client_script]
+entry = "client/main.lua"
+tiers = ["ui", "net"]
+```
+
+**Download.** The mod is in the server's files (`mods/catalog/`) and not in the clients', so each client downloads it, the Lua and a
+picture for each kind of prop, before its realm can ask the player; none of it runs or is read until the player allows it. (A client
+that has the mod installed does not use it for scripts.)
+
+**The server's half** (`catalog/server.cs`) keeps the catalog (the kinds the map has a datablock for, with display names), a short
+list of recent spawns, and every rule. A message from a menu is `hello`, `spawn|kind|label` or `clear`. A request of any kind (even `hello`) is refused, with the
+reason, when the player has asked more than 3 times in 5 seconds; a spawn is refused too when the kind is not one the map has, the label is over 32 characters
+or has characters outside a short list, the player has 4 props out already, or `propCheckPlacement` finds no room in front of them.
+Otherwise the server's own script spawns the prop with `propSpawn`, owned by the player, keeps the label on it as a field of the
+object, remembers it in the recent list and sends the new list to every menu. Nothing about the menu is trusted: a modified client
+could send anything, so the rules are the server's, and the menu only asks.
+
+**The menu** (`catalog/client/main.lua`) is a `grid` of cards, each a `button` (a picture from the mod's content and a name; the whole
+card is the button, with the button's hover and pressed looks); a `textfield` for the label; a status line that shows only what the server refused; and the recent list under it. A click calls
+`net.send`:
+
+```lua
+card:on("press", function()
+    net.send("spawn|" .. entry.kind .. "|" .. label:get("text"))
+end)
+
+net.on(function(message)
+    -- catalog|kind|name|..., recent|player|kind|label|..., reply|ok|text, reply|refused|reason, or toggle
+end)
+```
+
+**Keys.** A server's menu binds no keys. Escape closes it: the engine takes the first Escape press before any action map of the game, drops
+the menu's hold on the cursor and tells it `closed`, which the menu answers by hiding itself (Shift+Escape stops server scripts for the
+connection, as ever). The key that opens it again is the game's: the level demo binds Q (`game/client.cs`), tells the server with a
+command (`Catalog`), and tells the engine the player asked (`Gui::client_script_player_asked`, which the game's Rust calls and no script
+can), so the menu may take the cursor again; the server's script answers the command with a `toggle` message to the menu.
+
+**Cursor.** The consent prompt turns the cursor on while it is up, even in a world played with the mouse, and puts it back as the game had
+it when the player answers.
+
+**Names.** A player's name in the recent list comes from their connect request and nothing verifies it, so the server cuts it to 16
+characters and uses it only if it has letters, numbers, spaces, `-`, `_` and `.`; else the list says "Player".
+
+The example's tests (`level-demo`'s `tests/catalog.rs`) play the menu through the GUI's own input; they need the guest and are run with
+`--include-ignored` (`just examples/level-catalog-test`).
 
 ## What servers cannot do
 

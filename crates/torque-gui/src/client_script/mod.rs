@@ -41,7 +41,7 @@
 //!
 //! **Map.** `apply` is the realm's applier and teardown; `controls` the `ClientScript*` classes, their input handlers and hit
 //! test; `paint` how each kind draws (and the kept text layouts); `layers` the layer state, the draw plan, the per-frame holds,
-//! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `prompt` the consent prompt; `events` the events for the
+//! the chip's column and `effectively_visible`; `route` input before the canvas; `chip` the chip; `prompt` the consent prompt; `inspect` the read-only list of shown controls (`Gui::client_script_controls`, for tests; no script reaches it); `events` the events for the
 //! realm and their encoding; `layout` the hook a layout plugin fills (`RealmLayout`); `props`, `rich` small helpers. The rest of the crate calls in at these places:
 //! - drawing (`draw.rs`): `draw_canvas` takes `DrawPlan::of`; `Walk::server_layer` draws the layer, `focus_on_top`'s field
 //!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed, and keeps what
@@ -177,6 +177,7 @@ mod apply;
 mod chip;
 mod controls;
 mod events;
+mod inspect;
 mod layers;
 mod layout;
 mod paint;
@@ -193,6 +194,7 @@ use crate::custom::GuiBuilderExt;
 
 pub use apply::{Applied, ContentCheck, Forwarded, MAX_ROOTS, Realm, Violation};
 pub use events::{Changed, UiEvent, encode_events};
+pub use inspect::ShownControl;
 pub use layers::{
     DEFAULT_FACES, DrawPlan, Hold, Holds, LayerAction, LayerMark, LayerState, MAX_ENGINE_LAYER,
     MAX_QUEUED_EVENTS, RealmView, Stats, TierToggle,
