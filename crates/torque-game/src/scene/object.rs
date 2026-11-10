@@ -124,9 +124,10 @@ pub fn set_transform(vm: &mut Vm, id: ObjId, matrix: Matrix) {
         return;
     }
     if camera::is_camera(vm, id) {
-        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those; it marks nothing (only a tick
-        // with a move marks `MoveMask`).
+        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those. Torque's marks nothing (only a
+        // tick with a move marks `MoveMask`); a game whose cameras mark their own bits says so through the ghosting layer.
         camera::set_transform(vm, id, &matrix);
+        mark_transform(vm, id);
     } else if crate::sim::item::is_item(vm, id) {
         crate::sim::item::set_transform(vm, id, &matrix);
     } else if crate::sim::vehicle::is_vehicle(vm, id) {
@@ -137,12 +138,16 @@ pub fn set_transform(vm: &mut Vm, id: ObjId, matrix: Matrix) {
         crate::sim::player::set_transform(vm, id, &matrix);
     } else {
         set_plain_transform(vm, id, &matrix);
-        // The classes whose own `setTransform` marks the object: the ghosting layer knows each ghost class's mask (none for the
-        // base `SceneObject::setTransform`).
-        let mask = ghosts::transform_mask(vm, id);
-        if mask != 0 {
-            ghosts::mark(vm, id, mask);
-        }
+        mark_transform(vm, id);
+    }
+}
+
+/// The classes whose own `setTransform` marks the object: the ghosting layer knows each ghost class's mask (none for the base
+/// `SceneObject::setTransform`).
+fn mark_transform(vm: &Vm, id: ObjId) {
+    let mask = ghosts::transform_mask(vm, id);
+    if mask != 0 {
+        ghosts::mark(vm, id, mask);
     }
 }
 
@@ -451,4 +456,71 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         let state = c.this_object.and_then(|id| world_box_of(vm, id));
         Native::Str(state.map_or_else(Vec::new, |s| text6(s.object_min, s.object_max)))
     });
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use std::any::Any;
+    use std::cell::Cell;
+
+    use super::*;
+    use crate::ghost::GhostLink;
+
+    /// A ghosting layer whose classes' own `setTransform` marks `mask`; it keeps what was marked.
+    struct Marks {
+        mask: u32,
+        marked: Cell<u32>,
+    }
+
+    impl GhostLink for Marks {
+        fn set_mask(&self, _: ObjId, bits: u32) {
+            self.marked.set(self.marked.get() | bits);
+        }
+        fn clear_mask(&self, _: ObjId, _: u32) {}
+        fn ghosted(&self, _: ObjId) -> bool {
+            true
+        }
+        fn transform_mask(&self, _: ObjId) -> u32 {
+            self.mask
+        }
+        fn check_bins(&self, _: &Vm, _: ObjId) {}
+        fn controlling_client(&self, _: &Vm, _: ObjId) -> Option<ObjId> {
+            None
+        }
+        fn controlling_camera_pos(&self, _: &Vm, _: ObjId) -> Option<f32> {
+            None
+        }
+        fn is_control_object(&self, _: ObjId) -> bool {
+            false
+        }
+        fn release_controlling_connection(&self, _: &Vm, _: ObjId) {}
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    /// What a camera's `setTransform` marks under a layer whose mask for it is `mask`.
+    fn camera_marks(mask: u32) -> u32 {
+        let mut vm = Vm::new();
+        crate::specs::install(&mut vm);
+        vm.eval(
+            b"datablock CameraData(EyeData) {};
+new Camera(Eye) { dataBlock = EyeData; };",
+        )
+        .unwrap();
+        let id = vm.objects().find(b"Eye").unwrap();
+        let link = Rc::new(Marks {
+            mask,
+            marked: Cell::new(0),
+        });
+        ext::get_mut(vm.objects_mut(), id).unwrap().ghost = Some(link.clone());
+        set_transform(&mut vm, id, grid::IDENTITY);
+        link.marked.get()
+    }
+
+    #[test]
+    fn a_cameras_set_transform_marks_what_the_ghosting_layer_gives_its_class() {
+        assert_eq!(camera_marks(0), 0, "Torque's camera marks nothing");
+        assert_eq!(camera_marks(0x0100_0000), 0x0100_0000);
+    }
 }
