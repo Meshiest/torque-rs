@@ -48,6 +48,8 @@ torque-server = { path = "../torque-server" }
 # The floor and the figure of the tests' world.
 torque-example-assets = { path = "../../examples/assets" }
 torque-shapes = { path = "../torque-shapes" }
+# The shape files the collision tests write.
+torque-shape-builder = { path = "../torque-shape-builder" }
 # The pictures of the ropes that follow joints (feature `rope`), drawn as the rope plugin's own pictures are.
 torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }

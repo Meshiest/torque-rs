@@ -34,7 +34,7 @@ propApplyImpulse(%crate, "0 40 0");
 
 ## What it adds
 
-- `PropData` (shape, collision box or ball, mass or density, friction, restitution, damping, top speed, sleep thresholds,
+- `PropData` (shape, collision box or ball or the convex hulls of the shape's collision meshes, mass or density, friction, restitution, damping, top speed, sleep thresholds,
   `canFreeze`, `maxPerPlayer`), every number clamped on write and on read; callbacks `onPropSpawn`, `onPropSleep`, `onPropWake`.
 - The `Prop` class and `propSpawn`, `propDelete`, `propFreeze`, `propUnfreeze`, `propSleep` (a map's props placed at rest),
   `propApplyImpulse`, `propSetVelocity`, the getters, `propCount`, `propAwakeCount`, `propRayCast` (the first prop a segment
@@ -82,6 +82,17 @@ let engine = EngineBuilder::new()
 
 Projectiles push the props they hit (the `ProjectileData`'s `impulse`, else by their speed), and explosions with an
 `areaImpulse` and `areaImpulseRadius` push the props around them; `PropData::onCollision` is told.
+
+## Collision as the shape
+
+`collision = "shape";` makes a prop collide as the collision meshes (`Collision-1` and on) of its `shapeFile`, each mesh one
+convex hull at the shape's rest pose and `drawScale`, held together as one rigid body: an L-shaped desk keeps its notch, a chair
+tucks under a table. `size` is still the box players, shots and placement checks see, and `mass` is the whole shape's. A shape
+with no collision mesh collides as its bounds; a shape past a cap (32 hulls, 64 points a hull, 256 units from its origin, 65,536
+points in all the shapes a server holds) or one that does not load collides as the `size` box, with a console note. A predicting
+client builds the same hulls from its own copy of the shape, and predicts them only if they are the ones the server says it
+used (a digest sent with each prop); otherwise it leaves the prop to the server. The datablock's wire record has the new field
+and the ghost's init record the digest (network version 4).
 
 ## Limits
 

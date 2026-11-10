@@ -17,11 +17,12 @@ use torque_ts_vm::geometry;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{FieldTarget, Vm};
 
-use crate::data::{PropData, PropParams};
+use crate::data::{PropCollision, PropData, PropParams, draw_scale};
 use crate::hits::{Blast, Hit, MAX_PENDING_HITS, ShotPush};
+use crate::hulls::{HullBook, PropHulls};
 use crate::quant::{self, Quantized, conjugate};
 use crate::records::{MASK_FLAGS, MASK_INIT, MASK_STATE, STATE_FIELDS};
-use crate::world::{Owner, OwnerKey, PropLimits, PropWorld};
+use crate::world::{Owner, OwnerKey, PropLimits, PropWorld, SpawnArgs};
 
 /// The class name as scripts see it.
 pub const CLASS: &str = <NetProp as ScriptClass>::NAME;
@@ -86,6 +87,10 @@ pub struct NetProp {
     data_block: i32,
     /// The key of its collision shape on both sides (0 to 1,023).
     slot: i32,
+    /// The digest of the hulls it collides as ([`crate::hulls::HullDigest`]; a count of 0: the datablock's box).
+    hull_count: i32,
+    hull_points: i32,
+    hull_volume: i32,
     /// The owner's connection object (0: none, or gone).
     owner_conn: i32,
     /// The predict id the owner's client gave it (0: none).
@@ -142,6 +147,10 @@ pub struct PropServer {
     pub(crate) blasts: Vec<Blast>,
     /// How each part was placed on its root's body ([`crate::hierarchy`]).
     pub(crate) links: crate::hierarchy::Links,
+    /// The collision hulls of the shapes the datablocks of `collision = "shape"` name, made once a shape.
+    pub hulls: HullBook,
+    /// The datablocks whose note about their hulls has been printed.
+    pub(crate) noted: std::collections::BTreeSet<u32>,
 }
 
 impl Default for PropServer {
@@ -155,6 +164,8 @@ impl Default for PropServer {
             hits: Vec::new(),
             blasts: Vec::new(),
             links: crate::hierarchy::Links::default(),
+            hulls: HullBook::default(),
+            noted: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -387,6 +398,10 @@ pub(crate) fn write_back(vm: &mut Vm, world: &PropWorld, id: u32, mask: u32) {
         set_field(vm, id, b"ownerConn", Field::Int(conn));
         set_field(vm, id, b"slot", Field::Int(i32::from(p.slot)));
         set_field(vm, id, b"predict", Field::Int(i32::from(p.predict)));
+        let digest = p.hulls.as_ref().map(|h| h.digest()).unwrap_or_default();
+        set_field(vm, id, b"hullCount", Field::Int(i32::from(digest.hulls)));
+        set_field(vm, id, b"hullPoints", Field::Int(i32::from(digest.points)));
+        set_field(vm, id, b"hullVolume", Field::Int(digest.volume as i32));
     }
     torque_game::scene::ghost::mark(vm, id, mask);
 }
@@ -417,9 +432,8 @@ pub(crate) fn spawn(
     if !is_class(vm, data, <PropData as ScriptClass>::NAME) {
         return Err(format!("{data} is not a PropData"));
     }
-    let params = PropData::read(vm, data)
-        .map(|d| PropParams::from(&d))
-        .map_err(|e| e.to_string())?;
+    let kind = PropData::read(vm, data).map_err(|e| e.to_string())?;
+    let (params, hulls) = collision_of(vm, props, data, &kind);
     // The caps are checked before the object is made, and again by the world.
     {
         let mut srv = props.0.borrow_mut();
@@ -440,11 +454,15 @@ pub(crate) fn spawn(
     };
     let half = params.shape.half_extents();
     torque_game::scene::object::set_object_box(vm, id, half.map(|h| -h), half);
-    let added = props
-        .0
-        .borrow_mut()
-        .world_mut(vm)
-        .spawn(id, data, params, pose, owner, predict);
+    let added = props.0.borrow_mut().world_mut(vm).spawn_with(SpawnArgs {
+        id,
+        data,
+        params,
+        hulls,
+        pose,
+        owner,
+        predict,
+    });
     if let Err(e) = added {
         delete_logged(vm, id);
         return Err(e.to_string());
@@ -463,6 +481,54 @@ pub(crate) fn spawn(
         vm.error(format!("propSpawn: onPropSpawn: {e}"));
     }
     Ok(id)
+}
+
+/// What datablock `data` (read as `kind`) collides as: its numbers made safe, and the hulls of its shape when it asked for them
+/// and the server could make them. A shape that has none to give collides as its bounds; one the server refuses collides as the
+/// datablock's box. Either prints a note, once a datablock: a spawn of a datablock whose hulls it has made already prints
+/// nothing.
+fn collision_of(
+    vm: &mut Vm,
+    props: &ServerProps,
+    data: ObjId,
+    kind: &PropData,
+) -> (PropParams, Option<Rc<PropHulls>>) {
+    let numbers = kind.numbers();
+    if numbers.collision != PropCollision::Shape {
+        return (numbers.held(), None);
+    }
+    let [x, y, z] = kind.draw_scale;
+    let scale = draw_scale([x, y, z]);
+    let loaded = props
+        .0
+        .borrow_mut()
+        .hulls
+        .load(vm, &kind.shape_file.0, scale);
+    match loaded {
+        Ok(hulls) => {
+            if hulls.is_bounds_only() && noted(props, data) {
+                vm.warn(format!(
+                    "PropData {data}: {} has no collision mesh: its props collide as its bounds",
+                    kind.shape_file.0
+                ));
+            }
+            (numbers.held().with_hulls(hulls.volume()), Some(hulls))
+        }
+        Err(why) => {
+            if noted(props, data) {
+                vm.error(format!(
+                    "PropData {data}: {}: {why}: its props collide as its box",
+                    kind.shape_file.0
+                ));
+            }
+            (numbers.held(), None)
+        }
+    }
+}
+
+/// True the first time it is asked about datablock `data`: whether its note is still to be printed.
+fn noted(props: &ServerProps, data: ObjId) -> bool {
+    props.0.borrow_mut().noted.insert(data)
 }
 
 /// The boxes of the players now, by id.

@@ -286,6 +286,8 @@ different.
   whose props outlive them for a while. Joints between props, the world and players (tethers hard or soft, winches, welds, hinges
   with limits and motors, grapples), server-authoritative, breakable, capped per player, per remote address, per prop and per
   server, sent to every client as `Joint` ghosts, with ropes that follow them (feature `rope`).
+  A prop can collide as its shape's collision meshes (`collision = "shape"`: one convex hull a mesh, in one rigid body), built
+  the same on the server and in a client's prediction, with caps on hulls, points and the server's total.
   Projectiles push the props they hit and explosions the props around them. With `PropPredictionPlugin` a client predicts
   the props its own Player holds, stands on or pushes (and the joints between them), restored to the server's state and
   replayed, drawn through a smoothed correction, with predicted impulses, spawns and shots of its own that are never sent.

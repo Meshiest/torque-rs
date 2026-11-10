@@ -392,6 +392,12 @@ impl ShapeCache {
         loaded
     }
 
+    /// Whether `path` has an answer that stays: the shape was read, or its read failed for good (a failed read is kept). False
+    /// for a path never asked for and for one a tick without the room did not read.
+    pub fn settled(&self, path: &[u8]) -> bool {
+        self.shapes.contains_key(&path.to_ascii_lowercase())
+    }
+
     /// The shape at `path` read in steps (`ShapeLoad`): as many as fit in `budget` (charged to `work`) run now, the rest on
     /// later calls; once a step is refused at tick `tick`, none is begun again before the next. At most `max` shapes, read or
     /// begun.

@@ -15,6 +15,12 @@
 //! box, the kind's mass, [`FRICTION`], [`RESTITUTION`]). The map's [`PROPS`] line takes the datablocks and one
 //! `propSleep(propSpawn(..))` an item, in the model's order.
 //!
+//! **Collision.** A kind that is [`PropKind::shaped`] (a chair, a desk, a table, a sofa: pieces with a gap under or in them)
+//! collides as its pieces, not as its box: its shape also holds a `Collision-1` detail with one box hull for each of the item's
+//! meshes (a chair's base, post, seat and back; a desk's top and sides), and its datablock says `collision = "shape";` (the box
+//! is still `size`, which players and shots see). A chair then tucks under a desk and a prop sits in a sofa's seat. The other
+//! kinds are boxes. The look is the same: the hulls are never drawn.
+//!
 //! **At rest.** Every item is spawned asleep where the model has it: nothing moves until a figure (or a prop it pushed)
 //! touches it, and a desk's items rest on the desk, a chair on the floor. The map's interiors are what the props land on.
 
@@ -24,7 +30,7 @@ use std::str::FromStr;
 
 use torque_import::dts;
 use torque_import::modelcore::math::{self, Mat4, Quat, Vec3};
-use torque_import::modelcore::{Mesh, Model, Node, Primitive};
+use torque_import::modelcore::{Detail, Mesh, Model, Node, Primitive};
 
 use crate::files::GameFiles;
 use crate::levels::GLOW;
@@ -97,6 +103,19 @@ prop_kinds! {
 }
 
 impl PropKind {
+    /// Whether an item of this kind collides as its pieces ([module docs](self)).
+    pub fn shaped(self) -> bool {
+        matches!(
+            self,
+            PropKind::Chair
+                | PropKind::SideChair
+                | PropKind::Armchair
+                | PropKind::Sofa
+                | PropKind::Desk
+                | PropKind::Table
+        )
+    }
+
     /// The mass (kilograms) of an item of this kind whose box is `size` (units): a desk's and a table's by the area of its
     /// top, every other kind's its own.
     pub fn mass(self, size: Vec3) -> f32 {
@@ -150,8 +169,12 @@ pub struct LevelProp {
     pub rotation: Quat,
     /// The box's half extents along the item's own axes.
     pub half: Vec3,
-    /// Its meshes about the box's middle, in the item's own axes: the shape it is drawn as.
+    /// Its meshes about the box's middle, in the item's own axes: the shape it is drawn as, and (for a kind that is
+    /// [`PropKind::shaped`]) the collision hulls it also holds.
     pub shape: Model,
+    /// The boxes (`[min, max]`, about the box's middle, in the item's own axes) the item's meshes take up, one each: the hulls
+    /// of `shape`'s `Collision-1` detail. Empty for a kind that is not shaped.
+    pub hulls: Vec<[Vec3; 2]>,
 }
 
 /// The prop group `node` is part of: the outermost of it and its ancestors whose name starts with [`PROP_GROUP`].
@@ -258,13 +281,20 @@ fn item(
         return Err(format!("the prop {group_name:?} has no vertices"));
     }
     let middle: Vec3 = std::array::from_fn(|k| (lo[k] + hi[k]) * 0.5);
-    let half: Vec3 = std::array::from_fn(|k| (hi[k] - lo[k]) * 0.5);
+    let mut half: Vec3 = std::array::from_fn(|k| (hi[k] - lo[k]) * 0.5);
     let snap = |v: f32| (v / SHAPE_STEP).round() * SHAPE_STEP;
     for p in meshes.iter_mut().flat_map(|m| &mut m.positions) {
         *p = std::array::from_fn(|k| snap(p[k] - middle[k]));
+        // The box is what the datablock's `size` says: it holds every point as snapped, so no hull pokes out of it.
+        half = std::array::from_fn(|k| half[k].max(p[k].abs()));
     }
     let (position, rotation, _) = math::decompose(&math::mul(&world[group], &moved(middle)));
-    let shape = shape_model(model, merged(kind, meshes));
+    let hulls = if kind.shaped() {
+        meshes.iter().filter_map(bounds_of).collect()
+    } else {
+        Vec::new()
+    };
+    let shape = shape_model(model, merged(kind, meshes), &hulls);
     Ok(LevelProp {
         name,
         kind,
@@ -272,6 +302,7 @@ fn item(
         rotation: math::normalize_quat(rotation),
         half,
         shape,
+        hulls,
     })
 }
 
@@ -320,10 +351,53 @@ fn merged(kind: PropKind, meshes: Vec<Mesh>) -> Mesh {
     out
 }
 
+/// The box a mesh takes up (`[min, max]`), none for a mesh with no vertices.
+fn bounds_of(mesh: &Mesh) -> Option<[Vec3; 2]> {
+    let first = *mesh.positions.first()?;
+    let (lo, hi) = mesh.positions.iter().fold((first, first), |(lo, hi), p| {
+        (
+            std::array::from_fn(|k| lo[k].min(p[k])),
+            std::array::from_fn(|k| hi[k].max(p[k])),
+        )
+    });
+    Some([lo, hi])
+}
+
+/// The collision mesh of the box `[lo, hi]`: its eight corners and twelve triangles, no material (a hull of a shape's
+/// `Collision-1` detail, `detail`).
+fn hull_mesh(detail: usize, [lo, hi]: [Vec3; 2]) -> Mesh {
+    let corner =
+        |i: u32| -> Vec3 { std::array::from_fn(|k| if i & (1 << k) == 0 { lo[k] } else { hi[k] }) };
+    let quads: [[u32; 4]; 6] = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
+    let indices = quads
+        .iter()
+        .flat_map(|&[a, b, c, d]| [a, b, c, a, c, d])
+        .collect();
+    Mesh {
+        name: "Col-1".into(),
+        detail: Some(detail),
+        positions: (0..8).map(corner).collect(),
+        normals: (0..8).map(|_| [0.0, 0.0, 1.0]).collect(),
+        uv0: vec![[0.0; 2]; 8],
+        primitives: vec![Primitive {
+            material: None,
+            indices,
+        }],
+        ..Mesh::default()
+    }
+}
+
 /// A shape's model of an item's `mesh` (in its own frame, [`merged`]): one node, the model's detail levels, and the
 /// materials it uses (no images: a shape names its textures by its materials' names, and the level's textures are in the kit
-/// beside it).
-fn shape_model(model: &Model, mut mesh: Mesh) -> Model {
+/// beside it), and a `Collision-1` detail with a hull for each of `hulls`.
+fn shape_model(model: &Model, mut mesh: Mesh, hulls: &[[Vec3; 2]]) -> Model {
     let mut materials = Vec::new();
     let mut index: BTreeMap<usize, usize> = BTreeMap::new();
     for p in &mut mesh.primitives {
@@ -341,10 +415,20 @@ fn shape_model(model: &Model, mut mesh: Mesh) -> Model {
             }))
         });
     }
+    let mut details = model.details.clone();
+    let mut meshes = vec![mesh];
+    if !hulls.is_empty() {
+        details.push(Detail {
+            name: "Collision-1".into(),
+            size: -1.0,
+        });
+        let at = details.len() - 1;
+        meshes.extend(hulls.iter().map(|&h| hull_mesh(at, h)));
+    }
     Model {
-        nodes: vec![Node::new(&mesh.name, None, [0.0; 3])],
-        meshes: vec![mesh],
-        details: model.details.clone(),
+        nodes: vec![Node::new(&meshes[0].name, None, [0.0; 3])],
+        meshes,
+        details,
         materials,
         images: Vec::new(),
         animations: Vec::new(),
@@ -387,8 +471,13 @@ pub fn build(files: &mut GameFiles, level: &str, props: &[LevelProp]) -> Result<
                 let name = format!("{id}Prop{next}");
                 let _ = writeln!(
                     script,
-                    "datablock PropData({name}) {{ shapeFile = \"kit/{file}\"; size = \"{} {} {}\"; mass = {}; friction = {FRICTION}; \
-                     restitution = {RESTITUTION}; }};",
+                    "datablock PropData({name}) {{ shapeFile = \"kit/{file}\"; {}size = \"{} {} {}\"; mass = {}; \
+                     friction = {FRICTION}; restitution = {RESTITUTION}; }};",
+                    if prop.kind.shaped() {
+                        "collision = \"shape\"; "
+                    } else {
+                        ""
+                    },
                     size[0],
                     size[1],
                     size[2],
@@ -410,7 +499,7 @@ pub fn build(files: &mut GameFiles, level: &str, props: &[LevelProp]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use torque_import::modelcore::{Detail, Material};
+    use torque_import::modelcore::Material;
 
     #[test]
     fn every_kind_reads_back_from_its_word_and_an_unknown_one_is_an_error() {
@@ -518,6 +607,80 @@ mod tests {
         );
         assert!(chair.shape.materials[0].unlit);
         chair.shape.check().unwrap();
+    }
+
+    /// A shaped kind's item takes a collision hull for each mesh it was made of, and the datablock says so; a kind of boxes gets
+    /// none.
+    #[test]
+    fn a_shaped_kind_gets_a_hull_for_each_mesh_and_says_so_in_its_datablock() {
+        let (_, props) = split(room()).unwrap();
+        let [chair] = &props[..] else {
+            panic!("{props:?}")
+        };
+        assert!(chair.kind.shaped());
+        assert_eq!(chair.hulls.len(), 2, "the seat and the back");
+        let near = |a: Vec3, b: Vec3| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        // The seat is 0.6 x 0.4 x 0.5 about the box's middle (the box is 0.5 deep, 1.0 tall, its middle a twentieth forward of the
+        // seat's).
+        assert!(
+            near(chair.hulls[0][0], [-0.3, -0.15, -0.5]),
+            "{:?}",
+            chair.hulls[0]
+        );
+        assert!(
+            near(chair.hulls[0][1], [0.3, 0.25, 0.0]),
+            "{:?}",
+            chair.hulls[0]
+        );
+        let at = chair
+            .shape
+            .details
+            .iter()
+            .position(|d| d.name == "Collision-1" && d.size < 0.0)
+            .expect("a collision detail");
+        let hulls: Vec<&Mesh> = chair
+            .shape
+            .meshes
+            .iter()
+            .filter(|m| m.detail == Some(at))
+            .collect();
+        assert_eq!(hulls.len(), 2);
+        assert!(
+            hulls
+                .iter()
+                .all(|m| m.positions.len() == 8 && m.triangles() == 12)
+        );
+        assert!(
+            hulls
+                .iter()
+                .all(|m| m.primitives.iter().all(|p| p.material.is_none()))
+        );
+        chair.shape.check().unwrap();
+        // The drawn mesh is the one it was, and the hulls add no drawn detail.
+        assert_eq!(chair.shape.meshes[0].triangles(), 4);
+        assert!(chair.shape.details[at].size < 0.0);
+        let mut files = GameFiles::bundled().unwrap();
+        let script = build(&mut files, "room", &props).unwrap();
+        assert!(
+            script.contains("collision = \"shape\"; size = "),
+            "{script}"
+        );
+        // Every kind that is not shaped is a box.
+        for &kind in PropKind::ALL {
+            assert_eq!(
+                kind.shaped(),
+                matches!(
+                    kind,
+                    PropKind::Chair
+                        | PropKind::SideChair
+                        | PropKind::Armchair
+                        | PropKind::Sofa
+                        | PropKind::Desk
+                        | PropKind::Table
+                ),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]

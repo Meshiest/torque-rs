@@ -2,6 +2,7 @@
 //! smoothed drawing and the shots ([module docs](super)).
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::rc::Rc;
 
 use torque_client::predict::slot::{
     BodyBox, BodyMotion, HeadStep, MoveStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
@@ -16,14 +17,16 @@ use torque_physics_rapier::TICK;
 
 use super::{MAX_REPLAY, MoveRing, PART_ID, PredictConfig, PropPrediction, Push, Spawn};
 use crate::client::{ClientProp, ClientProps, PropBook};
+use crate::data::{PropCollision, PropParams};
 use crate::hits::{self, ShotPush};
+use crate::hulls::{Choice, HullCaps, HullDigest, Made, PropHulls, Refusal, choose};
 use crate::joints::client::{ClientJoints, JointBook};
 use crate::joints::records::EndWire;
 use crate::joints::{End, FarEnd, Joint, Kind, KindId, Reach, Spring};
 use crate::quant::{self, Quantized, conjugate, quat_mul, quat_nlerp};
 use crate::records::xf_of;
 use crate::world::{
-    PUSH_MARGIN, PlayerAt, PropWorld, Pusher, Rest, StaticPiece, length, world_half,
+    PUSH_MARGIN, PlayerAt, PropWorld, Pusher, Rest, SpawnArgs, StaticPiece, length, world_half,
 };
 
 /// The ids the client's world gives the map pieces and the props around the predicted ones (fixed boxes), above the props'
@@ -153,6 +156,12 @@ impl PushLog {
     }
 }
 
+/// At most this many shapes' hulls are kept (a server has one set a datablock and draw scale; the cache starts over past it).
+const MAX_HULL_SETS: usize = 256;
+
+/// At most this many datablock and digest pairs are kept as unfit (the props cap); past it the set starts over.
+const MAX_UNFIT: usize = crate::world::MAX_PROPS as usize;
+
 /// What the part keeps between ticks.
 struct State {
     world: PropWorld,
@@ -183,6 +192,11 @@ struct State {
     run: Run,
     /// The members' states before the last move was stepped (kept from tick to tick, refilled in place).
     pre: Vec<(u32, Quantized, Rest)>,
+    /// The collision hulls of the shapes the predicted props of `collision = "shape"` came from, by file and draw scale: made
+    /// once from the client's own copy of the shape, a refusal kept as well.
+    hulls: BTreeMap<(String, [u32; 3]), Made>,
+    /// The datablocks and digests the client's hulls did not match: props of them are left to the server.
+    unfit: BTreeSet<(u32, HullDigest)>,
 }
 
 /// Where a tick's moves stand.
@@ -219,6 +233,8 @@ impl State {
             work: 0,
             run: Run::Stepping,
             pre: Vec::new(),
+            hulls: BTreeMap::new(),
+            unfit: BTreeSet::new(),
         }
     }
 }
@@ -431,7 +447,7 @@ impl Cx<'_> {
             Run::Over => true,
             Run::Stepping => false,
         };
-        let joined = self.join_and_leave(&wanted);
+        let joined = self.join_and_leave(&wanted, step);
         if !self.s.members.is_empty() {
             self.refresh_around(step);
         }
@@ -542,10 +558,14 @@ impl Cx<'_> {
                 return;
             }
             if out.contains(&g)
-                || self
-                    .book
-                    .get(g)
-                    .is_none_or(|p| p.frozen || p.params.is_none() || p.is_linked())
+                || self.book.get(g).is_none_or(|p| {
+                    p.frozen
+                        || p.params.is_none()
+                        || p.is_linked()
+                        || p.data
+                            .zip(p.hulls)
+                            .is_some_and(|k| self.s.unfit.contains(&k))
+                })
             {
                 continue;
             }
@@ -556,7 +576,7 @@ impl Cx<'_> {
 
     /// Makes the members `wanted`: new ones are spawned in the client's world, ones that left are taken out and fade. Whether
     /// any joined.
-    fn join_and_leave(&mut self, wanted: &[u32]) -> bool {
+    fn join_and_leave(&mut self, wanted: &[u32], step: &mut dyn TickStep) -> bool {
         let gone: Vec<u32> = self
             .s
             .members
@@ -576,6 +596,9 @@ impl Cx<'_> {
             }
             self.s.world.remove(g);
             self.book.set_predicted(g, None);
+            if let Ok(mut shared) = self.shared.0.try_borrow_mut() {
+                shared.hulls.remove(&g);
+            }
         }
         let mut joined = false;
         for &g in wanted {
@@ -588,14 +611,32 @@ impl Cx<'_> {
             let (Some(data), Some(params)) = (p.data, p.params) else {
                 continue;
             };
+            // A prop of hulls waits (a tick or two) for the client to read its shape, and is left to the server when the client's
+            // hulls are not the server's.
+            let Some((params, hulls)) = self.fitted(data, p.hulls, params, step) else {
+                continue;
+            };
             let st = p.q.state();
             if self
                 .s
                 .world
-                .spawn(g, data, params, (st.position, st.rotation), None, 0)
+                .spawn_with(SpawnArgs {
+                    id: g,
+                    data,
+                    params,
+                    hulls,
+                    pose: (st.position, st.rotation),
+                    owner: None,
+                    predict: 0,
+                })
                 .is_err()
             {
                 continue;
+            }
+            if let Some(hulls) = self.s.world.get(g).and_then(|p| p.hulls.clone())
+                && let Ok(mut shared) = self.shared.0.try_borrow_mut()
+            {
+                shared.hulls.insert(g, hulls);
             }
             let shown = place_q(&p.q);
             let from = self.s.fading.remove(&g).map_or(shown, |f| {
@@ -615,6 +656,83 @@ impl Cx<'_> {
             joined = true;
         }
         joined
+    }
+
+    /// The numbers and collision hulls a prop of datablock `data` is predicted with, given the digest of the hulls its server
+    /// collides it as (`server`: none for the datablock's box): `params` for the box, else the hulls the client makes from its
+    /// own copy of the shape (read through `step`) with the numbers fitted to them, but only if they are the server's
+    /// ([`choose`]). None while the client has not read the shape yet and may, and for a prop whose client hulls are not the
+    /// server's (another file, a read refused, a cap): it is not predicted, so it is never predicted as a shape the server does
+    /// not have.
+    fn fitted(
+        &mut self,
+        data: u32,
+        server: Option<HullDigest>,
+        params: PropParams,
+        step: &mut dyn TickStep,
+    ) -> Option<(PropParams, Option<Rc<PropHulls>>)> {
+        let Some(digest) = server else {
+            return Some((params, None));
+        };
+        let source = self
+            .book
+            .hull_source(data)
+            .filter(|_| params.collision == PropCollision::Shape);
+        let built = match source {
+            None => Some(Err(Refusal::Unreadable)),
+            Some(source) => {
+                let key = (
+                    source.path.to_ascii_lowercase(),
+                    source.scale.map(f32::to_bits),
+                );
+                if !self.s.hulls.contains_key(&key) {
+                    let path = source.path.as_bytes();
+                    let made = match step.shape(path) {
+                        // The work of making the hulls is the tick's for parts: a tick without the room for it waits.
+                        Some(shape) => {
+                            let mut charge = |units: u64| step.charge(units);
+                            match PropHulls::of_client(
+                                &shape,
+                                source.scale,
+                                &HullCaps::default(),
+                                &mut charge,
+                            ) {
+                                Err(Refusal::Budget) => None,
+                                made => Some(made),
+                            }
+                        }
+                        None if step.shape_settled(path) => Some(Err(Refusal::Unreadable)),
+                        None => None,
+                    };
+                    if let Some(made) = made {
+                        // A server that names ever more shapes cannot grow the cache past this: it starts over (a shape is made
+                        // again, and charged again, when a prop of it joins).
+                        if self.s.hulls.len() >= MAX_HULL_SETS {
+                            self.s.hulls.clear();
+                        }
+                        self.s.hulls.insert(key.clone(), made.map(Rc::new));
+                    }
+                }
+                self.s.hulls.get(&key).cloned()
+            }
+        };
+        match choose(server, built.as_ref()) {
+            Choice::Hulls => {
+                let hulls = built.and_then(Result::ok)?;
+                Some((params.with_hulls(hulls.volume()), Some(hulls)))
+            }
+            Choice::Box => Some((params, None)),
+            Choice::Wait => None,
+            Choice::Unfit => {
+                // A server that keeps sending fresh digests cannot grow the set past this: it starts over (each prop left
+                // out is only looked at again).
+                if self.s.unfit.len() >= MAX_UNFIT {
+                    self.s.unfit.clear();
+                }
+                self.s.unfit.insert((data, digest));
+                None
+            }
+        }
     }
 
     /// The pushes the game asked for since the last tick (each on the props predicted when its move runs).
@@ -1399,6 +1517,7 @@ mod tests {
             data: Some(1),
             params: Some(params),
             slot: 0,
+            hulls: None,
             mine: false,
             predict: 0,
             q: Quantized::default(),

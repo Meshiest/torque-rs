@@ -10,6 +10,8 @@ pub struct Limits {
     pub max_colliders: usize,
     /// Points a convex hull is made from; a hull of more is replaced by its box.
     pub max_hull_vertices: usize,
+    /// Hulls one compound shape holds; a compound of more is replaced by the box of its points.
+    pub max_compound_hulls: usize,
     /// Solver contact points after a sub-step; past it the tick's remaining sub-steps are not run
     /// ([`crate::StepReport::contacts_capped`]).
     pub max_contacts: usize,
@@ -41,6 +43,7 @@ impl Default for Limits {
             max_bodies: 1_024,
             max_colliders: 16_384,
             max_hull_vertices: torque_collide::mesh::MAX_HULL_VERTS,
+            max_compound_hulls: 64,
             max_contacts: 16_384,
             max_cells_per_query: 64,
             max_coordinate: 100_000.0,

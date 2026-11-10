@@ -180,7 +180,7 @@ impl PropWorld {
         };
         let desc = BodyDesc {
             motion,
-            shape: body_shape(p.params.shape),
+            shape: body_shape(&p.params, p.hulls.as_deref()),
             position: s.position,
             rotation: s.rotation,
             linvel: s.linvel,
@@ -209,7 +209,7 @@ impl PropWorld {
         let Some(p) = self.props.get(&id) else {
             return false;
         };
-        let mut desc = PartDesc::new(body_shape(p.params.shape), local.0, local.1);
+        let mut desc = PartDesc::new(body_shape(&p.params, p.hulls.as_deref()), local.0, local.1);
         desc.density = p.params.density;
         desc.friction = p.params.friction;
         desc.restitution = p.params.restitution;

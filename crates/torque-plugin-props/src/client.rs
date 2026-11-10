@@ -16,7 +16,8 @@ use torque_engine::net_classes::{DatablockFields, GhostEvent, ShapeDraw};
 use torque_ghosts::Value;
 use torque_ts_vm::vm::Vm;
 
-use crate::data::{MAX_SHAPE_BYTES, PropNumbers, PropParams, draw_scale};
+use crate::data::{MAX_SHAPE_BYTES, PropCollision, PropNumbers, PropParams, draw_scale};
+use crate::hulls::HullDigest;
 use crate::quant::Quantized;
 use crate::records::PropGhost;
 
@@ -31,6 +32,8 @@ pub struct ClientProp {
     pub params: Option<PropParams>,
     /// The server's slot for it: its collision shape's key.
     pub slot: u16,
+    /// What the server collides it as, when that is its shape's hulls ([`HullDigest`]); none when it is the datablock's box.
+    pub hulls: Option<HullDigest>,
     /// Whether it is this client's own, and the predict id it was given.
     pub mine: bool,
     pub predict: u8,
@@ -89,6 +92,16 @@ pub struct PropBook {
     revision: u64,
     /// Each prop by its slot and ghost index: a slot's shape is its lowest ghost's.
     by_slot: std::collections::BTreeSet<(u16, u32)>,
+    /// The shape file and draw scale of each datablock of `collision = "shape"` the book has a prop of, by datablock id: what a
+    /// prediction takes the prop's collision hulls from ([`HullSource`]).
+    sources: BTreeMap<u32, HullSource>,
+}
+
+/// Where a datablock of `collision = "shape"` takes its hulls from: its shape file and draw scale, as the client has them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HullSource {
+    pub path: String,
+    pub scale: [f32; 3],
 }
 
 impl PropBook {
@@ -140,6 +153,7 @@ impl PropBook {
                     data: None,
                     params: None,
                     slot: 0,
+                    hulls: None,
                     mine: false,
                     predict: 0,
                     q: Quantized::default(),
@@ -163,6 +177,7 @@ impl PropBook {
                 self.by_slot.insert((init.slot, index));
             }
             entry.slot = init.slot;
+            entry.hulls = init.hulls;
             entry.mine = init.mine;
             entry.predict = init.predict;
         }
@@ -215,6 +230,24 @@ impl PropBook {
         self.revision = next_revision();
         self.props.clear();
         self.by_slot.clear();
+        self.sources.clear();
+    }
+
+    /// Where datablock `data` takes its collision hulls from, when it asked for them and a prop of it was heard.
+    pub fn hull_source(&self, data: u32) -> Option<&HullSource> {
+        self.sources.get(&data)
+    }
+
+    /// Notes (or, with none, forgets) where datablock `data` takes its collision hulls from.
+    pub fn set_hull_source(&mut self, data: u32, source: Option<HullSource>) {
+        match source {
+            Some(source) => {
+                self.sources.insert(data, source);
+            }
+            None => {
+                self.sources.remove(&data);
+            }
+        }
     }
 
     /// The props' states as words, in ghost order (the index, the slot, the thirteen integers, the flags), for a trace hash.
@@ -258,6 +291,11 @@ pub fn params_of(vm: &Vm, id: u32) -> Option<PropParams> {
     }
     let n = |f: &[u8]| number(vm, id, f, 0);
     let numbers = PropNumbers {
+        collision: PropCollision::of(&String::from_utf8_lossy(&vm.read_field_of(
+            torque_ts_vm::vm::FieldTarget::Live(id),
+            b"collision",
+            b"",
+        ))),
         size: [0, 1, 2].map(|k| number(vm, id, b"size", k)),
         radius: n(b"radius"),
         mass: n(b"mass"),
@@ -273,6 +311,26 @@ pub fn params_of(vm: &Vm, id: u32) -> Option<PropParams> {
         max_per_player: 0,
     };
     Some(numbers.held())
+}
+
+/// Where the client's datablock `id` takes its collision hulls from: its `shapeFile` and `drawScale` (none for a datablock that
+/// asks for the box, or has no shape file).
+pub fn hull_source_of(vm: &Vm, id: u32) -> Option<HullSource> {
+    let params = params_of(vm, id)?;
+    if params.collision != PropCollision::Shape {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&vm.read_field_of(
+        torque_ts_vm::vm::FieldTarget::Live(id),
+        b"shapeFile",
+        b"",
+    ))
+    .into_owned();
+    if path.is_empty() || path.len() > MAX_SHAPE_BYTES {
+        return None;
+    }
+    let scale = draw_scale([0, 1, 2].map(|k| number(vm, id, b"drawScale", k)));
+    Some(HullSource { path, scale })
 }
 
 /// Finds where each prop of the book is in the scene hierarchy: a child's pose for a prediction tick, from its parents' latest
@@ -323,6 +381,15 @@ pub fn heard(vm: &mut Vm, book: &ClientProps, event: GhostEvent<'_, PropGhost>) 
     match event {
         GhostEvent::Added { index, record } | GhostEvent::Changed { index, record } => {
             book.heard(index, record, |id| params_of(vm, id));
+            if let Some(data) = record.data_block.0
+                && book
+                    .get(index)
+                    .and_then(|p| p.params)
+                    .is_some_and(|p| p.collision == PropCollision::Shape)
+                && book.hull_source(data).is_none()
+            {
+                book.set_hull_source(data, hull_source_of(vm, data));
+            }
         }
         GhostEvent::Removed { index } => book.removed(index),
     }

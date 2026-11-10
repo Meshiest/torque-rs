@@ -86,11 +86,18 @@ pub fn predictors() -> Vec<Scenario> {
 /// The scenarios of the physics worlds a server and a predicting client both step outside TGE's objects, in the order they
 /// print after `predictors`.
 pub fn physics() -> Vec<Scenario> {
-    vec![Scenario {
-        name: "rapier-drop",
-        mode: None,
-        run: crate::rapier::drop,
-    }]
+    vec![
+        Scenario {
+            name: "rapier-drop",
+            mode: None,
+            run: crate::rapier::drop,
+        },
+        Scenario {
+            name: "rapier-compound",
+            mode: None,
+            run: crate::rapier::compound,
+        },
+    ]
 }
 
 /// The scenarios of the engine's opt-in plugins that a server simulates and a predicting client sees, in the order they print

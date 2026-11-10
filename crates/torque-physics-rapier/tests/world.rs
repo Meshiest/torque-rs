@@ -8,8 +8,11 @@ use rapier3d::prelude::{QueryFilter, Ray, Vector};
 use torque_collide::ObjectId;
 use torque_collide::map::MapShape;
 use torque_collide::math::Box3;
+use torque_physics_rapier::work;
 use torque_physics_rapier::world::Cap;
-use torque_physics_rapier::{BodyDesc, BodyId, BodyState, Config, Error, Limits, Shape, World};
+use torque_physics_rapier::{
+    BodyDesc, BodyId, BodyState, Config, Error, Limits, Motion, Shape, World,
+};
 
 const TERRAIN: ObjectId = ObjectId(1);
 const KEEP: ObjectId = ObjectId(2);
@@ -638,4 +641,389 @@ fn a_bodys_parts_come_and_go_in_proportion_to_their_number() {
         ratio < 9.0,
         "the time grew {ratio} times for 4 times the parts"
     );
+}
+
+/// The eight corners of the box `lo..hi`.
+fn box_points(lo: [f32; 3], hi: [f32; 3]) -> Vec<[f32; 3]> {
+    (0..8)
+        .map(|i| std::array::from_fn(|k| if i & (1 << k) == 0 { lo[k] } else { hi[k] }))
+        .collect()
+}
+
+/// An L of two bars two units long and half a unit wide and thick: the second beside the first's end.
+fn l_shape() -> Shape {
+    Shape::Compound {
+        hulls: vec![
+            box_points([-1.0, -1.0, -0.25], [1.0, -0.5, 0.25]),
+            box_points([-1.0, -0.5, -0.25], [-0.5, 1.0, 0.25]),
+        ]
+        .into(),
+    }
+}
+
+#[test]
+fn a_compound_of_hulls_holds_their_mass_and_collides_where_any_hull_does() {
+    let mut w = World::new(Config::default());
+    let fixed = BodyDesc {
+        motion: Motion::Fixed,
+        shape: l_shape(),
+        position: [0.0, 0.0, 0.25],
+        ..BodyDesc::default()
+    };
+    w.add_body(BodyId(1), &fixed, &mut free).unwrap();
+    assert_eq!(w.stats().hulls_replaced, 0);
+    // Two bars: 1.0 and 0.25 units cubed, at a density of 2.
+    let volume = l_shape().volume(w.limits(), &mut free).unwrap();
+    assert!(
+        (volume - (2.0 * 0.5 * 0.5 + 1.5 * 0.5 * 0.5)).abs() < 1e-3,
+        "{volume}"
+    );
+    // A ball dropped into the notch falls to the floor body below it; one over the arm rests on the arm.
+    let floor = BodyDesc {
+        motion: Motion::Fixed,
+        shape: Shape::Box {
+            half: [20.0, 20.0, 0.5],
+        },
+        position: [0.0, 0.0, -0.5],
+        ..BodyDesc::default()
+    };
+    w.add_body(BodyId(2), &floor, &mut free).unwrap();
+    w.add_body(BodyId(3), &ball([0.3, 0.3, 2.0]), &mut free)
+        .unwrap();
+    w.add_body(BodyId(4), &ball([0.0, -0.75, 2.0]), &mut free)
+        .unwrap();
+    for _ in 0..300 {
+        w.step(&mut free).unwrap();
+    }
+    let notch = w.body(BodyId(3)).unwrap().position[2];
+    let arm = w.body(BodyId(4)).unwrap().position[2];
+    assert!((notch - 0.5).abs() < 0.02, "in the notch: {notch}");
+    assert!((arm - 1.0).abs() < 0.02, "on the arm: {arm}");
+}
+
+#[test]
+fn a_compound_past_the_hull_limit_or_with_no_hulls_is_the_box_of_its_points() {
+    let limits = Limits {
+        max_compound_hulls: 3,
+        ..Limits::default()
+    };
+    let mut w = World::new(Config {
+        limits,
+        ..Config::default()
+    });
+    let many = Shape::Compound {
+        hulls: (0..4)
+            .map(|i| box_points([i as f32; 3], [i as f32 + 0.5; 3]))
+            .collect::<Vec<_>>()
+            .into(),
+    };
+    let d = |shape| BodyDesc {
+        shape,
+        ..BodyDesc::default()
+    };
+    w.add_body(BodyId(1), &d(many), &mut free).unwrap();
+    w.add_body(
+        BodyId(2),
+        &d(Shape::Compound {
+            hulls: Vec::new().into(),
+        }),
+        &mut free,
+    )
+    .unwrap();
+    // Within the limit nothing is replaced.
+    w.add_body(
+        BodyId(3),
+        &d(Shape::Compound {
+            hulls: vec![box_points([0.0; 3], [1.0; 3]); 3].into(),
+        }),
+        &mut free,
+    )
+    .unwrap();
+    assert_eq!(w.stats().hulls_replaced, 2);
+}
+
+#[test]
+fn a_compound_with_a_point_that_is_not_a_number_is_refused_and_a_flat_hull_in_it_is_its_box() {
+    let mut w = World::new(Config::default());
+    let mut bad = box_points([0.0; 3], [1.0; 3]);
+    bad[3][1] = f32::NAN;
+    let d = |hulls: Vec<Vec<[f32; 3]>>| BodyDesc {
+        shape: Shape::Compound {
+            hulls: hulls.into(),
+        },
+        ..BodyDesc::default()
+    };
+    assert_eq!(
+        w.add_body(
+            BodyId(1),
+            &d(vec![box_points([0.0; 3], [1.0; 3]), bad]),
+            &mut free
+        ),
+        Err(Error::NonFinite)
+    );
+    assert_eq!(w.body_count(), 0);
+    // A flat hull among sound ones is replaced by its (thickened) box; the body is still made.
+    let flat = box_points([0.0, 0.0, 0.0], [1.0, 1.0, 0.0]);
+    w.add_body(
+        BodyId(1),
+        &d(vec![box_points([2.0; 3], [3.0; 3]), flat]),
+        &mut free,
+    )
+    .unwrap();
+    assert_eq!(w.stats().hulls_replaced, 1);
+}
+
+/// `n` points on a plane tilted by `tilt` about both horizontal axes, spread over `spread` units.
+fn tilted_plane(n: usize, tilt: f32, spread: f32, rng: &mut Rng) -> Vec<[f32; 3]> {
+    (0..n)
+        .map(|_| {
+            let (x, y) = (rng.range(-spread, spread), rng.range(-spread, spread));
+            [x, y, tilt * x - 0.6 * tilt * y + 0.25]
+        })
+        .collect()
+}
+
+/// `n` points on a line in a direction that is none of the axes.
+fn tilted_line(n: usize, rng: &mut Rng) -> Vec<[f32; 3]> {
+    (0..n)
+        .map(|_| {
+            let t = rng.range(-2.0, 2.0);
+            [0.3 * t, -0.7 * t + 1.0, 0.2 * t - 0.5]
+        })
+        .collect()
+}
+
+#[test]
+fn points_in_a_tilted_plane_or_on_a_line_become_their_box_and_never_reach_the_hull_builder() {
+    let mut rng = Rng(0x5eed);
+    let mut w = World::new(Config::default());
+    let mut expected = 0;
+    let mut id = 1;
+    let mut add = |w: &mut World, shape: Shape| {
+        let d = BodyDesc {
+            shape,
+            position: [id as f32 * 5.0, 0.0, 3.0],
+            ..BodyDesc::default()
+        };
+        w.add_body(BodyId(id), &d, &mut free).unwrap();
+        id += 1;
+    };
+    // Tilted planes (thick in every axis-aligned box), nearly flat ones within the thickness, lines and one point repeated; as
+    // bodies of one hull and as hulls of a compound.
+    for tilt in [0.1, 0.5, 1.0, 3.0] {
+        for n in [4, 12, 60, 200] {
+            let points = tilted_plane(n, tilt, 1.0, &mut rng);
+            add(
+                &mut w,
+                Shape::Hull {
+                    points: points.clone(),
+                },
+            );
+            add(
+                &mut w,
+                Shape::Compound {
+                    hulls: vec![points].into(),
+                },
+            );
+            expected += 2;
+        }
+    }
+    for n in [4, 9, 100] {
+        add(
+            &mut w,
+            Shape::Hull {
+                points: tilted_line(n, &mut rng),
+            },
+        );
+        add(
+            &mut w,
+            Shape::Hull {
+                points: vec![[0.3, 0.4, 0.5]; n],
+            },
+        );
+        expected += 2;
+    }
+    // A plane that is only nearly flat (4 mm thick, under the 1 cm limit) is still a box; one 0.2 units thick is a hull.
+    let mut slab = tilted_plane(30, 0.8, 1.0, &mut rng);
+    slab[0][2] += 0.004;
+    add(&mut w, Shape::Hull { points: slab });
+    expected += 1;
+    assert_eq!(w.stats().hulls_replaced, expected);
+    let mut thick = tilted_plane(30, 0.8, 1.0, &mut rng);
+    thick[0][2] += 0.1;
+    thick[1][2] -= 0.1;
+    add(&mut w, Shape::Hull { points: thick });
+    assert_eq!(w.stats().hulls_replaced, expected);
+    for _ in 0..30 {
+        w.step(&mut free).unwrap();
+    }
+    assert!(!w.is_poisoned());
+}
+
+#[test]
+fn hostile_point_sets_of_every_flatness_never_panic() {
+    let mut rng = Rng(0xfeed);
+    for round in 0..300 {
+        let mut w = World::new(Config::default());
+        let n = 4 + (rng.below(60) as usize);
+        let tilt = rng.range(-3.0, 3.0);
+        let mut points = match round % 3 {
+            0 => tilted_plane(n, tilt, rng.range(0.01, 2.0), &mut rng),
+            1 => tilted_line(n, &mut rng),
+            _ => vec![[rng.range(-1.0, 1.0); 3]; n],
+        };
+        // Some of them nudged by less than the thickness, or by a lot.
+        let scale = if round % 7 == 0 { 100.0 } else { 1.0 };
+        for p in &mut points {
+            if rng.below(5) == 0 {
+                p[rng.below(3) as usize] += rng.range(-1e-3, 1e-3) * scale;
+            }
+        }
+        let d = BodyDesc {
+            shape: Shape::Compound {
+                hulls: vec![points].into(),
+            },
+            position: [0.0, 0.0, 2.0],
+            ..BodyDesc::default()
+        };
+        w.add_body(BodyId(1), &d, &mut free).unwrap();
+        for _ in 0..3 {
+            w.step(&mut free).unwrap();
+        }
+        assert!(!w.is_poisoned(), "round {round}");
+    }
+}
+
+/// A compound of `n` small boxes in a row, `step` apart.
+fn row_of_boxes(n: usize, step: f32) -> Shape {
+    Shape::Compound {
+        hulls: (0..n)
+            .map(|i| {
+                let x = i as f32 * step;
+                box_points([x, -0.2, -0.2], [x + 0.4, 0.2, 0.2])
+            })
+            .collect::<Vec<_>>()
+            .into(),
+    }
+}
+
+/// A world of `count` bodies of `shape` piled on one another in the air (every pair touches), stepped once so the narrow phase
+/// holds their pairs.
+fn pile(count: u32, shape: &Shape) -> World {
+    let mut w = World::new(Config::default());
+    for k in 0..count {
+        let d = BodyDesc {
+            shape: shape.clone(),
+            position: [0.05 * k as f32, 0.03 * k as f32, 50.0],
+            ..BodyDesc::default()
+        };
+        w.add_body(BodyId(k + 1), &d, &mut free).unwrap();
+    }
+    w.step(&mut free).unwrap();
+    w
+}
+
+/// What the world's next step charges.
+fn charged(w: &mut World) -> u64 {
+    let mut total = 0;
+    let mut count = |u: u64| {
+        total += u;
+        true
+    };
+    w.step(&mut count).unwrap();
+    total
+}
+
+#[test]
+fn a_pile_of_compounds_is_charged_by_the_hulls_of_every_pair_and_refused_where_boxes_fit() {
+    let boxes = Shape::Box { half: [0.4; 3] };
+    let compounds = row_of_boxes(16, 0.1);
+    let mut plain = pile(10, &boxes);
+    let mut heavy = pile(10, &compounds);
+    let (cheap, dear) = (charged(&mut plain), charged(&mut heavy));
+    // 45 pairs of 16 hulls each side test 256 hull pairs a pair: far more than a pair of boxes.
+    assert!(dear > 40 * cheap, "{dear} against {cheap}");
+    // A budget the boxes fit with room to spare refuses the compounds, and a refused step moves nothing.
+    let budget = cheap * 4;
+    let mut plain = pile(10, &boxes);
+    let mut heavy = pile(10, &compounds);
+    let before = heavy.state_words();
+    let within = |spent: &mut u64, u: u64| {
+        *spent += u;
+        *spent <= budget
+    };
+    let (mut a, mut b) = (0, 0);
+    assert!(plain.step(&mut |u| within(&mut a, u)).is_ok());
+    assert_eq!(
+        heavy.step(&mut |u| within(&mut b, u)).err(),
+        Some(Error::Exhausted)
+    );
+    assert_eq!(heavy.state_words(), before);
+    // The charge follows the hulls: half as many hulls a side is about a quarter of the pair work.
+    let mut half = pile(10, &row_of_boxes(8, 0.1));
+    let mid = charged(&mut half);
+    assert!(mid < dear / 2 && mid > cheap, "{cheap} < {mid} < {dear}");
+}
+
+#[test]
+fn a_compound_is_charged_for_each_hull_when_it_is_made() {
+    let make = |n: usize| {
+        let mut w = World::new(Config::default());
+        let mut total = 0;
+        let mut count = |u: u64| {
+            total += u;
+            true
+        };
+        let d = BodyDesc {
+            shape: row_of_boxes(n, 0.5),
+            ..BodyDesc::default()
+        };
+        w.add_body(BodyId(1), &d, &mut count).unwrap();
+        total
+    };
+    let (one, thirty_two) = (make(1), make(32));
+    assert!(thirty_two > 20 * one / 2, "{one} and {thirty_two}");
+    // Each hull is at least the per-hull charge and its eight points.
+    assert!(thirty_two - one >= 31 * (work::HULL + 8 * work::VERTEX));
+}
+
+#[test]
+fn the_hulls_of_compounds_count_against_the_colliders_cap_and_leave_with_their_body() {
+    let limits = Limits {
+        max_colliders: 100,
+        ..Limits::default()
+    };
+    let mut w = World::new(Config {
+        limits,
+        ..Config::default()
+    });
+    let big = |k: u32| BodyDesc {
+        shape: row_of_boxes(32, 0.5),
+        position: [k as f32 * 40.0, 0.0, 5.0],
+        ..BodyDesc::default()
+    };
+    // Three of 32 hulls fill 96 of the 100; the fourth does not fit, though only three colliders are in the world.
+    for k in 0..3 {
+        w.add_body(BodyId(k + 1), &big(k), &mut free).unwrap();
+    }
+    assert_eq!(w.collider_count(), 3);
+    assert_eq!(
+        w.add_body(BodyId(4), &big(3), &mut free),
+        Err(Error::Cap(Cap::Colliders))
+    );
+    // A box still fits; one more compound of 32 does not, and of 3 hulls does.
+    w.add_body(BodyId(5), &ball([0.0, 100.0, 5.0]), &mut free)
+        .unwrap();
+    let small = BodyDesc {
+        shape: row_of_boxes(3, 0.5),
+        ..big(7)
+    };
+    assert_eq!(
+        w.add_body(BodyId(6), &big(6), &mut free),
+        Err(Error::Cap(Cap::Colliders))
+    );
+    w.add_body(BodyId(7), &small, &mut free).unwrap();
+    // A removed body gives its hulls back.
+    w.remove_body(BodyId(1)).unwrap();
+    w.add_body(BodyId(8), &big(8), &mut free).unwrap();
 }

@@ -97,6 +97,12 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         problems.extend(report.dropped.iter().map(|id| {
             format!("props: prop {id} could not be put back in the physics world; it is deleted")
         }));
+        // One line a tick for a great many bodies made at once (a script that spawns hundreds): their work slows the next steps.
+        if let Some((bodies, work)) = report.built {
+            problems.push(format!(
+                "props: {bodies} bodies were made since the last tick, {work} units of work, charged to the next steps"
+            ));
+        }
         let mut expired = expired;
         expired.extend(&report.dropped);
         (

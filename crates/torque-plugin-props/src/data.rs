@@ -2,6 +2,8 @@
 //! its wire record ([`PropDataRecord`]); and the same numbers made safe ([`PropParams`]).
 
 use torque_engine::{EngineClass, Filename};
+use torque_ts_vm::sim::ObjId;
+use torque_ts_vm::vm::Vm;
 
 use crate::quant;
 
@@ -19,12 +21,18 @@ pub const MAX_SHAPE_BYTES: usize = 96;
 /// and names it when it spawns a prop (`propSpawn(Crate, "0 0 2 1 0 0 0")`). Every number is clamped to its range when it is
 /// written, and again when a prop reads it, so a hostile value never reaches the physics world ([`PropParams`]).
 #[derive(EngineClass, Clone, Debug, PartialEq)]
-#[class(name = "PropData", parent = "GameBaseData")]
+#[class(name = "PropData", parent = "GameBaseData", preload = PropData::canonicalize)]
 pub struct PropData {
-    /// The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. Collision is `size` or
-    /// `radius`, not the shape.
+    /// The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. What it collides as is
+    /// `collision`: `size` or `radius` by default, the shape's collision meshes with `collision = "shape"`.
     #[field(name = "shapeFile", default = "")]
     pub shape_file: Filename,
+    /// What the prop collides as in the physics world: `"box"` (the default; the box of `size`, or the ball of `radius`) or
+    /// `"shape"` (the convex hulls of the `shapeFile`'s collision details, `Collision-1` and on, at `drawScale`; a shape with
+    /// none collides as its bounds, and one the server refuses ([`crate::hulls`]) as the box). With `"shape"`, `size` is still the
+    /// box players, placement checks and shots see, and `mass` is the mass of the whole shape. Any other text is `"box"`.
+    #[field(default = "box")]
+    pub collision: String,
     /// The scale the shape is drawn at along each axis (0.001 to 256).
     #[field(name = "drawScale", default = "1 1 1")]
     pub draw_scale: [f32; 3],
@@ -67,6 +75,19 @@ pub struct PropData {
     pub max_per_player: i32,
 }
 
+impl PropData {
+    /// The datablock's preload: `collision` is rewritten as the canonical text of the mode it names (trimmed, lower case, `box`
+    /// for anything that is not `shape`), so the record a client is sent says what the server reads, whatever the script wrote.
+    fn canonicalize(&self, vm: &mut Vm, id: ObjId) -> Result<(), String> {
+        let canonical = PropCollision::of(&self.collision).text();
+        if self.collision != canonical {
+            vm.objects_mut()
+                .set_field(id, b"collision", b"", canonical.as_bytes());
+        }
+        Ok(())
+    }
+}
+
 /// What a prop collides as.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropShape {
@@ -74,13 +95,46 @@ pub enum PropShape {
     Box([f32; 3]),
     /// A ball of this radius round the origin.
     Ball(f32),
+    /// The shape's collision hulls ([`crate::hulls::PropHulls`]): `half` is the box that stands for them where only a box is
+    /// asked (the datablock's `size`, or its `radius`), `volume` what they hold.
+    Hulls { half: [f32; 3], volume: f32 },
+}
+
+/// What a prop collides as in the physics world ([`PropData::collision`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PropCollision {
+    /// The box of `size`, or the ball of `radius`.
+    #[default]
+    Box,
+    /// The convex hulls of the shape's collision meshes.
+    Shape,
+}
+
+impl PropCollision {
+    /// The mode `text` names: `shape` (any case, blanks round it) is [`PropCollision::Shape`]; anything else the box.
+    pub fn of(text: &str) -> PropCollision {
+        if text.trim().eq_ignore_ascii_case("shape") {
+            PropCollision::Shape
+        } else {
+            PropCollision::Box
+        }
+    }
+
+    /// The text the datablock keeps and sends for the mode: `shape` or `box`, which [`PropCollision::of`] reads back as itself
+    /// and which the wire's 8 bytes never cut.
+    pub fn text(self) -> &'static str {
+        match self {
+            PropCollision::Box => "box",
+            PropCollision::Shape => "shape",
+        }
+    }
 }
 
 impl PropShape {
     /// The half-extents of the box round the shape.
     pub fn half_extents(self) -> [f32; 3] {
         match self {
-            PropShape::Box(h) => h,
+            PropShape::Box(h) | PropShape::Hulls { half: h, .. } => h,
             PropShape::Ball(r) => [r; 3],
         }
     }
@@ -90,6 +144,7 @@ impl PropShape {
         match self {
             PropShape::Box([x, y, z]) => 8.0 * x * y * z,
             PropShape::Ball(r) => 4.188_790_2 * r * r * r,
+            PropShape::Hulls { volume, .. } => volume,
         }
     }
 }
@@ -99,6 +154,10 @@ impl PropShape {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropParams {
     pub shape: PropShape,
+    /// What the datablock asked for. With [`PropCollision::Shape`] and no hulls built (yet, or refused) `shape` is the box.
+    pub collision: PropCollision,
+    /// The datablock's `mass` (0: the mass comes from `density`).
+    pub mass: f32,
     /// Mass a cubic unit, after a `mass` was turned into one.
     pub density: f32,
     pub friction: f32,
@@ -124,6 +183,7 @@ pub fn held(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
 /// A datablock's numbers as they were written (or sent), before they are made safe ([`PropNumbers::held`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropNumbers {
+    pub collision: PropCollision,
     pub size: [f32; 3],
     pub radius: f32,
     pub mass: f32,
@@ -143,6 +203,7 @@ impl Default for PropNumbers {
     /// The class's defaults.
     fn default() -> PropNumbers {
         PropNumbers {
+            collision: PropCollision::Box,
             size: [1.0; 3],
             radius: 0.0,
             mass: 0.0,
@@ -181,6 +242,8 @@ impl PropNumbers {
         };
         PropParams {
             shape,
+            collision: self.collision,
+            mass,
             density,
             friction: held(self.friction, 0.0, 10.0, 0.6),
             restitution: held(self.restitution, 0.0, 1.0, 0.1),
@@ -195,49 +258,85 @@ impl PropNumbers {
     }
 }
 
+impl PropData {
+    /// The datablock's numbers as written, before they are made safe.
+    pub fn numbers(&self) -> PropNumbers {
+        PropNumbers {
+            collision: PropCollision::of(&self.collision),
+            size: self.size,
+            radius: self.radius,
+            mass: self.mass,
+            density: self.density,
+            friction: self.friction,
+            restitution: self.restitution,
+            linear_damping: self.linear_damping,
+            angular_damping: self.angular_damping,
+            max_speed: self.max_speed,
+            sleep_linear: self.sleep_linear,
+            sleep_angular: self.sleep_angular,
+            can_freeze: self.can_freeze,
+            max_per_player: self.max_per_player,
+        }
+    }
+}
+
 impl From<&PropData> for PropParams {
     fn from(d: &PropData) -> PropParams {
+        d.numbers().held()
+    }
+}
+
+impl PropDataRecord {
+    /// The record's numbers as sent, before they are made safe.
+    pub fn numbers(&self) -> PropNumbers {
         PropNumbers {
-            size: d.size,
-            radius: d.radius,
-            mass: d.mass,
-            density: d.density,
-            friction: d.friction,
-            restitution: d.restitution,
-            linear_damping: d.linear_damping,
-            angular_damping: d.angular_damping,
-            max_speed: d.max_speed,
-            sleep_linear: d.sleep_linear,
-            sleep_angular: d.sleep_angular,
-            can_freeze: d.can_freeze,
-            max_per_player: d.max_per_player,
+            collision: PropCollision::of(&self.collision),
+            size: self.size,
+            radius: self.radius,
+            mass: self.mass,
+            density: self.density,
+            friction: self.friction,
+            restitution: self.restitution,
+            linear_damping: self.linear_damping,
+            angular_damping: self.angular_damping,
+            max_speed: self.max_speed,
+            sleep_linear: self.sleep_linear,
+            sleep_angular: self.sleep_angular,
+            can_freeze: self.can_freeze,
+            max_per_player: 0,
         }
-        .held()
     }
 }
 
 impl From<&PropDataRecord> for PropParams {
     fn from(r: &PropDataRecord) -> PropParams {
-        PropNumbers {
-            size: r.size,
-            radius: r.radius,
-            mass: r.mass,
-            density: r.density,
-            friction: r.friction,
-            restitution: r.restitution,
-            linear_damping: r.linear_damping,
-            angular_damping: r.angular_damping,
-            max_speed: r.max_speed,
-            sleep_linear: r.sleep_linear,
-            sleep_angular: r.sleep_angular,
-            can_freeze: r.can_freeze,
-            max_per_player: 0,
-        }
-        .held()
+        r.numbers().held()
     }
 }
 
 impl PropParams {
+    /// These numbers for a prop that collides as hulls holding `volume`: the box or ball becomes the hulls' bounds, and a `mass`
+    /// is spread over the hulls (a `density` is a density still). Unchanged for a volume that is not a positive number.
+    #[must_use]
+    pub fn with_hulls(self, volume: f32) -> PropParams {
+        if !(volume.is_finite() && volume > 0.0) {
+            return self;
+        }
+        let density = if self.mass > 0.0 {
+            held(self.mass / volume, 0.001, 100_000.0, 1.0)
+        } else {
+            self.density
+        };
+        PropParams {
+            shape: PropShape::Hulls {
+                half: self.shape.half_extents(),
+                volume,
+            },
+            density,
+            ..self
+        }
+    }
+
     /// The prop's mass.
     pub fn mass(&self) -> f32 {
         self.density * self.shape.volume()
@@ -253,6 +352,8 @@ pub struct PropDataRecord {
     pub shape_file: String,
     #[net(name = "drawScale")]
     pub draw_scale: [f32; 3],
+    #[net(max_len = 8)]
+    pub collision: String,
     pub size: [f32; 3],
     pub radius: f32,
     pub mass: f32,

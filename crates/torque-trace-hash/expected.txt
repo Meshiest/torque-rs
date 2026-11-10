@@ -11,7 +11,14 @@ all engine cb53dd915036b58d
 figure-smooth tge 218cc5e67d025571
 predictors tge c63f6b6b971854cc
 rapier-drop none 31a5ce13c9db549d
-physics none 716cb8e96e71430f
+# rapier-compound: 24 bodies, 16 of them compounds of two to four overlapping, off-centre boxes (so the summed mass, centre of mass and
+# inertia, the compound's BVH and its contacts with the hills and the keep are all covered), four with a tilted-plane hull among sound
+# ones, four single hulls of points in a tilted plane or on a line (made as their boxes). It first printed two values, native and
+# wasm32: Rapier's `std` feature gave the 3x3 inertia eigen solver the platform's `acos` and `cos`. Without that feature it goes
+# through `libm` and both targets print this one; rapier-drop did not move.
+rapier-compound none 19dbcc3382c7596e
+# physics: the fold of the two physics scenarios (it moved only because rapier-compound joined it).
+physics none 34ce915c49a2fd14
 # Players' and vehicles' boxes are kinematic bodies of the props' world: a crate falls onto a figure, not through it.
 props-drop tge d09a9b08e6536557
 # Joints between props (tether, winch, weld, hinge) and a Player's grapple; the figure's box is a kinematic body of the

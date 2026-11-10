@@ -23,7 +23,11 @@ let state = world.body(BodyId(7));
   a terrain's squares as triangles cut along the engine's own diagonal for each square (a height field's single diagonal
   would not match the engine's collision), an interior's hulls as convex polyhedra.
 - **Shapes.** Boxes, balls, and convex hulls of points (a shape's collision mesh: `Shape::from_mesh_hull`). A hull of more
-  than `Limits::max_hull_vertices` points, a flat one, or one the hull builder cannot make becomes the box of its points.
+  than `Limits::max_hull_vertices` points, a flat one, or one the hull builder cannot make becomes the box of its points. A
+  `Shape::Compound` holds several hulls (a prop's collision meshes) in one body, each made so and placed at its own middle; more
+  than `Limits::max_compound_hulls` (64), or none, becomes the box of all its points. Points in one plane (at any tilt), on one
+  line or on one point become their box too, before the hull builder runs: a panic inside it cannot be caught on wasm32, so that
+  check is the guard there.
 - **Determinism.** Rapier's `enhanced-determinism` (scalar math, `libm`, ordered maps), no threads, a fixed step and
   sub-step count per world, bodies kept and walked in id order, cells built in a fixed order. `just trace-hash` runs the
   `rapier-drop` scenario (64 boxes and 8 hulls dropped onto the example hills and the keep for 600 ticks) natively and as

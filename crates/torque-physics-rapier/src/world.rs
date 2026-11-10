@@ -221,6 +221,10 @@ pub struct World {
     maps: Maps,
     poisoned: bool,
     stats: WorldStats,
+    /// The hulls a compound holds beyond its first, by the body or part that holds them, and their sum: they count against
+    /// [`Limits::max_colliders`] as colliders do.
+    hull_extra: BTreeMap<BodyId, usize>,
+    hull_load: usize,
 }
 
 impl std::fmt::Debug for World {
@@ -253,6 +257,7 @@ fn sane(l: Limits) -> Limits {
         max_bodies: l.max_bodies.min(65_536),
         max_colliders: l.max_colliders.min(1 << 20),
         max_hull_vertices: l.max_hull_vertices.clamp(4, 4_096),
+        max_compound_hulls: l.max_compound_hulls.clamp(1, 1_024),
         max_contacts: l.max_contacts.min(1 << 20),
         max_cells_per_query: l.max_cells_per_query.clamp(1, 4_096),
         max_coordinate: pos(l.max_coordinate, 1.0, 1.0e7, d.max_coordinate),
@@ -334,6 +339,8 @@ impl World {
             maps,
             poisoned: false,
             stats: WorldStats::default(),
+            hull_extra: BTreeMap::new(),
+            hull_load: 0,
         }
     }
 
@@ -362,6 +369,27 @@ impl World {
 
     pub fn collider_count(&self) -> usize {
         self.rapier.colliders.len()
+    }
+
+    /// The colliders and the compounds' hulls beyond one a collider: what [`Limits::max_colliders`] caps.
+    pub(crate) fn collider_load(&self) -> usize {
+        self.rapier.colliders.len() + self.hull_load
+    }
+
+    /// Notes that body or part `id` holds a compound of `parts` hulls.
+    pub(crate) fn take_hulls(&mut self, id: BodyId, parts: usize) {
+        let extra = parts.saturating_sub(1);
+        if extra > 0 {
+            self.hull_extra.insert(id, extra);
+            self.hull_load += extra;
+        }
+    }
+
+    /// Notes that body or part `id` is gone, with its hulls.
+    pub(crate) fn drop_hulls(&mut self, id: BodyId) {
+        if let Some(extra) = self.hull_extra.remove(&id) {
+            self.hull_load = self.hull_load.saturating_sub(extra);
+        }
     }
 
     pub fn map_stats(&self) -> MapStats {
@@ -429,7 +457,15 @@ impl World {
         charge: &mut dyn FnMut(u64) -> bool,
     ) -> Result<usize, Error> {
         self.live()?;
-        let limits = self.config.limits;
+        // The compounds' hulls take room of the colliders' cap too.
+        let limits = Limits {
+            max_colliders: self
+                .config
+                .limits
+                .max_colliders
+                .saturating_sub(self.hull_load),
+            ..self.config.limits
+        };
         let cells = Maps::cells_of(region, &limits).ok_or(Error::NonFinite)?;
         let mut built = 0;
         for cell in cells {
@@ -474,7 +510,7 @@ impl World {
         if self.bodies.len() >= l.max_bodies {
             return Err(Error::Cap(Cap::Bodies));
         }
-        if self.rapier.colliders.len() >= l.max_colliders {
+        if self.collider_load() >= l.max_colliders {
             return Err(Error::Cap(Cap::Colliders));
         }
         let position = guard::coords(desc.position, l.max_coordinate).ok_or(Error::NonFinite)?;
@@ -491,6 +527,9 @@ impl World {
             return Err(Error::Exhausted);
         }
         let built = shape::build(&desc.shape, &l, charge)?;
+        if self.collider_load() + built.parts > l.max_colliders {
+            return Err(Error::Cap(Cap::Colliders));
+        }
         let kind = match desc.motion {
             Motion::Dynamic => RigidBodyType::Dynamic,
             // Velocity-based: the velocities toward a target are this crate's ([`World::set_kinematic_target`]), so they are
@@ -522,6 +561,7 @@ impl World {
             h
         })?;
         self.stats.hulls_replaced += usize::from(built.replaced);
+        self.take_hulls(id, built.parts);
         let good = BodyState {
             position,
             rotation,
@@ -561,6 +601,7 @@ impl World {
         let e = self.bodies.remove(&id).ok_or(Error::Unknown(id))?;
         self.forget_joints_of(id);
         self.forget_parts_of(id);
+        self.drop_hulls(id);
         self.guarded(|r| {
             r.remove_body(e.handle);
         })
@@ -775,9 +816,22 @@ impl World {
             .filter_map(|e| self.rapier.bodies.get(e.handle))
             .filter(|b| b.is_dynamic_or_kinematic() && !b.is_sleeping())
             .count() as u64;
-        let pairs = self.rapier.narrow_phase.contact_pairs().count() as u64;
+        // A pair of compounds tests every hull of one against every hull of the other: it is charged by the hulls it holds.
+        let hulls = |h| {
+            self.rapier
+                .colliders
+                .get(h)
+                .and_then(|c| c.shape().as_compound())
+                .map_or(1, |c| c.shapes().len().max(1)) as u64
+        };
+        let pair_tests: u64 = self
+            .rapier
+            .narrow_phase
+            .contact_pairs()
+            .map(|p| hulls(p.collider1).saturating_mul(hulls(p.collider2)))
+            .fold(0, u64::saturating_add);
         let per = awake * work::BODY_STEP
-            + pairs * work::PAIR_STEP
+            + pair_tests.saturating_mul(work::PAIR_STEP)
             + self.joints.len() as u64 * work::JOINT_STEP;
         if !charge(per.saturating_mul(u64::from(self.config.substeps))) {
             return Err(Error::Exhausted);

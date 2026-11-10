@@ -2,8 +2,9 @@
 //!
 //! [`PropsPlugin`] adds
 //!
-//! - the datablock class `PropData` ([`PropData`]): what a kind of prop collides as, its mass, friction and bounce, when it sleeps,
-//!   whether it may be frozen, the shape it is drawn as;
+//! - the datablock class `PropData` ([`PropData`]): what a kind of prop collides as (a box or a ball, or the convex hulls of its
+//!   shape's collision meshes, [`hulls`]), its mass, friction and bounce, when it sleeps, whether it may be frozen, the shape it
+//!   is drawn as;
 //! - the console class `Prop` ([`server::NetProp`]) and the server's console functions `propSpawn`, `propDelete`, `propFreeze`,
 //!   `propUnfreeze`, `propSleep`, `propApplyImpulse`, `propSetVelocity`, the getters, `propRayCast` and `propCheckPlacement`
 //!   ([`natives`]): a server API only. Props have no client entry point: a game's own server commands decide who may spawn
@@ -53,13 +54,21 @@
 //! propApplyImpulse(%crate, "0 40 0");
 //! ```
 //!
+//! `collision = "shape";` makes a prop collide as its `shapeFile`'s collision meshes (`Collision-1` and on: each mesh one convex
+//! hull, at the shape's rest pose and `drawScale`), held together as one rigid body, so an L-shaped desk keeps its notch and a
+//! chair tucks under a table. The default is the box of `size` (or the ball of `radius`); `size` is still the box players and
+//! shots see. A shape with no collision mesh collides as its bounds; one past a cap ([`hulls::HullCaps`]) or one that does not
+//! load, as the `size` box, with a console note.
+//!
 //! # Limits
 //!
 //! Props per player (`$Pref::Props::MaxPerPlayer`, 64), per server (`$Pref::Props::MaxProps`, 1,024) and awake at once
 //! (`$Pref::Props::MaxAwake`, 256), and per remote address of the owners (`$Pref::Props::MaxPerAddress`, 256), whoever asked
 //! for the spawn. A spawn past a cap is refused with a console error; past the awake cap the props farthest from every player
 //! sleep first. The step is charged to a budget
-//! (`$Pref::Props::StepBudget`): a step past it does not run, and the awake cap is lowered until the step fits again.
+//! (`$Pref::Props::StepBudget`): a step past it does not run, and the awake cap is lowered until the step fits again. A shape of
+//! `collision = "shape"` gives at most [`hulls::MAX_HULLS`] hulls of [`hulls::MAX_HULL_VERTICES`] points each, within
+//! [`hulls::MAX_COORD`] units of its origin, and a server holds [`hulls::MAX_SERVER_VERTICES`] points of shapes in all.
 //!
 //! # Network
 //!
@@ -82,7 +91,8 @@
 //!
 //! **Modules.** [`natives`]: the server's console functions and the placement checks. [`tick`]: the server's tick hook (owners,
 //! statics, pushes, the step, the writeback). [`world`]: the physics world and every rule about props, with no script engine.
-//! [`quant`]: the wire's precision. [`records`], [`data`], [`client`]: what goes on the net (the ghost and datablock records) and
+//! [`quant`]: the wire's precision. [`hulls`]: a shape's collision hulls (the caps, the server's loader and book, the client's
+//! reading of the same file). [`records`], [`data`], [`client`]: what goes on the net (the ghost and datablock records) and
 //! what a client does with it. [`server`]: the state, spawning, the collision source and the update priority. [`joints`]: the
 //! joint kinds and caps (`mod.rs`), their rules in the world (`world.rs`, an `impl PropWorld`), the `Joint` class and the server's
 //! tethers (`server.rs`), the console functions (`natives.rs`), the record (`records.rs`), a client's book and tethers
@@ -132,10 +142,55 @@
 //! then a restore and replay when the server sent new states (or one step), the drawn poses eased and the predicted states
 //! written into the book, which the Player's next move meets.
 //!
+//! **Props that collide as their shape.** A datablock's `collision` field (`PropCollision`; it is in the datablock record, so
+//! network version 4) picks box or shape. For shape, `PropParams` holds `PropShape::Hulls { half, volume }`: `half` is the box
+//! that still stands for the prop wherever only a box is asked (`size` or `radius`: the placement checks, the collision source,
+//! the prediction's choice of what a Player touches), and `volume` what the hulls hold, which turns a `mass` into a density
+//! (`PropParams::with_hulls`). The hulls themselves are an `Rc<PropHulls>` on the [`Prop`](world::Prop)
+//! (`PropWorld::spawn_with`), so a world made again, a prop that freezes or thaws and a prop hung on another all build the same
+//! compound (`world::body_shape`). *Server:* `server::spawn` reads the datablock and asks `ServerProps::hulls`
+//! ([`hulls::HullBook`]) for the hulls of its `shapeFile` at its `drawScale`; the book reads the shape through the engine's own
+//! loader (`torque_game::shapes::shapes_of`: the kept set, the read bounds, the script's budget) and takes each collision
+//! detail's meshes at the rest pose (`rays::detail_parts`). A shape is read once whatever the number of props, and a datablock's
+//! note (no mesh, or refused) prints once. *Client:* the prediction part reads no file itself: it asks the slot's
+//! `TickStep::shape` (the connection's shape cache, charged to the parts' budget), a prop whose shape is not read yet waits a
+//! tick or two before it joins the predicted set (`Cx::fitted`). Both sides end in `PropHulls::of_parts`, one function, so for one
+//! shape the hulls are the same to the bit. *The two agree:* the server writes what it ended up colliding the prop as into the
+//! `Prop` ghost's init record (`InitWire::hulls`, the `hullCount`, `hullPoints` and `hullVolume` fields of the server's prop: a
+//! `hulls::HullDigest`, none for the datablock's box, which is also what a cap, the server's total or a file it cannot read
+//! give), and the client predicts the hulls only if its own build has that digest (`hulls::choose`): the box for none, and for a
+//! build that differs or fails (another file under the path, no file, its own budget or caps) the prop is not predicted at all
+//! (`State::unfit`, left to the server), never predicted as a shape the server does not have. The datablock's `collision` text is
+//! made canonical (`shape` or `box`) by the datablock's preload before it is sent, so the wire's 8 bytes cannot split the two.
+//! *Work.* Every step of building hulls is charged: `PropHulls::of_parts` pays for each point it reads and for the volume's build
+//! (the server to the script's budget, the client to the tick's budget for parts, where a refusal is a wait), each body made or
+//! made again (a spawn, a freeze or thaw, a world made again) is charged to the next steps' budgets (`PropWorld::built_work`: at most half a step's budget a step, so a script
+//! that makes hundreds in one pass slows the steps after it and loses none; one console line a tick when the work is past a quarter of
+//! the budget; the debt is held to `world::BUILD_DEBT_STEPS` (4) budgets, which eight steps pay off, and the excess is forgiven and
+//! counted in `PropWorld::forgiven_work`). A spawn is never refused for it, so the most build work a pass of a script can do
+//! synchronously is `$Pref::Props::MaxProps` (1,024) times the most one shape costs (32 hulls of 64 points, about 20,000 units): the
+//! props' own caps bound it, and `MaxPerPlayer` bounds what one client's commands can make. The physics step charges a contact pair by the hulls of both
+//! shapes. A client keeps at most 256 shapes' hulls and starts over past it. The physics crate's `Shape::Compound` makes each hull as a `Shape::Hull` and places it at its middle (a
+//! hull that cannot be made is its box; a compound of more than `Limits::max_compound_hulls` hulls is the box of all its points).
+//!
 //! **Invariants**, each with the test that guards it:
 //! - The state written back is the wire's, so a client restores the server's bits and native equals wasm32:
 //!   `every_awake_state_is_written_back_at_the_wires_precision`, `a_quantized_state_quantizes_back_to_the_same_state`, and the
 //!   `props-drop` line of `just trace-hash`.
+//! - A prop of hulls rests in its shape's notch where a box would stand on top, keeps the datablock's mass, and sleeps and stays
+//!   still where it rests: `a_prop_with_an_l_shaped_hull_lets_another_sit_in_its_notch_where_a_box_would_not`,
+//!   `a_crate_dropped_on_the_l_arm_rests_on_it_and_a_hulled_prop_keeps_its_mass`,
+//!   `a_hulled_prop_asleep_where_it_rests_stays_still`.
+//! - A server and a client hold the same hulls for a shape (file, node poses, draw scale) and refuse the same shapes past a cap,
+//!   and a hostile file (counts, points, bytes) is refused or held and never panics:
+//!   `a_server_and_a_client_hold_the_same_hulls_for_a_shape`, `a_shape_past_a_cap_is_refused_the_same_way_on_both_sides`,
+//!   `a_hostile_shape_file_is_refused_cleanly_whatever_its_counts_say`,
+//!   `hostile_collision_meshes_are_refused_or_held_and_never_reach_the_world_unchecked`.
+//! - The caps and the fallbacks hold, each with a note: `the_caps_refuse_too_many_hulls_too_many_points_and_points_that_are_no_numbers`,
+//!   `the_server_holds_the_points_of_all_its_shapes_to_a_total`,
+//!   `a_datablock_of_shape_collision_gets_its_hulls_and_every_fallback_is_the_box_with_a_note`. A datablock that does not ask is
+//!   untouched (the `props-drop` line of `just trace-hash`), and a predicting client steps a prop with the hulls the server made:
+//!   `a_predicting_client_steps_a_prop_it_touches_with_the_hulls_the_server_made`.
 //! - No script text is built from what a player controls (objects are made with `Vm::new_object`, callbacks called natively):
 //!   `no_script_text_is_built_from_what_a_player_controls`.
 //! - Caps per owner, per address and per server hold whoever asks: `the_caps_refuse_the_65th_for_a_player_and_the_1025th_for_the_server`,
@@ -313,6 +368,7 @@ pub mod client;
 pub mod data;
 pub mod hierarchy;
 pub mod hits;
+pub mod hulls;
 pub mod joints;
 pub mod natives;
 pub mod predict;
@@ -338,7 +394,7 @@ pub use server::{PropPrefs, ServerProps};
 pub use world::{Link, PropLimits, PropWorld};
 
 /// The network version of the props plugin: a client and a server must run the same.
-pub const NET_VERSION: u32 = 3;
+pub const NET_VERSION: u32 = 4;
 
 /// The name of the ghost class a prop is.
 pub const GHOST_CLASS: &str = "Prop";

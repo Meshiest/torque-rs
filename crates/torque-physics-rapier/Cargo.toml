@@ -11,8 +11,10 @@ keywords = ["torque", "physics", "rapier", "determinism", "gamedev"]
 categories = ["game-development", "simulation"]
 
 [dependencies]
-# `enhanced-determinism`: scalar math and `libm`, so native and wasm32 step alike. No `parallel`, no `simd8`.
-rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "std", "enhanced-determinism"] }
+# `enhanced-determinism`: scalar math and `libm`, so native and wasm32 step alike. No `parallel`, no `simd8`, and no `std`: with it
+# the glam layer's 3x3 eigen solver (every body's principal inertia, which a hull or a compound has to find) takes the platform's
+# `acos` and `cos`, whose last bit differs between a native build and wasm32; without it the solver goes through `libm`.
+rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "alloc", "enhanced-determinism"] }
 # The map pieces (terrain, interiors) and shape hulls as the engine's collision holds them, and the budget it charges.
 torque-collide = { path = "../torque-collide" }
 torque-mapcore = { path = "../torque-mapcore" }

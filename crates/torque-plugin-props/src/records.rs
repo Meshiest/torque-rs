@@ -7,6 +7,7 @@ use torque_ghosts::codec::{Codec, F32, R, Xf};
 use torque_ghosts::plugin::{DatablockRef, FieldSpec, NetField};
 use torque_ghosts::{Value, int};
 
+use crate::hulls::HullDigest;
 use crate::quant::{Quantized, ROT_BITS};
 
 /// The mask bit of what a new ghost is told once (and again when its owner changes): its slot, whether it is the client's own,
@@ -123,10 +124,13 @@ pub struct InitWire {
     pub mine: bool,
     /// The id the owner's client gave a prop it showed at once (1 to 255), for that client alone; 0 for none.
     pub predict: u8,
+    /// What the server collides it as when that is its shape's hulls ([`HullDigest`]); none when it is the datablock's box. A
+    /// client predicts the hulls only if its own build of the shape has this digest.
+    pub hulls: Option<HullDigest>,
 }
 
 impl NetField for InitWire {
-    const MIN_BITS: usize = SLOT_BITS as usize + 2;
+    const MIN_BITS: usize = SLOT_BITS as usize + 3;
     const COMPOUND: bool = true;
 
     fn layout<C: Codec>(&mut self, c: &mut C, name: &'static str, _spec: FieldSpec) -> R {
@@ -143,10 +147,24 @@ impl NetField for InitWire {
         } else {
             self.predict = 0;
         }
+        let mut has = self.hulls.is_some();
+        c.flag(name, &mut has)?;
+        if has {
+            let d = self.hulls.get_or_insert_with(HullDigest::default);
+            let (mut hulls, mut points) = (u32::from(d.hulls), u32::from(d.points));
+            c.int(name, &mut hulls, 8)?;
+            c.int(name, &mut points, 16)?;
+            c.int(name, &mut d.volume, 32)?;
+            d.hulls = hulls as u8;
+            d.points = points as u16;
+        } else {
+            self.hulls = None;
+        }
         Ok(())
     }
 
-    /// The server prop's `slot`, `ownerConn` (the owner's connection object) and `predict`, against the connection packed for.
+    /// The server prop's `slot`, `ownerConn` (the owner's connection object), `predict` and the digest of its hulls
+    /// (`hullCount`, `hullPoints`, `hullVolume`: none for a count of 0), against the connection packed for.
     fn from_view(view: &dyn ObjectView, _name: &str, _index: usize, _spec: FieldSpec) -> InitWire {
         let owner = int(view, "ownerConn", 0);
         let conn = int(view, "@connection", 0);
@@ -160,6 +178,11 @@ impl NetField for InitWire {
             } else {
                 0
             },
+            hulls: (int(view, "hullCount", 0) > 0).then(|| HullDigest {
+                hulls: int(view, "hullCount", 0).clamp(0, 255) as u8,
+                points: int(view, "hullPoints", 0).clamp(0, 65_535) as u16,
+                volume: int(view, "hullVolume", 0) as u32,
+            }),
         }
     }
 

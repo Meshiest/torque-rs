@@ -36,7 +36,8 @@
 //! [`PredictionPart`] (`engine.net().prediction_part(P)`): every client runs each part after its predictor at each of the three
 //! moments, whichever predictor the game picks, and a part's `run_tge` does nothing (TGE's scheme ran already). A part reads the
 //! moves and acks as a predictor does, and what moves the predicted object makes ([`PredictState::motion`]), the map pieces
-//! near a point ([`TickStep::statics_near`]), the projectile ghosts ([`PredictState::shots`]) and a datablock's numbers
+//! near a point ([`TickStep::statics_near`]), a shape file of the game's ([`TickStep::shape`]: the cache the client's
+//! vehicles and static shapes share), the projectile ghosts ([`PredictState::shots`]) and a datablock's numbers
 //! ([`PredictState::datablock_number`]); at a view it draws ghosts where it puts them ([`Drawn::ghosts`]), starting from where
 //! the client shows them ([`ViewStep::shown`]). A part whose objects move with the control object (a prop it pushes or a
 //! grapple holds) steps them inside the predictor's tick, in TGE's move loop ([`PredictionPart::moves_begin`],
@@ -61,6 +62,7 @@ use torque_engine::net::NetRegistry;
 use torque_engine::{ClientStage, Engine, PluginId};
 use ts_vm::vm::{Native, Vm};
 
+use super::drive::ClientShape;
 use super::{ClientGlobals, PredictStats, Predictor, game::PredictWorld};
 
 /// The id [`TgePrediction`] is registered under.
@@ -407,6 +409,20 @@ pub trait TickStep: PredictState {
     /// Charges `units` of a part's work to the tick's budget for parts ([`PART_TICK_WORK`], shared by every part): false once
     /// it is spent, and the part leaves the rest of its work for a later tick.
     fn charge(&mut self, units: u64) -> bool;
+    /// The shape file at `path` in the game's files, read the first time it is asked for and kept for the connection (the cache
+    /// the client's vehicles and static shapes share), its read charged to the tick's budget for parts. `None` while it is not
+    /// read ([`TickStep::shape_settled`] says whether it ever will be): not there, not a shape, past a cap, or a tick without
+    /// the room. A step that has no files answers `None` always.
+    fn shape(&mut self, path: &[u8]) -> Option<Rc<ClientShape>> {
+        let _ = path;
+        None
+    }
+    /// Whether the answer of [`TickStep::shape`] for `path` is final: the shape was read, or it never will be (a read that
+    /// failed is kept as failed). False while a tick without the room has not tried.
+    fn shape_settled(&self, path: &[u8]) -> bool {
+        let _ = path;
+        true
+    }
 }
 
 /// A view ([`Prediction::view`]).
@@ -707,6 +723,20 @@ impl<W: PredictWorld> TickStep for TickCx<'_, W> {
     fn charge(&mut self, units: u64) -> bool {
         self.sim.part_work = self.sim.part_work.saturating_add(units);
         self.sim.part_work <= PART_TICK_WORK
+    }
+
+    fn shape(&mut self, path: &[u8]) -> Option<Rc<ClientShape>> {
+        let sim = &mut *self.sim;
+        sim.shapes.get(
+            path,
+            sim.static_world.reader.as_ref(),
+            &mut sim.part_work,
+            PART_TICK_WORK,
+        )
+    }
+
+    fn shape_settled(&self, path: &[u8]) -> bool {
+        self.sim.shapes.settled(path)
     }
 }
 

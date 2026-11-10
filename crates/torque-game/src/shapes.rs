@@ -19,6 +19,8 @@
 //! debris shape), a `.dts.txt` path, or a field a class does not have. The loader is the
 //! `EngineClass::preload` of those classes (the interpreter's seam), so the line comes
 //! out in the middle of the datablock's declaration.
+//! A plugin's own datablock class loads a shape through the same loader ([`shapes_of`] gives it, once [`register`] ran), so its
+//! shape is in the same kept set and paid for by the same budget (the props plugin takes collision hulls from a shape so).
 //!
 //! **What it reads.** The file through [`FileHost`](ts_vm::host::FileHost) only, and a version-24 file in full:
 //! `shapes::dts::parse` (which ends with `Shape::validate`) and `shapes::preload::facts` give the runtime
@@ -962,10 +964,20 @@ impl ShapeLoad {
     }
 }
 
-/// Gives the shape classes their loader (after the host's class table is installed) and returns the shapes it keeps.
-/// Registering again replaces the behaviours and starts a new set.
+/// The shapes a script engine's loader keeps, as its extension.
+struct Installed(Rc<Shapes>);
+
+/// The loader [`register`] gave `vm`, for a plugin that loads a shape of its own (a datablock of its own class) through the
+/// same kept set, paid for by the same budget.
+pub fn shapes_of(vm: &Vm) -> Option<Rc<Shapes>> {
+    vm.extension::<Installed>().map(|i| Rc::clone(&i.0))
+}
+
+/// Gives the shape classes their loader (after the host's class table is installed) and returns the shapes it keeps
+/// ([`shapes_of`] finds them again). Registering again replaces the behaviours and starts a new set.
 pub fn register(vm: &mut Vm) -> Rc<Shapes> {
     let shapes = Rc::new(Shapes::default());
+    vm.set_extension(Rc::new(Installed(Rc::clone(&shapes))));
     crate::dbvalues::register(vm, &shapes.values);
     for (class, field) in SHAPE_FIELDS {
         let (on_failure, on_add): (OnFailure, Option<Rc<dyn EngineClass>>) = match class {

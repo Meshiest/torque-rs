@@ -14,6 +14,7 @@ use torque_import::{Options, bbmodel};
 use torque_interior_builder::mesh::{MeshInput, MeshOptions};
 use torque_interior_builder::verify::Counts;
 use torque_interior_builder::verify::mesh::run_mesh;
+use torque_plugin_props::data::PropCollision;
 use torque_plugin_props::quant::Quantized;
 use torque_plugin_props::world::Rest;
 use torque_plugin_props::{ClientProps, PropLimits, ServerProps};
@@ -702,6 +703,103 @@ fn the_props_start_asleep_where_the_model_put_them_and_nothing_moves_while_no_on
     }
     assert_eq!(server_props(&game), start, "the server's props moved");
     assert_eq!(client_props(&game), sent, "the client's props moved");
+}
+
+#[test]
+fn the_furniture_with_gaps_collides_as_its_pieces_and_every_other_item_as_a_box() {
+    let game = office_running([5.5, -3.0], 0.0);
+    let props = game
+        .engine()
+        .resource::<ServerProps>()
+        .expect("the props plugin")
+        .clone();
+    let hulls: Vec<usize> = props
+        .with(|s| {
+            s.world
+                .as_ref()
+                .map(|w| {
+                    w.props()
+                        .values()
+                        .filter_map(|p| p.hulls.as_ref().map(|h| h.hulls().len()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let shaped: usize = ITEMS
+        .iter()
+        .filter(|(k, _)| k.shaped())
+        .map(|(_, n)| n)
+        .sum();
+    assert_eq!(
+        hulls.len(),
+        shaped,
+        "the props that collide as their pieces"
+    );
+    // A chair's base, post, seat and back; a desk's top and sides: a few hulls each, never the one box.
+    assert!(hulls.iter().all(|&n| (2..=8).contains(&n)), "{hulls:?}");
+    // The datablock's `size` box holds the whole prop, so what touches it, wakes it, holds it or is cast at it sees all of it: no
+    // hull of the server's bodies reaches past it.
+    let outside: Vec<(u32, [f32; 3], [f32; 3])> = props
+        .with(|s| {
+            let world = s.world.as_ref()?;
+            Some(
+                world
+                    .props()
+                    .iter()
+                    .filter_map(|(&id, p)| {
+                        let half = p.params.shape.half_extents();
+                        let reach: [f32; 3] = std::array::from_fn(|k| {
+                            p.hulls.as_ref().map_or(0.0, |h| {
+                                h.hulls()
+                                    .iter()
+                                    .flatten()
+                                    .map(|pt| pt[k].abs())
+                                    .fold(0.0, f32::max)
+                            })
+                        });
+                        (0..3)
+                            .any(|k| reach[k] > half[k])
+                            .then_some((id, reach, half))
+                    })
+                    .collect(),
+            )
+        })
+        .flatten()
+        .unwrap_or_default();
+    assert!(
+        outside.is_empty(),
+        "hulls past their datablock's size: {outside:?}"
+    );
+    // And so does every item's drawn shape (the meshes the boxes were made from), as the building of the datablock's numbers.
+    for item in office_model().1 {
+        for p in item.shape.meshes.iter().flat_map(|m| &m.positions) {
+            assert!(
+                (0..3).all(|k| p[k].abs() <= item.half[k]),
+                "{}: {p:?} past {:?}",
+                item.name,
+                item.half
+            );
+        }
+    }
+    // The client's prediction is told to make the same hulls: each such datablock asked for the shape.
+    let book = game
+        .engine()
+        .resource::<ClientProps>()
+        .expect("the props plugin")
+        .clone();
+    let asking = book
+        .with(|b| {
+            b.props()
+                .values()
+                .filter(|p| {
+                    p.params
+                        .is_some_and(|p| p.collision == PropCollision::Shape)
+                })
+                .count()
+        })
+        .unwrap_or_default();
+    assert_eq!(asking, shaped);
 }
 
 #[test]

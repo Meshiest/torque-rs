@@ -43,6 +43,7 @@ datablock PropData(Crate)
    shapeFile = "art/crate.dts";   // what it is drawn as (empty: not drawn)
    drawScale = "1 1 1";           // the shape's scale, 0.001 to 256
    size = "1 1 1";                // the collision box, each 0.02 to 128 units
+   collision = "box";             // "shape": the convex hulls of the shape's collision meshes instead (see below)
    radius = 0;                    // above 0: a ball of this radius instead
    mass = 20;                     // 0: from density and the volume
    density = 1;
@@ -63,8 +64,54 @@ function Crate::onPropWake(%this, %prop) {}
 ```
 
 Every number is clamped to its range when it is written and again when a prop reads it; a value that is not a number reads as the
-field's default. A prop collides as its `size` box (or `radius` ball), not as its shape's mesh. `PropData` is a game datablock, so
-its callbacks are methods of the datablock's name.
+field's default. A prop collides as its `size` box (or `radius` ball) unless `collision = "shape"`. `PropData` is a game
+datablock, so its callbacks are methods of the datablock's name.
+
+### Colliding as the shape
+
+A shape has collision meshes (`Collision-1` and on, which the engine's own shapes use for players and vehicles, and which an
+imported model gets from its `Col-1`, `Collision-1` or `hull_*` meshes). With `collision = "shape";` the prop collides as them:
+each mesh is one convex hull, taken at the shape's rest pose at the datablock's `drawScale`, and the hulls are held together as
+one rigid body (a Rapier compound), so an L-shaped desk keeps its notch, a chair tucks under a table and a prop sits in a sofa's
+seat. A mesh that is not convex collides as its convex hull, so a shape that is meant to have a hollow needs one mesh for each
+convex piece.
+
+```
+datablock PropData(Desk)
+{
+   shapeFile = "art/desk.dts";    // collision meshes: the top, the two side panels
+   collision = "shape";
+   size = "2 1 0.8";              // still the box players, shots and placement checks see; it should hold the shape
+   mass = 40;                     // the whole shape's mass
+};
+```
+
+The server reads the file through the engine's own capped loader, once a shape, and the client reads the same file from its own
+copy when it predicts the prop, with the same code, so for one shape both hold the same hulls. The server sends each prop what it
+ended up colliding it as (a count of hulls, points and the volume's bits, or the box), and a client predicts the hulls only if its
+own build matches; one that read another file, has none, or ran out of budget leaves the prop to the server (it is drawn as sent,
+not predicted) rather than predict a shape the server does not have. Past these caps, or for a file that does not load, the prop
+collides as its `size` box and the server prints a note; a shape with no collision mesh collides as its bounds (also with a note).
+The `collision` text is made `shape` or `box` when the datablock is added, whatever was written:
+
+| What | Cap |
+|---|---|
+| hulls a shape | 32 |
+| distinct points a hull | 64 |
+| a point's distance from the shape's origin, after `drawScale` | 256 units |
+| points in all the shapes a server has loaded | 65,536 (a client does not hold this one: a prop past it is a box on the server, and the client is told so) |
+
+Hulls cost what they hold: a body of hulls is charged by its points and hulls when it is made, its contacts in a step by the pairs of
+hulls both sides have (two 32-hull props touching are 1,024 hull pairs, not one), and each hull counts against the physics world's
+collider cap. What the bodies made since the last step cost is charged to the next steps' budgets, at most half a budget a step (a script that
+makes two hundred of the largest shapes in one pass loses none, and the steps after it each run within their budget, a line on the
+console says how many were made). The debt is held to four budgets (eight steps pay it off) and a burst's excess is forgiven, counted
+in `PropWorld::forgiven_work`; the work done in one pass of a script is at most `$Pref::Props::MaxProps` times the most one shape costs
+(32 hulls of 64 points, about 20,000 units), and one player's commands at most `$Pref::Props::MaxPerPlayer` times that. A client builds a shape's hulls
+within the tick's budget for prediction and waits a tick when it has none left.
+
+Players, items, projectiles and the placement checks still meet the prop as its `size` box: the hulls are what props meet each other
+and the map as. The datablock's wire record has the `collision` field (network version 4).
 
 ## Console functions
 
@@ -428,6 +475,16 @@ over 600 ticks under load, an unparented prop within 1% of its parent's point ve
 deleting and a world made again with children) and `--test hierarchy_net` (a client finds a child where its parent puts it and never
 draws it as resting); the `hierarchy-props` scenario of `just trace-hash` hashes a lift with driven children and bodies with parts
 under a walking figure, native and wasm32.
+
+Collision as the shape: `--test shape_collision` (a server and a client hold the same hulls for a shape, refuse the same ones past
+a cap, and a fuzzer feeds a hostile shape file to both; the datablock's fallbacks and their notes; a predicting client steps a
+prop with the hulls the server made) and, in the world alone (`src/hulls_tests.rs`), a crate that rests in an L-shaped prop's
+notch where a box would hold it on top, the mass a datablock gives the whole shape, and a hulled prop that sleeps where it rests.
+A client whose hulls are not the server's (another file, none, a cap) leaves the prop to the server, and one told the box predicts the
+box, whatever it could have built (`a_client_that_built_other_hulls_than_the_server_leaves_the_prop_to_the_server`,
+`a_prop_the_server_collides_as_a_box_is_predicted_as_one_whatever_the_client_could_build`, and `choose`'s every case in
+`src/hulls_tests.rs`). Points in a tilted plane, on a line or on a point become a box and never reach the hull builder
+(`torque-physics-rapier`'s `world` tests). `rapier-compound` of `just trace-hash` drops compounds onto the hills and the keep.
 
 Prediction: `--test predict` (the carry, the ride and the push, a predicted push the server makes too and one it never makes, the
 caps, a projectile's push held to its cap, the shooter's own shot and its explosion). The `carry` and `projectile-props`

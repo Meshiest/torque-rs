@@ -257,6 +257,8 @@ pub(crate) struct Shared {
     pub(crate) stats: PredictStats,
     /// Where each predicted prop was drawn at the last view (ghost, position, rotation), in ghost order.
     pub(crate) drawn: Vec<(u32, [f32; 3], [f32; 4])>,
+    /// The collision hulls each predicted prop of `collision = "shape"` is stepped with, by ghost.
+    pub(crate) hulls: std::collections::BTreeMap<u32, Rc<crate::hulls::PropHulls>>,
 }
 
 /// A client's prop prediction: the engine resource the part and the client functions share ([module docs](self)). One client
@@ -280,6 +282,12 @@ impl PropPrediction {
     /// The props predicted now, in ghost order.
     pub fn members(&self) -> Vec<u32> {
         self.0.borrow().members.clone()
+    }
+
+    /// The collision hulls the predicted prop of ghost `ghost` is stepped with, when its datablock asked for its shape's and the
+    /// client built them from its own copy of the shape; none for a prop that is not predicted or collides as a box.
+    pub fn hulls(&self, ghost: u32) -> Option<Rc<crate::hulls::PropHulls>> {
+        self.0.borrow().hulls.get(&ghost).cloned()
     }
 
     /// Whether the prop of ghost `ghost` is predicted now.

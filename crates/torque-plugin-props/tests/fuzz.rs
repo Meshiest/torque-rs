@@ -19,7 +19,7 @@ use torque_ghosts::codec::{NetWidths, ReadCtx, decode};
 use torque_net::bits::BitReader;
 use torque_net::huffman::Table;
 use torque_plugin_props::client::{ClientSource, MAX_CLIENT_PROPS, draw};
-use torque_plugin_props::data::{MAX_DRAW_SCALE, PropNumbers};
+use torque_plugin_props::data::{MAX_DRAW_SCALE, PropCollision, PropNumbers};
 use torque_plugin_props::joints::client::{ClientTethers, MAX_CLIENT_JOINTS};
 use torque_plugin_props::joints::records::{
     EndWire, FlagsWire as JointFlagsWire, InitWire as JointInitWire, LengthWire, SpringWire,
@@ -88,6 +88,7 @@ fn record(rng: &mut Rng) -> PropGhost {
             slot: rng.next() as u16,
             mine: rng.below(2) == 0,
             predict: rng.next() as u8,
+            hulls: None,
         }),
         state: (rng.below(2) == 0).then(|| {
             let w: [i32; 13] = std::array::from_fn(|_| rng.int());
@@ -156,6 +157,11 @@ fn a_hostile_servers_records_never_panic_the_client() {
         let mut params = |id: u32| {
             (!id.is_multiple_of(3)).then(|| {
                 PropNumbers {
+                    collision: if id.is_multiple_of(2) {
+                        PropCollision::Shape
+                    } else {
+                        PropCollision::Box
+                    },
                     size: [rng.float(), rng.float(), rng.float()],
                     radius: rng.float(),
                     mass: rng.float(),

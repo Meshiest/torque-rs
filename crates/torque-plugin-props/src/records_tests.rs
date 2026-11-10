@@ -95,7 +95,8 @@ fn every_group_round_trips_and_the_state_is_exact() {
         Some(InitWire {
             slot: 42,
             mine: true,
-            predict: 9
+            predict: 9,
+            hulls: None,
         })
     );
     assert_eq!(
@@ -118,7 +119,8 @@ fn every_group_round_trips_and_the_state_is_exact() {
         Some(InitWire {
             slot: 42,
             mine: false,
-            predict: 0
+            predict: 0,
+            hulls: None,
         })
     );
     // An update of the state alone.
@@ -222,4 +224,33 @@ fn the_datablock_record_names_fields_of_the_class() {
     }
     // Every field but the server's own cap goes to the clients.
     assert_eq!(sent.len() + 1, class.len(), "{sent:?} {class:?}");
+}
+
+#[test]
+fn the_digest_of_a_props_hulls_round_trips_and_a_prop_of_a_box_sends_none() {
+    use crate::hulls::HullDigest;
+    let digest = HullDigest {
+        hulls: 32,
+        points: 2_048,
+        volume: 0x3f80_1234,
+    };
+    let view = prop(moving())
+        .with("hullCount", Value::Int(32))
+        .with("hullPoints", Value::Int(2_048))
+        .with("hullVolume", Value::Int(i64::from(0x3f80_1234_u32 as i32)));
+    let (record, _) = PropGhost::pack(&view, MASK_INIT, &ctx());
+    assert_eq!(record.init.expect("init").hulls, Some(digest));
+    let (back, bits) = round(&record);
+    assert_eq!(back, record);
+    assert!(bits < 120, "{bits}");
+    // A box (a count of 0, or no fields) is none, and the volume's sign bit is a bit of it.
+    let (record, _) = PropGhost::pack(&prop(moving()), MASK_INIT, &ctx());
+    assert_eq!(record.init.expect("init").hulls, None);
+    let negative = prop(moving())
+        .with("hullCount", Value::Int(1))
+        .with("hullVolume", Value::Int(-1));
+    let (record, _) = PropGhost::pack(&negative, MASK_INIT, &ctx());
+    let hulls = record.init.expect("init").hulls.expect("hulls");
+    assert_eq!(hulls.volume, u32::MAX);
+    assert_eq!(round(&record).0, record);
 }

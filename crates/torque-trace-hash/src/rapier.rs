@@ -1,5 +1,5 @@
-//! The Rapier world's scenario: 64 boxes and 8 hulls dropped onto the example hills and the keep interior standing on them,
-//! stepped [`TICKS`] ticks, every body's state hashed each tick.
+//! The Rapier world's scenarios: 64 boxes and 8 hulls ([`drop`]), or 24 compounds of hulls ([`compound`]), dropped onto the example
+//! hills and the keep interior standing on them, stepped [`TICKS`] ticks, every body's state hashed each tick.
 //!
 //! No server or client runs: the world is the deterministic core that a server's props and a client's prediction both step,
 //! so its state alone must match on every target. The map is the example kit's own: the hills' `.ter` read as the engine
@@ -111,8 +111,119 @@ fn bodies() -> Vec<(BodyId, BodyDesc)> {
     out
 }
 
-/// The scenario's run (module docs). `distance` is the bodies' mean distance from where they started.
+/// The eight corners of the box `lo..hi`.
+fn corners(lo: [f32; 3], hi: [f32; 3]) -> Vec<[f32; 3]> {
+    (0..8)
+        .map(|i| std::array::from_fn(|k| if i & (1 << k) == 0 { lo[k] } else { hi[k] }))
+        .collect()
+}
+
+/// A random box of up to `half` about a centre within `around` of the origin.
+fn random_box(s: &mut u64, around: f32, half: f32) -> Vec<[f32; 3]> {
+    let c = [
+        range(s, -around, around),
+        range(s, -around, around),
+        range(s, -around, around),
+    ];
+    let h = [
+        range(s, 0.1, half),
+        range(s, 0.1, half),
+        range(s, 0.1, half),
+    ];
+    corners(
+        std::array::from_fn(|k| c[k] - h[k]),
+        std::array::from_fn(|k| c[k] + h[k]),
+    )
+}
+
+/// Points on a plane tilted about both horizontal axes (no axis-aligned box of them is thin).
+fn tilted_plane(s: &mut u64, n: usize) -> Vec<[f32; 3]> {
+    (0..n)
+        .map(|_| {
+            let (x, y) = (range(s, -0.8, 0.8), range(s, -0.8, 0.8));
+            [x, y, 0.7 * x - 0.4 * y]
+        })
+        .collect()
+}
+
+/// The bodies of [`compound`]: 24 of them over the field, the keep and the ground north of it. Sixteen are compounds of two to
+/// four boxes (an L, a table, a chair: overlapping, off-centre, so the summed mass, the centre of mass and the inertia of the
+/// compound are all unlike a box's), four a compound with a hull of points in a tilted plane among sound ones, and four a single
+/// hull of points in a tilted plane (two) or on a line (two): the points that cannot make a hull are made as their boxes.
+fn compound_bodies() -> Vec<(BodyId, BodyDesc)> {
+    let mut s = 0x9e37_79b9_7f4a_7c15_u64;
+    let base = torque_example_assets::terrain::BASE;
+    let mut out = Vec::new();
+    for k in 0..24u32 {
+        let (gx, gy) = ((k % 6) as f32, (k / 6) as f32);
+        let position = [
+            -15.0 + gx * 6.0 + range(&mut s, -1.0, 1.0),
+            -18.0 + gy * 12.0 + range(&mut s, -1.0, 1.0),
+            base + 14.0 + range(&mut s, 0.0, 8.0),
+        ];
+        let shape = match k {
+            0..16 => Shape::Compound {
+                hulls: (0..2 + k % 3)
+                    .map(|_| random_box(&mut s, 0.6, 0.5))
+                    .collect::<Vec<_>>()
+                    .into(),
+            },
+            16..20 => Shape::Compound {
+                hulls: vec![
+                    random_box(&mut s, 0.5, 0.4),
+                    tilted_plane(&mut s, 30),
+                    random_box(&mut s, 0.5, 0.4),
+                ]
+                .into(),
+            },
+            20..22 => Shape::Hull {
+                points: tilted_plane(&mut s, 24),
+            },
+            _ => Shape::Hull {
+                points: (0..12)
+                    .map(|_| {
+                        let t = range(&mut s, -0.8, 0.8);
+                        [0.5 * t, -0.8 * t, 0.3 * t]
+                    })
+                    .collect(),
+            },
+        };
+        let rotation = [
+            range(&mut s, -1.0, 1.0),
+            range(&mut s, -1.0, 1.0),
+            range(&mut s, -1.0, 1.0),
+            range(&mut s, 0.2, 1.0),
+        ];
+        out.push((
+            BodyId(100 + k),
+            BodyDesc {
+                shape,
+                position,
+                rotation,
+                linvel: [range(&mut s, -2.0, 2.0), range(&mut s, -2.0, 2.0), 0.0],
+                angvel: [range(&mut s, -1.0, 1.0); 3],
+                density: range(&mut s, 0.5, 3.0),
+                friction: range(&mut s, 0.3, 1.0),
+                restitution: range(&mut s, 0.0, 0.3),
+                ..BodyDesc::default()
+            },
+        ));
+    }
+    out
+}
+
+/// The first scenario's run (module docs). `distance` is the bodies' mean distance from where they started.
 pub fn drop() -> Result<Outcome, String> {
+    run(bodies())
+}
+
+/// The second scenario's run: [`compound_bodies`] dropped the same way.
+pub fn compound() -> Result<Outcome, String> {
+    run(compound_bodies())
+}
+
+/// Drops `bodies` onto the hills and the keep and hashes each tick.
+fn run(bodies: Vec<(BodyId, BodyDesc)>) -> Result<Outcome, String> {
     let (hills, keep) = map()?;
     let mut world = World::new(Config::default());
     let mut free = |_: u64| true;
@@ -122,7 +233,6 @@ pub fn drop() -> Result<Outcome, String> {
     world
         .add_map(ObjectId(2), keep)
         .map_err(|e| e.to_string())?;
-    let bodies = bodies();
     let start: Vec<[f32; 3]> = bodies.iter().map(|(_, d)| d.position).collect();
     world
         .add_bodies(bodies, &mut free)

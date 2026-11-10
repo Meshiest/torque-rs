@@ -29,6 +29,7 @@ use torque_physics_rapier::{
 };
 
 use crate::data::{PropParams, PropShape};
+use crate::hulls::PropHulls;
 use crate::joints::{Joint, JointEvent, JointLimits};
 use crate::quant::{self, Quantized};
 use crate::records::{MASK_FLAGS, MASK_INIT, MASK_STATE};
@@ -102,6 +103,10 @@ impl PropLimits {
     }
 }
 
+/// The most step budgets the work of bodies made can owe (the debt past it is forgiven, [`PropWorld::forgiven_work`]); each step pays
+/// half a budget of it.
+pub const BUILD_DEBT_STEPS: u64 = 4;
+
 /// The longest owner key text a game may give (`propOwnerKey`); a longer one is cut to it.
 pub const MAX_OWNER_KEY: usize = 128;
 
@@ -155,6 +160,8 @@ pub struct Prop {
     /// The `PropData` datablock's object id, and its numbers.
     pub data: u32,
     pub params: PropParams,
+    /// The hulls it collides as, when its datablock asked for the shape's and they were built ([`PropShape::Hulls`]).
+    pub hulls: Option<Rc<PropHulls>>,
     /// The key of its collision shape on both sides (0 to 1,023).
     pub slot: u16,
     pub owner: Option<Owner>,
@@ -195,6 +202,20 @@ impl Rest {
     pub fn is_frozen(self) -> bool {
         self == Rest::Frozen
     }
+}
+
+/// What [`PropWorld::spawn_with`] takes: the arguments of [`PropWorld::spawn`] and the hulls the prop collides as.
+#[derive(Clone, Debug)]
+pub struct SpawnArgs {
+    pub id: u32,
+    pub data: u32,
+    pub params: PropParams,
+    /// The hulls it collides as, when its `params` say [`PropShape::Hulls`]; otherwise they are not used.
+    pub hulls: Option<Rc<PropHulls>>,
+    /// A position and a unit quaternion `x, y, z, w`.
+    pub pose: ([f32; 3], [f32; 4]),
+    pub owner: Option<Owner>,
+    pub predict: u8,
 }
 
 /// Why a spawn was refused.
@@ -364,6 +385,9 @@ pub struct TickReport {
     pub events: Vec<(u32, PropEvent)>,
     /// The step did not run: the budget refused it.
     pub over_budget: bool,
+    /// The bodies made (and made again) since the last tick and their work, when that was past a quarter of the step budget: the
+    /// next steps' budgets are charged it.
+    pub built: Option<(u32, u64)>,
     /// Props put to sleep because more were awake than the cap allows.
     pub capped: u32,
     /// Props awake after the tick.
@@ -427,8 +451,15 @@ pub struct PropWorld {
     /// The awake cap a budget overrun lowered, while it lasts.
     cut: Option<u32>,
     pub limits: PropLimits,
+    /// The work of the bodies made (and made again) since the last step: it is charged to the next step's budget.
+    built_work: u64,
+    /// How many bodies that work was of.
+    built_bodies: u32,
     /// Ticks the budget refused.
     pub over_budget: u64,
+    /// Work of bodies made that was never charged to a step, because a burst left more than [`BUILD_DEBT_STEPS`] steps' budgets
+    /// owing (the excess is forgiven, here counted).
+    pub forgiven_work: u64,
     /// Pusher and bystander boxes the physics world refused to make (its caps; each is tried again at the next tick).
     pub box_refused: u64,
     /// Boxes left out for not being a body's: not finite, or a half-extent past [`MAX_PUSHER_HALF`].
@@ -504,11 +535,12 @@ fn add_static(world: &mut World, id: u32, piece: &StaticPiece) -> bool {
     }
 }
 
-/// The body of a prop's shape.
-fn body_shape(shape: PropShape) -> Shape {
-    match shape {
-        PropShape::Box(half) => Shape::Box { half },
-        PropShape::Ball(radius) => Shape::Ball { radius },
+/// The body of a prop's shape: its hulls when it has them, else the box or ball its datablock gave.
+fn body_shape(params: &PropParams, hulls: Option<&PropHulls>) -> Shape {
+    match (params.shape, hulls) {
+        (PropShape::Hulls { .. }, Some(hulls)) => hulls.shape(),
+        (PropShape::Box(half) | PropShape::Hulls { half, .. }, _) => Shape::Box { half },
+        (PropShape::Ball(radius), _) => Shape::Ball { radius },
     }
 }
 
@@ -554,7 +586,10 @@ impl PropWorld {
             config: config(substeps),
             cut: None,
             limits: limits.held(),
+            built_work: 0,
+            built_bodies: 0,
             over_budget: 0,
+            forgiven_work: 0,
             box_refused: 0,
             box_rejected: 0,
             box_stopped: 0,
@@ -673,10 +708,32 @@ impl PropWorld {
         id: u32,
         data: u32,
         params: PropParams,
-        (position, rotation): ([f32; 3], [f32; 4]),
+        pose: ([f32; 3], [f32; 4]),
         owner: Option<Owner>,
         predict: u8,
     ) -> Result<(), SpawnError> {
+        self.spawn_with(SpawnArgs {
+            id,
+            data,
+            params,
+            hulls: None,
+            pose,
+            owner,
+            predict,
+        })
+    }
+
+    /// [`PropWorld::spawn`] of a prop that may collide as hulls ([`SpawnArgs::hulls`]).
+    pub fn spawn_with(&mut self, args: SpawnArgs) -> Result<(), SpawnError> {
+        let SpawnArgs {
+            id,
+            data,
+            params,
+            hulls,
+            pose: (position, rotation),
+            owner,
+            predict,
+        } = args;
         if self.props.contains_key(&id)
             || self.statics.contains_key(&id)
             || self.joints.contains_key(&id)
@@ -704,7 +761,7 @@ impl PropWorld {
         let s = start.state();
         let desc = BodyDesc {
             motion: Motion::Dynamic,
-            shape: body_shape(params.shape),
+            shape: body_shape(&params, hulls.as_deref()),
             position: s.position,
             rotation: s.rotation,
             density: params.density,
@@ -714,8 +771,15 @@ impl PropWorld {
             angular_damping: params.angular_damping,
             ..BodyDesc::default()
         };
-        let mut free = |_: u64| true;
-        match self.world.add_body(BodyId(id), &desc, &mut free) {
+        let mut work = 0u64;
+        let mut count = |units: u64| {
+            work = work.saturating_add(units);
+            true
+        };
+        let added = self.world.add_body(BodyId(id), &desc, &mut count);
+        self.built_work = self.built_work.saturating_add(work);
+        self.built_bodies = self.built_bodies.saturating_add(1);
+        match added {
             Ok(()) => {}
             Err(Error::NonFinite) => return Err(SpawnError::Bad),
             Err(_) => return Err(SpawnError::World),
@@ -728,6 +792,7 @@ impl PropWorld {
             Prop {
                 data,
                 params,
+                hulls,
                 slot,
                 owner,
                 predict,
@@ -739,6 +804,11 @@ impl PropWorld {
             },
         );
         Ok(())
+    }
+
+    /// The work of bodies made that the next steps' budgets are still to be charged.
+    pub fn owed_work(&self) -> u64 {
+        self.built_work
     }
 
     /// Takes a prop away; true when it was one.
@@ -779,7 +849,7 @@ impl PropWorld {
         let s = p.q.stopped().state();
         let desc = BodyDesc {
             motion,
-            shape: body_shape(p.params.shape),
+            shape: body_shape(&p.params, p.hulls.as_deref()),
             position: s.position,
             rotation: s.rotation,
             density: p.params.density,
@@ -801,7 +871,11 @@ impl PropWorld {
         };
         let removed = self.world.remove_body(BodyId(id));
         self.note(&format!("prop {id}'s body"), removed);
-        let mut free = |_: u64| true;
+        let mut work = 0u64;
+        let mut free = |units: u64| {
+            work = work.saturating_add(units);
+            true
+        };
         let (made, has_body) = match self.world.add_body(BodyId(id), &desc, &mut free) {
             Ok(()) => (true, true),
             Err(e) => {
@@ -814,6 +888,8 @@ impl PropWorld {
                 (false, has_body)
             }
         };
+        self.built_work = self.built_work.saturating_add(work);
+        self.built_bodies = self.built_bodies.saturating_add(1);
         // Removing the body took its joints out of the physics world: they go back on the body it has now.
         if has_body {
             self.reinsert_joints_of(id);
@@ -1040,7 +1116,7 @@ impl PropWorld {
             let s = p.q.state();
             let desc = BodyDesc {
                 motion,
-                shape: body_shape(p.params.shape),
+                shape: body_shape(&p.params, p.hulls.as_deref()),
                 position: s.position,
                 rotation: s.rotation,
                 linvel: s.linvel,
@@ -1053,8 +1129,15 @@ impl PropWorld {
                 ..BodyDesc::default()
             };
             let asleep = p.rest.is_asleep();
-            let mut free = |_: u64| true;
-            if self.world.add_body(BodyId(id), &desc, &mut free).is_err() {
+            let mut work = 0u64;
+            let mut count = |units: u64| {
+                work = work.saturating_add(units);
+                true
+            };
+            let added = self.world.add_body(BodyId(id), &desc, &mut count);
+            self.built_work = self.built_work.saturating_add(work);
+            self.built_bodies = self.built_bodies.saturating_add(1);
+            if added.is_err() {
                 self.remove(id);
                 lost.push(id);
                 continue;
@@ -1202,7 +1285,20 @@ impl PropWorld {
             report.dirty.push((id, MASK_FLAGS));
         }
         let budget = self.limits.step_budget;
-        let mut spent = 0u64;
+        // What the bodies made since the last step cost counts against the next steps' budgets, at most half of one a step, so a
+        // script that makes a great many at once slows the steps that follow a little rather than stopping one.
+        let bodies = std::mem::take(&mut self.built_bodies);
+        if self.built_work > budget / 4 {
+            report.built = Some((bodies, self.built_work));
+        }
+        // A burst cannot hold the steps after it at half a budget for long: the debt is at most BUILD_DEBT_STEPS budgets (paid
+        // off in twice that many steps), and the rest is forgiven.
+        let kept = self.built_work.min(budget.saturating_mul(BUILD_DEBT_STEPS));
+        self.forgiven_work = self.forgiven_work.saturating_add(self.built_work - kept);
+        self.built_work = kept;
+        let owed = self.built_work.min(budget / 2);
+        self.built_work -= owed;
+        let mut spent = owed;
         let mut charge = |units: u64| {
             spent = spent.saturating_add(units);
             spent <= budget

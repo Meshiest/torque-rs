@@ -135,7 +135,7 @@ impl World {
         }
         let host = *self.bodies.get(&onto).ok_or(Error::Unknown(onto))?;
         let l = self.config.limits;
-        if self.rapier.colliders.len() >= l.max_colliders {
+        if self.collider_load() >= l.max_colliders {
             return Err(Error::Cap(Cap::Colliders));
         }
         let position = guard::coords(desc.position, l.max_coordinate).ok_or(Error::NonFinite)?;
@@ -148,6 +148,9 @@ impl World {
             return Err(Error::Exhausted);
         }
         let built = shape::build(&desc.shape, &l, charge)?;
+        if self.collider_load() + built.parts > l.max_colliders {
+            return Err(Error::Cap(Cap::Colliders));
+        }
         let at = pose(position, rotation) * Pose::from_translation(v3(built.offset));
         let collider = ColliderBuilder::new(built.shape)
             .position(at)
@@ -160,6 +163,7 @@ impl World {
         let reach = size + position.iter().map(|v| v * v).sum::<f32>().sqrt();
         let collider = self.guarded(|r| r.insert_collider(collider, Some(host.handle)))?;
         self.stats.hulls_replaced += usize::from(built.replaced);
+        self.take_hulls(id, built.parts);
         self.parts.insert(
             id,
             PartEntry {
@@ -184,6 +188,7 @@ impl World {
     pub fn remove_part(&mut self, id: BodyId) -> Result<(), Error> {
         self.live()?;
         let part = self.parts.remove(&id).ok_or(Error::Unknown(id))?;
+        self.drop_hulls(id);
         if let Some(index) = self.part_index.get_mut(&part.onto) {
             index.remove(id, part.reach);
             if index.ids.is_empty() {
@@ -330,6 +335,7 @@ impl World {
         if let Some(index) = self.part_index.remove(&id) {
             for part in index.ids {
                 self.parts.remove(&part);
+                self.drop_hulls(part);
             }
         }
     }

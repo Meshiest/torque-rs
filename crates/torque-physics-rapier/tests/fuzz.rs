@@ -81,12 +81,18 @@ fn points(rng: &mut Rng, cap: usize) -> Vec<[f32; 3]> {
 }
 
 fn shape(rng: &mut Rng, cap: usize) -> Shape {
-    match rng.below(4) {
+    match rng.below(5) {
         0 => Shape::Box {
             half: vec3(rng, 2.0),
         },
         1 => Shape::Ball {
             radius: float(rng, 2.0),
+        },
+        2 => Shape::Compound {
+            hulls: (0..rng.below(80))
+                .map(|_| points(rng, cap))
+                .collect::<Vec<_>>()
+                .into(),
         },
         _ => Shape::Hull {
             points: points(rng, cap),
@@ -174,6 +180,7 @@ fn limits(rng: &mut Rng) -> Limits {
         max_bodies: rng.below(10) as usize,
         max_colliders: rng.below(80) as usize,
         max_hull_vertices: rng.below(70) as usize,
+        max_compound_hulls: rng.below(70) as usize,
         max_contacts: rng.below(80) as usize,
         max_cells_per_query: rng.below(20) as usize,
         max_coordinate: pick(rng, d.max_coordinate),
