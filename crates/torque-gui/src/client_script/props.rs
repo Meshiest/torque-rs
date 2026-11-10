@@ -18,10 +18,105 @@ fn prop_def(prop: Prop) -> &'static PropDef {
     DEFS[prop as usize].expect("PROPS has every prop")
 }
 
+/// Where prop values are read from: a control's [`Props`], the props an op gives, or one over the other ([`Over`]). Reading
+/// through it never copies a value, so a check of an op costs what the op carries, not what the control holds.
+pub(crate) trait Lookup {
+    /// The value set for `prop`, if any.
+    fn lookup(&self, prop: Prop) -> Option<&PropValue>;
+}
+
+/// The props an op gives, in its order: a prop given twice reads as the last one.
+pub(crate) struct Given<'a>(pub(crate) &'a [(Prop, PropValue)]);
+
+impl Lookup for Given<'_> {
+    fn lookup(&self, prop: Prop) -> Option<&PropValue> {
+        self.0
+            .iter()
+            .rev()
+            .find(|(p, _)| *p == prop)
+            .map(|(_, v)| v)
+    }
+}
+
+/// What `top` sets, else what `base` has.
+pub(crate) struct Over<'a> {
+    pub(crate) top: &'a dyn Lookup,
+    pub(crate) base: &'a dyn Lookup,
+}
+
+impl Lookup for Over<'_> {
+    fn lookup(&self, prop: Prop) -> Option<&PropValue> {
+        self.top.lookup(prop).or_else(|| self.base.lookup(prop))
+    }
+}
+
+/// A Bool prop of `props`, else its default.
+pub(crate) fn flag_of(props: &dyn Lookup, prop: Prop) -> bool {
+    match props.lookup(prop) {
+        Some(PropValue::Bool(b)) => *b,
+        _ => matches!(prop_def(prop).default, PropDefault::Bool(true)),
+    }
+}
+
+/// A Number prop of `props`, else its default.
+pub(crate) fn num_of(props: &dyn Lookup, prop: Prop) -> f64 {
+    match props.lookup(prop) {
+        Some(PropValue::Number(n)) => *n,
+        _ => match prop_def(prop).default {
+            PropDefault::Number(n) => n,
+            _ => 0.0,
+        },
+    }
+}
+
+/// An Int prop of `props`, else its default.
+pub(crate) fn int_of(props: &dyn Lookup, prop: Prop) -> u32 {
+    match props.lookup(prop) {
+        Some(PropValue::Int(n)) => *n,
+        _ => match prop_def(prop).default {
+            PropDefault::Int(n) => n,
+            _ => 0,
+        },
+    }
+}
+
+/// A Vec2 prop of `props`, else its default.
+pub(crate) fn vec2_of(props: &dyn Lookup, prop: Prop) -> (f64, f64) {
+    match props.lookup(prop) {
+        Some(PropValue::Vec2(x, y)) => (*x, *y),
+        _ => match prop_def(prop).default {
+            PropDefault::Vec2(x, y) => (x, y),
+            _ => (0.0, 0.0),
+        },
+    }
+}
+
+/// A text, rich text or image prop of `props`, else empty.
+pub(crate) fn text_of(props: &dyn Lookup, prop: Prop) -> &str {
+    match props.lookup(prop) {
+        Some(PropValue::Text(t)) => t,
+        _ => "",
+    }
+}
+
+/// A list's rows in `props`, else none.
+pub(crate) fn rows_of(props: &dyn Lookup) -> &[String] {
+    match props.lookup(Prop::Rows) {
+        Some(PropValue::Rows(rows)) => rows,
+        _ => &[],
+    }
+}
+
 /// The props a control has been given: few, so a list that is searched. Reading one it was never given reads the format's
 /// default.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Props(Vec<(Prop, PropValue)>);
+
+impl Lookup for Props {
+    fn lookup(&self, prop: Prop) -> Option<&PropValue> {
+        self.0.iter().find(|(p, _)| *p == prop).map(|(_, v)| v)
+    }
+}
 
 impl Props {
     pub(crate) fn set(&mut self, prop: Prop, value: PropValue) {
@@ -31,49 +126,24 @@ impl Props {
         }
     }
 
-    fn get(&self, prop: Prop) -> Option<&PropValue> {
-        self.0.iter().find(|(p, _)| *p == prop).map(|(_, v)| v)
-    }
-
     pub(crate) fn flag(&self, prop: Prop) -> bool {
-        match self.get(prop) {
-            Some(PropValue::Bool(b)) => *b,
-            _ => matches!(prop_def(prop).default, PropDefault::Bool(true)),
-        }
+        flag_of(self, prop)
     }
 
     pub(crate) fn num(&self, prop: Prop) -> f64 {
-        match self.get(prop) {
-            Some(PropValue::Number(n)) => *n,
-            _ => match prop_def(prop).default {
-                PropDefault::Number(n) => n,
-                _ => 0.0,
-            },
-        }
+        num_of(self, prop)
     }
 
     pub(crate) fn int(&self, prop: Prop) -> u32 {
-        match self.get(prop) {
-            Some(PropValue::Int(n)) => *n,
-            _ => match prop_def(prop).default {
-                PropDefault::Int(n) => n,
-                _ => 0,
-            },
-        }
+        int_of(self, prop)
     }
 
     pub(crate) fn vec2(&self, prop: Prop) -> (f64, f64) {
-        match self.get(prop) {
-            Some(PropValue::Vec2(x, y)) => (*x, *y),
-            _ => match prop_def(prop).default {
-                PropDefault::Vec2(x, y) => (x, y),
-                _ => (0.0, 0.0),
-            },
-        }
+        vec2_of(self, prop)
     }
 
     pub(crate) fn color(&self, prop: Prop) -> [u8; 4] {
-        match self.get(prop) {
+        match self.lookup(prop) {
             Some(PropValue::Color(c)) => *c,
             _ => match prop_def(prop).default {
                 PropDefault::Color(c) => c,
@@ -84,7 +154,7 @@ impl Props {
 
     /// An enum prop's index.
     pub(crate) fn index(&self, prop: Prop) -> u8 {
-        match self.get(prop) {
+        match self.lookup(prop) {
             Some(PropValue::Enum(i)) => *i,
             _ => match prop_def(prop).default {
                 PropDefault::Enum(i) => i,
@@ -95,16 +165,10 @@ impl Props {
 
     /// A text, rich text or image prop.
     pub(crate) fn text(&self, prop: Prop) -> &str {
-        match self.get(prop) {
-            Some(PropValue::Text(t)) => t,
-            _ => "",
-        }
+        text_of(self, prop)
     }
 
     pub(crate) fn rows(&self) -> &[String] {
-        match self.get(Prop::Rows) {
-            Some(PropValue::Rows(rows)) => rows,
-            _ => &[],
-        }
+        rows_of(self)
     }
 }

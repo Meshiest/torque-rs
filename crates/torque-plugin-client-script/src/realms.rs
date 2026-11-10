@@ -14,8 +14,8 @@
 //!
 //! Whatever the player answered is told to the server once as a [`Status`], and nothing else about why.
 
-use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +29,7 @@ use torque_engine::net::ConnectTarget;
 use torque_engine::rpc::{NoGhosts, RealmInbox};
 use torque_gui::Gui;
 use torque_gui::client_script::{LayerAction, Realm, RealmView, TierToggle};
-use torque_mods::{CacheOwner, Mods};
+use torque_mods::{CacheOwner, MAX_CLIENT_IMAGE_BYTES, Mods};
 use torque_server::net::rpc::ClientRpc;
 use torque_ts_vm::vm::Vm;
 
@@ -37,7 +37,7 @@ use crate::abilities::ABILITIES;
 use crate::call::{error_text, reply_value};
 use crate::choices::Choices;
 use crate::consent::{ConsentAnswer, ConsentPrompt, ConsentRequest, EnginePrompt};
-use crate::effects::{Outgoing, Record, Recording};
+use crate::effects::{Applying, Outgoing, Record, Recording};
 use crate::inbox::ScriptInbox;
 use crate::messages::{OfferedMod, STATUS, ScriptStatus, ScriptUp, Status, UP};
 use crate::policy::{
@@ -61,18 +61,27 @@ impl<F: Fn(InstanceLimits) -> Result<Box<dyn Runner>, Trap>> RunnerFactory for F
     }
 }
 
-/// Where a server's verified files are: the look that reads nothing, and the read that happens only after the player allowed.
+/// Reads one image file of a mod by its path within the mod, when the realm first shows it.
+pub type ImageReader = Box<dyn Fn(&str) -> Option<Arc<[u8]>>>;
+
+/// Where a server's verified files are: the look that reads nothing, and the reads that happen only after the player allowed.
 pub trait OfferSource {
     /// Whether the files of `offered` are mounted for `server` on this connection and hold its entry. Reads nothing.
     fn ready(&self, vm: &Vm, server: CacheOwner, offered: &OfferedMod) -> bool;
 
-    /// The mod's files as `(mods/<id>/<path>, bytes)`, by the rules of [`Mods::client_content`].
+    /// The mod's script files as `(mods/<id>/<path>, bytes)`, by the rules of [`Mods::client_scripts`].
     fn content(
         &self,
         vm: &Vm,
         server: CacheOwner,
         offered: &OfferedMod,
     ) -> Option<Vec<(String, Arc<[u8]>)>>;
+
+    /// The reader of the mod's images ([`Mods::client_image`]'s rules), called when a control first shows one. By default the
+    /// mod has none.
+    fn images(&self, _vm: &Vm, _server: CacheOwner, _offered: &OfferedMod) -> ImageReader {
+        Box::new(|_| None)
+    }
 }
 
 /// The files `torque-mods` mounted from the server's download or its own cache entry.
@@ -91,7 +100,44 @@ impl OfferSource for ModsSource {
         server: CacheOwner,
         offered: &OfferedMod,
     ) -> Option<Vec<(String, Arc<[u8]>)>> {
-        Mods::of(vm)?.client_content(server, &offered.id, &offered.hash)
+        Mods::of(vm)?.client_scripts(server, &offered.id, &offered.hash)
+    }
+
+    fn images(&self, vm: &Vm, server: CacheOwner, offered: &OfferedMod) -> ImageReader {
+        let Some(mods) = Mods::of(vm) else {
+            return Box::new(|_| None);
+        };
+        let (id, hash) = (offered.id.clone(), offered.hash);
+        Box::new(move |path| mods.client_image(server, &id, &hash, path))
+    }
+}
+
+/// A realm's images, read from the server's mods when a control first shows one and kept for the realm's life, at most
+/// [`MAX_CLIENT_IMAGE_BYTES`] of them in all: an image past it is not this server's content to the realm.
+struct Images {
+    readers: Vec<(String, ImageReader)>,
+    read: RefCell<HashMap<String, Arc<[u8]>>>,
+    bytes: Cell<u64>,
+}
+
+impl Images {
+    /// The bytes of the content path `mods/<id>/<path>`.
+    fn get(&self, content_path: &str) -> Option<Arc<[u8]>> {
+        if let Some(bytes) = self.read.borrow().get(content_path) {
+            return Some(Arc::clone(bytes));
+        }
+        let (id, path) = content_path.strip_prefix("mods/")?.split_once('/')?;
+        let (_, reader) = self.readers.iter().find(|(mine, _)| mine == id)?;
+        let bytes = reader(path)?;
+        let total = self.bytes.get().saturating_add(bytes.len() as u64);
+        if total > MAX_CLIENT_IMAGE_BYTES {
+            return None;
+        }
+        self.bytes.set(total);
+        self.read
+            .borrow_mut()
+            .insert(content_path.to_string(), Arc::clone(&bytes));
+        Some(bytes)
     }
 }
 
@@ -118,6 +164,8 @@ struct Frame {
 /// A running realm and the ends of its queues.
 struct Live {
     session: Session<Recording>,
+    /// The other end of the session's recorder, for the frames' [`Applying`].
+    recording: Recording,
     realm: Realm,
     record: Rc<RefCell<Record>>,
     replies: Rc<RefCell<VecDeque<(u32, bool, Value)>>>,
@@ -508,13 +556,22 @@ impl Realms {
         let Some(mut realm) = Realm::new(vm, gui, grants.grants(), view) else {
             return unavailable(self, vm, "a realm is running already");
         };
-        let store = content.clone();
-        realm.set_content_check(Box::new(move |path| store.get(path).cloned()));
+        let images = Images {
+            readers: pending
+                .mods
+                .iter()
+                .map(|m| (m.id.clone(), self.source.images(vm, pending.server, m)))
+                .collect(),
+            read: RefCell::default(),
+            bytes: Cell::new(0),
+        };
+        realm.set_content_check(Box::new(move |path| images.get(path)));
         let Some(table) = vm.extension::<ClientRpc>().map(|rpc| rpc.table().clone()) else {
             realm.teardown(vm, gui);
             return unavailable(self, vm, "there is no connection");
         };
         let (effects, record) = Recording::new(table);
+        let recording = effects.clone();
         let mods: Vec<ClientMod> = pending
             .mods
             .iter()
@@ -532,6 +589,7 @@ impl Realms {
         self.stats.opened += 1;
         self.state = State::Live(Box::new(Live {
             session,
+            recording,
             realm,
             record,
             replies: Rc::default(),
@@ -554,6 +612,8 @@ impl Realms {
         let State::Live(mut live) = std::mem::replace(&mut self.state, State::Off) else {
             return;
         };
+        // What the GUI did for the realm since its last frame (its layouts, its image decodes) is the realm's time.
+        live.session.charge(gui.take_client_script_owed());
         // In: the server's values and calls, the answers to the realm's calls, and the player's input.
         if let Some(inbox) = inbox {
             for value in inbox.take_values(frame.epoch) {
@@ -575,20 +635,25 @@ impl Realms {
         if !batch.is_empty() {
             live.session.ui_events(&batch);
         }
-        let mut turned_off = false;
+        let mut ended = None;
         for action in gui.take_client_script_actions() {
             match action {
                 LayerAction::Revoke(tier) => {
                     live.session.revoke(tier);
                 }
                 LayerAction::Hide(_) => {}
-                LayerAction::TurnOff => turned_off = true,
+                // "Turn off for this server" outweighs a Shift+Escape in the same frame.
+                LayerAction::TurnOff => ended = Some(LayerAction::TurnOff),
+                LayerAction::Stop => {
+                    ended.get_or_insert(LayerAction::Stop);
+                }
             }
         }
-        if turned_off {
-            if let Err(error) = self
-                .choices
-                .set(live.server, &live.address, Remembered::Never)
+        if let Some(action) = ended {
+            if action == LayerAction::TurnOff
+                && let Err(error) = self
+                    .choices
+                    .set(live.server, &live.address, Remembered::Never)
             {
                 vm.warn(format!(
                     "server scripts: the choice could not be saved ({error})"
@@ -597,9 +662,30 @@ impl Realms {
             end(vm, gui, *live);
             return;
         }
-        live.session.frame(frame.now_us, frame.target);
-        // Out: what the realm asked for, in the format's order.
-        let keep = self.apply(vm, gui, rpc, &mut live, frame.now_us);
+        // The player's revocations take the controls away before the realm runs again.
+        let revoked = std::mem::take(&mut live.record.borrow_mut().revoked);
+        if !revoke(vm, gui, &mut live, &revoked) {
+            end(vm, gui, *live);
+            return;
+        }
+        {
+            let Live {
+                session,
+                recording,
+                realm,
+                ..
+            } = &mut *live;
+            let mut applying = Applying {
+                recording,
+                realm,
+                vm,
+                gui,
+                now_us: frame.now_us,
+            };
+            session.frame_with(frame.now_us, frame.target, &mut applying);
+        }
+        // Out: what the realm asked for that waited for its ui ops.
+        let keep = self.apply(vm, gui, rpc, &mut live);
         self.state = if keep {
             State::Live(live)
         } else {
@@ -608,51 +694,23 @@ impl Realms {
         };
     }
 
-    /// Applies what the frame recorded. `false` when the realm is over.
-    fn apply(
-        &mut self,
-        vm: &mut Vm,
-        gui: &Gui,
-        rpc: &ClientRpc,
-        live: &mut Live,
-        now_us: u64,
-    ) -> bool {
+    /// Carries out what the frame recorded besides its `ui` ops (applied during the frame). `false` when the realm is over.
+    fn apply(&mut self, vm: &mut Vm, gui: &Gui, rpc: &ClientRpc, live: &mut Live) -> bool {
         let record = std::mem::take(&mut *live.record.borrow_mut());
         for (_, line) in &record.logs {
             vm.print(format!("[scripts from {}] {line}", live.address).as_bytes());
         }
         self.stats.refused += record.refused_sends + record.refused_calls;
-        let mut alive = record.stopped.is_none() && !record.torn_down;
-        if alive {
-            for ui in &record.ui {
-                if let Err(violation) = live.realm.apply_flush(vm, gui, ui, now_us) {
-                    vm.warn(format!(
-                        "server scripts from {} stopped: {violation}",
-                        live.address
-                    ));
-                    alive = false;
-                    break;
-                }
-            }
-        }
+        let alive = record.stopped.is_none() && !record.torn_down;
         if let Some(why) = &record.stopped {
             vm.warn(format!(
                 "server scripts from {} stopped: {why}",
                 live.address
             ));
         }
-        if !alive {
+        if !alive || !revoke(vm, gui, live, &record.revoked) {
             // A flush whose ui failed sends nothing, and a stopped realm answers no call.
             return false;
-        }
-        for tier in &record.revoked {
-            if let Err(violation) = live.realm.revoke(vm, gui, *tier) {
-                vm.warn(format!(
-                    "server scripts from {} stopped: {violation}",
-                    live.address
-                ));
-                return false;
-            }
         }
         self.send_out(vm, rpc, live, record.outgoing);
         true
@@ -736,6 +794,20 @@ impl Realms {
             None => {}
         }
     }
+}
+
+/// Takes `tiers` from the realm's controls: `false` when that stopped it.
+fn revoke(vm: &mut Vm, gui: &Gui, live: &mut Live, tiers: &[Tier]) -> bool {
+    for tier in tiers {
+        if let Err(violation) = live.realm.revoke(vm, gui, *tier) {
+            vm.warn(format!(
+                "server scripts from {} stopped: {violation}",
+                live.address
+            ));
+            return false;
+        }
+    }
+    true
 }
 
 /// Closes a realm: its instance thrown away and everything it made removed.

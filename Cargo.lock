@@ -4405,6 +4405,7 @@ dependencies = [
  "torque-fonts",
  "torque-images",
  "torque-ts-vm",
+ "web-time",
 ]
 
 [[package]]
@@ -4552,6 +4553,7 @@ version = "0.1.0"
 name = "torque-plugin-client-script"
 version = "0.1.0"
 dependencies = [
+ "png",
  "torque",
  "torque-client-script-format",
  "torque-client-script-host",

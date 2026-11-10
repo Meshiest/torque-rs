@@ -215,7 +215,7 @@ fn press(gui: &Gui, row: Row) {
             l.hidden = !hidden;
             l.actions.push(LayerAction::Hide(!hidden));
         }
-        Row::TurnOff => turn_off(gui),
+        Row::TurnOff => turn_off(gui, LayerAction::TurnOff),
     }
 }
 

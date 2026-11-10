@@ -47,15 +47,26 @@
 //!   again, `draw_tooltip`, then cuts the chip's column (`LayerState::column`) out of every quad the layer pushed, and keeps what
 //!   it pushed (`LayerMemo`, in `DrawCache`) to push again in a frame whose `LayerKey` is the same (see **Kept draws**);
 //!   `Walk::engine_layer` draws the prompts and the chip; each layer is recorded as a `LayerMark`; realm images are drawn by
-//!   `DrawCtx::realm_image` from `RealmImage` bytes in `DrawCache`'s own realm textures; `Walk::custom_control` runs no
-//!   `onRender` for a realm control (`is_realm`);
+//!   `DrawCtx::realm_image` from `RealmImage` bytes, decoded once when first drawn into the texture every copy of that
+//!   `RealmImage` shares, within the frame's and the realm's decode allowances (`MAX_REALM_DECODE_FRAME`, `DecodeAllowance`;
+//!   an image they cannot take yet waits, and the layer is not kept meanwhile); `Walk::custom_control` runs no `onRender` for a
+//!   realm control (`is_realm`);
 //! - input (`input.rs`): `process_input_event` calls `route` before the canvas and `after_canvas` after it; `route` gives a
 //!   prompt's key responder `on_key_down` and `on_key_up_at`;
 //! - the frame (`Gui::frame`) calls `frame`; `ControlClass::on_remove` calls `forget`; `control.rs` skips the game's callbacks
 //!   for realm controls (`is_realm`); `canvas.rs`'s `cursorOn` and `cursorOff` count `GuiState::cursor_calls`.
 //!
-//! **An op's way.** The host gives `Realm::apply_flush` a flush; it is decoded record by record, the tier checked against the
-//! grants, and a `ui` record read by its kind. Everything is checked before anything changes, so a refused op changes nothing.
+//! **An op's way.** The host gives `Realm::apply_flush` a flush. `Realm::check_flush` first checks it whole against the
+//! applier's books without making anything (`apply::Dry`, which keeps what the flush changed beside the books and must check
+//! every op as the applier does, in the same order), so a refused flush changes nothing; the host also calls it alone on a
+//! flush whose pieces it then applies over several frames (with `Realm::apply_checked`, which skips the check of the
+//! whole). A set reads the control's props where they are, under what the op gives (`props::Over`), and merges into them in
+//! place: nothing of a control is copied for an op, so an op costs what it carries (the guest pays for that). Then it is applied record by record, the tier checked against the
+//! grants, and a `ui` record read by its kind, under a host work budget (`MAX_FRAME_WORK`). While it applies, a resize of a
+//! layout's container only sets its bounds and marks it and the containers around it due (`layers::defer_layout`), so the
+//! frame's layout check lays each out once however many ops moved it. The time the GUI spends for the realm outside its frame
+//! (that check, its image decodes) is kept in `LayerState::owed` for the host to charge to the realm
+//! (`Gui::take_client_script_owed`).
 //! A create or set merges the props, checks the rules between them and the caps, makes or finds the object, writes the layout
 //! props to its fields and the rest to its `NodeState`. A container (`flex`, `grid`) is made as an object of the layout's class
 //! with its props, and every control's item props, written as the words of CSS to the fields the layout names
@@ -86,6 +97,14 @@
 //! nothing while a dialog, a prompt or an unmarked screen is up.
 //!
 //! **Invariants and their guards** (run the commands below after any change here):
+//! - A flush's check finds what applying it finds, at the same op: `client_script_applier_fuzz_100000_sequences` and its two
+//!   container variants compare `check_flush` with `apply_checked` on every random flush; a flush refused at its last op makes
+//!   nothing: `client_script_a_flush_is_checked_whole_before_any_of_it_applies`.
+//! - A realm's images keep their caps (a side of `MAX_IMAGE_SIDE`, `MAX_IMAGE_BYTES` decoded in all; past the decoded cap an
+//!   image is not shown, and the realm goes on) and decode once each for the realm's life, within the frame's allowance,
+//!   natively on threads but for small ones: `client_script_images_past_their_caps_are_refused`,
+//!   `client_script_images_decode_once_within_the_frames_allowance`, `client_script_image_decodes_past_the_burst_wait_for_the_rate`,
+//!   `client_script_a_large_image_decodes_off_the_frame_and_once_for_the_realm`.
 //! - No code field, name or script callback is reachable from a realm control: `client_script_a_realm_control_is_not_the_games`,
 //!   `client_script_string_props_set_to_code_never_run`, `Realm::check` in `client_script_applier_fuzz_100000_sequences`.
 //! - The game never moves the server layer: `client_script_game_screen_changes_never_move_the_server_layer`.
@@ -178,7 +197,7 @@ pub use layers::{
     DEFAULT_FACES, DrawPlan, Hold, Holds, LayerAction, LayerMark, LayerState, MAX_ENGINE_LAYER,
     MAX_QUEUED_EVENTS, RealmView, Stats, TierToggle,
 };
-pub(crate) use layers::{focus_on_top, forget, frame};
+pub(crate) use layers::{defer_layout, focus_on_top, forget, frame};
 pub use layout::{RealmLayout, RealmLayoutEntry};
 pub(crate) use paint::{caret_on, draw_tooltip, tooltip_text};
 pub use prompt::{

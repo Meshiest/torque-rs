@@ -1,5 +1,6 @@
 //! The `ui` tier: controls the realm makes, as handles over its mirror, and the events of its controls.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use mlua::{
@@ -10,10 +11,12 @@ use mlua::{
 use super::format::ui::{
     self as fui, Event, Kind, KindDef, Prop, PropDef, PropType, PropValue, Track,
 };
-use super::format::{Malformed, NodeBudget, Reader, Tier, Value as FormatValue, Writer, event, op};
+use super::format::{
+    Malformed, NodeBudget, Reader, Tier, Value as FormatValue, Writer, abi, event, op,
+};
 use super::{
-    CallbackId, MAX_NAME, State, add_handler, function, granted, guarded, invoke_kept, keep,
-    name_of, release, short_text, state,
+    CallbackId, MAX_NAME, State, add_handler, charge, function, granted, guarded, invoke_kept,
+    keep, name_of, release, short_text, state,
 };
 use crate::realm::table_slots;
 
@@ -418,30 +421,34 @@ fn read_props(kind: &KindDef, props: Option<Table>) -> mlua::Result<Props> {
 }
 
 /// The rules that tie a control's props together and the realm's caps, for `props` set on a control of `kind` that
-/// has `old` (none for a new one): the control's text byte counts afterwards (its own, and all).
+/// has `old` (none for a new one): the control's text byte counts afterwards (its own, and all). Only the props being set
+/// are read whole; the others' bytes are the node's kept counts.
 fn check_control(
     ui: &UiState,
     kind: &KindDef,
     old: Option<&Node>,
     props: &Props,
 ) -> mlua::Result<(usize, usize)> {
-    let get = |prop: Prop| -> PropValue {
+    let get = |prop: Prop| -> Cow<'_, PropValue> {
         props
             .get(&prop)
-            .cloned()
-            .or_else(|| old.and_then(|n| n.props.get(&prop).cloned()))
-            .unwrap_or_else(|| fui::prop_def(prop).default.value())
+            .or_else(|| old.and_then(|n| n.props.get(&prop)))
+            .map_or_else(
+                || Cow::Owned(fui::prop_def(prop).default.value()),
+                Cow::Borrowed,
+            )
     };
-    if kind.has(Prop::Selected)
-        && let (PropValue::Int(selected), PropValue::Rows(rows)) =
-            (get(Prop::Selected), get(Prop::Rows))
-        && selected as usize > rows.len()
-    {
-        return Err(Error::runtime("ui: `selected` is past the list's rows"));
+    if kind.has(Prop::Selected) {
+        let (selected, rows) = (get(Prop::Selected), get(Prop::Rows));
+        if let (PropValue::Int(selected), PropValue::Rows(rows)) = (&*selected, &*rows)
+            && *selected as usize > rows.len()
+        {
+            return Err(Error::runtime("ui: `selected` is past the list's rows"));
+        }
     }
     if kind.has(Prop::Range)
         && let (PropValue::Vec2(lo, hi), PropValue::Number(v)) =
-            (get(Prop::Range), get(Prop::SliderValue))
+            (&*get(Prop::Range), &*get(Prop::SliderValue))
     {
         if lo >= hi {
             return Err(Error::runtime(
@@ -454,13 +461,26 @@ fn check_control(
             ));
         }
     }
-    let (mut own_text, mut all_text) = (0, 0);
-    for prop in kind.props() {
-        let bytes = fui::text_bytes(&get(prop));
-        all_text += bytes;
-        // Rich text and a list's rows have caps of their own (their types').
-        if !matches!(prop, Prop::RichText | Prop::Rows) {
-            own_text += bytes;
+    // Rich text and a list's rows have caps of their own (their types').
+    let own = |prop: Prop| !matches!(prop, Prop::RichText | Prop::Rows);
+    let was = |prop: Prop| {
+        old.and_then(|n| n.props.get(&prop)).map_or_else(
+            || fui::text_bytes(&fui::prop_def(prop).default.value()),
+            fui::text_bytes,
+        )
+    };
+    let (mut own_text, mut all_text) = match old {
+        Some(n) => (n.own_text, n.text),
+        None => kind.props().fold((0, 0), |(o, a), prop| {
+            let bytes = was(prop);
+            (o + if own(prop) { bytes } else { 0 }, a + bytes)
+        }),
+    };
+    for (&prop, value) in props {
+        let (before, after) = (was(prop), fui::text_bytes(value));
+        all_text = all_text - before + after;
+        if own(prop) {
+            own_text = own_text - before + after;
         }
     }
     if own_text > fui::MAX_CONTROL_TEXT {
@@ -481,6 +501,29 @@ fn check_control(
         ));
     }
     Ok((own_text, all_text))
+}
+
+/// The steps an element of a list costs to read from Lua or build back (a string and a table slot each: about 600 ns under
+/// Wasmtime).
+const ELEMENT_STEPS: u64 = 6;
+
+/// The steps a new control costs beyond its op: its node in the mirror and its handle.
+const CREATE_STEPS: u64 = 10;
+
+/// The work of handling `value` (reading it from Lua, building it back, cloning it), in the bytes the realm's charge takes:
+/// its text, and [`ELEMENT_STEPS`] for each element of a list.
+fn work_of(value: &PropValue) -> u64 {
+    let elements = match value {
+        PropValue::Rows(rows) => rows.len(),
+        PropValue::Tracks(tracks) => tracks.len(),
+        _ => 0,
+    };
+    fui::text_bytes(value) as u64 + elements as u64 * ELEMENT_STEPS * abi::BYTES_PER_STEP
+}
+
+/// Charges the running callback for `props` read from Lua.
+fn charge_props(lua: &Lua, props: &Props) -> mlua::Result<()> {
+    charge(lua, props.values().map(work_of).sum())
 }
 
 /// Writes a props field.
@@ -590,6 +633,8 @@ fn new_control(
     let kind = fui::kind_named(&name)
         .ok_or_else(|| Error::runtime(format!("ui.new: there is no kind `{name}`")))?;
     let props = read_props(kind, props)?;
+    charge_props(lua, &props)?;
+    charge(lua, CREATE_STEPS * abi::BYTES_PER_STEP)?;
     let parent = match parent {
         None | Some(Value::Nil) => None,
         Some(Value::UserData(u)) => Some(u),
@@ -692,6 +737,7 @@ fn set(lua: &Lua, this: &Control, props: Table) -> mlua::Result<bool> {
         return Ok(false);
     };
     let props = read_props(kind, Some(props))?;
+    charge_props(lua, &props)?;
     let mut st = state(lua)?;
     let counts = check_control(&st.ui, kind, Some(st.ui.live(id)?), &props)?;
     st.emit(Tier::Ui, op::ui::SET, |w| {
@@ -712,7 +758,14 @@ fn get(lua: &Lua, this: &Control, name: LuaString) -> mlua::Result<MultiValue> {
         .prop_named(&name)
         .ok_or_else(|| Error::runtime(format!("get: a {} has no prop `{name}`", kind.name)))?;
     let value = state(lua)?.ui.live(id)?.prop(def.prop);
+    charge(lua, work_of(&value))?;
     prop_to_lua(lua, def.ty, value)
+}
+
+/// Charges the running callback a step for each control at and under `id`, the walk `destroy` and `parent` make.
+fn charge_subtree(lua: &Lua, id: u32) -> mlua::Result<()> {
+    let count = state(lua)?.ui.subtree(id).len() as u64;
+    charge(lua, count * abi::BYTES_PER_STEP)
 }
 
 /// `h:destroy()`: the control and everything under it.
@@ -720,6 +773,7 @@ fn destroy(lua: &Lua, this: &Control) -> mlua::Result<bool> {
     let Some((id, _)) = target(lua, this, "destroy")? else {
         return Ok(false);
     };
+    charge_subtree(lua, id)?;
     let released = {
         let mut st = state(lua)?;
         st.emit(Tier::Ui, op::ui::DESTROY, |w| w.u32(id))?;
@@ -753,6 +807,7 @@ fn reparent(lua: &Lua, this: &Control, parent: AnyUserData) -> mlua::Result<bool
     let Some((id, _)) = target(lua, this, "parent")? else {
         return Ok(false);
     };
+    charge_subtree(lua, id)?;
     let mut st = state(lua)?;
     let to = handle_of(&st, &parent, "parent")?;
     let (to_depth, to_containers) = {

@@ -17,9 +17,10 @@
 //! every frame is struck off rather than holding the frame rate down; a file run gets 100,000 (about 11 ms), and a
 //! server with a bigger setup spreads it over frames.
 //!
-//! **Budgets.** A realm's work in a frame (natively its entries and the applying of their ops; on the web only the
-//! applying) is held to `min(2 ms, 12%)` of the frame (1 ms of applying on the web); past it the rest waits for the next
-//! frame and repeated input events keep only the newest. Over budget in 30 of the last 60 frames, it runs every other
+//! **Budgets.** A realm's work in a frame (natively its entries, the checks of their flushes and the applying of their
+//! ops, in pieces of 64 records; on the web the checks and the applying) is held to `min(1.5 ms, 9%)` of the frame (0.75 ms
+//! on the web); past it the rest waits for the next frame, an entry starts only when what is left covers the last one, and
+//! repeated input events keep only the newest. Over budget in 30 of the last 60 frames, it runs every other
 //! frame and [`Session::is_slow`] says so.
 //!
 //! **Tiers.** A tier is granted only when its server asked, the player allowed it, its host module is in this build

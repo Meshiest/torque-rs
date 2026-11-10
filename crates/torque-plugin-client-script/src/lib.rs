@@ -32,10 +32,21 @@
 //! **Map.** `abilities` the tiers a player decides on (keys, English lines, defaults); `policy` the setting, policies and the
 //! pure `decide`; `choices` the file; `consent` the prompt slot and the engine's prompt; `messages` the RPC messages, their
 //! caps and the byte bucket; `call` what a realm's `net.call` may name and how its table becomes arguments; `inbox` what a
-//! client holds for the realm; `effects` the recorder the host's session writes to; `realms` the state machine; `server` and
+//! client holds for the realm; `effects` the recorder the host's session writes to and `Applying`, the effects of a frame,
+//! which check a flush's `ui` records whole and apply its pieces as the session applies them; `realms` the state machine; `server` and
 //! `plugin` the server's half and the plugin that registers all of it.
 //!
 //! **Rules and their tests.**
+//! - The GUI's work for a realm is the realm's: applying its ui ops counts in its frame budget, its slow rule and its strikes,
+//!   a flush past the budget waits for later frames, and the GUI's layouts and image decodes for it are charged to its next
+//!   frames (`budget::applying_past_the_budget_waits_for_later_frames_and_makes_the_realm_slow`,
+//!   `budget::applying_that_holds_the_frame_too_long_is_a_strike_and_turns_the_realm_off`,
+//!   `budget::many_resizes_of_a_nested_container_are_laid_out_once_a_frame_and_charged_to_the_realm`); a flush is checked whole
+//!   before any of it applies, and its `net` ops never leave when its `ui` ops are refused
+//!   (`budget::a_flush_whose_last_op_is_forged_applies_nothing_and_sends_nothing`). A set costs the host what it carries,
+//!   not the size of the control it changes (`budget::a_storm_of_selections_on_a_full_list_stays_within_its_budget`).
+//! - Shift+Escape ends the realm for the connection and remembers nothing; the chip's "Turn off for this server" remembers
+//!   Never (`consent::shift_escape_ends_the_realm_for_the_connection_only_and_the_chip_remembers_never`).
 //! - Before the player's answer nothing of the realm exists: no instance, no file read, no control, no guest started
 //!   (`consent::no_realm_instance_and_no_file_read_before_allow`, `consent::not_now_and_never_start_nothing`).
 //! - A refusal for good is remembered across a reconnect, with no prompt and no instance
@@ -92,4 +103,4 @@ pub use consent::{ConsentAnswer, ConsentPrompt, ConsentRequest, EnginePrompt};
 pub use inbox::ScriptInbox;
 pub use plugin::ClientScriptsPlugin;
 pub use policy::{Decision, Policies, Policy, Remembered, Setting};
-pub use realms::{ModsSource, OfferSource, RealmState, Realms, RunnerFactory, Stats};
+pub use realms::{ImageReader, ModsSource, OfferSource, RealmState, Realms, RunnerFactory, Stats};

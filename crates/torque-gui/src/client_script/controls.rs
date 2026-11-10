@@ -61,6 +61,15 @@ impl NodeState {
         self.laid = None;
     }
 
+    /// Sets `given` over the props it has, and takes the image the store gave for them.
+    pub(super) fn merge_props(&mut self, given: &[(Prop, PropValue)], image: Option<RealmImage>) {
+        for (prop, value) in given {
+            self.props.set(*prop, value.clone());
+        }
+        self.image = image;
+        self.laid = None;
+    }
+
     /// Whether the control draws something the player sees, so that acting on it is the player's doing: a panel's fill, a
     /// text, an image, or a control with a look of its own (a button, toggle, field, list or slider).
     fn shows_something(&self) -> bool {

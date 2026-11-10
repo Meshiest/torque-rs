@@ -74,6 +74,19 @@ pub(crate) struct Mount {
 
 /// The most files of one mod a client-script realm is given.
 pub const MAX_CLIENT_FILES: usize = 1_024;
+/// The most bytes of script files of one mod read for a client-script realm (the realm keeps at most this much of a server's);
+/// the scripts past it, in the package's order, are not read.
+pub const MAX_CLIENT_SCRIPT_BYTES: u64 = 1 << 20;
+/// The most bytes of one image file read for a client-script realm. A realm also reads at most this much of images in all.
+pub const MAX_CLIENT_IMAGE_BYTES: u64 = 32 << 20;
+/// The extensions of the files a client-script realm shows as images.
+const CLIENT_IMAGE_EXTENSIONS: [&str; 3] = [".png", ".jpg", ".jpeg"];
+
+/// Whether `path` names a Lua script by its extension (any case).
+fn is_client_script(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".lua") || lower.ends_with(".luau")
+}
 
 /// Where the content of a download mount came from: the one record the reader that may run server-sent scripts (a
 /// client-script realm) trusts. A mount without one is never read for scripts.
@@ -191,8 +204,9 @@ impl Table {
             .is_some_and(|m| m.package.len() <= MAX_CLIENT_FILES && m.package.contains(entry))
     }
 
-    /// The files of that mount, each as `mods/<mod_id>/<path>`.
-    pub(crate) fn client_content(
+    /// The script files of that mount, each as `mods/<mod_id>/<path>`: only `.lua` and `.luau` files, in the package's order,
+    /// until [`MAX_CLIENT_SCRIPT_BYTES`] (by the sizes the package lists, so nothing past it is inflated). No other file is read.
+    pub(crate) fn client_scripts(
         &self,
         mod_id: &str,
         server: CacheOwner,
@@ -202,15 +216,18 @@ impl Table {
         if mount.package.len() > MAX_CLIENT_FILES {
             return None;
         }
-        mount
-            .package
-            .names()
-            .iter()
-            .map(|name| {
-                let bytes = mount.package.read(name)?;
-                Some((format!("mods/{mod_id}/{name}"), Arc::from(bytes)))
-            })
-            .collect()
+        let mut left = MAX_CLIENT_SCRIPT_BYTES;
+        let mut out = Vec::new();
+        for name in mount.package.names().iter().filter(|n| is_client_script(n)) {
+            let size = mount.package.size_of(name)?;
+            if size > left {
+                break;
+            }
+            let bytes = mount.package.read(name)?;
+            left -= bytes.len() as u64;
+            out.push((format!("mods/{mod_id}/{name}"), Arc::from(bytes)));
+        }
+        Some(out)
     }
 
     /// One `.lua` or `.luau` file of that mount, by its path within the mod.
@@ -221,12 +238,32 @@ impl Table {
         hash: &Hash,
         path: &str,
     ) -> Option<Arc<[u8]>> {
-        let lower = path.to_ascii_lowercase();
-        if !(lower.ends_with(".lua") || lower.ends_with(".luau")) {
+        if !is_client_script(path) {
             return None;
         }
         let mount = self.client_mount(mod_id, server, hash)?;
         mount.package.read(path).map(Arc::from)
+    }
+
+    /// One `.png`, `.jpg` or `.jpeg` file of that mount, by its path within the mod, when it is at most
+    /// [`MAX_CLIENT_IMAGE_BYTES`] (by the size the package lists, so a larger one is not inflated).
+    pub(crate) fn client_image(
+        &self,
+        mod_id: &str,
+        server: CacheOwner,
+        hash: &Hash,
+        path: &str,
+    ) -> Option<Arc<[u8]>> {
+        let lower = path.to_ascii_lowercase();
+        if !CLIENT_IMAGE_EXTENSIONS.iter().any(|e| lower.ends_with(e)) {
+            return None;
+        }
+        let mount = self.client_mount(mod_id, server, hash)?;
+        if mount.package.size_of(path)? > MAX_CLIENT_IMAGE_BYTES {
+            return None;
+        }
+        let bytes = mount.package.read(path)?;
+        (bytes.len() as u64 <= MAX_CLIENT_IMAGE_BYTES).then(|| Arc::from(bytes))
     }
 
     /// The bytes held by every mount but the server mount `name`, and the files of the server mounts but `name`.

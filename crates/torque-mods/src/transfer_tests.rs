@@ -765,7 +765,7 @@ fn scripted(seed: u8) -> Files {
 
 fn client_script_reader(r: &Rig, port: u16, hash: &Hash, mod_id: &str) -> Option<Vec<String>> {
     r.table
-        .client_content(mod_id, CacheOwner::of_server(server_at(port)), hash)
+        .client_scripts(mod_id, CacheOwner::of_server(server_at(port)), hash)
         .map(|files| files.into_iter().map(|(path, _)| path).collect())
 }
 
@@ -777,8 +777,11 @@ fn client_script_content_is_read_only_for_the_server_that_sent_it() {
     r.join(std::slice::from_ref(&offer), &[content]);
     assert_eq!(r.d.phase(), Phase::Done);
     let paths = client_script_reader(&r, 7000, &offer.hash, "props").expect("the sender's own");
-    assert!(paths.contains(&"mods/props/client/main.lua".to_string()));
-    assert!(paths.contains(&"mods/props/art/big.bin".to_string()));
+    assert_eq!(
+        paths,
+        ["mods/props/client/main.lua"],
+        "only the scripts are read"
+    );
     // Another server's key, another hash, another id: nothing.
     assert!(client_script_reader(&r, 7001, &offer.hash, "props").is_none());
     assert!(client_script_reader(&r, 7000, &[1; 32], "props").is_none());
@@ -797,6 +800,60 @@ fn client_script_content_is_read_only_for_the_server_that_sent_it() {
     );
     assert!(script("art/big.bin").is_none(), "only Lua files");
     assert!(script("client/missing.lua").is_none());
+}
+
+#[test]
+fn client_script_content_reads_only_scripts_and_images_one_at_a_time_within_their_caps() {
+    let r = rig(caps(true));
+    let files: Files = vec![
+        ("client/main.lua".to_string(), b"realm.log('hi')".to_vec()),
+        ("sounds/theme.ogg".to_string(), vec![0u8; 50 << 20]),
+        ("art/logo.png".to_string(), pattern(2_000, 3)),
+        (
+            "art/huge.png".to_string(),
+            vec![0u8; crate::files::MAX_CLIENT_IMAGE_BYTES as usize + 1],
+        ),
+    ];
+    let (offer, content) = offered("big", "1.0", &files, true);
+    let limits = ModLimits {
+        file_bytes: 64 << 20,
+        ..ModLimits::default()
+    };
+    let owner = CacheOwner::of_server(server_at(7000));
+    mount_content(
+        &r.table,
+        &limits,
+        &mount_name("big"),
+        content,
+        Some(MountOrigin {
+            server: owner,
+            hash: offer.hash,
+            way: Way::Download,
+        }),
+    )
+    .expect("mounts");
+    let scripts = r
+        .table
+        .client_scripts("big", owner, &offer.hash)
+        .expect("the sender's own");
+    let paths: Vec<&str> = scripts.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(paths, ["mods/big/client/main.lua"], "the sound is not read");
+    let image = |path: &str| r.table.client_image("big", owner, &offer.hash, path);
+    assert_eq!(image("art/logo.png").expect("an image").len(), 2_000);
+    assert!(image("art/huge.png").is_none(), "past the cap");
+    assert!(image("sounds/theme.ogg").is_none(), "not an image");
+    assert!(image("client/main.lua").is_none(), "not an image");
+    assert!(
+        r.table
+            .client_image(
+                "big",
+                CacheOwner::of_server(server_at(7001)),
+                &offer.hash,
+                "art/logo.png"
+            )
+            .is_none(),
+        "another server's"
+    );
 }
 
 #[test]
@@ -929,5 +986,5 @@ fn client_script_content_with_more_files_than_the_realm_takes_is_refused() {
         }),
     )
     .expect("mounts");
-    assert!(r.table.client_content("big", owner, &offer.hash).is_none());
+    assert!(r.table.client_scripts("big", owner, &offer.hash).is_none());
 }

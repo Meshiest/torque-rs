@@ -14,8 +14,8 @@ use torque_client_script_format::{Grants, Records, Tier, Value, Writer, op};
 use web_time::Instant;
 
 use crate::{
-    CallRoute, ClientMod, Effects, FrameBudget, GrantSet, InstanceLimits, LogLevel, Runner,
-    ServerContent, Session, Settings, Stop, Trap, Unstarted, Violation,
+    CallRoute, ClientMod, Effects, FRAME_STEPS, FrameBudget, GrantSet, InstanceLimits, LogLevel,
+    Runner, STEP_NANOS, ServerContent, Session, Settings, Stop, Trap, Unstarted, Violation,
 };
 use parity::Trace;
 
@@ -606,6 +606,10 @@ pub const CASES: &[Case] = &[
         actions: a_guest_holding_its_entries_past_the_long_entry_time_is_struck_off,
     },
     Case {
+        name: "the_ui_functions_cost_steps_for_what_they_handle",
+        actions: the_ui_functions_cost_steps_for_what_they_handle,
+    },
+    Case {
         name: "nan_prints_the_same_on_every_runner",
         actions: nan_prints_the_same_on_every_runner,
     },
@@ -1152,6 +1156,58 @@ end)
             expect(
                 !slot.effects().logs.iter().any(|l| l.contains("steps")),
                 "for its entries' length, not its steps",
+            )
+        }),
+    ]
+}
+
+fn the_ui_functions_cost_steps_for_what_they_handle() -> Vec<Action> {
+    vec![
+        // A full list's rows read back, set and made again, each in a loop a frame: the steps they are charged stop each
+        // loop at the frame's budget, within ten times the time those steps of plain Luau take.
+        Action::open(
+            0,
+            Guest::Realm,
+            UI_NET,
+            &[(
+                "main.lua",
+                r#"
+local rows = {}
+for i = 1, 1024 do rows[i] = string.format("row %011d", i) end
+local l = ui.new("list", { rows = rows })
+local n = 0
+realm.onFrame(function()
+  n = n + 1
+  if n % 3 == 1 then
+    while true do l:get("rows") end
+  elseif n % 3 == 2 then
+    while true do pcall(l.set, l, { rows = rows }) end
+  else
+    while true do pcall(ui.new, "list", { rows = rows }) end
+  end
+end)
+"#,
+            )],
+        ),
+        Action::Frames { slot: 0, count: 40 },
+        Action::Check(|w| {
+            let slot = w.slot(0);
+            expect(
+                slot.stop().is_some_and(|(s, _)| *s == Stop::Strikes),
+                "struck off",
+            )?;
+            expect(
+                slot.effects().logs.iter().any(|l| l.contains("steps")),
+                "for running out of steps",
+            )?;
+            let longest = slot
+                .session
+                .as_ref()
+                .map_or(Duration::MAX, Session::longest_entry);
+            let most = Duration::from_nanos(10 * STEP_NANOS * u64::from(FRAME_STEPS));
+            expect(
+                longest <= most,
+                &format!("its entries stayed within {most:?} (the longest {longest:?})"),
             )
         }),
     ]

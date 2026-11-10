@@ -26,6 +26,10 @@ pub const MAX_ROW_TEXT: usize = 4 << 10;
 pub const MAX_TEXT: usize = 1 << 20;
 /// The most distinct images live controls show.
 pub const MAX_IMAGES: usize = 256;
+/// The widest and tallest an image may be, in pixels.
+pub const MAX_IMAGE_SIDE: u32 = 2048;
+/// The most bytes the images live controls show take decoded (four a pixel), all together.
+pub const MAX_IMAGE_BYTES: usize = 64 << 20;
 /// The most rows of a list.
 pub const MAX_ROWS: usize = 1024;
 /// How long after an activating event of the realm's own controls `ui.focus` is allowed, in microseconds.

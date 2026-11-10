@@ -39,6 +39,8 @@ torque-engine = { path = "../torque-engine", features = ["testing"] }
 torque-fonts = { path = "../torque-fonts" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-images = { path = "../torque-images" }
+# The bench's images.
+png = "0.18"
 torque-client-script-host = { path = "../torque-client-script-host", features = ["ui", "net", "unreviewed-tiers", "wasmtime"] }
 # The end-to-end test: the engine's own server and client over the memory transport (tests/end_to_end.rs).
 torque = { path = "../torque", default-features = false, features = ["app", "mods"] }

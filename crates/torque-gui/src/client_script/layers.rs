@@ -2,15 +2,18 @@
 //! add, and what the realm holds (the cursor, a focused text field) while it is on screen.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Duration;
 
 use torque_client_script_format::ui::Prop;
 use torque_client_script_format::{MAX_EVENTS, Tier};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
+use web_time::Instant;
 
 use super::controls::{NodeState, origin};
 use super::events::{UiEvent, encode_events};
 use crate::control::{self, children};
+use crate::draw::DecodeAllowance;
 use crate::input::MAX_EVENT_STEPS;
 use crate::{Gui, MAX_FRAME_WORK, MAX_TREE_DEPTH, custom, name_of};
 
@@ -83,7 +86,9 @@ pub enum LayerAction {
     Revoke(Tier),
     /// Hide the realm's controls for now (`true`) or show them again.
     Hide(bool),
-    /// Stop server scripts for this connection.
+    /// Stop server scripts for this connection and remember nothing (Shift+Escape).
+    Stop,
+    /// Stop server scripts for this connection and never run this server's again (the chip's "Turn off for this server").
     TurnOff,
 }
 
@@ -100,6 +105,14 @@ pub struct Stats {
     pub escape_keys: u64,
     /// Events dropped because the queue was full.
     pub dropped_events: u64,
+    /// The `Vm::charge_work` units the applier's flushes were charged (the resizes their ops made).
+    pub apply_work: u64,
+    /// Resizes of the layout's containers the applier left to the frame's layout check instead of laying out at once.
+    pub deferred_layouts: u64,
+    /// Images not shown because the realm's decoded cap had no room for them.
+    pub refused_images: u64,
+    /// The `ui` records the applier applied.
+    pub applied_records: u64,
 }
 
 /// How the cursor was when the realm turned it on.
@@ -194,6 +207,14 @@ pub struct LayerState {
     /// each frame the container is checked. Two frames: one lays out, the next sees that it has settled. A container not here
     /// costs a frame nothing, and with none here a frame does no layout work at all.
     pub(crate) layout_due: BTreeMap<ObjId, u8>,
+    /// The applier is applying a flush: a resize of a container of the layout's only marks it to be laid out by the frame's
+    /// check ([`defer_layout`]), so no op of the flush lays a layout out at once.
+    pub(crate) applying: bool,
+    /// What the realm's images may still decode.
+    pub(crate) decode: DecodeAllowance,
+    /// The time the host spent on the realm's behalf outside its frame (its layouts, its image decodes) and has not charged
+    /// to it yet ([`Gui::take_client_script_owed`]).
+    pub(crate) owed: Duration,
 }
 
 /// The frames a container is checked for after something it reads changed.
@@ -208,6 +229,37 @@ pub(crate) fn mark_layouts(gui: &Gui, containers: impl IntoIterator<Item = ObjId
             l.layout_due.insert(id, LAYOUT_FRAMES);
         }
     }
+}
+
+/// A resize of `id` while the applier applies a flush, when `id` is a container of the layout's: its bounds are set and it and
+/// the containers around it are checked by the frame's layout pass, which lays each out once however many ops resized it.
+/// False (nothing done) for any other control or time.
+pub(crate) fn defer_layout(
+    vm: &mut Vm,
+    gui: &Gui,
+    id: ObjId,
+    position: (i32, i32),
+    extent: (i32, i32),
+) -> bool {
+    {
+        let l = &gui.0.borrow().client_script;
+        if !l.applying || !l.laid.contains(&id) {
+            return false;
+        }
+    }
+    control::set_bounds(vm, id, position, extent);
+    let mut around = vec![id];
+    let mut at = id;
+    while around.len() <= MAX_TREE_DEPTH
+        && let Some(p) = control::parent(vm, at)
+    {
+        around.push(p);
+        at = p;
+    }
+    mark_layouts(gui, around);
+    gui.0.borrow_mut().client_script.stats.deferred_layouts += 1;
+    gui.touch_custom();
+    true
 }
 
 /// Something every layout reads changed (the layer's size): check all the containers.
@@ -249,6 +301,9 @@ impl Default for LayerState {
             stats: Stats::default(),
             laid: BTreeSet::new(),
             layout_due: BTreeMap::new(),
+            applying: false,
+            decode: DecodeAllowance::default(),
+            owed: Duration::ZERO,
         }
     }
 }
@@ -492,12 +547,13 @@ fn give_back_cursor(gui: &Gui) {
     restore_cursor(&mut s.cursor_on, s.cursor_calls, l.cursor_saved.take());
 }
 
-/// Stops server scripts for the connection: the layer goes at once, the realm is told to stop by [`LayerAction::TurnOff`].
-pub(crate) fn turn_off(gui: &Gui) {
+/// Stops server scripts for the connection: the layer goes at once, the realm is told to stop by `action`
+/// ([`LayerAction::Stop`] or [`LayerAction::TurnOff`]).
+pub(crate) fn turn_off(gui: &Gui, action: LayerAction) {
     release_holds(gui, Release::Closed);
     let mut s = gui.0.borrow_mut();
     s.client_script.off = true;
-    s.client_script.actions.push(LayerAction::TurnOff);
+    s.client_script.actions.push(action);
 }
 
 /// One frame of the host layers: the layers sized to the canvas, the realm told the screen size, the chip laid out, and the
@@ -550,6 +606,7 @@ fn update_layouts(vm: &mut Vm, gui: &Gui) {
     if due.is_empty() || !server_shown(vm, gui) {
         return;
     }
+    let started = Instant::now();
     let saved = vm.begin_host_budget_with_runs(MAX_FRAME_WORK, MAX_EVENT_STEPS);
     let mut runs = 0;
     for &id in &due {
@@ -573,6 +630,7 @@ fn update_layouts(vm: &mut Vm, gui: &Gui) {
     }
     l.stats.layout_updates += runs;
     l.stats.layout_work += work;
+    l.owed += started.elapsed();
 }
 
 /// Drops what the realm may not hold now: everything when its layer is not shown or a dialog or prompt is over it, the focus
@@ -724,6 +782,12 @@ impl Gui {
     /// What the realm holds now.
     pub fn client_script_holds(&self) -> Holds {
         self.0.borrow().client_script.holds
+    }
+
+    /// The time the GUI spent on the realm's behalf since the last call (laying out its containers, decoding its images): the
+    /// host charges it to the realm's frame budget.
+    pub fn take_client_script_owed(&self) -> Duration {
+        std::mem::take(&mut self.0.borrow_mut().client_script.owed)
     }
 
     /// The counts the layers keep.

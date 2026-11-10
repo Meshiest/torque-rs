@@ -1650,3 +1650,68 @@ fn hostile_lua_values_for_layout_props_never_get_past_the_converter() {
         "{made} made, {refused} refused"
     );
 }
+
+/// A list at its caps (1,024 rows, 15 KiB) in `l`, its rows in `rows`.
+const FULL_LIST: &str = r#"
+local rows = {}
+for i = 1, 1024 do rows[i] = string.format("row %011d", i) end
+local l = ui.new("list", { rows = rows })
+"#;
+
+#[test]
+fn the_ui_functions_are_charged_for_what_they_handle() {
+    // Reading a full list's rows back costs a step a row and its bytes.
+    let mut r = full();
+    run(&mut r, &format!("{FULL_LIST} LIST = l"));
+    run_at(&mut r, 1, "one.lua", "local _ = LIST:get('selected')");
+    let small = r.last_steps();
+    run_at(&mut r, 2, "rows.lua", "local _ = LIST:get('rows')");
+    let rows = r.last_steps();
+    assert!(
+        rows >= small + 1024 + (15 * 1024) / abi::BYTES_PER_STEP,
+        "a get of 1,024 rows took {rows} steps, a get of a number {small}"
+    );
+    // So do setting them and making a list of them.
+    run_at(&mut r, 3, "set.lua", "LIST:set({ rows = { 'a' } })");
+    let one = r.last_steps();
+    run_at(
+        &mut r,
+        4,
+        "set_all.lua",
+        "local t = {} for i = 1, 1024 do t[i] = 'b' end LIST:set({ rows = t })",
+    );
+    assert!(r.last_steps() >= one + 1024, "a set of 1,024 rows");
+    // A set of another prop reads nothing of the rows: a flush's worth of them is quick.
+    let started = std::time::Instant::now();
+    run_at(
+        &mut r,
+        5,
+        "select.lua",
+        "for i = 1, 4000 do LIST:set({ selected = i % 1024 + 1 }) end",
+    );
+    assert!(started.elapsed().as_secs_f64() < 1.0, "4,000 selections");
+    // Loops of each run out of steps, quickly.
+    for (name, body) in [
+        (
+            "a get of a full list's rows",
+            "while true do l:get('rows') end",
+        ),
+        (
+            "a set of a full list's rows",
+            "while true do pcall(l.set, l, { rows = rows }) end",
+        ),
+        (
+            "new lists of full rows",
+            "while true do pcall(ui.new, 'list', { rows = rows }) end",
+        ),
+    ] {
+        assert_runs_out(name, &format!("{FULL_LIST} {body}"));
+    }
+    assert_runs_out(
+        "moving a tree of a thousand controls",
+        r#"local a = ui.new("panel", {})
+        for i = 1, 1000 do ui.new("panel", {}, a) end
+        local b, top = ui.new("panel", {}), ui.root()
+        while true do pcall(a.parent, a, b) pcall(a.parent, a, top) end"#,
+    );
+}

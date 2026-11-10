@@ -1,6 +1,7 @@
 //! A server's content as the client holds it: the files it downloaded from that server and verified (by hash), keyed by
-//! their content paths (`mods/<mod id>/...`). Every script and image a realm names is looked up here; nothing of the
-//! realm's opens a file on disk by a name it was given.
+//! their content paths (`mods/<mod id>/...`). Every script a realm runs is looked up here (the engine reads its images
+//! from the same verified files when a control first shows one); nothing of the realm's opens a file on disk by a name it
+//! was given.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

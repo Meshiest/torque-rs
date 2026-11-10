@@ -83,6 +83,8 @@ struct Core {
     strikes: Strikes,
     pace: Pace,
     stop: Option<(Stop, Duration)>,
+    /// Host work the realm caused outside its frames ([`Session::charge`]) that its next frames have not paid for yet.
+    debt: Duration,
     /// Whether the realm was closed: its effects were torn down.
     closed: bool,
     guest_pending: u32,
@@ -90,6 +92,11 @@ struct Core {
     frames_started: u64,
     /// The longest a script's entry (a file run or a frame) ran.
     longest: Duration,
+    /// How long the last script entry ran: a frame starts one only when what is left of its budget covers that.
+    last_entry: Duration,
+    /// The time the whole-flush checks took since the frame began (on the web, between frames too): the frame counts it as
+    /// applying.
+    checking: Duration,
 }
 
 impl Core {
@@ -143,10 +150,13 @@ impl Core {
             strikes: Strikes::new(settings.strikes),
             pace: Pace::new(settings.slow_after),
             stop: None,
+            debt: Duration::ZERO,
             closed: false,
             guest_pending: 0,
             frames_started: 0,
             longest: Duration::ZERO,
+            last_entry: Duration::ZERO,
+            checking: Duration::ZERO,
         }
     }
 
@@ -201,31 +211,65 @@ impl Core {
             return report;
         }
         let budget = self.settings.budget.of(target);
+        // Host work charged since pays first: a frame it fills runs nothing and counts as over.
+        let owed = std::mem::take(&mut self.debt);
+        if owed >= budget && !budget.is_zero() {
+            self.debt = owed - budget;
+            report.over = true;
+            self.pace.record(true);
+            return report;
+        }
         let started = Instant::now();
         let mut applying = Duration::ZERO;
         let mode = self.settings.budget;
-        let spent = |applying: Duration| match mode {
-            FrameBudget::Shared { .. } => started.elapsed(),
-            FrameBudget::ApplyOnly { .. } => applying,
+        let spent = |applying: Duration| {
+            owed + match mode {
+                FrameBudget::Shared { .. } => started.elapsed(),
+                FrameBudget::ApplyOnly { .. } => applying,
+            }
         };
         let mut framed = false;
         loop {
             if self.in_flight.is_some() && !self.collect(effects) {
                 break;
             }
-            while let Some(action) = self.backlog.pop_front() {
+            // The guest's flush was checked whole when it was collected: on the engine's thread, as applying is.
+            applying += std::mem::take(&mut self.checking);
+            if self.stop.is_some() {
+                return report;
+            }
+            loop {
+                // An entry that spent the budget leaves its ops to the next frame, so one frame never holds both an entry at
+                // the budget and a piece of ops on top of it.
+                if spent(applying) >= budget && (report.entries > 0 || report.applied > 0) {
+                    break;
+                }
+                let Some(action) = self.backlog.pop_front() else {
+                    break;
+                };
+                let ui = matches!(action, Action::Ui(_));
                 let at = Instant::now();
                 self.apply(action, effects);
-                applying += at.elapsed();
+                let took = at.elapsed();
+                applying += took;
                 report.applied += 1;
                 if self.stop.is_some() {
                     return report;
                 }
-                if spent(applying) >= budget {
-                    break;
+                // A piece of ui ops that held the frame as long as a long entry is a strike, as that entry is.
+                if ui && took > self.settings.long_entry && self.strikes.strike(now) {
+                    self.halt(Stop::Strikes, took, effects);
+                    return report;
                 }
             }
-            let used = spent(applying) >= budget && (report.entries > 0 || report.applied > 0);
+            // A frame starts an entry only when what is left of its budget covers the last entry (on the web the entry runs
+            // off this thread and only its applying counts), unless it has done nothing yet: an entry cannot be split.
+            let entry = match mode {
+                FrameBudget::Shared { .. } => self.last_entry,
+                FrameBudget::ApplyOnly { .. } => Duration::ZERO,
+            };
+            let used =
+                spent(applying) + entry >= budget && (report.entries > 0 || report.applied > 0);
             if !self.backlog.is_empty() || used {
                 break;
             }
@@ -256,6 +300,14 @@ impl Core {
             self.pace.record(report.over);
         }
         report
+    }
+
+    /// Host work the realm caused outside its frames (laying out its controls, decoding its images): its next frames pay for
+    /// it first. It is no strike: the host bounds that work by its own caps, and a realm showing its images is not at fault.
+    fn charge(&mut self, spent: Duration) {
+        if self.stop.is_none() {
+            self.debt = self.debt.saturating_add(spent);
+        }
     }
 
     /// Collects the outcome of the running entry, if it has one (on the web, between frames).
@@ -301,6 +353,7 @@ impl Core {
         // keeping its files are the host's own calls, not the script's time.
         if matches!(flight.entry, Started::Run { .. } | Started::Frame) {
             self.longest = self.longest.max(reply.elapsed);
+            self.last_entry = reply.elapsed;
             if (reply.long || reply.elapsed > self.settings.long_entry)
                 && self.strikes.strike(flight.now_us)
             {
@@ -362,6 +415,7 @@ impl Core {
     ) {
         self.guest_pending = reply.pending;
         let tiers = Tiers { told, ..self.tiers };
+        let at = Instant::now();
         let checked = flush::check(
             &reply.ops,
             tiers,
@@ -370,10 +424,16 @@ impl Core {
             &mut self.logs,
             effects,
         );
+        let took = at.elapsed();
+        self.checking += took;
         let actions = match checked {
             Ok(actions) => actions,
             Err(violation) => return self.halt(Stop::Violation(violation), ran, effects),
         };
+        // A check that held the frame as long as a long entry is a strike, as that entry is.
+        if took > self.settings.long_entry && self.strikes.strike(now_us) {
+            return self.halt(Stop::Strikes, took, effects);
+        }
         for action in actions {
             if action != Action::Limit {
                 self.backlog.push_back(action);
@@ -541,6 +601,26 @@ impl<E: Effects> Session<E> {
     pub fn frame(&mut self, now_us: u64, target: Duration) -> FrameReport {
         let effects = self.effects.as_mut().expect(HELD);
         self.core.frame(now_us, target, effects)
+    }
+
+    /// [`Session::frame`] with `effects` in place of the session's own for the frame: for an engine whose `ui` ops are applied
+    /// with what it holds only for the frame (its script engine, its GUI), so that applying them is counted in the realm's
+    /// budget, its slow rule and its strikes like its entries are. Everything but `check_ui` and `apply_ui` should go where the
+    /// session's own effects send it.
+    pub fn frame_with(
+        &mut self,
+        now_us: u64,
+        target: Duration,
+        effects: &mut dyn Effects,
+    ) -> FrameReport {
+        self.core.frame(now_us, target, effects)
+    }
+
+    /// Charges the realm `spent` of host work it caused outside its frames (laying out its controls, decoding its images): its
+    /// next frames pay for it before they run anything, so it counts in the budget and the slow rule (not in the strikes: the
+    /// host bounds that work itself).
+    pub fn charge(&mut self, spent: Duration) {
+        self.core.charge(spent);
     }
 
     /// Collects the outcome of the running entry, if it has one (on the web, between frames).

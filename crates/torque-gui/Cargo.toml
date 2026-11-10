@@ -17,6 +17,8 @@ torque-engine = { path = "../torque-engine" }
 torque-fonts = { path = "../torque-fonts" }
 torque-images = { path = "../torque-images" }
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The time a realm's image decodes and layouts cost, charged to the realm (a clock that works on the web too).
+web-time = "1.1"
 
 [dev-dependencies]
 # The draw tests' synthetic bitmaps.

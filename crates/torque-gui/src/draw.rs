@@ -45,15 +45,22 @@
 //! 2012 GarageGames, LLC), `gui/3d/guiTSControl.cpp` (Copyright (c) 2012 GarageGames, LLC), `T3D/gameTSCtrl.cpp` (Copyright (c)
 //! 2012 GarageGames, LLC); the code here is this crate's own.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(not(target_family = "wasm"))]
+use std::sync::mpsc;
+use std::time::Duration;
 
+use torque_client_script_format::ui::{MAX_IMAGE_BYTES, MAX_IMAGE_SIDE};
 use torque_fonts::{FontUse, TextColors};
-use torque_images::lru::Lru;
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
+use web_time::Instant;
 
 use crate::control::{bounds, children, flag, is_a, point};
 use crate::textures::{GuiTexture, GuiTextures, texture_of};
@@ -77,10 +84,21 @@ pub const MAX_CONTROLS: u32 = 1 << 18;
 /// The most GameTSCtrls one frame keeps the projection of.
 pub const MAX_TS_RECTS: usize = 64;
 
-/// The most textures of client-script realms' images one cache keeps.
-pub const MAX_REALM_TEXTURES: usize = 2 * torque_client_script_format::ui::MAX_IMAGES;
-/// The most texel bytes those textures hold together (least recently drawn dropped first).
-pub const MAX_REALM_TEXTURE_BYTES: usize = 128 << 20;
+/// The most texel bytes of client-script realms' images one frame decodes (a 1024 x 1024 image's), but for one larger image,
+/// which decodes alone in its frame: the rest wait for the next frames.
+pub const MAX_REALM_DECODE_FRAME: usize = 4 << 20;
+/// The texel bytes a realm's images may decode at once: enough to show every image it may hold (the format's decoded cap).
+pub const REALM_DECODE_BURST: usize = MAX_IMAGE_BYTES;
+/// The texel bytes a second a realm's images decode once that burst is spent: a realm that keeps changing its images to new
+/// ones waits for them.
+pub const REALM_DECODE_PER_SECOND: usize = 4 << 20;
+/// What a realm image costs to hold beside its texels and its file: its texture's own data, and a renderer's.
+pub const REALM_TEXTURE_OVERHEAD: usize = 4 << 10;
+/// The most realm images one cache decodes on threads at once; the rest wait for them.
+pub const MAX_REALM_DECODES_IN_FLIGHT: usize = 2;
+/// The texel bytes of realm images a frame decodes on its own thread (small ones: a 128 x 128 image's, a fraction of a
+/// millisecond), so that an icon shows in the frame it first appears; larger images decode on threads.
+pub const REALM_DECODE_HERE_FRAME: usize = 64 << 10;
 
 /// The most columns a GuiGraphCtrl plots (a hostile extent draws to here).
 pub const MAX_GRAPH_COLUMNS: i32 = 4096;
@@ -147,6 +165,13 @@ pub struct DrawReport {
     pub realm_controls: u32,
     /// Texts measured by plugin controls' draws ([`DrawCtx::text_size`]).
     pub text_measures: u32,
+    /// Images of a client-script realm whose decode began this frame.
+    pub realm_decodes: u32,
+    /// Of those, the ones decoded on the frame's own thread (the web's, or a thread that could not be made): their time is
+    /// the frame's.
+    pub realm_decoded_here: u32,
+    /// Images of a client-script realm not drawn this frame because the decode allowances could not take them yet.
+    pub realm_waiting: u32,
     /// Whether the client-script chip was drawn.
     pub chip: bool,
     /// The layers in the order they were drawn: the content, the server layer, each dialog, the engine layer, the chip.
@@ -345,28 +370,85 @@ pub struct Frame {
 }
 
 /// An image a client-script realm shows: the bytes its server's store gave for one of its paths, under an id no other image
-/// has. It is drawn from those bytes alone, its texture kept apart from the game's ([`DrawCache`]): it is never looked up by
-/// name, so a realm's path cannot reach the game's art.
+/// has. It is drawn from those bytes alone, its texture kept apart from the game's: it is never looked up by name, so a
+/// realm's path cannot reach the game's art. Its header is read when it is made (a side past [`MAX_IMAGE_SIDE`] is refused);
+/// it is decoded once, when first drawn (natively on a thread of its own, so no frame waits for it), and its texture is shared
+/// by every copy: the realm keeps it while it fits in the realm's decoded cap ([`MAX_IMAGE_BYTES`]).
 #[derive(Clone)]
 pub(crate) struct RealmImage {
     id: u64,
     kind: torque_images::Kind,
     bytes: Arc<[u8]>,
+    size: (u32, u32),
+    /// Where its texture is.
+    texture: Rc<RefCell<Decode>>,
+}
+
+/// Where a realm image's texture is.
+#[derive(Default)]
+enum Decode {
+    /// Not asked for yet.
+    #[default]
+    Idle,
+    /// Decoding on a thread of its own.
+    #[cfg(not(target_family = "wasm"))]
+    Pending(mpsc::Receiver<Option<Arc<GuiTexture>>>),
+    /// Decoded (none: it did not decode).
+    Done(Option<Arc<GuiTexture>>),
+}
+
+/// The texture of an image of `kind` and `size` from `bytes`, named by `id`: none when the bytes do not decode to that size.
+fn decode_realm_image(
+    kind: torque_images::Kind,
+    bytes: &[u8],
+    size: (u32, u32),
+    id: u64,
+) -> Option<Arc<GuiTexture>> {
+    torque_images::decode(kind, bytes)
+        .ok()
+        .filter(|b| (b.width, b.height) == size)
+        .and_then(|b| texture_of(&format!("realm:{id}"), &b, false, true))
 }
 
 impl RealmImage {
-    /// The image of `bytes`, given for `path`: None when the path's extension names no image kind.
-    pub(crate) fn new(path: &str, bytes: Arc<[u8]>) -> Option<RealmImage> {
+    /// The kind and size of `bytes`, given for `path`: None when the path's extension names no image kind, the header does
+    /// not read, or a side is 0 or past [`MAX_IMAGE_SIDE`].
+    pub(crate) fn header(path: &str, bytes: &[u8]) -> Option<(torque_images::Kind, (u32, u32))> {
         let kind = match path.rsplit_once('.')?.1 {
             "png" => torque_images::Kind::Png,
             "jpg" | "jpeg" => torque_images::Kind::Jpeg,
             _ => return None,
         };
+        let (w, h) = torque_images::size_of(kind, bytes)?;
+        let fits = |side: u32| (1..=MAX_IMAGE_SIDE).contains(&side);
+        (fits(w) && fits(h)).then_some((kind, (w, h)))
+    }
+
+    /// The bytes an image of `size` takes decoded.
+    pub(crate) fn decoded_bytes_of(size: (u32, u32)) -> usize {
+        4 * size.0 as usize * size.1 as usize
+    }
+
+    /// The image of `bytes`, given for `path` ([`RealmImage::header`]'s rules).
+    pub(crate) fn new(path: &str, bytes: Arc<[u8]>) -> Option<RealmImage> {
+        let (kind, size) = RealmImage::header(path, &bytes)?;
         Some(RealmImage {
             id: crate::textures::next_id(),
             kind,
             bytes,
+            size,
+            texture: Rc::default(),
         })
+    }
+
+    /// The bytes it takes decoded.
+    pub(crate) fn decoded_bytes(&self) -> usize {
+        RealmImage::decoded_bytes_of(self.size)
+    }
+
+    /// The bytes holding it costs: decoded, its file's, and a texture's own ([`REALM_TEXTURE_OVERHEAD`]).
+    pub(crate) fn held_bytes(&self) -> usize {
+        self.decoded_bytes() + self.bytes.len() + REALM_TEXTURE_OVERHEAD
     }
 }
 
@@ -375,15 +457,56 @@ impl fmt::Debug for RealmImage {
         f.debug_struct("RealmImage")
             .field("id", &self.id)
             .field("bytes", &self.bytes.len())
+            .field("size", &self.size)
             .finish()
+    }
+}
+
+/// What a realm's images may still decode: a burst, refilled with time ([`REALM_DECODE_BURST`], [`REALM_DECODE_PER_SECOND`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DecodeAllowance {
+    bytes: usize,
+    /// The tick count (milliseconds) of the last refill; none before the first image.
+    at_ms: Option<u32>,
+}
+
+impl Default for DecodeAllowance {
+    fn default() -> DecodeAllowance {
+        DecodeAllowance {
+            bytes: REALM_DECODE_BURST,
+            at_ms: None,
+        }
+    }
+}
+
+impl DecodeAllowance {
+    /// Takes `cost` bytes at tick `now_ms`: false (and nothing taken) when there are not that many yet.
+    pub(crate) fn take(&mut self, now_ms: u32, cost: usize) -> bool {
+        if let Some(at) = self.at_ms {
+            let gained =
+                (now_ms.wrapping_sub(at) as usize).saturating_mul(REALM_DECODE_PER_SECOND / 1000);
+            self.bytes = self.bytes.saturating_add(gained).min(REALM_DECODE_BURST);
+        }
+        self.at_ms = Some(now_ms);
+        let Some(left) = self.bytes.checked_sub(cost) else {
+            return false;
+        };
+        self.bytes = left;
+        true
     }
 }
 
 /// What a frame reuses: the textures, the fonts and their sheets, and `dglDrawTextN`'s saved colour (a global in TGE).
 pub struct DrawCache {
     pub textures: GuiTextures,
-    /// The textures of client-script realms' images, by image ([`RealmImage`]; None: it did not decode or fit).
-    realm_textures: Lru<u64, Option<Arc<GuiTexture>>>,
+    /// The texel bytes of realms' images this frame may still decode ([`MAX_REALM_DECODE_FRAME`]).
+    realm_decode_left: usize,
+    /// The time this frame's decodes of realms' images took on its thread, charged to the realm when the frame ends.
+    realm_decode_time: Duration,
+    /// Realm images decoding on threads now.
+    realm_in_flight: Arc<AtomicUsize>,
+    /// The texel bytes of realm images this frame may still decode on its own thread ([`REALM_DECODE_HERE_FRAME`]).
+    realm_here_left: usize,
     pub fonts: Box<dyn crate::FontSource>,
     sheets: BTreeMap<(String, i32, usize), Arc<GuiTexture>>,
     /// The sheets' texel bytes.
@@ -471,6 +594,9 @@ impl ReportCounts {
             // own (the layers and the chip are marked after the server layer), or they are added by name ([`LayerMemo`]).
             unmodelled: _,
             no_texture: _,
+            realm_waiting: _,
+            realm_decodes: _,
+            realm_decoded_here: _,
             missing_fonts: _,
             truncated: _,
             extension: _,
@@ -535,6 +661,8 @@ impl ReportCounts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DrawMarks {
     no_texture: u32,
+    /// Realm images waiting for their decode: the layer draws them on a later frame.
+    realm_waiting: u32,
     unmodelled: u32,
     extension: u32,
     truncated: bool,
@@ -679,7 +807,10 @@ impl DrawCache {
     pub fn new(fonts: Box<dyn crate::FontSource>) -> DrawCache {
         DrawCache {
             textures: GuiTextures::default(),
-            realm_textures: Lru::new(MAX_REALM_TEXTURES, MAX_REALM_TEXTURE_BYTES),
+            realm_decode_left: MAX_REALM_DECODE_FRAME,
+            realm_decode_time: Duration::ZERO,
+            realm_in_flight: Arc::default(),
+            realm_here_left: REALM_DECODE_HERE_FRAME,
             fonts,
             sheets: BTreeMap::new(),
             sheet_bytes: 0,
@@ -1134,28 +1265,95 @@ impl Walk<'_> {
         t
     }
 
-    /// A realm image's texture: decoded from its own bytes once, in the realm textures (never the game's).
+    /// A realm image's texture: decoded from its own bytes once (never from the game's), when this frame's and the realm's
+    /// decode allowances hold it; natively on a thread, the image drawing nothing until it is done. Else it waits for a later
+    /// frame.
     fn realm_texture(&mut self, image: &RealmImage) -> Option<Arc<GuiTexture>> {
-        if let Some(found) = self.cache.realm_textures.get(&image.id) {
-            return found.clone();
+        let mut slot = image.texture.borrow_mut();
+        match &*slot {
+            Decode::Done(made) => return made.clone(),
+            #[cfg(not(target_family = "wasm"))]
+            Decode::Pending(done) => {
+                let made = match done.try_recv() {
+                    Ok(made) => made,
+                    Err(mpsc::TryRecvError::Empty) => {
+                        self.out.draws.report.realm_waiting += 1;
+                        return None;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => None,
+                };
+                if made.is_none() {
+                    self.out.draws.report.no_texture += 1;
+                }
+                *slot = Decode::Done(made.clone());
+                return made;
+            }
+            Decode::Idle => {}
         }
-        let made = torque_images::decode(image.kind, &image.bytes)
-            .ok()
-            .and_then(|b| texture_of(&format!("realm:{}", image.id), &b, false, true));
-        let size = made.as_ref().map_or(0, |t| t.rgba.len());
-        if !self
-            .cache
-            .realm_textures
-            .insert(image.id, made.clone(), size)
-        {
-            // Too large beside what the frame drew: remembered as none, not decoded again.
-            self.cache.realm_textures.insert(image.id, None, 0);
+        let cost = image.decoded_bytes();
+        let first = self.cache.realm_decode_left == MAX_REALM_DECODE_FRAME;
+        let here = cost <= self.cache.realm_here_left || cfg!(target_family = "wasm");
+        let free = here
+            || self.cache.realm_in_flight.load(Ordering::Acquire) < MAX_REALM_DECODES_IN_FLIGHT;
+        let allowed = free
+            && (first || cost <= self.cache.realm_decode_left)
+            && self
+                .gui
+                .0
+                .borrow_mut()
+                .client_script
+                .decode
+                .take(self.now, cost);
+        if !allowed {
+            self.out.draws.report.realm_waiting += 1;
             return None;
         }
+        self.cache.realm_decode_left = self.cache.realm_decode_left.saturating_sub(cost);
+        self.out.draws.report.realm_decodes += 1;
+        #[cfg(not(target_family = "wasm"))]
+        if !here && let Some(done) = self.decode_on_a_thread(image) {
+            *slot = Decode::Pending(done);
+            self.out.draws.report.realm_waiting += 1;
+            return None;
+        }
+        self.cache.realm_here_left = self.cache.realm_here_left.saturating_sub(cost);
+        let started = Instant::now();
+        let made = decode_realm_image(image.kind, &image.bytes, image.size, image.id);
+        self.cache.realm_decode_time += started.elapsed();
+        self.out.draws.report.realm_decoded_here += 1;
         if made.is_none() {
             self.out.draws.report.no_texture += 1;
         }
+        *slot = Decode::Done(made.clone());
         made
+    }
+
+    /// Starts decoding `image` on a thread of its own: what it gives back, or none when no thread could be made (then it is
+    /// decoded here).
+    #[cfg(not(target_family = "wasm"))]
+    fn decode_on_a_thread(
+        &self,
+        image: &RealmImage,
+    ) -> Option<mpsc::Receiver<Option<Arc<GuiTexture>>>> {
+        let (send, done) = mpsc::channel();
+        let in_flight = Arc::clone(&self.cache.realm_in_flight);
+        let (kind, bytes, size, id) = (image.kind, Arc::clone(&image.bytes), image.size, image.id);
+        in_flight.fetch_add(1, Ordering::AcqRel);
+        let spawned = std::thread::Builder::new()
+            .name("realm image".into())
+            .spawn({
+                let in_flight = Arc::clone(&in_flight);
+                move || {
+                    // A realm that is gone takes nothing back: the texture is dropped with the channel.
+                    let _ = send.send(decode_realm_image(kind, &bytes, size, id));
+                    in_flight.fetch_sub(1, Ordering::AcqRel);
+                }
+            });
+        if spawned.is_err() {
+            in_flight.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(done)
     }
 
     /// `dglDrawBitmapStretchSR`: `dst` (x, y, w, h) from `src` (x, y, w, h) of the texture, modulated by `color`.
@@ -2114,6 +2312,7 @@ impl Walk<'_> {
         let r = &draws.report;
         DrawMarks {
             no_texture: r.no_texture,
+            realm_waiting: r.realm_waiting,
             unmodelled: r.unmodelled.values().sum(),
             extension: r.extension.values().sum(),
             truncated: r.truncated,
@@ -2299,7 +2498,8 @@ impl Walk<'_> {
 pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     cache.chunked.begin_frame();
     cache.textures.begin_frame();
-    cache.realm_textures.begin_frame();
+    cache.realm_decode_left = MAX_REALM_DECODE_FRAME;
+    cache.realm_here_left = REALM_DECODE_HERE_FRAME;
     let (canvas, size) = {
         let s = gui.0.borrow();
         (s.canvas, s.canvas_size)
@@ -2363,6 +2563,10 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
         walk.engine_layer(&layers);
         walk.set_clip(viewport);
         walk.cursor();
+    }
+    let decoded = std::mem::take(&mut walk.cache.realm_decode_time);
+    if !decoded.is_zero() {
+        gui.0.borrow_mut().client_script.owed += decoded;
     }
     walk.out
 }

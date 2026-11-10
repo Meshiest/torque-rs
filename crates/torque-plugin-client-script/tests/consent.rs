@@ -656,3 +656,121 @@ fn a_new_connection_always_starts_at_idle_even_if_no_frame_saw_the_old_one_end()
     assert_eq!(asking.realms.state(), RealmState::Idle);
     assert_eq!(asking.asked.cancelled.get(), 1);
 }
+
+/// A flush of a mod root and one button on it.
+fn button_flush() -> Vec<u8> {
+    use torque_client_script_format::ui::{Kind, Prop, PropValue, write_props};
+    use torque_client_script_format::{Writer, op};
+    let mut out = Writer::new();
+    let mark = out.begin(Tier::Ui.id(), op::ui::ROOT);
+    out.u32(1);
+    out.text("hud");
+    out.end(mark).expect("fits");
+    let mark = out.begin(Tier::Ui.id(), op::ui::CREATE);
+    out.u32(2);
+    out.u32(1);
+    out.u8(Kind::Button as u8);
+    let props = [
+        (Prop::Pos, PropValue::Vec2(10.0, 10.0)),
+        (Prop::Size, PropValue::Vec2(100.0, 30.0)),
+        (Prop::Text, PropValue::Text("Go".into())),
+    ];
+    write_props(&mut out, props.iter().map(|(p, v)| (*p, v)));
+    out.end(mark).expect("fits");
+    out.into_bytes()
+}
+
+fn key(w: &mut World, action: u8, modifier: u8) -> bool {
+    use torque_gui::input::InputEvent;
+    use torque_gui::keys::{KEY_ESCAPE, KEYBOARD_DEVICE, SI_KEY};
+    let ev = InputEvent {
+        device: KEYBOARD_DEVICE,
+        obj_type: SI_KEY,
+        obj_inst: KEY_ESCAPE,
+        action,
+        modifier,
+        ..InputEvent::default()
+    };
+    let (consumed, error) = w.gui.input_event(&mut w.vm, &ev);
+    assert!(error.is_none());
+    consumed
+}
+
+fn click(w: &mut World, x: i32, y: i32) {
+    use torque_gui::input::InputEvent;
+    use torque_gui::keys::{KEY_BUTTON0, MOUSE_DEVICE, SI_BREAK, SI_BUTTON, SI_MAKE};
+    assert!(w.gui.mouse_moved(&mut w.vm, (x, y), 0).is_none());
+    for action in [SI_MAKE, SI_BREAK] {
+        let ev = InputEvent {
+            device: MOUSE_DEVICE,
+            obj_type: SI_BUTTON,
+            obj_inst: KEY_BUTTON0,
+            action,
+            ..InputEvent::default()
+        };
+        assert!(w.gui.input_event(&mut w.vm, &ev).1.is_none());
+    }
+}
+
+/// The chip's rectangle (x, y, width, height).
+fn chip_rect(w: &World) -> [i32; 4] {
+    let objects = w.vm.objects();
+    let chip = objects
+        .iter()
+        .find(|(_, o)| objects.classes.name(o.class()) == b"ClientScriptChip")
+        .map(|(id, _)| id)
+        .expect("a chip");
+    let (pos, ext) = torque_gui::bounds(&w.vm, chip);
+    [pos.0, pos.1, ext.0, ext.1]
+}
+
+/// A world whose realm runs with `ui` and shows one button.
+fn showing_a_button() -> World {
+    let mut w = World::new(Setting::Ask, ui_net(), Choices::in_memory());
+    w.files.here.set(true);
+    w.script.flushes.borrow_mut().push_back(button_flush());
+    w.offer(&["ui"]);
+    w.frames(3);
+    allow(&w, &[(Tier::Ui, true)], false);
+    w.frames(3);
+    assert_eq!(w.realms.state(), RealmState::Running);
+    w.gui.frame(&mut w.vm);
+    w
+}
+
+#[test]
+fn shift_escape_ends_the_realm_for_the_connection_only_and_the_chip_remembers_never() {
+    use torque_gui::keys::{SI_MAKE, SI_SHIFT};
+    let mut w = showing_a_button();
+    assert!(key(&mut w, SI_MAKE, SI_SHIFT), "the host takes it");
+    w.frame();
+    assert_eq!(w.realms.state(), RealmState::Off);
+    assert!(!w.gui.client_script_active());
+    assert_eq!(objects_of_the_realm(&w), 0);
+    assert_eq!(
+        w.realms.choices().get(server_key()),
+        None,
+        "Shift+Escape remembers nothing"
+    );
+    // A reconnect asks again.
+    w.realms.disconnect(&mut w.vm, &w.gui);
+    let prompts = w.realms.stats().prompts;
+    w.offer(&["ui"]);
+    w.frames(3);
+    assert_eq!(w.realms.state(), RealmState::Asking);
+    assert_eq!(w.realms.stats().prompts, prompts + 1);
+
+    // The chip's "Turn off for this server" remembers Never. Rows: the header, ui, hide, turn off.
+    let mut w = showing_a_button();
+    let rect = chip_rect(&w);
+    click(&mut w, rect[0] + 5, rect[1] + 5);
+    w.gui.frame(&mut w.vm);
+    let open = chip_rect(&w);
+    click(&mut w, open[0] + 5, open[1] + 22 + 40 + 5);
+    w.frame();
+    assert_eq!(w.realms.state(), RealmState::Off);
+    assert_eq!(
+        w.realms.choices().get(server_key()),
+        Some(&Remembered::Never)
+    );
+}

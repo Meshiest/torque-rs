@@ -12,8 +12,9 @@ use torque_client_script_format::{
 
 use crate::effects::{Effects, LogLevel, Violation};
 
-/// The most `ui` records the host hands the GUI in one piece: the unit of the web's per-frame apply cap.
-pub(crate) const UI_CHUNK: usize = 256;
+/// The most `ui` records the host hands the GUI in one piece: the unit the frame budget is checked between, so a frame holds
+/// at most one piece past its budget.
+pub(crate) const UI_CHUNK: usize = 64;
 
 /// One checked op (or a run of `ui` ones), for the engine.
 #[derive(Clone, Debug, PartialEq)]

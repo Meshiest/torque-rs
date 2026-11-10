@@ -8,7 +8,8 @@ use torque_ts_vm::vm::{Vm, VmError};
 
 use super::controls::{Notch, hit, origin, wheel};
 use super::layers::{
-    Release, chip_wanted, focus_on_top, prompt_up, release_holds, server_takes_input, turn_off,
+    LayerAction, Release, chip_wanted, focus_on_top, prompt_up, release_holds, server_takes_input,
+    turn_off,
 };
 use crate::Gui;
 use crate::canvas::hit_test_gui;
@@ -170,7 +171,8 @@ fn escape(gui: &Gui, ev: &InputEvent) -> bool {
         SI_MAKE => {
             let shift = normalise_modifiers(ev.modifier) & SI_SHIFT != 0;
             if active && shift {
-                turn_off(gui);
+                // The panic key ends the realm for the connection only: the server is asked again next time.
+                turn_off(gui, LayerAction::Stop);
             } else if active && held {
                 release_holds(gui, Release::Closed);
             } else if !prompt {

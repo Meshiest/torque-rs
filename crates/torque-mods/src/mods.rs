@@ -1008,7 +1008,7 @@ impl Mods {
     }
 
     /// Whether the files of mod `mod_id` that `server` offered with content hash `hash` are mounted for this connection and
-    /// hold `entry`, by the rules of [`client_content`](Self::client_content). Nothing is read: a client asks this before it asks
+    /// hold `entry`, by the rules of [`client_scripts`](Self::client_scripts). Nothing is read: a client asks this before it asks
     /// the player, and reads the files only once the player has allowed them.
     pub fn client_ready(
         &self,
@@ -1020,24 +1020,26 @@ impl Mods {
         self.table.client_ready(mod_id, server, hash, entry)
     }
 
-    /// The files of mod `mod_id` as the server `server` sent them on this connection, each as `(mods/<id>/<path>, bytes)`:
-    /// the one opt-in reader of server-sent script files, for a client-script realm.
+    /// The script files of mod `mod_id` as the server `server` sent them on this connection, each as `(mods/<id>/<path>, bytes)`:
+    /// the one opt-in reader of server-sent script files, for a client-script realm. Only `.lua` and `.luau` files are read, at
+    /// most [`MAX_CLIENT_SCRIPT_BYTES`](crate::MAX_CLIENT_SCRIPT_BYTES) of them; the realm's images are read one at a time when
+    /// it shows them ([`client_image`](Self::client_image)), and no other file of the mod is read.
     ///
     /// Only the mount that was offered by `server`, verified against `hash`, and reached the client by that server's own
     /// download or its own cache entry is read. A mod the player has installed, content another server sent, an entry found
     /// through cache sharing, a mount made by [`mount_server_files`](Self::mount_server_files) and a hash that differs give
     /// `None`, and so does a mod with more than [`MAX_CLIENT_FILES`](crate::MAX_CLIENT_FILES) files. `exec`, `read_script` and every other path keep
     /// refusing these files ([`is_untrusted`](Self::is_untrusted)).
-    pub fn client_content(
+    pub fn client_scripts(
         &self,
         server: crate::cache::CacheOwner,
         mod_id: &str,
         hash: &Hash,
     ) -> Option<Vec<(String, Arc<[u8]>)>> {
-        self.table.client_content(mod_id, server, hash)
+        self.table.client_scripts(mod_id, server, hash)
     }
 
-    /// One script file of that mount ([`client_content`](Self::client_content)'s rules), by its path within the mod. Only a
+    /// One script file of that mount ([`client_scripts`](Self::client_scripts)'s rules), by its path within the mod. Only a
     /// `.lua` or `.luau` file.
     pub fn client_script(
         &self,
@@ -1047,6 +1049,18 @@ impl Mods {
         path: &str,
     ) -> Option<Arc<[u8]>> {
         self.table.client_script(mod_id, server, hash, path)
+    }
+
+    /// One image file of that mount ([`client_scripts`](Self::client_scripts)'s rules), by its path within the mod: only a
+    /// `.png`, `.jpg` or `.jpeg` file of at most [`MAX_CLIENT_IMAGE_BYTES`](crate::MAX_CLIENT_IMAGE_BYTES).
+    pub fn client_image(
+        &self,
+        server: crate::cache::CacheOwner,
+        mod_id: &str,
+        hash: &Hash,
+        path: &str,
+    ) -> Option<Arc<[u8]>> {
+        self.table.client_image(mod_id, server, hash, path)
     }
 }
 

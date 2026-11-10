@@ -239,8 +239,14 @@ pub(crate) struct State {
     pub(crate) net: net::NetState,
 }
 
+/// The steps an op costs beyond its bytes: making and writing it here takes about 25 times what a Luau step does (measured
+/// under Wasmtime: a `set` of one prop about 2.5 us), so a callback of ui calls at its step cap takes about as long as one of
+/// plain Luau.
+const OP_STEPS: u64 = 25;
+
 impl State {
-    /// Appends an op: an error a script sees when the flush is full.
+    /// Appends an op, charged [`OP_STEPS`] and its bytes: an error a script sees when the flush is full or the callback is out
+    /// of steps.
     pub(crate) fn emit(
         &mut self,
         tier: Tier,
@@ -258,6 +264,11 @@ impl State {
         if self.out.ops.end(mark).is_err() || self.out.ops.len() > format::MAX_FLUSH_BYTES {
             self.out.ops.truncate(before);
             return Err(Error::runtime("too much changed in one frame"));
+        }
+        let bytes = (self.out.ops.len() - before) as u64;
+        if !self.fuel.spend(OP_STEPS + bytes / abi::BYTES_PER_STEP) {
+            self.out.ops.truncate(before);
+            return Err(Error::runtime(STOPPED));
         }
         self.out.count += 1;
         Ok(())
@@ -510,7 +521,7 @@ fn interrupt(lua: &Lua) -> mlua::Result<VmState> {
 }
 
 /// Charges a bulk builtin's bytes of work to the running callback.
-fn charge(lua: &Lua, bytes: u64) -> mlua::Result<()> {
+pub(crate) fn charge(lua: &Lua, bytes: u64) -> mlua::Result<()> {
     let steps = bytes / abi::BYTES_PER_STEP;
     if steps == 0 {
         return Ok(());

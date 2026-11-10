@@ -277,14 +277,27 @@ fn applier_fuzz(mut rig: Rig, seed: u64, containers: bool) {
     rig.apply_ok(&start);
     for sequence in 0..SEQUENCES {
         for _ in 0..=rng.below(6) {
-            let next = rig.realm.next_handle();
-            let ops = random_op(&mut rng, &live, next, containers);
+            // Half the flushes are one op, the others a few, each op taking the handle after the last create it may have made.
+            let mut next = rig.realm.next_handle();
+            let mut flush = Vec::new();
+            let ops = if rng.percent(50) { 1 } else { 2 + rng.below(4) };
+            for _ in 0..ops {
+                flush.extend_from_slice(random_op(&mut rng, &live, next, containers).bytes());
+                next += u32::from(rng.percent(40));
+            }
             clock += 1000;
-            match rig
+            // The check of the whole flush finds what applying it op by op finds, at the same op.
+            let checked = rig.realm.check_flush(&rig.gui, &flush);
+            let result = rig
                 .realm
-                .apply_flush(&mut rig.vm, &rig.gui, ops.bytes(), clock)
-            {
-                Ok(_) => applied += 1,
+                .apply_checked(&mut rig.vm, &rig.gui, &flush, clock)
+                .map(|_| ());
+            assert_eq!(
+                checked, result,
+                "sequence {sequence}: the check and the apply of a flush differ"
+            );
+            match result {
+                Ok(()) => applied += 1,
                 Err(violation) => {
                     refused += 1;
                     reasons.insert(violation.0);

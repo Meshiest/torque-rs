@@ -1333,7 +1333,11 @@ fn client_script_shift_escape_turns_server_scripts_off() {
     let mut rig = Rig::new(&[Tier::Ui]);
     rig.apply_ok(&button_ops());
     assert!(escape(&mut rig, SI_MAKE, SI_SHIFT));
-    assert_eq!(rig.gui.take_client_script_actions(), [LayerAction::TurnOff]);
+    assert_eq!(
+        rig.gui.take_client_script_actions(),
+        [LayerAction::Stop],
+        "connection-only: nothing is remembered"
+    );
     assert!(!rig.gui.client_script_active());
     let report = rig.draw();
     assert!(report.realm_controls == 0 && !report.chip);
@@ -2283,7 +2287,11 @@ fn client_script_images_come_from_the_servers_store_alone() {
         "the game has the file, the store does not"
     );
     rig.apply_ok(&image(2, "mods/mod/b.png", 100.0));
-    rig.apply_ok(&image(3, "mods/mod/c.png", 200.0));
+    assert_eq!(
+        rig.apply(&image(3, "mods/mod/c.png", 200.0)),
+        Err(Violation("an image that is not this server's content")),
+        "bytes whose header does not read are no image"
+    );
     let batches = rig.batches();
     assert!(
         batches
@@ -2297,11 +2305,7 @@ fn client_script_images_come_from_the_servers_store_alone() {
         .filter_map(|b| b.texture.as_ref())
         .filter(|t| t.name.starts_with("realm:"))
         .collect();
-    assert_eq!(
-        realm.len(),
-        1,
-        "the store's image; the bytes that are no image draw nothing"
-    );
+    assert_eq!(realm.len(), 1, "the store's image");
     assert_eq!(&realm[0].rgba[..3], &[10, 200, 30], "the store's pixels");
     assert!(
         textured(&batches, "realm:")
@@ -2494,4 +2498,260 @@ fn client_script_the_server_layer_fonts_are_markup_and_never_the_games() {
     let (_, keys) = rig.cache.fonts.cache().server_usage();
     assert!(keys >= 60, "{keys} server fonts");
     assert!(keys <= torque_fonts::MAX_SERVER_FONTS);
+}
+
+/// A store holding `bytes` under every path below `mods/mod/`.
+fn store_of(bytes: Vec<u8>) -> ContentCheck {
+    let bytes: Arc<[u8]> = bytes.into();
+    Box::new(move |p| p.starts_with("mods/mod/").then(|| Arc::clone(&bytes)))
+}
+
+fn image_op(ops: &mut Ops, handle: u32, path: &str) {
+    ops.create(
+        handle,
+        1,
+        Kind::Image,
+        &[
+            (Prop::Image, text(path)),
+            (Prop::Pos, vec2(10.0 + f64::from(handle) * 34.0, 10.0)),
+            (Prop::Size, vec2(32.0, 32.0)),
+        ],
+    );
+}
+
+/// Eight image controls of eight paths, each 2048 x 512 (4 MiB decoded), shown four at a time in turn for 60 frames: each
+/// image is decoded once, at most a frame's allowance of them a frame, and showing them again decodes nothing.
+#[test]
+fn client_script_images_decode_once_within_the_frames_allowance() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    rig.realm
+        .set_content_check(store_of(png(2048, 512, [40, 90, 200])));
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    for k in 0..8 {
+        image_op(&mut ops, 2 + k, &format!("mods/mod/{k}.png"));
+    }
+    rig.apply_ok(&ops);
+    let per_frame = (crate::draw::MAX_REALM_DECODE_FRAME / (4 * 2048 * 512)).max(1);
+    let mut decodes = 0;
+    // The decodes run on threads: frames go on (a little apart, so that they finish) until none waits.
+    let (mut waiting, mut quiet) = (0, 0);
+    for frame in 0..600u32 {
+        let mut ops = Ops::default();
+        for k in 0..8u32 {
+            ops.set(
+                2 + k,
+                &[(Prop::Visible, PropValue::Bool(k / 4 == frame % 2))],
+            );
+        }
+        rig.apply_ok(&ops);
+        let report = rig.draw();
+        assert!(
+            report.realm_decodes as usize <= per_frame,
+            "frame {frame}: {} decodes",
+            report.realm_decodes
+        );
+        assert_eq!(report.realm_decoded_here, 0, "none on the frame's thread");
+        decodes += report.realm_decodes;
+        waiting = report.realm_waiting;
+        quiet = if waiting == 0 { quiet + 1 } else { 0 };
+        // Done once all eight began and both halves drew with none waiting; then 60 frames more decode nothing.
+        if decodes >= 8 && quiet >= 2 && frame >= 60 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(waiting, 0, "every image decoded");
+    for frame in 0..60u32 {
+        let mut ops = Ops::default();
+        for k in 0..8u32 {
+            ops.set(
+                2 + k,
+                &[(Prop::Visible, PropValue::Bool(k / 4 == frame % 2))],
+            );
+        }
+        rig.apply_ok(&ops);
+        let report = rig.draw();
+        decodes += report.realm_decodes;
+        assert_eq!(report.realm_waiting, 0);
+    }
+    assert_eq!(decodes, 8, "each image decoded once");
+}
+
+/// Thousands of tiny distinct images shown one after another on one control: the realm keeps at most [`ui::MAX_IMAGES`] of
+/// them, and what it holds (texels, files, and each texture's own cost) stays within its decoded cap.
+#[test]
+fn client_script_thousands_of_tiny_images_keep_the_kept_ones_within_their_caps() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    rig.realm.set_content_check(store_of(png(2, 2, [1, 2, 3])));
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    image_op(&mut ops, 2, "mods/mod/0.png");
+    rig.apply_ok(&ops);
+    for batch in 0..5u32 {
+        let mut ops = Ops::default();
+        for k in 0..1_000u32 {
+            let path = format!("mods/mod/{}.png", 1 + batch * 1_000 + k);
+            ops.set(2, &[(Prop::Image, text(&path))]);
+        }
+        rig.apply_ok(&ops);
+        assert!(rig.realm.image_entries() <= torque_client_script_format::ui::MAX_IMAGES);
+        rig.realm
+            .check(&rig.vm, &rig.gui)
+            .expect("the invariants hold");
+    }
+    // Showing a kept one again finds it.
+    let mut ops = Ops::default();
+    ops.set(2, &[(Prop::Image, text("mods/mod/4999.png"))]);
+    rig.apply_ok(&ops);
+    assert_eq!(
+        rig.realm.image_entries(),
+        torque_client_script_format::ui::MAX_IMAGES
+    );
+}
+
+/// A noise image at the side cap (2048 x 2048, slow to decode) is decoded off the frame: no frame takes the decode's time.
+/// Destroyed and made again under the same path, it decodes nothing: the realm keeps its texture.
+#[test]
+fn client_script_a_large_image_decodes_off_the_frame_and_once_for_the_realm() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut noise = 0x2545_F491_4F6C_DD1Du64;
+    let pixels: Vec<u8> = (0..2048 * 2048 * 3)
+        .map(|_| {
+            noise ^= noise << 13;
+            noise ^= noise >> 7;
+            noise ^= noise << 17;
+            noise as u8
+        })
+        .collect();
+    let mut bytes = Vec::new();
+    {
+        let mut e = ::png::Encoder::new(&mut bytes, 2048, 2048);
+        e.set_color(::png::ColorType::Rgb);
+        e.set_depth(::png::BitDepth::Eight);
+        e.set_compression(::png::Compression::Fastest);
+        e.write_header()
+            .expect("the header")
+            .write_image_data(&pixels)
+            .expect("the pixels");
+    }
+    rig.realm.set_content_check(store_of(bytes));
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    image_op(&mut ops, 2, "mods/mod/noise.png");
+    rig.apply_ok(&ops);
+    // The draws while it decodes: a few controls' worth each, however long the decode takes.
+    let (mut slowest, mut frames) = (std::time::Duration::ZERO, 0);
+    loop {
+        let started = std::time::Instant::now();
+        let report = rig.draw();
+        slowest = slowest.max(started.elapsed());
+        frames += 1;
+        assert_eq!(report.realm_decoded_here, 0);
+        if report.realm_waiting == 0 {
+            break;
+        }
+        assert!(frames < 5_000, "the decode never finished");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(frames > 1, "the decode took frames, not one");
+    assert!(
+        slowest < std::time::Duration::from_millis(15),
+        "a frame waited for the decode: {slowest:?}"
+    );
+    assert_eq!(textured(&rig.batches(), "realm:").len(), 1, "it shows");
+    // Remade under the same path: nothing decodes, and it shows at once.
+    let mut ops = Ops::default();
+    ops.destroy(2);
+    rig.apply_ok(&ops);
+    rig.draw();
+    let mut ops = Ops::default();
+    image_op(&mut ops, 3, "mods/mod/noise.png");
+    rig.apply_ok(&ops);
+    let report = rig.draw();
+    assert_eq!((report.realm_decodes, report.realm_waiting), (0, 0));
+    assert_eq!(textured(&rig.batches(), "realm:").len(), 1);
+}
+
+#[test]
+fn client_script_images_past_their_caps_are_refused() {
+    // Wider than the side cap.
+    let mut rig = Rig::new(&[Tier::Ui]);
+    rig.realm
+        .set_content_check(store_of(png(4096, 1, [1, 2, 3])));
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    rig.apply_ok(&ops);
+    let mut ops = Ops::default();
+    image_op(&mut ops, 2, "mods/mod/wide.png");
+    assert_eq!(
+        rig.apply(&ops),
+        Err(Violation("an image that is not this server's content"))
+    );
+    // Sixteen distinct images of 2048 x 512 are the realm's 64 MiB decoded; a seventeenth is past it, and one in place of
+    // one of the sixteen is not.
+    let mut rig = Rig::new(&[Tier::Ui]);
+    rig.realm
+        .set_content_check(store_of(png(2048, 512, [1, 2, 3])));
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    for k in 0..16 {
+        image_op(&mut ops, 2 + k, &format!("mods/mod/{k}.png"));
+    }
+    rig.apply_ok(&ops);
+    // Past the cap the image is refused, not the realm: the control shows nothing, and it is counted.
+    let mut ops = Ops::default();
+    image_op(&mut ops, 18, "mods/mod/16.png");
+    rig.apply_ok(&ops);
+    assert_eq!(rig.gui.client_script_stats().refused_images, 1);
+    assert!(
+        rig.vm
+            .log_texts()
+            .iter()
+            .any(|l| l.contains("is not shown"))
+    );
+    let mut ops = Ops::default();
+    ops.set(2, &[(Prop::Image, text("mods/mod/16.png"))]);
+    rig.apply_ok(&ops);
+    assert_eq!(
+        rig.gui.client_script_stats().refused_images,
+        1,
+        "this one fits"
+    );
+    rig.realm
+        .check(&rig.vm, &rig.gui)
+        .expect("the invariants hold");
+}
+
+/// A flush whose last op breaks a rule changes nothing at all: no control of it is made.
+#[test]
+fn client_script_a_flush_is_checked_whole_before_any_of_it_applies() {
+    let mut rig = Rig::new(&[Tier::Ui]);
+    let mut ops = Ops::default();
+    ops.root(1, "mod");
+    for k in 0..600 {
+        ops.create(2 + k, 1, Kind::Panel, &[]);
+    }
+    ops.destroy(9_999);
+    let before = rig.realm_objects();
+    assert_eq!(rig.apply(&ops), Err(Violation("a handle that is not live")));
+    assert_eq!(rig.realm_objects(), before, "nothing of the flush was made");
+    assert_eq!(rig.realm.handles(), Vec::<u32>::new());
+}
+
+/// Past its burst, a realm's images decode at the allowance's rate: a realm that keeps changing them to new ones waits.
+#[test]
+fn client_script_image_decodes_past_the_burst_wait_for_the_rate() {
+    use crate::draw::{DecodeAllowance, REALM_DECODE_BURST};
+    let mut allowance = DecodeAllowance::default();
+    assert!(allowance.take(0, REALM_DECODE_BURST), "the burst");
+    assert!(!allowance.take(0, 1), "nothing left");
+    assert!(!allowance.take(10, 1 << 20), "10 ms is not 1 MiB");
+    assert!(allowance.take(1_000, 4_000_000), "a second is 4 MiB");
+    assert!(!allowance.take(1_000, 1 << 20));
+    assert!(
+        allowance.take(1_000_000, REALM_DECODE_BURST),
+        "it refills to the burst and no more"
+    );
+    assert!(!allowance.take(1_000_000, 1));
 }

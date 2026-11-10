@@ -21,8 +21,8 @@
 //!
 //! **Client scripts.** A mod's manifest may ask for `[client_script]` (an `entry` Lua file of the mod's content and the `tiers` it
 //! asks for, [`ClientScriptSpec`]). The server tells its clients ([`Mods::client_script_offers`], with the content hash the
-//! clients verify), and a client's one opt-in reader of server-sent script files ([`Mods::client_content`],
-//! [`Mods::client_script`], and [`Mods::client_ready`], which reads nothing) gives them only to a sandboxed realm and only for the
+//! clients verify), and a client's one opt-in reader of server-sent script files ([`Mods::client_scripts`],
+//! [`Mods::client_script`], [`Mods::client_image`], and [`Mods::client_ready`], which reads nothing) gives them only to a sandboxed realm and only for the
 //! mount that this server offered, that was verified against the hash, and that came by this server's own download or its own
 //! cache entry. `exec`, `read_script` and the Lua extension's mod realms keep refusing every file a server sent.
 //!
@@ -92,7 +92,7 @@ pub use cache::{
     CacheOwner, CacheScope, CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed,
     MAX_ENTRIES, MemoryStore, default_cache_dir, index_of,
 };
-pub use files::MAX_CLIENT_FILES;
+pub use files::{MAX_CLIENT_FILES, MAX_CLIENT_IMAGE_BYTES, MAX_CLIENT_SCRIPT_BYTES};
 pub use info::{
     ClientScriptSpec, Compare, MAX_CLIENT_TIERS, MAX_LIST, MAX_NAME_LEN, MAX_TEXT_LEN, ModInfo,
     Requirement, Version, check_id,

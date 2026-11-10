@@ -625,3 +625,66 @@ fn a_change_is_laid_out_in_its_own_container_alone() {
     assert_eq!(updates, 4, "both containers, two frames");
     assert!(both > 0, "both were fingerprinted");
 }
+
+/// A flex of 250 panels with a flex inside it.
+fn nested_flex() -> Rig {
+    let mut rig = Rig::new(true);
+    let mut ops = Ops::default();
+    ops.root(1).create(2, 1, Kind::Flex, &[size(600.0, 400.0)]);
+    for k in 0..250 {
+        ops.create(3 + k, 2, Kind::Panel, &[size(20.0, 10.0)]);
+    }
+    ops.create(253, 2, Kind::Flex, &[size(40.0, 40.0)]);
+    ops.create(254, 253, Kind::Panel, &[size(10.0, 10.0)]);
+    rig.apply(&ops).expect("the flush applies");
+    for _ in 0..4 {
+        rig.frame();
+    }
+    rig
+}
+
+/// A flush that sets the size of a nested flex 2,000 times (two sizes in turn) lays nothing out while it applies: the resizes
+/// only mark the containers, and the frame's check lays the outer one out, to what one set of the last size gives.
+#[test]
+fn many_resizes_of_a_nested_container_are_laid_out_once_by_the_frame() {
+    let mut rig = nested_flex();
+    let gui = rig.client.host.gui.clone();
+    let before = gui.client_script_stats();
+    let mut ops = Ops::default();
+    for k in 0..2_000 {
+        let side = if k % 2 == 0 { 50.0 } else { 60.0 };
+        ops.set(253, &[size(side, side)]);
+    }
+    let vm = rig.client.vm_mut();
+    rig.realm
+        .apply_flush(vm, &gui, ops.0.bytes(), 1_000_000)
+        .expect("the flush applies");
+    let applied = gui.client_script_stats();
+    assert_eq!(
+        applied.layout_updates, before.layout_updates,
+        "nothing laid out while the flush applied"
+    );
+    assert!(applied.deferred_layouts >= before.deferred_layouts + 2_000);
+    for _ in 0..4 {
+        rig.frame();
+    }
+    let laid = gui.client_script_stats();
+    assert!(
+        laid.layout_updates - applied.layout_updates <= 4,
+        "the two containers checked for two frames, not 2,000 times: {}",
+        laid.layout_updates - applied.layout_updates
+    );
+    let mut once = nested_flex();
+    let mut ops = Ops::default();
+    ops.set(253, &[size(60.0, 60.0)]);
+    once.apply(&ops).expect("the flush applies");
+    for _ in 0..4 {
+        once.frame();
+    }
+    for handle in [2, 3, 252, 253, 254] {
+        assert_eq!(rig.rect(handle), once.rect(handle), "handle {handle}");
+    }
+    rig.realm
+        .check(rig.client.vm(), &gui)
+        .expect("the invariants hold");
+}

@@ -8,7 +8,7 @@ use crate::runner::InstanceLimits;
 
 /// What a Luau step of the realm's guest costs under Wasmtime, measured (`realm-gate`): about 102 ns.
 pub const STEP_NANOS: u64 = 102;
-/// The steps of a frame's budget: about 2 ms of Luau, the native frame budget's most. Each callback of a frame gets
+/// The steps of a frame's Luau: about 2 ms, which an entry may take whole (it is never split). Each callback of a frame gets
 /// at most these.
 pub const FRAME_STEPS: u32 = 20_000;
 /// The steps of a file run (a mod's entry and what it `require`s): about 11 ms of Luau, under the 25 ms that is a
@@ -85,7 +85,7 @@ impl Settings {
     /// The native defaults: 32 MiB of Lua; [`RUN_STEPS`] a file run and [`FRAME_STEPS`] a frame (a frame's callback
     /// gets at most a frame's budget, so a realm at its caps every frame holds the frame to about 2 ms, and its stops
     /// are strikes); a 250 ms
-    /// deadline (the epoch); an entry past 25 ms (12.5 budgets) a strike; `min(2 ms, 12%)` of a frame; slow after 30
+    /// deadline (the epoch); an entry past 25 ms a strike; `min(1.5 ms, 9%)` of a frame; slow after 30
     /// of 60 frames; off after 3 strikes in 10 s.
     pub fn native() -> Settings {
         Settings {
@@ -95,8 +95,8 @@ impl Settings {
             deadline: Duration::from_millis(250),
             long_entry: Duration::from_millis(25),
             budget: FrameBudget::Shared {
-                max: Duration::from_millis(2),
-                share: 0.12,
+                max: Duration::from_micros(1500),
+                share: 0.09,
             },
             slow_after: 30,
             strikes: StrikeRule {
@@ -108,12 +108,12 @@ impl Settings {
     }
 
     /// The web defaults: as [`Settings::native`] (the same steps, so a script counts the same on both), with a 1 s
-    /// deadline (the Worker's watchdog) and 1 ms of applying a frame.
+    /// deadline (the Worker's watchdog) and 0.75 ms of applying a frame.
     pub fn web() -> Settings {
         Settings {
             deadline: Duration::from_secs(1),
             budget: FrameBudget::ApplyOnly {
-                cap: Duration::from_millis(1),
+                cap: Duration::from_micros(750),
             },
             ..Settings::native()
         }

@@ -897,6 +897,66 @@ fn entries_past_the_long_entry_time_are_strikes() {
     assert_eq!(rig.session.longest_entry(), Duration::from_millis(30));
 }
 
+/// Frames of a realm whose every frame flushes a few `ui` roots.
+fn ui_every_frame(frames: usize) -> Vec<Outcome> {
+    (0..frames)
+        .map(|f| flush_reply(|o| ui_root(o, f as u32 + 1)))
+        .collect()
+}
+
+#[test]
+fn applying_a_piece_past_the_long_entry_time_is_a_strike() {
+    let settings = Settings {
+        long_entry: Duration::from_millis(5),
+        ..Settings::native()
+    };
+    let mut rig = Rig::new(UI_NET, ui_every_frame(8), false, settings);
+    rig.seen_mut().apply_cost = Duration::from_millis(6);
+    for _ in 0..8 {
+        rig.frame();
+    }
+    assert_eq!(
+        rig.session.stop().map(|(s, _)| s.clone()),
+        Some(Stop::Strikes),
+        "three long applies in ten seconds"
+    );
+    assert_eq!(rig.seen().ui.len(), 3);
+}
+
+#[test]
+fn host_work_charged_to_the_realm_is_paid_by_its_next_frames_and_makes_it_slow() {
+    let mut rig = Rig::new(UI_NET, ui_every_frame(200), false, Settings::native());
+    for _ in 0..3 {
+        rig.frame();
+    }
+    let before = rig.session.frames_started();
+    // 7.5 ms of layouts: five frames of the 1.5 ms budget run nothing.
+    rig.session.charge(Duration::from_micros(7500));
+    for _ in 0..5 {
+        rig.frame();
+    }
+    assert_eq!(
+        rig.session.frames_started(),
+        before,
+        "the debt was paid first"
+    );
+    rig.frame();
+    assert_eq!(rig.session.frames_started(), before + 1);
+    assert!(rig.session.stop().is_none(), "a charge is no strike");
+    // Charged every frame over its budget, the realm turns slow.
+    for _ in 0..70 {
+        rig.session.charge(Duration::from_millis(3));
+        rig.frame();
+    }
+    assert!(rig.session.is_slow());
+    // Not even one past the long-entry time: the host bounds that work by its own caps.
+    for _ in 0..3 {
+        rig.session.charge(Duration::from_millis(30));
+        rig.frame();
+    }
+    assert!(rig.session.stop().is_none());
+}
+
 /// What a dropped session left behind, seen from outside it.
 #[derive(Default)]
 struct Left {

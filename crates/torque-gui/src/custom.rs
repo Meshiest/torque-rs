@@ -828,6 +828,9 @@ pub(crate) fn resize(
     extent: (i32, i32),
     depth: usize,
 ) -> bool {
+    if crate::client_script::defer_layout(vm, gui, id, position, extent) {
+        return true;
+    }
     let done = with(vm, gui, id, depth, |b, state, cx| {
         b.resize(state, cx, position, extent);
     })

@@ -31,6 +31,7 @@ pub const RUNNER_DEPENDENT: &[&str] = &[
     "os_clock_is_the_instances_own",
     "a_guest_at_its_step_caps_every_frame_is_struck_off",
     "a_guest_holding_its_entries_past_the_long_entry_time_is_struck_off",
+    "the_ui_functions_cost_steps_for_what_they_handle",
     "three_limit_stops_in_ten_seconds_turn_the_realm_off",
     "limit_stops_further_apart_do_not",
     "an_op_of_a_revoked_tier_stops_the_realm_once_it_was_told",
