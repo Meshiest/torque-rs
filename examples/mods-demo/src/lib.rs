@@ -3,16 +3,18 @@
 //! The game is a folder (`game/`): an entry script for the server and one for the client, a prefs file, and three mods in
 //! `game/mods`:
 //!
-//! - `orbs`, the game mode: TorqueScript for its datablocks, Lua for its rules, and content (shapes, pictures, a sound) that
+//! - `soccer`, the game mode: TorqueScript for its datablocks, Lua for its rules, and content (shapes, pictures, a sound) that
 //!   [`assets`] makes from code. Its `mod.toml` says `share = "download"`, so a client that joins is sent the content, verifies
 //!   it, mounts it and only then enters. The Lua runs on the server alone.
-//! - `golden-orbs`, which requires `orbs` and so loads after it (though its name sorts first) and replaces two of its Lua
-//!   functions. Players need nothing from it (`share = "none"`).
+//! - `big-ball`, which requires `soccer` and so loads after it (though its name sorts first), declares a bigger ball and
+//!   replaces the Lua function that names the ball. Players need nothing from it (`share = "none"`).
 //! - `confetti`, which `game/prefs.cs` switches off: it is found and never mounted.
 //!
-//! The Lua extension is not linked in: it is built apart (`just lua`) and loaded from a `plugins/` folder, as a game loads it
-//! ([`Lua`]). A [`Session`] is one server and its clients over the memory transport, stepped by hand; [`viewer`] draws a client
-//! of one offscreen. `cargo run -p torque-example-mods-demo --bin mods-demo` plays a few rounds headless.
+//! The ball is a prop of `torque-plugin-props`, which only the engine's own protocol carries, so every engine of the demo
+//! speaks it whatever `TORQUE_NET_PROTOCOL` says. The Lua extension is not linked in: it is built apart (`just lua`) and
+//! loaded from a `plugins/` folder, as a game loads it ([`Lua`]). A [`Session`] is one server and its clients over the memory
+//! transport, stepped by hand, each client steered by a [`bot`]; [`viewer`] draws a client of one offscreen.
+//! `cargo run -p torque-example-mods-demo --bin mods-demo` plays a few rounds headless.
 //!
 //! # Maintaining
 //!
@@ -23,6 +25,7 @@
 //! `a_library_added_to_the_plugins_folder_is_not_approved_while_the_shipped_one_loads`).
 
 pub mod assets;
+pub mod bot;
 pub mod session;
 pub mod viewer;
 
@@ -33,14 +36,15 @@ use std::path::{Path, PathBuf};
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
-use torque::app::plugins::{DefaultPlugins, ModsPlugin};
+use torque::app::plugins::{DefaultPlugins, ModsPlugin, set_protocol};
 use torque::app::server::{GameServer, Listen, ServerStart};
-use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId, ProtocolKind};
 use torque::extensions::{
     ApprovalRequest, Approve, NativeExtensions, NativeExtensionsPlugin, TerminalPrompt, sha256_hex,
 };
 use torque::mods::CacheChoice;
-use torque_plugin_rope::RopePlugin;
+use torque_plugin_props::client::ClientProp;
+use torque_plugin_props::{ClientProps, PropsPlugin};
 
 pub use session::Session;
 
@@ -82,7 +86,10 @@ pub fn bundle_dir() -> PathBuf {
 pub fn server_files() -> io::Result<GameFiles> {
     let mut files = GameFiles::default();
     files.add_dir(&game_dir(), "")?;
-    for (id, content) in [("orbs", assets::orbs()?), ("confetti", assets::confetti()?)] {
+    for (id, content) in [
+        ("soccer", assets::soccer()?),
+        ("confetti", assets::confetti()?),
+    ] {
         for (path, bytes) in content {
             files.insert(&format!("mods/{id}/{path}"), &bytes);
         }
@@ -208,8 +215,8 @@ pub enum Role {
     Client { cache: PathBuf },
 }
 
-/// An engine of the game for `role`: the default plugins, the rope plugin, and the Lua extension when there is one. Mods are
-/// found in the game's files (`mods/`).
+/// An engine of the game for `role`: the default plugins in the engine's own protocol, the props plugin, and the Lua extension
+/// when there is one. Mods are found in the game's files (`mods/`).
 pub fn engine(files: &GameFiles, role: Role, lua: Option<&Lua>) -> Result<Engine, String> {
     let mods = match role {
         Role::Server => ModsPlugin::new().required_mods(),
@@ -217,12 +224,10 @@ pub fn engine(files: &GameFiles, role: Role, lua: Option<&Lua>) -> Result<Engine
     };
     let config = GameConfig::load(files).map_err(|e| e.to_string())?;
     let mut builder = EngineBuilder::new();
+    builder.add_plugins(DefaultPlugins.set(mods));
+    set_protocol(&mut builder, ProtocolKind::Engine);
     builder
-        .add_plugins((
-            DefaultPlugins.set(mods),
-            ExamplePlugin(files.clone()),
-            RopePlugin::default(),
-        ))
+        .add_plugins((PropsPlugin, ExamplePlugin(files.clone())))
         .config(&config);
     if let Some(lua) = lua {
         builder
@@ -230,6 +235,14 @@ pub fn engine(files: &GameFiles, role: Role, lua: Option<&Lua>) -> Result<Engine
             .enable_id("torque.native-extensions");
     }
     builder.build().map_err(|e| e.to_string())
+}
+
+/// The ball as the client of `engine` sees it: the newest prop its book holds (a kickoff replaces the ball with a new one).
+pub fn ball_of(engine: &Engine) -> Option<ClientProp> {
+    engine
+        .resource::<ClientProps>()?
+        .with(|book| book.props().values().next_back().copied())
+        .flatten()
 }
 
 /// A server of the game on the memory transport, started by `engine`'s plugins, for a host that ticks it itself.

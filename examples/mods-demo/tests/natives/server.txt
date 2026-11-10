@@ -44,14 +44,27 @@ Player::setActionThread 3..5 (string sequenceName, bool hold, bool fsp)
 Player::setArmThread 3..3 (string sequenceName)
 Player::setControlObject 3..3 (ShapeBase obj)
 ScatterSky::inspectPostApply 2..2 ()
+SceneObject::clearChildren 2..3 sceneObject.clearChildren([keepWorld]) - takes every child off the object (keeping where each is, or with `keepWorld` 0 its local pose); how many
+SceneObject::deleteRecursive 2..2 sceneObject.deleteRecursive() - deletes the object and every object below it, children first; how many objects went
+SceneObject::getChild 3..3 sceneObject.getChild(index) - the object's child number `index` (from 0, in the order they were hung), 0 past the last
+SceneObject::getChildCount 2..2 sceneObject.getChildCount() - how many children the object has
+SceneObject::getDeleteWithParent 2..2 sceneObject.getDeleteWithParent() - whether the object is deleted with its parent
 SceneObject::getForwardVector 2..2 ()
+SceneObject::getLocalTransform 2..2 sceneObject.getLocalTransform() - the object's pose in its parent as "x y z ax ay az angle", "" when it has no parent
 SceneObject::getObjectBox 2..2 ()
+SceneObject::getParent 2..2 sceneObject.getParent() - the parent's id, 0 for none
+SceneObject::getParentNode 2..2 sceneObject.getParentNode() - the parent's node the object hangs on, "" for the parent's origin
 SceneObject::getPosition 2..2 ()
+SceneObject::getRoot 2..2 sceneObject.getRoot() - the top of the object's chain of parents: the object itself when it has none
 SceneObject::getScale 2..2 ()
 SceneObject::getTransform 2..2 ()
 SceneObject::getUpVector 2..2 ()
 SceneObject::getWorldBox 2..2 ()
 SceneObject::getWorldBoxCenter 2..2 ()
+SceneObject::isAncestorOf 3..3 sceneObject.isAncestorOf(other) - whether the object is above `other` in its chain of parents
+SceneObject::setDeleteWithParent 3..3 sceneObject.setDeleteWithParent(flag) - sets whether the object is deleted with its parent (a turret with its tank) instead of being taken off it where it
+SceneObject::setLocalTransform 3..4 sceneObject.setLocalTransform(transform [, snap]) - sets the object's pose in its parent ("x y z ax ay az angle"; the values left out are kept); true, or false with
+SceneObject::setParent 3..5 sceneObject.setParent(parent [, keepWorld [, node]]) - hangs the object on a parent, or takes it off with 0 or ""; true, or false with getParentError() naming why
 SceneObject::setScale 3..3 (Point3F scale)
 SceneObject::setTransform 3..3 (Transform T)
 ShapeBase::applyDamage 3..3 (float amt)
@@ -186,6 +199,7 @@ call 2..* call(function, args...) - calls a global function by name
 cancel 2..2 cancel(scheduleId) - drops a scheduled call
 clearModDownloadCache 1..1 clearModDownloadCache() - deletes the mod content kept from servers; returns the bytes freed
 collapseEscape 2..2 collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for
+commandDrops 3..3 commandDrops(client, command) - how many calls of a server command the client sent that were refused
 commandToClient 3..22
 commandToServer 2..21
 compile 2..2 compile(file) - compiles a script without running it
@@ -236,6 +250,7 @@ getModDownloadState 1..1 getModDownloadState() - where a client's download of th
 getModField 3..3 getModField(id, field) - one fact about a mod: version, name, description, author, category, status (pending, enabled, disabled or skipped), reason, source, package, files, bytes, clientside, or a field the layout kept; empty for a mod or a fact there is not
 getModList 1..2 getModList([all]) - the ids of the loaded mods in load order, separated by spaces (all of them, the ones left out too, with `true`)
 getModStages 1..1 getModStages() - the declared load stages, separated by spaces
+getParentError 1..1 getParentError() - why the last setParent or setLocalTransform was refused: self, cycle, depth, children, subtree, total, notFinite,
 getRandom 1..3 getRandom([a [, b]]) - a random number: in (0, 1], from 0 to a, or from a to b
 getRandomSeed 1..1 getRandomSeed() - the random generator's state
 getRealTime 1..1 getRealTime() - a millisecond counter of the computer
@@ -263,6 +278,27 @@ isModEnabled 2..2 isModEnabled(id) - whether the mod is loaded and switched on
 isObject 2..2 isObject(object) - whether the object exists
 isPackage 2..2 isPackage(name) - whether a package of that name exists
 isWriteableFileName 2..2 isWriteableFileName(file) - whether a script may write that file
+jointCheck 5..10 jointCheck(client, a, b, eye [, reach [, kind [, point [, allowOtherPlayers [, allowOtherOwners]]]]]) - checks whether two ends could be joined for a player: "" when they may, else the reason
+jointCount 1..2 jointCount([owner]) - how many joints there are, or, given a client, how many its owner key owns
+jointCountOn 2..2 jointCountOn(prop) - how many joints a prop is an end of
+jointDelete 2..2 jointDelete(joint) - takes a joint away from the world and every client (and the rope that shows it); true if there was one
+jointGetDistance 2..2 jointGetDistance(joint) - the distance between a joint's ends after the last tick
+jointGetForce 2..2 jointGetForce(joint) - the force a joint held its ends with in the last tick
+jointGetKind 2..2 jointGetKind(joint) - a joint's kind: `tether`, `winch`, `weld`, `hinge` or `grapple`
+jointGetLength 2..2 jointGetLength(joint) - a tether's, a winch's or a grapple's length now (0 for the other kinds)
+jointGrapple 4..5 jointGrapple(player, target, length [, owner]) - tethers a player to a point or a prop, at most `length` away, and returns the joint's object id
+jointHinge 5..6 jointHinge(a, b, point, axis [, owner]) - hinges a prop to another (or, with `b` empty, to the world) about `axis` (`"x y z"`) through `point`, and returns the joint's
+jointHold 4..5 jointHold(player, prop, offset [, owner]) - makes a player carry a prop and returns the joint's object id
+jointIsAtLimit 2..2 jointIsAtLimit(joint) - whether a tether's ends are at its length (a rope following it is drawn taut)
+jointIsBroken 2..2 jointIsBroken(joint) - whether a joint broke (it holds nothing; delete it when it is done with)
+jointSetBreakForce 3..3 jointSetBreakForce(joint, force) - sets the force a joint breaks past (a torque counts at one unit; 0: never); true for a joint
+jointSetLength 3..4 jointSetLength(joint, length [, min]) - sets a tether's, a winch's or a grapple's length (0.001 to 200) and, if given, its shortest; true for one of those
+jointSetLimits 2..4 jointSetLimits(joint [, low [, high]]) - holds a hinge's angle between `low` and `high` (radians, from where it was made); with neither given, frees it; true for a
+jointSetMotor 4..4 jointSetMotor(joint, speed, maxTorque) - turns a hinge at `speed` radians a second with at most `maxTorque` (0: the motor is off); true for a hinge
+jointSetSpring 3..4 jointSetSpring(joint, stiffness [, damping]) - makes a tether or a grapple a spring past its length (`stiffness` force a unit past it, `damping` force a unit a second);
+jointTether 4..5 jointTether(a, b, length [, owner]) - ties two ends together, at most `length` apart, and returns the joint's object id
+jointWeld 3..4 jointWeld(a, b [, owner]) - welds a prop to another (or, with `b` empty, to the world) as they are now, and returns the joint's object id
+jointWinch 4..5 jointWinch(joint, length, rate [, maxForce]) - makes a tether a winch: its length moves to `length` at `rate` units a second (at most 20), and stops shortening while it
 loadMods 2..2 loadMods(stage) - runs the entry scripts of a load stage of every enabled mod, in load order, and returns how many ran (a stage runs once for a mod)
 ltrim 2..2 ltrim(text) - the text without leading white space
 mAbs 2..2 mAbs(x) - the absolute value
@@ -285,6 +321,23 @@ mSolveQuartic 6..6 mSolveQuartic(a, b, c, d, e) - the real roots of a*x^4 + b*x^
 mSqrt 2..2 mSqrt(x) - the square root
 mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
+propApplyImpulse 3..3 propApplyImpulse(prop, impulse) - pushes a prop: `impulse` is `"x y z"` (mass times units a second), held to the world's limits; wakes it
+propAwakeCount 1..1 propAwakeCount() - how many props are awake now
+propCheckPlacement 4..6 propCheckPlacement(datablock, transform, eye [, ignore [, reach]]) - checks where a prop of the datablock could be spawned for a player: "" when it may, else the reason
+propCount 1..2 propCount([owner]) - how many props there are, or, given a client, how many its owner key owns (orphans of an earlier connection under the same
+propDelete 2..2 propDelete(prop) - takes a prop away from the world and every client; true if there was one
+propFreeze 2..2 propFreeze(prop) - pins a prop where it is: it no longer moves, and others rest on it; true if it was frozen now
+propGetOwner 2..2 propGetOwner(prop) - the connection that owns a prop, 0 for none (or an owner who left)
+propGetSpin 2..2 propGetSpin(prop) - a prop's spin, `"x y z"` (radians a second about each axis)
+propGetTransform 2..2 propGetTransform(prop) - a prop's transform, `"x y z ax ay az angle"`, as the clients are sent it
+propGetVelocity 2..2 propGetVelocity(prop) - a prop's velocity, `"x y z"` (units a second), as the clients are sent it
+propIsAsleep 2..2 propIsAsleep(prop) - whether a prop is asleep (still, and costing nothing until something wakes it)
+propIsFrozen 2..2 propIsFrozen(prop) - whether a prop is frozen
+propRayCast 3..4 propRayCast(start, end [, ignore]) - the first prop the segment from `start` to `end` meets: `"prop x y z"` (where it meets the prop's box), or "" for none
+propSetVelocity 3..4 propSetVelocity(prop, velocity [, spin]) - sets a prop's velocity (`"x y z"`, units a second, held to its datablock's `maxSpeed`) and, if given, its spin (radians a
+propSleep 2..2 propSleep(prop) - puts a prop to sleep where it lies, stopped; true if it was awake
+propSpawn 3..5 propSpawn(datablock, transform [, owner [, predictId]]) - spawns a prop of the datablock at a transform and returns its object id
+propUnfreeze 2..2 propUnfreeze(prop) - lets a frozen prop move again, at rest; true if it was frozen
 purgeResources 1..1 Purge resources from the resource manager.
 quit 1..1 quit() - asks the main loop to stop
 removeField 3..3 removeField(text, index) - the text without that field
@@ -292,25 +345,8 @@ removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
 removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
-ropeNetAttach 4..5 ropeNetAttach(rope, end, object [, node]) - hangs an end of a networked rope from an object (name or id), that every client follows as it draws it
-ropeNetAttachAt 6..6 ropeNetAttachAt(rope, end, object, node, offset) - hangs an end of a networked rope from an object at a point in the object's own frame
-ropeNetClearCurve 2..2 ropeNetClearCurve(rope) - takes a networked rope's driven curve away
-ropeNetClearLook 2..2 ropeNetClearLook(rope) - puts everything one networked rope was given of its own (color, texture, speed, glow) back to the datablock's
-ropeNetCreate 4..6 ropeNetCreate(start, end, datablock [, predictId [, owner]]) - makes a networked rope of the datablock between two points, and returns its object id
-ropeNetDelete 2..2 ropeNetDelete(rope) - takes a networked rope away from every client; true if there was one
-ropeNetDrive 4..4 ropeNetDrive(rope, name, object) - makes a networked rope follow a rope driver (a plugin's) on every client
-ropeNetExpire 2..2 ropeNetExpire(rope) - deletes a networked rope whose lifetime has run out (the call `ropeNetSetLifetime` schedules)
-ropeNetFx 6..7 ropeNetFx(client, start, end, datablock, seconds [, bend]) - sends a rope that lasts `seconds` (at most 30) between two points to a client, or to every client when `client` is empty or 0,
-ropeNetPin 4..4 ropeNetPin(rope, end, point) - pins an end of a networked rope to a point; `end` is 0 or start, 1 or end
-ropeNetRelease 3..3 ropeNetRelease(rope, end) - lets an end of a networked rope go, so it falls with the rest on every client
-ropeNetSetColor 3..3 ropeNetSetColor(rope, color) - sets the color one networked rope is drawn with, `"r g b a"` from 0 to 255; an empty string puts the datablock's back
-ropeNetSetCurve 5..5 ropeNetSetCurve(rope, startDir, endDir, bend) - gives a networked rope a driven curve (see `ropeSetCurve`): each of `startDir` and `endDir` is empty, `"mount"` or `"x y z"`
-ropeNetSetEmissive 3..3 ropeNetSetEmissive(rope, on) - sets whether one networked rope glows; -1 puts the datablock's back
-ropeNetSetLength 3..4 ropeNetSetLength(rope, length [, seconds]) - sets the length of a networked rope; clients reel it from its length now to `length` evenly over `seconds`
-ropeNetSetLifetime 3..4 ropeNetSetLifetime(rope, seconds [, fade]) - makes a networked rope a temporary one: it is deleted `seconds` from now, and every client shows less of it over its last
-ropeNetSetTexture 3..3 ropeNetSetTexture(rope, file) - sets the texture one networked rope is drawn with (a .png or .jpg, at most 96 bytes of name); an empty string puts the
-ropeNetSetTextureScroll 3..3 ropeNetSetTextureScroll(rope, speed) - sets how fast one networked rope's texture runs along it, in repeats a second; an empty string puts the datablock's back
-ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its driver on every client
+rpcDrops 3..3 rpcDrops(client, name) - how many calls of an RPC the client sent that were dropped for going over its rate
+rpcToClient 3..* rpcToClient(client, name, fields..) - sends a client the server-to-client RPC `name`, its arguments the message's fields; answers the reason it was not queued, or nothing
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

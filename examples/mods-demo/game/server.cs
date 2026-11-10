@@ -1,4 +1,4 @@
-// The demo's server: a world with nothing in it, and the way a client comes in. The rules are not here: the `orbs` mod is the
+// The demo's server: a world with nothing in it, and the way a client comes in. The rules are not here: the `soccer` mod is the
 // game mode, and replaces GameConnection::onEnterGame and onLeaveGame (empty below) when the server's mods are loaded.
 
 exec("prefs.cs");
@@ -10,7 +10,8 @@ datablock CameraData(ObserverData)
 
 function startGame()
 {
-   new SimGroup(MissionCleanup);
+   if (!isObject(MissionCleanup))
+      new SimGroup(MissionCleanup);
    new SimGroup(ClientGroup);
 }
 

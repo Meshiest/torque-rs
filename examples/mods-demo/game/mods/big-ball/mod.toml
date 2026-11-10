@@ -1,0 +1,10 @@
+id = "big-ball"
+version = "1.0.0"
+name = "Big Ball"
+description = "Plays the match with a bigger, heavier ball."
+author = "torque-rs"
+# Needs the soccer mod and loads after it, though "big-ball" sorts before "soccer": a requirement beats the order of the names.
+requires = ["soccer >= 1.0"]
+requires_plugins = ["torque.lua"]
+# The ball's shape is the soccer mod's, drawn larger: players need nothing from this mod, so a client is never asked for it.
+share = "none"

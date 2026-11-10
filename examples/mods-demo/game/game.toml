@@ -6,5 +6,6 @@ server = "server.cs"
 client = "client.cs"
 
 [plugins]
-# Plugins of DefaultPlugins this game never uses: no sound, no water, no terrain, no game-list queries.
-disable = ["torque.audio", "torque.water", "torque.terrain", "torque.server-query"]
+# Plugins of DefaultPlugins this game never uses: no water, no terrain, no game-list queries. Sound stays on: the kick plays
+# through the engine's mixer (silent in the headless demo).
+disable = ["torque.water", "torque.terrain", "torque.server-query"]

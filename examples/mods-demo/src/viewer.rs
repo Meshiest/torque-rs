@@ -1,8 +1,8 @@
-//! A client of a [`Session`] drawn offscreen, as a window would draw it: the world's ghosts (the runners and orbs, in shapes the
-//! client downloaded), the ropes the rope plugin draws, and the board the client's own script keeps.
+//! A client of a [`Session`] drawn offscreen, as a window would draw it: the world's ghosts (the pitch, the players and the
+//! ball, in shapes the client downloaded) and the board the client's own script keeps.
 //!
 //! The drawing reads its files through the client's own script engine (the same file layer `exec` reads), so what the client
-//! downloaded and mounted is what is drawn: a client that had not mounted the mod's shapes would draw nothing for the orbs.
+//! downloaded and mounted is what is drawn: a client that had not mounted the mod's shapes would draw nothing of the match.
 
 use std::rc::Rc;
 
@@ -16,6 +16,7 @@ use torque::script::vm::host::{FileHost, FileRead, FileStat};
 use torque_render_core::{Frame, Gpu};
 use torque_render_scene::Assets;
 use torque_render_scene::hd::kit::look_at;
+use torque_render_scene::moving::ShapeSelect;
 use torque_render_scene::source::Eye;
 
 use crate::session::Session;
@@ -104,9 +105,9 @@ pub struct Viewer {
     owed: u32,
 }
 
-/// The default view: from the south and above, the whole field.
+/// The default view: from the side and above, the whole pitch, Blue attacking to the right.
 pub fn overview() -> Eye {
-    look_at([0.0, -12.5, 9.5], [0.0, 0.5, 0.3])
+    look_at([15.0, 0.0, 13.5], [0.5, 0.0, -0.5])
 }
 
 impl Viewer {
@@ -124,7 +125,11 @@ impl Viewer {
         Viewer {
             session,
             watch,
-            ghosts: GhostScene::new(GhostOptions::default()),
+            // Every shape: the pitch's static shapes and the client's own player too, which the view stands apart from.
+            ghosts: GhostScene::new(GhostOptions {
+                select: ShapeSelect::All,
+                ..GhostOptions::default()
+            }),
             files: ClientFiles(shared),
             eye: overview(),
             owed: 0,
@@ -171,7 +176,6 @@ impl App for Viewer {
 
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         let dt = 0.016;
-        // The ropes run with the view's clock.
         view.advance_time(dt);
         {
             let host = &self.session.clients[self.watch].host;
@@ -209,25 +213,67 @@ pub fn picture(seat: &mut Seat<Viewer>, gpu: &Gpu) -> Result<Frame, String> {
     seat.picture(gpu)
 }
 
-/// The pictures of a round in progress, as client 0 draws it, written into `dir`: an early moment of the round, the round with a leader
-/// and the scores after it. The session must hold two clients that have joined. Returns the paths.
+/// Where the watched client sees the ball, and its velocity.
+fn ball(seat: &Seat<Viewer>) -> Option<([f32; 3], [f32; 3])> {
+    let ball = seat.game.session.ball(seat.game.watch)?;
+    Some((ball.q.position(), ball.q.state().linvel))
+}
+
+/// A shot on goal: the ball in a goal's third and running at it.
+fn shot_on_goal(seat: &Seat<Viewer>) -> bool {
+    let playing = seat.game.session.server_global("$Soccer::Phase") == "play";
+    playing
+        && ball(seat).is_some_and(|([x, y, _], [_, vy, _])| {
+            y.abs() > 6.5 && x.abs() < 5.0 && vy * y.signum() > 4.0
+        })
+}
+
+/// Steps the session (without drawing) until `done` holds, at most `limit` ms; whether it did.
+fn wait(seat: &mut Seat<Viewer>, limit: u32, done: impl Fn(&Seat<Viewer>) -> bool) -> bool {
+    let mut waited = 0;
+    while !done(seat) {
+        if waited >= limit {
+            return false;
+        }
+        seat.game.advance(crate::session::TICK_MS);
+        waited += crate::session::TICK_MS;
+    }
+    true
+}
+
+/// A view of Red's goal from the pitch, close up.
+pub fn goal_close() -> Eye {
+    look_at([3.2, 6.0, 2.4], [0.0, 13.0, 0.9])
+}
+
+/// The pictures of a match, as client 0 draws it, written into `dir`: the kickoff, a shot on goal, the board after a goal,
+/// the end of the round, and one of the goals close up. The session must hold two clients that have joined. Returns the
+/// paths.
 pub fn write_shots(
     session: Session,
     dir: &std::path::Path,
 ) -> Result<Vec<std::path::PathBuf>, String> {
     let (mut seat, gpu) = seat(session, 0)?;
     let mut shots = torque::app::shots::Shots::new(dir)?;
-    let phase = |seat: &Seat<Viewer>| seat.game.session.server_global("$Orbs::Phase");
-    seat.run(&gpu, 3_000)?;
-    shots.save(&picture(&mut seat, &gpu)?, "round-early")?;
-    seat.run(&gpu, 5_000)?;
-    shots.save(&picture(&mut seat, &gpu)?, "round-leader")?;
-    let mut waited = 0;
-    while phase(&seat) != "break" && waited < 30_000 {
-        seat.run(&gpu, 500)?;
-        waited += 500;
+    let phase = |seat: &Seat<Viewer>| seat.game.session.server_global("$Soccer::Phase");
+    seat.run(&gpu, 700)?;
+    shots.save(&picture(&mut seat, &gpu)?, "kickoff")?;
+    if !wait(&mut seat, 90_000, shot_on_goal) {
+        return Err("no shot on goal".into());
     }
-    seat.run(&gpu, 500)?;
+    seat.run(&gpu, 150)?;
+    shots.save(&picture(&mut seat, &gpu)?, "shot-on-goal")?;
+    if !wait(&mut seat, 90_000, |s| phase(s) == "goal") {
+        return Err("no goal".into());
+    }
+    seat.run(&gpu, 600)?;
+    shots.save(&picture(&mut seat, &gpu)?, "goal")?;
+    if !wait(&mut seat, 120_000, |s| phase(s) == "over") {
+        return Err("the round did not end".into());
+    }
+    seat.run(&gpu, 600)?;
     shots.save(&picture(&mut seat, &gpu)?, "round-over")?;
+    seat.game.eye = goal_close();
+    shots.save(&picture(&mut seat, &gpu)?, "goal-close")?;
     Ok(shots.paths)
 }

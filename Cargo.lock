@@ -4362,7 +4362,7 @@ version = "0.1.0"
 dependencies = [
  "torque",
  "torque-example-assets",
- "torque-plugin-rope",
+ "torque-plugin-props",
  "torque-render-core",
  "torque-render-scene",
 ]

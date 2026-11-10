@@ -1,6 +1,7 @@
-//! Plays the demo headless: a server whose game mode is the `orbs` mod (Lua), and two clients that download the mod's content
-//! when they join. Prints what each does, then a few rounds of the score. `--shots <dir>` draws pictures of the first round from
-//! the first client instead of playing on (needs a GPU, offscreen: no window opens).
+//! Plays the demo headless: a server whose game mode is the `soccer` mod (Lua), and two clients that download the mod's content
+//! when they join and play the match, each steered by a bot. Prints what each does, then the goals of a few rounds.
+//! `--shots <dir>` draws pictures of the first round from the first client instead of playing on (needs a GPU, offscreen: no
+//! window opens).
 //!
 //! Needs the Lua extension: build it with `just lua` (the library lands in `<build folder>/release`), or name it with `--lua
 //! <library>` or `TORQUE_LUA_LIBRARY`. A packaged game (`just bundle examples/mods-demo`) loads it from its `plugins/` folder.
@@ -66,7 +67,7 @@ fn main() -> Result<(), String> {
         session.add_client()?;
         session.connect(client)?;
     }
-    if !session.run_until(4_000, |s| s.clients.iter().all(|c| c.ghost_count() >= 8)) {
+    if !session.run_until(4_000, |s| s.joined()) {
         return Err("the clients did not join".into());
     }
     for (n, client) in session.clients.iter_mut().enumerate() {
@@ -89,27 +90,32 @@ fn main() -> Result<(), String> {
         return Ok(());
     }
     let mut round = 0;
+    let mut goals = 0;
     let mut ticks = 0;
     while round <= options.rounds && ticks < 20_000 {
         session.step();
         ticks += 1;
-        let now = session.server_global("$Orbs::Round").parse().unwrap_or(0);
+        let now = session.server_global("$Soccer::Round").parse().unwrap_or(0);
         if now != round {
             round = now;
             println!("round {round}");
         }
-        if ticks % 160 == 0 {
+        let scored = session.server_global("$Soccer::Goals").parse().unwrap_or(0);
+        if scored != goals {
+            goals = scored;
+            println!("  goal: {}", session.server_global("$Soccer::Score"));
+        }
+        if ticks % 320 == 0 {
             println!(
-                "  {}  {}  scores {}  orbs taken {}",
-                session.server_global("$Orbs::Round"),
-                session.server_global("$Orbs::Phase"),
-                session.server_global("$Orbs::Scores"),
-                session.server_global("$Orbs::Collected"),
+                "  {}  {}  kicks {}",
+                session.server_global("$Soccer::Phase"),
+                session.server_global("$Soccer::Score"),
+                session.server_global("$Soccer::Kicks"),
             );
         }
     }
     for line in session.server_console() {
-        if line.starts_with("orbs:") || line.starts_with("golden-orbs:") {
+        if line.starts_with("soccer:") || line.starts_with("big-ball:") {
             println!("server console: {line}");
         }
     }

@@ -1,8 +1,8 @@
 id = "confetti"
 version = "1.0.0"
 name = "Confetti"
-description = "A mod the game's prefs switch off (prefs.cs): it is found, never mounted, and its content is never offered to players."
+description = "Confetti over the pitch after every goal. The game's prefs switch it off (prefs.cs): it is found, never mounted, and its content is never offered to players."
 author = "torque-rs"
-requires = ["orbs >= 1.0"]
+requires = ["soccer >= 1.0"]
 requires_plugins = ["torque.lua"]
 share = "download"

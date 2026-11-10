@@ -19,4 +19,4 @@ config = "../../crates/torque-plugin-lua/torque_lua.toml"
 # A round played headless from the bundle folder: the server loads the Lua game mode from game/mods, the clients download it.
 bin = "mods-demo"
 args = ["--rounds", "1", "--work", "{work}"]
-expect = ["server mod orbs: ", "round 1"]
+expect = ["server mod soccer: ", "round 1"]

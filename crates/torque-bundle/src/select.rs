@@ -159,7 +159,7 @@ mod tests {
             "game.toml",
             "prefs.cs",
             "maps/arena.map",
-            "mods/orbs/lib/rules.lua",
+            "mods/soccer/lib/rules.lua",
             "shapes/test_cube.dts",
         ] {
             assert!(!is_excluded(kept, &defaults), "left out {kept}");

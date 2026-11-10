@@ -1,7 +1,7 @@
-id = "orbs"
+id = "soccer"
 version = "1.0.0"
-name = "Orbs"
-description = "A collect-the-orbs round: two runners, five orbs, a clock and a score, with a rope from each runner to the orb it chases."
+name = "Soccer"
+description = "A small soccer match: one player a team on a walled pitch, a ball to kick, a score and a clock."
 author = "torque-rs"
 # The rules are Lua, so the mod needs the Lua extension; without it the mod is skipped.
 requires_plugins = ["torque.lua"]

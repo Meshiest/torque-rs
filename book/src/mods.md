@@ -4,9 +4,9 @@ A **mod** is a folder, or a `.zip` file, of scripts and assets that changes a ga
 the game's `mods` folder; the game finds them when it starts, puts their files over its own, and runs their scripts. Disabling a mod
 takes its scripts out again. You do not write any Rust to make one.
 
-For all of it at once, `examples/mods-demo` is a game mode written in Lua and shipped as a mod that its server requires: clients
-download its content, a second mod requires the first, a third is switched off by the prefs, and networked ropes show the round
-(see its README; `just examples mods-demo run` plays it headless).
+For all of it at once, `examples/mods-demo` is a game mode written in Lua and shipped as a mod that its server requires, a small
+soccer match: clients download its content, a second mod requires the first, and a third is switched off by the prefs (see its
+README; `just examples mods-demo run` plays it headless).
 
 ## What a mod looks like
 

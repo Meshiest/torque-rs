@@ -1,11 +1,13 @@
 //! The demo end to end, headless: a server whose game mode is a Lua mod that it requires, and two clients over the memory
-//! transport that download the mod's content when they join, see the game mode's ropes, and never run its Lua. The mods' load
-//! rules are checked on the server: a mod that requires another loads after it, and a mod the prefs disable is never mounted.
+//! transport that download the mod's content when they join, play the match (each steered by its bot), and never run its Lua.
+//! The mods' load rules are checked on the server: a mod that requires another loads after it, and a mod the prefs disable is
+//! never mounted.
 //!
 //! These tests need the Lua extension as a library, which they build with cargo (it compiles Luau's C++, so they need a C++
 //! compiler and are ignored by `cargo test`): `just examples mods-demo test` runs them. `TORQUE_LUA_LIBRARY` names a library
 //! built already.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -13,6 +15,7 @@ use std::sync::OnceLock;
 use torque::app::server::GameServer;
 use torque::mods::Mods;
 use torque_example_mods_demo::{Lua, Session, assets, library_file_name, lua_library};
+use torque_plugin_props::data::PropShape;
 
 /// The build folder: the one `cargo test` was given, else the workspace's.
 fn target_dir() -> PathBuf {
@@ -74,9 +77,11 @@ fn received(session: &mut Session, client: usize) -> u64 {
 }
 
 fn joined(s: &mut Session) -> bool {
-    s.clients
-        .iter()
-        .all(|c| c.ghost_count() >= 8 && !c.global("$Orbs::Updates").is_empty())
+    s.joined()
+}
+
+fn number(s: &Session, name: &str) -> u32 {
+    s.server_global(name).parse().unwrap_or(0)
 }
 
 #[test]
@@ -87,37 +92,45 @@ fn mods_load_in_the_order_their_rules_give_and_a_pref_keeps_one_out() {
     let server = &mut session.server;
     let list = server.call("getModList", &[]).unwrap();
     let ids: Vec<&str> = list.split_whitespace().collect();
-    // The list holds the disabled mod too, in its place: every mod requires `orbs`, then the free ones go by id.
+    // The list holds the disabled mod too, in its place: every mod requires `soccer`, then the free ones go by id.
     assert_eq!(
         ids,
-        ["orbs", "confetti", "golden-orbs"],
-        "golden-orbs requires orbs, so it loads after it though its name sorts first"
+        ["soccer", "big-ball", "confetti"],
+        "big-ball requires soccer, so it loads after it though its name sorts first"
     );
     let field = |server: &mut GameServer, id: &str, field: &str| {
         server.call("getModField", &[id, field]).unwrap()
     };
-    assert_eq!(field(server, "orbs", "status"), "enabled");
-    assert_eq!(field(server, "golden-orbs", "status"), "enabled");
+    assert_eq!(field(server, "soccer", "status"), "enabled");
+    assert_eq!(field(server, "big-ball", "status"), "enabled");
     // The pref `$Pref::Mods::Disabled` (game/prefs.cs, read by the entry script) says confetti starts off: it is never mounted,
     // its scripts never run, and nothing of it is offered to players.
     assert_eq!(field(server, "confetti", "status"), "disabled");
     assert_eq!(server.call("isModEnabled", &["confetti"]).unwrap(), "0");
-    assert_eq!(server.call("isModEnabled", &["orbs"]).unwrap(), "1");
-    assert_eq!(server.call("getRequiredModList", &[]).unwrap(), "orbs");
-    // The Lua of the second mod sits over the first's: the third orb is gold.
-    let value = |server: &mut GameServer, key: &str| server.call("orbsValue", &[key]).unwrap();
+    assert_eq!(server.call("isModEnabled", &["soccer"]).unwrap(), "1");
+    assert_eq!(server.call("getRequiredModList", &[]).unwrap(), "soccer");
+    // The second mod's script ran after the first's (its ball copies the soccer mod's), and its Lua sits over the first's: the
+    // match is played with the big ball.
     assert_eq!(
-        (value(server, "1"), value(server, "2"), value(server, "3")),
-        ("1".to_string(), "1".to_string(), "3".to_string())
+        session.server_eval("return BigBallData.radius;").unwrap(),
+        "0.75"
     );
+    assert_eq!(
+        session
+            .server_eval("return BigBallData.restitution;")
+            .unwrap(),
+        session.server_eval("return BallData.restitution;").unwrap()
+    );
+    let server = &mut session.server;
+    assert_eq!(server.call("soccerBallData", &[]).unwrap(), "BigBallData");
     // Switching the second mod off brings the first's rules back.
-    server.call("disableMod", &["golden-orbs"]).unwrap();
-    assert_eq!(value(server, "3"), "1");
+    server.call("disableMod", &["big-ball"]).unwrap();
+    assert_eq!(server.call("soccerBallData", &[]).unwrap(), "BallData");
 }
 
 #[test]
 #[ignore = "builds the Lua extension (Luau's C++)"]
-fn two_clients_download_the_mod_play_rounds_and_see_the_ropes() {
+fn two_clients_download_the_mod_and_play_a_match() {
     let mut s = session("play", false);
     for n in 0..2 {
         assert_eq!(s.add_client().unwrap(), n);
@@ -134,8 +147,8 @@ fn two_clients_download_the_mod_play_rounds_and_see_the_ropes() {
 
     // Both downloaded the mod's content, once.
     let content = Mods::of(s.server.vm())
-        .and_then(|m| m.content_of("orbs"))
-        .expect("the server has the orbs mod")
+        .and_then(|m| m.content_of("soccer"))
+        .expect("the server has the soccer mod")
         .bytes;
     assert!(content > 1_000, "the mod has content: {content} bytes");
     for n in 0..2 {
@@ -148,11 +161,11 @@ fn two_clients_download_the_mod_play_rounds_and_see_the_ropes() {
         assert_eq!(s.client_global(n, "$Download::Failed"), "");
         let mods = Mods::of(s.clients[n].vm()).expect("the client has mods");
         for file in [
-            "shapes/orb.dts",
-            "shapes/orb.png",
-            "shapes/runner_a.dts",
-            "art/beam.png",
-            "sounds/pickup.wav",
+            "shapes/pitch.dts",
+            "shapes/pitch.png",
+            "shapes/player_blue.dts",
+            "shapes/ball.dts",
+            "sounds/kick.wav",
         ] {
             assert!(mods.is_server_file(file), "client {n} mounted {file}");
             assert!(mods.is_untrusted(file), "and holds it as untrusted");
@@ -166,79 +179,96 @@ fn two_clients_download_the_mod_play_rounds_and_see_the_ropes() {
     }
     // The content is the mod's generated files and its Lua module (`lib/rules.lua`: Lua files are content, kept as data);
     // not `server.cs`, `server.lua` or `mod.toml`.
-    let generated: u64 = assets::orbs()
+    let generated: u64 = assets::soccer()
         .unwrap()
         .iter()
         .map(|(_, b)| b.len() as u64)
         .sum();
     let module = std::fs::metadata(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("game/mods/orbs/lib/rules.lua"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("game/mods/soccer/lib/rules.lua"),
     )
     .unwrap()
     .len();
     assert_eq!(content, generated + module);
+    // One player a team.
+    assert_eq!(
+        [
+            s.client_global(0, "$Match::Team"),
+            s.client_global(1, "$Match::Team")
+        ],
+        ["Blue", "Red"]
+    );
+    // Entering twice gives a client no second player.
+    let figures = "%n = 0; for (%i = 0; %i < MissionCleanup.getCount(); %i++) \
+                   if (MissionCleanup.getObject(%i).getClassName() $= \"Player\") %n++; return %n;";
+    assert_eq!(s.server_eval(figures).unwrap(), "2");
+    s.server_eval("ClientGroup.getObject(0).onEnterGame();")
+        .unwrap();
+    assert_eq!(s.server_eval(figures).unwrap(), "2");
 
-    // The Lua game mode runs on the server: the rounds advance, the scores move, the third orb is gold.
-    let mut seen = std::collections::BTreeSet::new();
-    let mut rounds = std::collections::BTreeSet::new();
-    let mut ropes = 0;
-    for _ in 0..1_900 {
-        s.step();
-        seen.insert(s.server_global("$Orbs::Scores"));
-        rounds.insert(s.server_global("$Orbs::Round"));
-        if let Ok(n) = s.clients[1].call("ropeNetCount", &[]) {
-            ropes = ropes.max(n.parse::<u32>().unwrap_or(0));
-        }
-    }
+    // The Lua game mode runs on the server and the bots play: the ball is kicked, goals are scored, a round ends and the next
+    // starts.
+    let mut scores = BTreeSet::new();
+    let mut shown = BTreeSet::new();
+    let done = s.run_until(9_000, |s| {
+        scores.insert(s.server_global("$Soccer::Score"));
+        shown.insert(s.client_global(1, "$Match::Phase"));
+        number(s, "$Soccer::Round") >= 2 && number(s, "$Soccer::Goals") >= 2
+    });
+    let (goals, kicks) = (number(&s, "$Soccer::Goals"), number(&s, "$Soccer::Kicks"));
     assert!(
-        rounds.contains("3"),
-        "the rounds advanced past two: {rounds:?}"
+        done,
+        "a round ended and goals were scored: {goals} goals, round {}, {scores:?}",
+        s.server_global("$Soccer::Round")
     );
-    assert!(seen.len() >= 6, "the score changed: {seen:?}");
-    let taken: u32 = s.server_global("$Orbs::Collected").parse().unwrap();
-    let points: u32 = s.server_global("$Orbs::Points").parse().unwrap();
-    assert!(taken > 10, "orbs were taken: {taken}");
+    assert!(kicks > goals, "the ball was kicked: {kicks}");
+    assert!(scores.len() >= 3, "the score changed: {scores:?}");
     assert!(
-        points > taken,
-        "golden orbs are worth more: {points} of {taken}"
+        ["play", "goal", "over"].iter().all(|p| shown.contains(*p)),
+        "the clients were shown play, a goal and the end of a round: {shown:?}"
     );
-    assert!(
-        s.server_console()
-            .iter()
-            .any(|l| l.contains("orbs: the game mode is loaded in the server realm"))
-            || taken > 0
-    );
+    assert_eq!(s.server_global("$Soccer::Ball"), "BigBallData");
     assert_eq!(s.server_global("$Confetti::Ran"), "");
 
-    // Both clients show the board the server sends and have the ropes: a beam for each runner and the leader's cable.
+    // Both clients show the board the server sends and hold the ball, the big one, as a prop.
     for n in 0..2 {
-        assert!(s.client_global(n, "$Orbs::Updates").parse::<u32>().unwrap() > 20);
-        let state = s.client_global(n, "$Orbs::State");
-        assert!(state.contains("Blue") && state.contains("Red"), "{state:?}");
+        assert!(
+            s.client_global(n, "$Match::Updates")
+                .parse::<u32>()
+                .unwrap()
+                > 20
+        );
+        let state = s.client_global(n, "$Match::State");
+        assert_eq!(state.split('\t').count(), 6, "{state:?}");
         // The Lua's own globals are the server's: a client never ran it.
-        assert_eq!(s.client_global(n, "$Orbs::Round"), "");
-        assert_eq!(s.client_global(n, "$Orbs::Points"), "");
+        assert_eq!(s.client_global(n, "$Soccer::Round"), "");
+        assert_eq!(s.client_global(n, "$Soccer::Goals"), "");
+        let ball = s.ball(n).and_then(|b| b.params).map(|p| p.shape);
+        assert_eq!(
+            ball,
+            Some(PropShape::Ball(0.75)),
+            "client {n} holds the big ball"
+        );
+        // The kicks are heard: the server asks each client to play the kick, and the client loads it from the mod's content.
+        assert!(
+            s.client_global(n, "$Sound::Played")
+                .parse::<u32>()
+                .unwrap_or(0)
+                > 0,
+            "client {n} heard no kick"
+        );
+        assert_ne!(
+            s.client_global(n, "$Sound::Last"),
+            "0",
+            "client {n} could not play the kick"
+        );
     }
-    assert!(ropes >= 3, "the clients hold the ropes: {ropes}");
-    let drawn: usize = s
-        .engines
-        .iter()
-        .skip(1)
-        .map(|e| {
-            e.resource::<torque_plugin_rope::RopeShared>()
-                .expect("ropes")
-                .lock()
-                .ropes()
-                .count()
-        })
-        .sum();
-    assert!(drawn >= 6, "each client simulates {drawn} ropes in all");
 
     // A second join of a client that has the content in its cache sends nothing.
     s.disconnect(0).unwrap();
     s.run(200);
     s.clients[0].set_global("$Download::Done", "");
-    s.clients[0].set_global("$Orbs::Updates", "");
+    s.clients[0].set_global("$Match::Updates", "");
     s.connect(0).unwrap();
     assert!(s.run_until(6_000, joined), "the second join");
     assert_eq!(
@@ -254,7 +284,7 @@ fn two_clients_download_the_mod_play_rounds_and_see_the_ropes() {
     assert_eq!(cached, 1, "one entry in the client's cache");
     let mods = Mods::of(s.clients[0].vm()).unwrap();
     assert!(
-        mods.is_server_file("shapes/orb.dts"),
+        mods.is_server_file("shapes/ball.dts"),
         "mounted from the cache"
     );
 }
@@ -274,24 +304,66 @@ fn a_servers_lua_never_runs_on_a_client_that_has_the_extension() {
         "the module arrived as content"
     );
     assert!(mods.is_untrusted("lib/rules.lua"));
-    for path in ["lib/rules.lua", "mods/orbs/lib/rules.lua"] {
+    for path in ["lib/rules.lua", "mods/soccer/lib/rules.lua"] {
         let result = s.clients[0]
             .vm_mut()
             .eval(format!("return exec(\"{path}\");").as_bytes());
         assert_ne!(result.map(|r| r == b"1"), Ok(true), "exec ran {path}");
     }
     s.run(100);
-    assert_eq!(s.client_global(0, "$Orbs::Round"), "");
-    assert_eq!(s.client_global(0, "$Orbs::Points"), "");
-    assert!(
-        s.server_global("$Orbs::Round").parse::<u32>().unwrap() >= 1,
-        "the server's copy runs"
+    assert_eq!(s.client_global(0, "$Soccer::Round"), "");
+    assert_eq!(s.client_global(0, "$Soccer::Goals"), "");
+    assert!(number(&s, "$Soccer::Round") >= 1, "the server's copy runs");
+}
+
+#[test]
+#[ignore = "builds the Lua extension (Luau's C++)"]
+fn a_client_plays_only_the_kick_and_only_on_the_pitch() {
+    let mut s = session("sound", false);
+    s.add_client().unwrap();
+    s.connect(0).unwrap();
+    assert!(s.run_until(6_000, joined));
+    let client = &mut s.clients[0];
+    let mut play = |args: &[&str]| {
+        let before = client.global("$Sound::Played");
+        client.call("clientCmdPlaySound", args).unwrap();
+        (client.global("$Sound::Played") != before).then(|| client.global("$Sound::At"))
+    };
+    // The kick on the pitch plays where it was asked.
+    assert_eq!(
+        play(&["sounds/kick.wav", "1", "-2", "0.5"]).as_deref(),
+        Some("1 -2 0.5")
+    );
+    // Any other file plays nothing, even one the client has.
+    for file in [
+        "shapes/ball.png",
+        "sounds/../sounds/kick.wav",
+        "SOUNDS/KICK.WAV",
+        "client.cs",
+    ] {
+        assert_eq!(play(&[file, "0", "0", "0"]), None, "{file}");
+    }
+    // A place that is not three plain numbers plays nothing.
+    for place in [
+        ["nan", "0", "0"],
+        ["1", "inf", "0"],
+        ["1", "2", ""],
+        ["1;2", "0", "0"],
+        ["1 2", "0", "0"],
+    ] {
+        let [x, y, z] = place;
+        assert_eq!(play(&["sounds/kick.wav", x, y, z]), None, "{place:?}");
+    }
+    // A place past the pitch is moved onto its edge.
+    assert_eq!(
+        play(&["sounds/kick.wav", "1e30", "-99999", "-5"]).as_deref(),
+        Some("8 -13.5 0")
     );
 }
 
 #[test]
 #[ignore = "builds the Lua extension and needs a GPU (offscreen: no window opens)"]
-fn pictures_of_a_round_are_drawn_from_a_client() {
+fn pictures_of_a_match_are_drawn_from_a_client() {
     let mut s = session("pictures", false);
     for n in 0..2 {
         s.add_client().unwrap();
@@ -312,7 +384,7 @@ fn pictures_of_a_round_are_drawn_from_a_client() {
         .iter()
         .map(|p| std::fs::metadata(p).unwrap().len())
         .collect();
-    assert_eq!(paths.len(), 3, "{paths:?}");
+    assert_eq!(paths.len(), 5, "{paths:?}");
     assert!(
         sizes.iter().all(|&n| n > 20_000),
         "pictures with something in them: {sizes:?}"

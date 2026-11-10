@@ -1,5 +1,6 @@
 //! One server and its clients in one process over the memory transport, stepped by hand: a tick of the server, then a step of
-//! each client, the datagrams carried across around each. No clock is read and no socket is opened.
+//! each client (its [`bot`](crate::bot) steering first), the datagrams carried across around each. No clock is read and no
+//! socket is opened.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
@@ -7,8 +8,9 @@ use std::path::PathBuf;
 use torque::app::client::{ClientNet, GameClient, carry_between};
 use torque::app::server::GameServer;
 use torque::engine::Engine;
+use torque_plugin_props::client::ClientProp;
 
-use crate::{Lua, Role, SERVER, client, client_files, engine, server, server_files};
+use crate::{Lua, Role, SERVER, ball_of, bot, client, client_files, engine, server, server_files};
 
 /// The server's tick, and each client's step (ms).
 pub const TICK_MS: u32 = 32;
@@ -17,7 +19,7 @@ pub const TICK_MS: u32 = 32;
 pub struct Session {
     pub server: GameServer,
     pub clients: Vec<GameClient>,
-    /// The engine of each client, for what its plugins keep (the rope plugin's ropes, the mods).
+    /// The server's engine, then each client's, for what their plugins keep (the props, the mods).
     pub engines: Vec<Engine>,
     /// Where the next client keeps its downloads.
     cache: PathBuf,
@@ -91,12 +93,13 @@ impl Session {
         carry_between(&self.server, &refs);
     }
 
-    /// One tick of the server, then one step of every client.
+    /// One tick of the server, then one step of every client, each steered by its bot first.
     pub fn step(&mut self) {
         self.carry();
         self.server.tick();
         self.carry();
-        for client in &mut self.clients {
+        for (client, engine) in self.clients.iter_mut().zip(&self.engines[1..]) {
+            bot::drive(client, engine);
             client.step(TICK_MS);
         }
         self.carry();
@@ -118,6 +121,23 @@ impl Session {
             self.step();
         }
         done(self)
+    }
+
+    /// The engine of client `n`.
+    pub fn client_engine(&self, n: usize) -> &Engine {
+        &self.engines[n + 1]
+    }
+
+    /// The ball as client `n` sees it ([`ball_of`]).
+    pub fn ball(&self, n: usize) -> Option<ClientProp> {
+        ball_of(self.client_engine(n))
+    }
+
+    /// Whether every client is in the match: it has its team and the server's board.
+    pub fn joined(&self) -> bool {
+        self.clients.iter().all(|c| {
+            !c.global("$Match::Team").is_empty() && !c.global("$Match::Updates").is_empty()
+        })
     }
 
     /// A global of the server's script engine as text (empty when unset).

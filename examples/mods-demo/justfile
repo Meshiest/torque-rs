@@ -3,19 +3,21 @@ set windows-shell := ["powershell", "-NoProfile", "-Command"]
 default:
     @just --list
 
-# The mods demo, headless: a server whose game mode is a Lua mod it requires, and two clients that download the mod's content when
-# they join (`--shots <dir>` also draws pictures of the round from the first client). Builds the Lua extension first (`just lua`,
-# a C++ compiler is needed); `--lua <library>` or TORQUE_LUA_LIBRARY names a built one instead
+# The mods demo, headless: a server whose game mode, a small soccer match, is a Lua mod it requires, and two clients that download
+# the mod's content when they join and play it, steered by bots (`--shots <dir>` draws pictures of the first round from the first
+# client instead). Builds the Lua extension first (`just lua`, a C++ compiler is needed); `--lua <library>` or TORQUE_LUA_LIBRARY
+# names a built one instead
 run *args:
     just --justfile ../../justfile --working-directory ../.. lua
     cargo run -p torque-example-mods-demo --release --bin mods-demo -- {{args}}
 
-# The mods demo's pictures of a round in progress, drawn offscreen into `dir`
+# The mods demo's pictures of a match (the kickoff, a shot on goal, a goal, the end of the round and a goal close up), drawn
+# offscreen into `dir`
 shots dir="../../target/mods-demo-shots":
     just --justfile ../../justfile --working-directory ../.. lua
     cargo run -p torque-example-mods-demo --release --bin mods-demo -- --shots {{dir}}
 
-# The mods demo's end-to-end tests: download, cache, Lua rounds, ropes and the mods' load rules. They build the Lua extension
-# (Luau's C++), so `cargo test` leaves them out
+# The mods demo's end-to-end tests: download, cache, a match with goals and rounds, and the mods' load rules. They build the Lua
+# extension (Luau's C++), so `cargo test` leaves them out
 test:
     cargo test -p torque-example-mods-demo --test demo -- --include-ignored

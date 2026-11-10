@@ -158,6 +158,9 @@ NetConnection::getGhostID 3..3 (S32 realID)
 NetConnection::getPacketLoss 2..2 ()
 NetConnection::getPing 2..2 ()
 NextToken 4..4 nextToken(text, tokenVariable, delimiters) - stores the first token, returns the rest
+OpenALInitDriver 1..1 Initializes the OpenAL driver.\n\n@note You must call this before any sounds will work!
+OpenALRegisterExtensions 1..1 OpenALRegisterExtensions()
+OpenALShutdownDriver 1..1 OpenALShutdownDriver()
 Player::checkDismountPoint 4..4 (Point3F oldPos, Point3F pos)
 Player::clearControlObject 2..2 ()
 Player::getControlObject 2..2 ()
@@ -300,13 +303,34 @@ WheeledVehicle::setWheelSteering 4..4 (int wheel, float steering)
 WheeledVehicle::setWheelTire 4..4 (int wheel, WheeledVehicleTire tire)
 activatePackage 2..2 activatePackage(name) - puts the package on top of the active ones
 addTaggedString 2..2 addTaggedString(text) - the tag of the text, kept until removed
+alGetListener3f 2..2 alGetListener3f(Alenum)
+alGetListeneri 2..2 alGetListeneri(Alenum)
+alGetString 2..2 (string item)\n\nThis wraps alGetString().
+alListener3f 3..5 alListener3f(ALenum, "x y z") or alListener3f(ALenum, x, y, z)
+alxCreateSource 2..6 (profile) or (profile, x,y,z) or (description, filename) or (description, filename, x,y,z)
+alxGetChannelVolume 2..2 (int channel_id)\n\n@param  channel_id  ID of channel to fetch volume from.\n@return Volume of channel.
+alxGetListenerf 2..2 alxGetListenerf(Alenum)
+alxGetSource3f 3..3 (handle, ALenum)
+alxGetSourcef 3..3 (handle, ALenum)
+alxGetSourcei 3..3 (handle, ALenum)
+alxGetStreamDuration 2..2 alxGetStreamDuration(handle)
+alxGetStreamPosition 2..2 alxGetStreamPosition(handle)
+alxGetWaveLen 2..2 (string filename)\n\n@param filename File to determine length of.\n@returns Length in milliseconds.
+alxIsPlaying 2..5 alxIsPlaying(handle)
+alxListenerf 3..3 alxListener(ALenum, value)
+alxPlay 2..5 alxPlay(handle) or alxPlay(profile) or alxPlay(profile, x,y,z)
+alxSetChannelVolume 3..3 (int channel_id, float volume)\n\n@param channel_id  ID of channel to set volume on.\n@param volume      New volume of channel, from 0.0f-1.0f
+alxSource3f 3..6 (handle, ALenum, x, y, z)\n\n@note You can replace the last three parameters with a string, "x y z"
+alxSourcef 4..4 (handle, ALenum, value)
+alxSourcei 4..4 (handle, ALenum, value)
+alxStop 2..2 (int handle)
+alxStopAll 1..1 ()
 atof 2..2 atof(text) - the number the text starts with
 atoi 2..2 atoi(text) - the integer the text starts with
 backtrace 1..1 backtrace() - prints the script functions that are running
 call 2..* call(function, args...) - calls a global function by name
 cancel 2..2 cancel(scheduleId) - drops a scheduled call
 clearModDownloadCache 1..1 clearModDownloadCache() - deletes the mod content kept from servers; returns the bytes freed
-clientCmdRopeFx 6..6 clientCmdRopeFx(start, end, datablock, seconds, bend) - the server's `ropeNetFx`: shows a rope of the datablock between two points for a few seconds (the remote command `RopeFx`)
 collapseEscape 2..2 collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for
 compile 2..2 compile(file) - compiles a script without running it
 createCanvas 2..2 (string windowTitle)
@@ -405,34 +429,7 @@ removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
 removeWord 3..3 removeWord(text, index) - the text without that word
 restWords 2..2 restWords(text) - the text after its first space
-ropeAttach 4..5 ropeAttach(rope, end, object [, node]) - hangs an end of a rope from an object (its name or number); `end` is 0 or start, 1 or end
-ropeClear 1..1 ropeClear() - takes every rope away
-ropeClearCurve 2..2 ropeClearCurve(rope) - takes a rope's driven curve away: it is simulated again if its datablock says so, else straight between its ends
-ropeClearLook 2..2 ropeClearLook(rope) - puts every value a script set on one rope (its color, texture, texture speed and glow) back to the datablock's
-ropeCount 1..1 ropeCount() - how many ropes there are
-ropeCreate 4..4 ropeCreate(start, end, datablock) - makes a rope of the datablock between two points, both ends pinned, and returns its number
-ropeDelete 2..2 ropeDelete(rope) - takes a rope away; true if there was one
-ropeFloor 2..2 ropeFloor(z) - keeps the free points of every rope above the height `z`
-ropeGetColor 2..2 ropeGetColor(rope) - the color a rope is drawn with now, as `"r g b a"` (empty for no such rope)
-ropeGetCurveBend 2..2 ropeGetCurveBend(rope) - the bend of a rope's driven curve (0 for none, or no such rope)
-ropeGetEmissive 2..2 ropeGetEmissive(rope) - whether a rope glows now
-ropeGetLength 2..2 ropeGetLength(rope) - the length of a rope now, in world units (0 for no such rope)
-ropeGetTexture 2..2 ropeGetTexture(rope) - the file of the texture a rope is drawn with now (empty for none, or no such rope)
-ropeGetTextureScroll 2..2 ropeGetTextureScroll(rope) - how fast a rope's texture runs now, in repeats a second (0 for no such rope)
-ropeImpulse 3..3 ropeImpulse(rope, velocity) - gives the free part of a rope a velocity `"x y z"`, in units a second (at most 200)
-ropeIsTaut 2..2 ropeIsTaut(rope) - whether a rope is drawn taut and straight now: both ends held and as far apart as the rope is long
-ropeNetCount 1..1 ropeNetCount() - how many ropes the server ghosts that this client shows
-ropeNoFloor 1..1 ropeNoFloor() - takes the floor away
-ropePin 4..4 ropePin(rope, end, point) - pins an end of a rope to a point; `end` is 0 or start, 1 or end
-ropePredict 2..2 ropePredict(rope) - tags a rope this client made as a prediction of one the server is about to make, and returns the id the server's ghost must carry
-ropeRelease 3..3 ropeRelease(rope, end) - lets an end of a rope go, so it falls with the rest; `end` is 0 or start, 1 or end
-ropeSetColor 3..3 ropeSetColor(rope, color) - sets the color one rope is drawn with, `"r g b a"` from 0 to 255 (a texture is tinted by it); an empty string puts the datablock's back
-ropeSetCurve 5..5 ropeSetCurve(rope, startDir, endDir, bend) - gives one rope a driven shape: a curve from its start to its far end, not simulated (a beam from a muzzle)
-ropeSetEmissive 3..3 ropeSetEmissive(rope, on) - sets whether one rope, drawn as a ribbon or a line, glows (drawn with no light or shade)
-ropeSetLength 3..4 ropeSetLength(rope, length [, seconds]) - sets the length of a rope; it is reeled in or out evenly over `seconds` from the length it has (0 or none: at once)
-ropeSetLifetime 3..4 ropeSetLifetime(rope, seconds [, fade]) - makes a rope a temporary one: it is taken away `seconds` from now, and shows less of itself over its last `fade` seconds
-ropeSetTexture 3..3 ropeSetTexture(rope, file) - sets the texture one rope is drawn with (a .png or .jpg); an empty string puts the datablock's back
-ropeSetTextureScroll 3..3 ropeSetTextureScroll(rope, speed) - sets how fast one rope's texture runs along it, in repeats a second (negative: toward the start)
+rpcToServer 2..* rpcToServer(name, fields..) - calls the client-to-server RPC `name`, its arguments the message's fields; answers the reason it was not queued, or nothing
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)

@@ -1,6 +1,6 @@
 [package]
 name = "torque-example-mods-demo"
-description = "A game mode written in Lua and shipped as a server-required mod: clients download its content, ropes show who chases what"
+description = "A game mode written in Lua and shipped as a server-required mod: a small soccer match whose clients download its content"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,14 +10,15 @@ publish.workspace = true
 keywords = ["torque", "mods", "lua", "example", "gamedev"]
 categories = ["game-development"]
 
-# A server whose game mode is a mod (`game/mods/orbs`: TorqueScript for the datablocks, Lua for the rules) and two clients that
-# download the mod's content when they join. The Lua extension is built apart (`just lua`) and loaded from a `plugins/` folder,
-# as a game loads it; this crate never links it. Run it with `just examples mods-demo run`.
+# A server whose game mode is a mod (`game/mods/soccer`: TorqueScript for the datablocks, Lua for the rules) and two clients that
+# download the mod's content when they join and play the match. The Lua extension is built apart (`just lua`) and loaded from a
+# `plugins/` folder, as a game loads it; this crate never links it. Run it with `just examples mods-demo run`.
 
 [dependencies]
 torque = { path = "../../crates/torque", default-features = false, features = ["app-core", "renderer", "mods", "native-extensions"] }
 torque-example-assets = { path = "../assets" }
-torque-plugin-rope = { path = "../../crates/torque-plugin-rope" }
+# The ball: a prop the players' boxes push.
+torque-plugin-props = { path = "../../crates/torque-plugin-props" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 

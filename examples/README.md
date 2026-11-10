@@ -240,12 +240,14 @@ code. The engine's server and client also send the datablocks and give each clie
 
 ## The mods demo
 
-A round of collect-the-orbs written in Lua and shipped as a mod the server requires, run headless: a server and two clients over
-the memory transport. A client that joins downloads the mod's content (shapes, pictures and a sound, made from code) through the
-pull transfer, mounts it and then enters; the mod's Lua runs only on the server and the rope plugin's networked ropes show who
-chases which orb. A second mod requires the first (load order); a third is switched off by the prefs and never mounts.
-`just examples mods-demo run` plays it, `just examples mods-demo shots` draws it, `just examples mods-demo test` checks it. The
-details are in [`mods-demo/README.md`](mods-demo/README.md).
+A small soccer match written in Lua and shipped as a mod the server requires, run headless: a server and two clients over the
+memory transport. A client that joins downloads the mod's content (the pitch, the players and the ball, a picture each and a
+sound, made from code) through the pull transfer, mounts it and then enters; the mod's Lua runs only on the server, keeps the
+score and the clock, and puts the ball back on the center spot after a goal. The ball is a prop of the props plugin that the
+players push and kick; each client's player is steered by a simple bot. A second mod requires the first (load order) and plays
+the match with a bigger ball; a third is switched off by the prefs and never mounts. `just examples mods-demo run` plays it,
+`just examples mods-demo shots` draws it, `just examples mods-demo test` checks it. The details are in
+[`mods-demo/README.md`](mods-demo/README.md).
 
 ## The native extension
 
