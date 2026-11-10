@@ -20,10 +20,11 @@ installs wasm-bindgen's command line into the target folder.
 <td align="center"><a href="#the-vehicle-demo"><img src="screenshots/vehicle-demo-turn.webp" width="200" alt="The vehicle demo"><br>The vehicle demo</a></td>
 <td align="center"><a href="#the-character"><img src="screenshots/character-walk.webp" width="200" alt="The character"><br>The character</a></td>
 <td align="center"><a href="#the-asset-kit"><img src="screenshots/assets-figure.webp" width="200" alt="The asset kit"><br>The asset kit</a></td>
+<td align="center"><a href="#the-prop-catalog"><img src="screenshots/level-demo-catalog.webp" width="200" alt="The prop catalog"><br>The prop catalog</a></td>
 </tr>
 </table>
 
-Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the mods demo](#the-mods-demo), a Lua game mode shipped as a mod that the server requires.
+Also, without a picture: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the minimal example on the engine](#the-minimal-example-on-the-engine), the same game with the engine doing the wiring; [the mods demo](#the-mods-demo), a game mode shipped as a mod that the server requires; [the native extension](#the-native-extension), a plugin built apart from the engine; [the format viewer](#the-format-viewer), pictures of Source engine content.
 
 ## The level demo
 
@@ -53,19 +54,12 @@ restart, Esc back to the menu.
 | Web, online | [the gallery](https://reheatedcake.io/torque-rs/): the plaza, the office and the valley | `just site` |
 | Pictures | `just examples/level-demo-shots`, `just examples/level-demo-valley-shots` | `cargo run -p torque-example-level-demo --release -- --shots <dir>` |
 | With a rope across the plaza (`torque-plugin-rope`) | `just examples/level-demo-rope-shots` (pictures) | `cargo run -p torque-example-level-demo --release --features rope` |
-| The office's prop catalog (a server-sent menu; native only) | `just examples/level-catalog` (plays it headless), `just examples/level-catalog-shots` (pictures), `just examples/level-catalog-test` | `cargo run -p torque-example-level-demo --release --example level-catalog` |
+| The office's prop catalog | see [the prop catalog](#the-prop-catalog) | |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
 interiors and terrain; interiors and props built from a Blockbench model (nearest-sampled textures, see-through glass,
 furniture the figure pushes, predicted on the client); spot lights with shadows; the camera blend; the web build with its
 files fetched by a list and kept in the browser's cache.
-
-**The prop catalog** (`level-demo/catalog/`, `src/catalog.rs`): the office's server requires a mod of its clients, a menu of the office's
-props with a picture and a Spawn button each, and a field for an optional label. A client downloads the mod (the Lua and the pictures)
-with the mods' download, asks its player before anything of it runs, and the menu sends what the player does back to the server, whose
-own script checks it (a known kind, a label, a cap, a rate limit, `propCheckPlacement`) and spawns the prop with `propSpawn`, owned by the
-player. The pictures are drawn from the props' own shapes (`just examples/level-catalog-icons`). It needs the realm guest (`just lua-client-web`; `WASI_SDK_PATH` names the WASI SDK) and is not in the window or the web build.
-The [server scripts chapter](../book/src/server-scripts.md) walks through it.
 
 ### The valley
 
@@ -85,6 +79,50 @@ eight seconds of its sky moving: `cargo run -p torque-example-level-demo --relea
 `WaterBlock` drawn with the HD renderer's water (waves, reflection, refraction, sun glint); a `TimeOfDay` held at sunset
 under a `ScatterSky`, with volumetric clouds on a faster clock; ground textures that hide visible tiling (opt-in, per
 map); a few tree and grove interiors placed hundreds of times.
+
+## The prop catalog
+
+![The prop catalog open over the office: a grid of props with their pictures, a label field, and the recent spawns](screenshots/level-demo-catalog.webp)
+
+A menu that the office's server gives to its players. The server has a catalog of the office's props (chair, sofa, desk, plant,
+monitor, mug and fifteen more), each with a picture. The picture files and the menu's script are a mod (`level-demo/catalog/`)
+that the server requires, so a client downloads it when it joins. The menu's script is
+Lua and runs on the player's machine, in a sandbox, so before anything of it runs the client asks the player. The prompt says
+the server wants to run scripts and lists what the menu asks for (show menus, talk to the server); the player picks Allow, Not
+now or Never for this server.
+
+Once allowed, the catalog opens over the game. Clicking a card asks the server to put that prop down in front of the player. The
+menu only asks: the server's script (`catalog/server.cs`) decides. It checks that the kind exists, that the label uses only
+letters, numbers, spaces and a few marks and is at most 32 characters, that the player has fewer than 4 props out and has not
+asked more than 3 times in 5 seconds, and that there is room in front of the figure. Then it spawns the prop (`propSpawn`),
+owned by that player. A refusal shows in red under the cards. The "Recent spawns" list under them shows the last five spawns of
+every player, newest first. The pictures on the cards are drawn from the props' own shapes (`just examples/level-catalog-icons`).
+
+**Controls:** Q opens or closes the catalog; Esc hides it (the game's own menu does not open); click a card to put that prop
+down in front of you; type in the Label box first to give it a label; Clear my props takes back the ones you put down (only
+yours); the Hide catalog button at the top left does the same as Esc, with the mouse. Shift and Esc together turn the server's
+scripts off for the connection.
+
+**Run it:** it is native only (not in the level demo's window, nor the web build) and has no window of its own: the example plays a
+short session with two clients, Ann and Bob, who allow the menu and spawn a chair each, and prints what each one shows. The
+keys above are what the client binds; the example's tests press them.
+
+| | Recipe | Command |
+|---|---|---|
+| Play the session, headless | `just examples/level-catalog` | `cargo run -p torque-example-level-demo --release --example level-catalog` |
+| Pictures (the prompt, the catalog, a label typed, the list of spawns, a chair in the office, a refusal) | `just examples/level-catalog-shots <dir>` | `... --example level-catalog -- --shots <dir>` |
+| The tests | `just examples/level-catalog-test` | `cargo test -p torque-example-level-demo --test catalog -- --include-ignored` |
+| The cards' pictures again | `just examples/level-catalog-icons` | `cargo run -p torque-example-level-demo --release --example catalog-icons` |
+
+The first three need the client script guest, a WebAssembly build of the Lua extension that the recipes make first with
+`just lua-client-web`. That needs rustup's `wasm32-wasip1` target, Node, and the WASI SDK unpacked somewhere, its folder named
+by the `WASI_SDK_PATH` environment variable (the [Lua chapter](../book/src/lua.md) says where to get it). `TORQUE_CLIENT_GUEST`
+names a guest that is already built.
+
+**Shows:** a server that requires a mod of its clients; the mod's download, with its pictures; the consent prompt for a server's
+scripts; a menu made by sandboxed client Lua (`ui` and `net` only) that sends its requests to the server as text; a server script
+that checks everything a client sends; props spawned and owned by a player (`torque-plugin-props`). The
+[server scripts chapter](../book/src/server-scripts.md) walks through it.
 
 ## The arena shooter
 
@@ -106,6 +144,7 @@ shoot, right button aim down the sights, R reload, Tab first or third person, T 
 | Dedicated server (internet) | `just examples/fps-server-public` | `... --bin fps-server -- --bind 0.0.0.0 --port 28000` |
 | Web (browsers and desktops in one game) | `just examples/web-fps` (a browser joins at http://127.0.0.1:28000/) | `node web/build.mjs fps`, then `fps-server --transport both` |
 | Web, online (played alone, or with friends by invite link) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
+| Room service for player-hosted games (browsers join by a code) | `just examples/web-fps-rooms` | `cargo run -p torque-rooms --release -- --web-root <the web build>` |
 | Pictures | `just examples/fps-shots` and the other `fps-*-shots` recipes | `... --bin fps-client -- --shots <dir>` |
 
 **Shows:** a full network game (the LAN server query, ghosting, client prediction); posed hitboxes and lag compensation;
@@ -128,12 +167,13 @@ camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
 
 | | Recipe | Command |
 |---|---|---|
-| Native (play alone, host or join from its menu) | `just examples/vehicle-demo` | `cargo run -p torque-example-vehicle-demo --release` |
-| At once | `just examples/vehicle-demo --solo` (or `--host`, `--join <address>`) | `... --release -- --solo` |
-| With a gamepad | | `cargo run -p torque-example-vehicle-demo --release --features gamepad -- --gamepad` |
+| Native (play alone, host or join from its menu) | `just examples/vehicle-demo` | `cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo` |
+| At once | `just examples/vehicle-demo --solo` (or `--host`, `--join <address>`) | `... --release --bin vehicle-demo -- --solo` |
+| With a gamepad | | `cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo --features gamepad -- --gamepad` |
 | Web (played alone) | `just examples/web-vehicle-demo` (serves it on http://127.0.0.1:8080/) | `node web/build.mjs vehicle-demo` |
 | Web, online (played alone, or with friends by invite link) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
-| Pictures | `just examples/vehicle-demo-shots`, `vehicle-demo-track-shots`, `vehicle-demo-cloud-shots` | `... --release -- --shots <dir>` |
+| Dedicated server, with browsers in the same game | `just examples/web-vehicle-demo-server` (a browser joins at http://127.0.0.1:28000/?join) | `node web/build.mjs vehicle-demo`, then `vehicle-demo-server --transport both --webrtc` |
+| Pictures | `just examples/vehicle-demo-shots` and the other `vehicle-demo-*-shots` recipes | `... --release --bin vehicle-demo -- --shots <dir>` |
 
 **Shows:** wheeled vehicles (springs, tires, steering) with client prediction; mounting; tire tracks and wheel dust; other
 players' vehicles drawn smoothly between updates; a terrain with a blended dirt layer; forests built as interiors; a day
@@ -172,10 +212,31 @@ the legacy terrain format.
 ## The minimal server and client
 
 A dedicated server of the bundled game and a client that connects to it and prints the ghosts it is sent, both in the
-console. `just examples/min-server` (`cargo run -p torque-example-minimal --bin min-server`) and `just examples/min-client`
-(`cargo run -p torque-example-minimal --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
-`just bundle examples/minimal --server --archive` packages the server alone (it links no drawing, window or audio crate) as a zip
-or a gzipped tar.
+console. It is the smallest way to see the network path: the server runs a short script mission (a crate and a gem that moves in
+a circle), and the client lists what the server ghosts to it. Everything is wired by hand on the lower crates (the transport,
+the handshake, the ghost manager).
+
+**Run it:** `just examples/min-server` (`cargo run -p torque-example-minimal --bin min-server`) on 127.0.0.1:28000, then
+`just examples/min-client` (`cargo run -p torque-example-minimal --bin min-client`). `--ticks N` stops the server after N ticks.
+The client also runs in a window: `cargo run -p torque-example-minimal --features window --bin example-window -- --local` (it
+starts the server too; `--server <address>` joins another). `just examples/headless` runs the umbrella crate's headless
+examples (`script`, `shape`, `collide`, `net`) and a short run of the server. `just bundle examples/minimal --server --archive`
+packages the server alone (it links no drawing, window or audio crate) as a zip or a gzipped tar.
+
+**Shows:** the server's main loop, the connection handshake and ghosting without the engine's helpers; a packaged dedicated
+server.
+
+## The minimal example on the engine
+
+The same game as the minimal server and client (its scripts and mission are read from `examples/minimal`), built the other
+way: an `Engine` of `DefaultPlugins` and one small game plugin make the server, the client and the window, in about a fifth of the
+code. The engine's server and client also send the datablocks and give each client its camera, which the hand-wired one leaves out.
+[`minimal-engine/README.md`](minimal-engine/README.md) compares the two side by side.
+
+**Run it:** `just examples/min-engine-server` (127.0.0.1:28000), `just examples/min-engine-client` (prints the ghosts) and
+`just examples/min-engine-window` (the client in a window; `--local` runs the server too).
+
+**Shows:** `Engine`, `DefaultPlugins` and a game plugin; the same server, client and window client built on the app layer.
 
 ## The mods demo
 
@@ -186,9 +247,42 @@ chases which orb. A second mod requires the first (load order); a third is switc
 `just examples/mods-demo` plays it, `just examples/mods-demo-shots` draws it, `just examples/mods-demo-test` checks it. The
 details are in [`mods-demo/README.md`](mods-demo/README.md).
 
+## The native extension
+
+A plugin built on its own, apart from the engine: a few console functions (`sample_greet`, `Sample::add` and others), a global, and two render
+passes (an orange square standing in the world and a blue badge in the corner of the picture), written against the plugin SDK
+(`torque-plugin-sdk`) and loaded at run time over the C ABI. `native-extension/c/sample.c` is the same idea in C: one function,
+`C::twice(text)`, built with any C compiler and `torque_plugin.h`.
+
+**Run it:** it is not a game. `just native-ext-sample` (from the repository's root) builds the library
+(`cargo build --manifest-path examples/native-extension/Cargo.toml`; it is its own workspace). To load it in a game, put the
+library and `native_sample.toml` in the game's `plugins/` folder and turn the loader on (the
+[native extensions chapter](../book/src/native-extensions.md)). The loader's tests build it and load it, and compare its
+output with the same plugin compiled into a game: `cargo test -p torque-plugin-loader`.
+
+**Shows:** the SDK's `#[function]` macro and `export!`, a plugin's manifest, extension render passes, and a C plugin.
+
+## The format viewer
+
+Pictures of Source engine content, drawn offscreen. It mounts a game folder you already have (the folders named by
+`TORQUE_SOURCE_GAME_DIR`, separated by `;`, each holding a `gameinfo.txt`), reads it through the format plugins
+(`torque-format-valve`) and draws pictures and frame sequences with the HD renderer. It opens no window, and it never writes into
+the game's folder. No game file is in this repository.
+
+**Run it:** set `TORQUE_SOURCE_GAME_DIR`, then `cargo run -p torque-example-format-viewer --release -- <command> ...`. The
+commands are `list <prefix> <suffix>` and `cat <path>` (look through the files), `sheet <out.png> <material>...` (textures side
+by side), `model <out-dir> <model.mdl> [sequence] [frames]` (a model turned about, or one sequence), `map <out-dir> <map.bsp>`
+(a map's geometry, displacements and props from a few cameras), `phy <out-dir> <model.mdl>...` (collision hulls drawn over the
+models), `effect <out-dir> <file.pcf> [system]` (a particle system's frames), `sound <out.wav> <entry or wave> [seconds]` (a
+sound mixed to a file) and `logic <out-dir> <map.bsp>` (a map's doors and other entities run, one picture a frame).
+
+**Shows:** the format plugins' loaders for textures, materials, models, animations, maps, particles and sounds; the HD renderer
+drawing content that was not made for it.
+
 ## The pictures
 
 `just examples/showcase <dir>` draws the four pictures at the top of the repository's README (without the HUD, at the HD
 renderer's highest quality) and puts them in a 2 x 2 grid (`hero.png`, `hero@2x.png`). `--examples` draws the other
-pictures on this page, `--only <name>` draws one, and `--size WxH` sets their size. The WebP files here were made from
-those PNGs.
+pictures on this page, `--only <name>` draws one, and `--size WxH` sets their size. The prop catalog's picture is one of
+`just examples/level-catalog-shots <dir>` (`catalog-recent.png`, with the corner readout). The WebP files in `screenshots/` were
+made from those PNGs (1280 x 720, lossy, quality 85).
