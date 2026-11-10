@@ -1,0 +1,31 @@
+[package]
+name = "torque-bundle"
+description = "Packages a game made on torque-rs: its binaries with the plugins its game.toml keeps, its files, its extensions, the licenses of what it links and a manifest of hashes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "packaging", "bundle", "gamedev"]
+categories = ["game-development", "development-tools::build-utils"]
+
+# A build tool: it runs cargo and rustc, reads the game's folder and writes a bundle folder. It links none of the engine (only the
+# resource layer's no-follow file reader), so it builds in seconds and never needs a GPU. `just bundle <game crate>` runs it.
+
+[dependencies]
+aho-corasick = "1"
+# The no-follow, capped reader of a file (`--verify` reads a bundle from elsewhere).
+torque-resource = { path = "../torque-resource" }
+memchr = "2.7"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+sha2 = "0.10"
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
+
+# The leak scan looks inside the zips of a game folder, and the tests read the bundle's own archive back.
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[lints]
+workspace = true

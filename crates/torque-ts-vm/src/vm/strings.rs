@@ -12,6 +12,7 @@
 //! Follows Torque3D's MIT-licensed `console/consoleFunctions.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here
 //! is this crate's own.
 
+use super::words::ByteSet;
 use super::{Native, NativeCall, Vm, VmError};
 use crate::text::{atoi, collapse_escape, expand_escape_capped, find, until_nul};
 use crate::vm::MAX_STRING_BYTES;
@@ -192,8 +193,8 @@ impl Vm {
     /// Work: a pass reads at most the previous pass's output, and the output holds only a run past 63 bytes,
     /// so passes are few (each strips something, and what is kept beyond 63 bytes is one run); but a `<` that
     /// begins no tag can still make a scan walk to the end of the text, up to 63 times a pass. Every pass is
-    /// charged its text, checked against the step budget before it starts, and the scans that did not end in
-    /// a tag are charged after it.
+    /// charged its text, checked against the step budget before it starts, and each scan that did not end in a
+    /// tag is charged and checked as it ends.
     pub(crate) fn strip_ml_control_chars(&self, input: &[u8]) -> Result<Vec<u8>, VmError> {
         let mut src = until_nul(input).to_vec();
         loop {
@@ -201,7 +202,6 @@ impl Vm {
             self.ensure_budget()?;
             let mut out = Vec::with_capacity(src.len().min(ML_KEEP + 1));
             let mut stripped = false;
-            let mut scans = 0u64;
             let mut i = 0;
             while out.len() < ML_KEEP {
                 let Some(&c) = src.get(i) else { break };
@@ -217,7 +217,8 @@ impl Vm {
                         stripped = true;
                         continue;
                     }
-                    scans = scans.saturating_add(looked as u64);
+                    self.objects.add_work(looked as u64);
+                    self.ensure_budget()?;
                 }
                 out.push(c);
                 i += 1;
@@ -229,7 +230,6 @@ impl Vm {
                     i += 1;
                 }
             }
-            self.objects.add_work(scans);
             if !stripped {
                 return Ok(out);
             }
@@ -402,12 +402,12 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "stripChars(text, chars) - the text without any of the characters",
         |_, c| {
-            let set = arg(c, 2);
+            let set = ByteSet::new(arg(c, 2));
             Native::Str(
                 arg(c, 1)
                     .iter()
                     .copied()
-                    .filter(|b| !set.contains(b))
+                    .filter(|&b| !set.contains(b))
                     .collect(),
             )
         },

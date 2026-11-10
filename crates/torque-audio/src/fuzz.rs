@@ -288,6 +288,7 @@ fn hostile_sound_files_never_panic() {
     let trace = std::env::var_os("TORQUE_FUZZ_AUDIO_TRACE");
     let mut rng = Rng(0x00a0_d10f_u64 | 1);
     let (mut panics, mut read, mut ogg_cases, mut caught) = (0usize, 0usize, 0usize, 0usize);
+    let mut slowest = (std::time::Duration::ZERO, 0usize);
     for i in 0..cases {
         let (name, seed) = &seeds[i % seeds.len()];
         let ogg = name.ends_with(".ogg");
@@ -298,14 +299,24 @@ fn hostile_sound_files_never_panic() {
             let _ = std::fs::write(t, &bytes);
             eprintln!("audio fuzz case {i} {name} ({} bytes)", bytes.len());
         }
+        let started = std::time::Instant::now();
         match catch_unwind(AssertUnwindSafe(|| exercise(name, &bytes, &mut caught))) {
             Ok(true) => read += 1,
             Ok(false) => {}
             Err(_) => panics += 1,
         }
+        slowest = slowest.max((started.elapsed(), i));
     }
     eprintln!(
-        "audio fuzz: {cases} cases ({ogg_cases} ogg; {sampled} sample seeds), {panics} panics, {read} read, {caught} decoder panics caught"
+        "audio fuzz: {cases} cases ({ogg_cases} ogg; {sampled} sample seeds), {panics} panics, {read} read, {caught} decoder panics caught; slowest case {} took {:?}",
+        slowest.1, slowest.0
     );
     assert_eq!(panics, 0);
+    // A decoder whose work is tied to its input takes milliseconds on a file this small.
+    assert!(
+        slowest.0 < std::time::Duration::from_secs(10),
+        "case {} took {:?}",
+        slowest.1,
+        slowest.0
+    );
 }

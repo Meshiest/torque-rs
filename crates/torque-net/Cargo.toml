@@ -17,5 +17,25 @@ categories = ["network-programming", "game-development"]
 
 [dependencies]
 
+[dev-dependencies]
+# The digests of the wire goldens.
+sha2 = "0.10"
+# The benches.
+criterion = { workspace = true }
+# The engine session bench's allocation counts.
+stats_alloc = { workspace = true }
+
+[[bench]]
+name = "ghost_section"
+harness = false
+
+[[bench]]
+name = "bits"
+harness = false
+
+[[bench]]
+name = "engine_session"
+harness = false
+
 [lints]
 workspace = true

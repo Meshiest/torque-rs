@@ -11,10 +11,10 @@
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
-//! `Tab`), both looking where the figure looks ([`behind`]: `Tab` moves the camera, never turns it). The camera behind rides a
-//! boom ([`CameraBoom`]) back from above the figure's feet (no higher than its eye), pulled in
+//! `Tab`), both looking where the figure looks ([`torque::app::camera_behind`]: `Tab` moves the camera, never turns it). The camera behind rides a
+//! boom ([`torque::app::camera_boom::CameraBoom`]) back from above the figure's feet (no higher than its eye), pulled in
 //! fast in front of the cubes, the interiors' walls, the terrain and the water that come between and let out slowly when they
-//! go; it looks through glass. `Tab` moves the camera from one to the other ([`CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
+//! go; it looks through glass. `Tab` (`setCameraMode`: the camera modes, [`torque::app::camera_modes`]) moves the camera from one to the other ([`torque::app::camera_blend::CameraBlend`], kept in front of them as the camera behind is); the figure is hidden while the
 //! camera is close to its eyes ([`CLOSE`]), on the way in and on the way out. A new figure (a respawn) or a teleport cuts the
 //! camera to it ([`OwnView::cut`]), and while the next figure is on its way the view stays where it was.
 //!
@@ -26,12 +26,15 @@ use std::net::SocketAddrV4;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use torque::app::camera_blend::{CLOSE, CameraBlend};
-use torque::app::camera_boom::CameraBoom;
-use torque::app::client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+use torque::app::camera_blend::CLOSE;
+use torque::app::camera_modes::{
+    CameraCx, CameraModes, CameraWorld, FIRST_PERSON, Rig, THIRD_PERSON,
+};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::lights::WorldLights;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
+use torque::engine::Engine;
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
 use torque_render_scene::hd::clouds::CloudLook;
@@ -40,10 +43,10 @@ use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
 use crate::ground::MapGround;
+use crate::plugin::{Level, level_engine};
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
 use torque::app::ghosts::OwnView;
-use torque_example_common::behind::{boom_line, looking, moved_only};
 use torque_example_common::prediction::CubeClient;
 
 /// The client's address on the link.
@@ -60,23 +63,33 @@ pub const CLOUD_CLOCK_WRAP: f32 = 100_000.0;
 pub const CAMERA_CLEARANCE: f32 = 0.3;
 pub const CAMERA_NEAREST: f32 = 0.4;
 
+/// The camera behind the figure: the numbers above as the built-in third person and first person take them.
+pub fn camera_rig() -> Rig {
+    Rig {
+        distance: CAMERA_DISTANCE,
+        target_height: CAMERA_TARGET_HEIGHT,
+        lift: CAMERA_LIFT,
+        nearest: CAMERA_NEAREST,
+        clearance: CAMERA_CLEARANCE,
+    }
+}
+
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the map's server and their
 /// logs) and the level demo's own parts.
 pub struct LevelDemo {
     pub client: GameClient<WorldServer>,
-    pub files: GameFiles,
+    pub files: Rc<GameFiles>,
+    /// Files only the map's server has (the mods it requires of its clients).
+    server_mods: Vec<(String, Vec<u8>)>,
+    engine: Engine,
     pub maps: Vec<MapEntry>,
     scene: WorldScene,
     /// The map being played (its index in [`LevelDemo::maps`]).
     pub playing: Option<usize>,
     /// The daylight the view was last given (the map's Sky over the default).
     daylight: Daylight,
-    /// The camera's ease between first and third person, and the mode it last eased to (first person).
-    blend: CameraBlend,
-    camera_mode: Option<bool>,
-    /// The camera behind the figure: its boom, and the eye it gave this frame.
-    boom: CameraBoom,
-    behind: Option<Eye>,
+    /// The camera modes (first person and the camera behind the figure on its boom), the one in use and the ease between them.
+    modes: Rc<CameraModes>,
     /// Where the camera was drawn last frame.
     drawn_at: Option<[f32; 3]>,
     /// The eye last drawn from the figure, held while the server's next figure is on its way (a respawn).
@@ -107,50 +120,65 @@ impl DerefMut for LevelDemo {
 }
 
 impl LevelDemo {
-    /// The client over `files`: `client.cs` run, the menu built from the maps found.
-    pub fn new(mut files: GameFiles) -> Result<LevelDemo, String> {
-        crate::levels::add_levels(&mut files)?;
-        crate::files::add_valley(&mut files)?;
-        let maps = crate::files::maps(&files);
-        let cube = Rc::new(CubeClient::new(files.mem_files()));
-        cube.set_poses(crate::figure_poses());
-        let mut b = ClientBuilder::new(ClientSetup {
-            files: Some(files.mem_files()),
-            game_classes: true,
-            client_game: Some(Rc::clone(&cube) as _),
-            net: ClientNet::Memory {
+    /// The client over `files`: [`level_engine`] built, then [`LevelDemo::from_engine`].
+    pub fn new(files: GameFiles) -> Result<LevelDemo, String> {
+        let engine = level_engine(files)?.build().map_err(|e| e.to_string())?;
+        LevelDemo::from_engine(&engine)
+    }
+
+    /// The client `engine` makes (over the files its [`LevelPlugin`](crate::plugin::LevelPlugin) holds): `client.cs` run, the menu built from the maps
+    /// found.
+    pub fn from_engine(engine: &Engine) -> Result<LevelDemo, String> {
+        // The shared level, not the resource's borrow, which would be held across the client's recipes.
+        let level = Rc::clone(
+            &*engine
+                .resource::<Rc<Level>>()
+                .ok_or("the engine has no level demo (LevelPlugin)")?,
+        );
+        let mut b = ClientBuilder::from_engine(
+            engine,
+            Some(level.files.mem_files()),
+            ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
             },
-            layout_fonts: true,
-            ..ClientSetup::default()
-        })?;
-        b.vm.set_global("$World::MapCount", &maps.len().to_string());
-        for (i, m) in maps.iter().enumerate() {
-            b.vm.set_global(&format!("$World::MapTitle{i}"), &m.title);
-            b.vm.set_global(&format!("$World::MapAbout{i}"), &m.about);
-        }
+        )?;
         b.exec("client.cs")?;
         b.invoke("buildMenu")?;
+        let client = b.build();
+        let modes = client
+            .camera_modes()
+            .ok_or("the engine has no camera modes (CameraModesPlugin)")?;
+        // The camera behind the figure is the one in use until `Tab`.
+        modes.set_now(THIRD_PERSON);
         Ok(LevelDemo {
-            client: b.build(),
-            files,
-            maps,
+            client,
+            engine: engine.clone(),
+            files: Rc::clone(&level.files),
+            server_mods: level.server_mods.clone(),
+            maps: level.maps.clone(),
             scene: WorldScene::default(),
             playing: None,
             daylight: Daylight::default(),
-            blend: CameraBlend::default(),
+            modes,
             lights: WorldLights::default(),
-            camera_mode: None,
-            boom: CameraBoom::new(CAMERA_NEAREST, CAMERA_CLEARANCE),
-            behind: None,
             drawn_at: None,
             held: None,
-            cube,
+            cube: Rc::clone(&level.cube),
             ground: MapGround::default(),
             ground_changed: false,
             cloud_clock: 0.0,
         })
+    }
+
+    /// The files only a server of this game has (the mods it requires of its clients).
+    pub fn server_mods(&self) -> &[(String, Vec<u8>)] {
+        &self.server_mods
+    }
+
+    /// The engine this client and its servers are made by.
+    pub fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     /// A world view on `gpu`, the sky's clouds sunlit cumulus (a map with a day has them), the ground of the map being played.
@@ -163,6 +191,22 @@ impl LevelDemo {
 
     /// Starts map `index`: its server, and the client joins it.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
+        let map = self.prepare_map(index)?;
+        let server =
+            WorldServer::start_with(&self.engine, &self.files, &self.server_mods, &map.path)?;
+        self.client.start_hosting(server);
+        self.enter_map(index, &map)
+    }
+
+    /// Joins map `index` as served by a server another part of the process runs (at [`SERVER_ADDR`], started over a copy of this
+    /// client's files with [`WorldServer::start_with`]): the client plays it as it does a map of its own server.
+    pub fn join_map(&mut self, index: usize) -> Result<(), String> {
+        let map = self.prepare_map(index)?;
+        self.enter_map(index, &map)
+    }
+
+    /// The client left any map it was in, and has the ground map `index` has.
+    fn prepare_map(&mut self, index: usize) -> Result<MapEntry, String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
         let text =
@@ -172,22 +216,30 @@ impl LevelDemo {
         self.cube.set_water(&self.ground.waters);
         self.scene.set_water(&self.ground.waters);
         self.ground_changed = true;
-        let server = WorldServer::start(&self.files, &map.path)?;
-        self.client.start_hosting(server);
+        Ok(map)
+    }
+
+    // The map's name hangs the plaza's rope (the `rope` feature).
+    fn enter_map(
+        &mut self,
+        index: usize,
+        #[cfg_attr(not(feature = "rope"), allow(unused_variables))] map: &MapEntry,
+    ) -> Result<(), String> {
         self.playing = Some(index);
         self.call("connectTo", &[SERVER_ADDR.to_string().as_str()])?;
+        #[cfg(feature = "rope")]
+        crate::ropes::hang(self, &crate::shots::map_name(&map.path))?;
         Ok(())
     }
 
     /// Stops the server being played, if there is one.
     pub fn leave(&mut self) {
+        #[cfg(feature = "rope")]
+        crate::ropes::take_down(self);
         self.client.stop_hosting();
         self.scene.clear();
         self.playing = None;
-        self.blend.reset();
-        self.camera_mode = None;
-        self.boom.reset();
-        self.behind = None;
+        self.modes.cut();
         self.held = None;
         self.lights.clear();
         if !self.ground.is_empty() {
@@ -253,86 +305,35 @@ impl LevelDemo {
         self.scene.own()
     }
 
+    /// The props the last frame drew as still geometry (they sleep): the moving shapes it drew leave them out.
+    pub fn resting_props(&self) -> usize {
+        self.scene.resting_count()
+    }
+
     /// Whether the camera is at the figure's eyes (`Tab`).
     pub fn first_person(&self) -> bool {
-        self.flag("$World::FirstPerson")
+        self.modes.is_active(FIRST_PERSON)
     }
 
     /// Puts the camera there at once, without easing (the shots' second picture).
     pub fn set_first_person(&mut self, on: bool) {
-        self.set_global("$World::FirstPerson", if on { "1" } else { "0" });
-        self.camera_mode = Some(on);
-        self.blend.reset();
+        self.modes
+            .set_now(if on { FIRST_PERSON } else { THIRD_PERSON });
+    }
+
+    /// Runs `f` on the camera modes with this frame's context: the figure as the last frame placed it, `dt` seconds on.
+    fn with_camera<R>(&self, dt: f32, f: impl FnOnce(&CameraModes, &CameraCx<'_>) -> R) -> R {
+        let figure = self.figure();
+        f(
+            &self.modes,
+            &CameraCx::new(self, dt).with_control(figure.as_ref()),
+        )
     }
 
     /// The eye this frame: behind the figure or at its eyes; a fixed view of the middle of the map before there is one.
     pub fn eye(&self) -> Eye {
-        match self.figure() {
-            Some(f) if self.first_person() => looking(f.eye, f.yaw, f.pitch),
-            Some(f) => self.third_person(&f),
-            None => with_fov(look_at([0.0, -30.0, 18.0], [0.0, 0.0, 0.0])),
-        }
-    }
-
-    /// The camera behind the figure this frame: on its boom when the frame placed it, else where the boom's room puts it.
-    fn third_person(&self, f: &OwnView) -> Eye {
-        if let Some(e) = self.behind {
-            return e;
-        }
-        let (back, length) = boom(f);
-        let mut at = self.kept_clear(camera_target(f), back, length, CAMERA_NEAREST);
-        self.above_ground(&mut at);
-        looking(at, f.yaw, f.pitch)
-    }
-
-    /// Point `at` raised to stay [`CAMERA_CLEARANCE`] twice over above the terrain or water under it.
-    fn above_ground(&self, at: &mut [f32; 3]) {
-        if let Some(ground) = self.ground.surface(at[0], at[1]) {
-            at[2] = at[2].max(ground + CAMERA_CLEARANCE * 2.0);
-        }
-    }
-
-    /// The boom behind the figure moved on `dt` seconds (module docs).
-    fn place_behind(&mut self, dt: f32) {
-        let Some(f) = self.figure() else {
-            self.boom.reset();
-            self.behind = None;
-            return;
-        };
-        let (back, length) = boom(&f);
-        let (scene, ground) = (&self.scene, &self.ground);
-        let mut at = self
-            .boom
-            .follow(camera_target(&f), back, length, dt, |a, b| {
-                match (scene.sight_share(a, b), ground.line_share(a, b)) {
-                    (Some(x), Some(y)) => Some(x.min(y)),
-                    (x, y) => x.or(y),
-                }
-            });
-        self.above_ground(&mut at);
-        self.behind = Some(looking(at, f.yaw, f.pitch));
-    }
-
-    /// The point `distance` from `target` along unit `back`, brought in front of the first cube, interior wall, terrain or water between (no
-    /// nearer than `nearest`, or the distance when that is nearer).
-    fn kept_clear(
-        &self,
-        target: [f32; 3],
-        back: [f32; 3],
-        distance: f32,
-        nearest: f32,
-    ) -> [f32; 3] {
-        let end = [0, 1, 2].map(|i| target[i] + back[i] * distance);
-        let ground = self.ground.line_share(target, end).map(|s| s * distance);
-        let hit = match (self.scene.sight_hit(target, back, distance), ground) {
-            (Some(x), Some(y)) => Some(x.min(y)),
-            (x, y) => x.or(y),
-        };
-        let reach = match hit {
-            Some(t) => (t - CAMERA_CLEARANCE).max(nearest.min(distance)),
-            None => distance,
-        };
-        [0, 1, 2].map(|i| target[i] + back[i] * reach)
+        let fixed = with_fov(look_at([0.0, -30.0, 18.0], [0.0, 0.0, 0.0]));
+        self.with_camera(0.0, |modes, cx| modes.target(cx, fixed))
     }
 
     /// The eye drawn this frame: [`LevelDemo::eye`], its camera eased from the last mode's after a switch, its look the
@@ -346,26 +347,8 @@ impl LevelDemo {
         {
             return eye;
         }
-        let target = self.eye();
-        let mut blend = self.blend;
-        let eye = blend.eye(target, |p| match figure {
-            Some(f) => {
-                let from = camera_target(&f);
-                let d = [0, 1, 2].map(|i| p[i] - from[i]);
-                let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-                if length < 1e-4 {
-                    return p;
-                }
-                self.kept_clear(from, d.map(|x| x / length), length, 0.0)
-            }
-            None => p,
-        });
-        self.blend = blend;
-        // Both modes look where the figure looks: the ease moves the camera only.
-        let eye = match figure {
-            Some(_) => moved_only(eye, target),
-            None => eye,
-        };
+        let fixed = with_fov(look_at([0.0, -30.0, 18.0], [0.0, 0.0, 0.0]));
+        let eye = self.with_camera(0.0, |modes, cx| modes.drawn(cx, fixed));
         self.drawn_at = Some(eye.position);
         self.held = figure.map(|_| eye);
         eye
@@ -379,7 +362,7 @@ impl LevelDemo {
 
     /// Whether the camera is easing between modes.
     pub fn camera_blending(&self) -> bool {
-        !self.blend.arrived()
+        self.modes.blending()
     }
 
     /// An eye looking at the whole map from above and to its south (the shots' overview).
@@ -424,14 +407,7 @@ impl LevelDemo {
     pub fn update_scene(&mut self, dt: f32) {
         self.client.predict_frame();
         let first_person = self.first_person();
-        if self
-            .camera_mode
-            .replace(first_person)
-            .is_some_and(|m| m != first_person)
-        {
-            self.blend.switch();
-        }
-        self.blend.advance(dt);
+        self.with_camera(dt, |modes, cx| modes.begin(cx));
         // The figure is hidden while the camera is close to its eyes, on the way in and on the way out.
         let hidden = match (self.figure(), self.drawn_at) {
             (Some(f), Some(p)) => near_eyes(p, f.eye),
@@ -459,11 +435,9 @@ impl LevelDemo {
         }
         // A new figure (a respawn) or a teleport cuts the camera to it: nothing eased across the way between.
         if self.figure().is_some_and(|f| f.cut) {
-            self.blend.reset();
-            self.boom.reset();
-            self.behind = None;
+            self.modes.cut();
         }
-        self.place_behind(dt);
+        self.with_camera(dt, |modes, cx| modes.update(cx));
     }
 
     /// The frame: the ghosts into `view`, the canvas drawn (with the world's rectangle) and the eye.
@@ -548,23 +522,6 @@ impl App for LevelDemo {
     }
 }
 
-/// The boom from [`camera_target`] back to the camera behind the figure with nothing in the way: its way (unit) and length,
-/// back against the figure's look ([`boom_line`]).
-fn boom(f: &OwnView) -> ([f32; 3], f32) {
-    boom_line(f.yaw, f.pitch, CAMERA_DISTANCE, CAMERA_LIFT)
-}
-
-/// Where the camera behind the figure's boom starts: above its feet, no higher than its eye (crouched or prone the camera rides
-/// lower with the eye, eased as the eye is).
-fn camera_target(f: &OwnView) -> [f32; 3] {
-    let eye = (f.eye[2] - f.position[2]).max(0.0);
-    [
-        f.position[0],
-        f.position[1],
-        f.position[2] + CAMERA_TARGET_HEIGHT.min(eye),
-    ]
-}
-
 pub fn with_fov(mut eye: Eye) -> Eye {
     eye.fov = None;
     eye
@@ -582,6 +539,32 @@ fn near_eyes(camera: [f32; 3], eyes: [f32; 3]) -> bool {
 pub fn advance_cloud_clock(clock: f32, dt: f32, scale: f32) -> f32 {
     let next = (clock + dt * scale) % CLOUD_CLOCK_WRAP;
     if next.is_finite() { next } else { 0.0 }
+}
+
+/// What the camera keeps clear of: the cubes and interiors the scene holds, and the terrain and water.
+impl CameraWorld for LevelDemo {
+    fn clear_share(&self, from: [f32; 3], to: [f32; 3]) -> Option<f32> {
+        match (
+            self.scene.sight_share(from, to),
+            self.ground.line_share(from, to),
+        ) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, y) => x.or(y),
+        }
+    }
+
+    fn clear_hit(&self, from: [f32; 3], dir: [f32; 3], reach: f32) -> Option<f32> {
+        let end = [0, 1, 2].map(|i| from[i] + dir[i] * reach);
+        let ground = self.ground.line_share(from, end).map(|s| s * reach);
+        match (self.scene.sight_hit(from, dir, reach), ground) {
+            (Some(x), Some(y)) => Some(x.min(y)),
+            (x, y) => x.or(y),
+        }
+    }
+
+    fn ground(&self, x: f32, y: f32) -> Option<f32> {
+        self.ground.surface(x, y)
+    }
 }
 
 #[cfg(test)]

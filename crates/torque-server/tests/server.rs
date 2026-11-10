@@ -5,15 +5,18 @@
 use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use torque_game::scene::container::{Container, ContainerConfig};
 use torque_ghosts::tge::TgeClass;
 use torque_net::bits::BitWriter;
 use torque_net::classes::Kind;
 use torque_net::client::{Client, ClientEvent, ClientState};
+use torque_net::connect::{AuthProvider, BlockSource, ConnectBlock, ManifestGate, SharedSecret};
 use torque_net::ghost::net_flags;
 use torque_net::handshake::ConnectFields;
 use torque_net::huffman::Table;
+use torque_net::manifest::Manifest;
 use torque_scene::BinGeometry;
 use torque_server::net::codecs::net_codecs;
 use torque_server::net::datablock::{DatablockView, DbValue};
@@ -22,7 +25,7 @@ use torque_server::net::hostevent::HostEvent;
 use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
 use torque_server::net::transport::{MemoryEnd, MemoryTransport, SharedTransport};
 use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use torque_server::server::{FIRST_PASS_MS, RunEnd, Server, TICK_MS};
+use torque_server::server::{FIRST_PASS_MS, RunEnd, STEP_LIMIT, Server, TICK_MS};
 use torque_server::state::{START_GHOST_BITS, ServerState};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
@@ -274,7 +277,6 @@ fn net_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
             transport,
             game: TorqueNet::default(),
             engine: Rc::clone(&state),
-            step_limit: None,
             clock: NetClock::Sim,
             ghosts: TgeGhostGame,
             container,
@@ -301,13 +303,244 @@ fn game_flagged_datagrams_from_no_connection_share_their_ips_work_whatever_the_p
     }
     s.run(TICK_MS, |_| false);
     let sh = shared.borrow();
-    // The IP's share pays for 19 (each charged its cost, the next reserving 1,644 units of the 2,048); the rest are skipped.
+    // They are a stranger's: each costs its bytes (22 units) from the IP's share of the strangers' pool (512), so 23 are read
+    // and the rest skipped.
     assert_eq!(
         (sh.counters.received, sh.counters.over_budget),
-        (19, 81),
+        (23, 77),
         "one share for the IP"
     );
     assert!(sh.stash.is_none(), "none waits for the tick's budget");
+}
+
+/// A client joined to `s` from `addr`: the handshake run to its end, the connection's handshake id.
+fn join(
+    s: &mut NetServer,
+    shared: &Rc<RefCell<NetShared<TorqueNet>>>,
+    end: &MemoryEnd,
+    addr: SocketAddr,
+) -> (Client, torque_net::handshake::ConnId) {
+    let table = Table::torque();
+    let mut client = Client::new(7, ConnectFields::standard(b"", Vec::new()));
+    end.inject(addr, &client.challenge_request());
+    for _ in 0..10 {
+        s.run(TICK_MS, |_| false);
+        carry(s, end, &mut client, addr, &table);
+        if client.state() == &ClientState::Connected {
+            break;
+        }
+    }
+    assert_eq!(client.state(), &ClientState::Connected);
+    let conn = shared.borrow().hs.lookup(addr).expect("accepted");
+    (client, conn)
+}
+
+/// Hands the client what the server sent it, and answers with an ack when it heard a payload.
+fn carry(s: &NetServer, end: &MemoryEnd, client: &mut Client, addr: SocketAddr, table: &Table) {
+    let now = s.vm.sim_time();
+    let mut heard = false;
+    for (to, datagram) in end.take_sent() {
+        if to != addr {
+            continue;
+        }
+        match client.on_datagram(table, &datagram, now) {
+            ClientEvent::Send(bytes) => {
+                end.inject(addr, &bytes);
+            }
+            ClientEvent::Game { received, .. } => heard |= received.payload,
+            _ => {}
+        }
+    }
+    if heard && let Some(p) = client.protocol_mut() {
+        end.inject(addr, &p.ack_packet(now));
+    }
+}
+
+#[test]
+fn a_net_run_keeps_the_servers_step_limit() {
+    let (mut s, shared, end) = net_server();
+    assert_eq!(s.vm.step_limit(), Some(STEP_LIMIT));
+    s.vm.eval(
+        b"new SimGroup(ClientGroup); function spin() { while (1) {} }
+              function GameConnection::onConnect(%c) { $joined++; }",
+    )
+    .unwrap();
+    join(
+        &mut s,
+        &shared,
+        &end,
+        SocketAddr::from(([127, 0, 0, 1], 50_000)),
+    );
+    assert_eq!(
+        s.vm.global("$joined").as_deref(),
+        Some(&b"1"[..]),
+        "the join ran script"
+    );
+    assert_eq!(
+        s.vm.step_limit(),
+        Some(STEP_LIMIT),
+        "the join's runs put it back"
+    );
+    // A smaller limit, so a debug build spins briefly: after a second join's runs, a looping event still stops at it.
+    s.vm.set_step_limit(Some(100_000));
+    join(
+        &mut s,
+        &shared,
+        &end,
+        SocketAddr::from(([127, 0, 0, 1], 50_001)),
+    );
+    assert_eq!(s.vm.step_limit(), Some(100_000));
+    s.vm.eval(b"schedule(0, 0, spin);").unwrap();
+    let until = s.vm.sim_time() + 4 * TICK_MS;
+    s.run(until, |_| false);
+    assert_eq!(s.vm.step_limit(), Some(100_000));
+    assert!(
+        s.vm.steps() >= 100_000,
+        "the event ran to the limit: {}",
+        s.vm.steps()
+    );
+}
+
+#[test]
+fn peers_behind_stand_ins_from_one_real_network_share_its_caps() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(b"new SimGroup(ClientGroup);").unwrap();
+    // Five stand-ins in five networks, all of one real /24: the network holds 4 pending connections, so the fifth waits.
+    let mut events = Vec::new();
+    for n in 1..=5u8 {
+        let stand_in = SocketAddr::from(([240, n, 0, 1], 9_000));
+        end.stand_in(stand_in, std::net::IpAddr::from([198, 51, 100, n]));
+        events.push(handshake(
+            &mut s,
+            &end,
+            stand_in,
+            ConnectFields::standard(b"", Vec::new()),
+        ));
+    }
+    let accepted = events
+        .iter()
+        .filter(|e| matches!(e, ClientEvent::Accepted(_)))
+        .count();
+    assert_eq!(accepted, 4, "{events:?}");
+    assert!(matches!(events[4], ClientEvent::Nothing));
+    // A stand-in of another real network is accepted.
+    let other = SocketAddr::from(([240, 9, 0, 1], 9_000));
+    end.stand_in(other, std::net::IpAddr::from([203, 0, 113, 1]));
+    let event = handshake(
+        &mut s,
+        &end,
+        other,
+        ConnectFields::standard(b"", Vec::new()),
+    );
+    assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
+    let sh = shared.borrow();
+    let conn = sh.hs.lookup(other).expect("accepted");
+    assert_eq!(
+        sh.hs.connection(conn).map(|c| c.ip),
+        Some(std::net::IpAddr::from([203, 0, 113, 1])),
+        "the connection keeps its real address"
+    );
+}
+
+#[test]
+fn a_flood_past_a_passs_old_read_cap_still_lets_a_players_packets_through_in_a_tick_or_two() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(b"new SimGroup(ClientGroup);").unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 50_000));
+    let (mut client, conn) = join(&mut s, &shared, &end, addr);
+    let table = Table::torque();
+    // 5,000 junk datagrams a tick from fresh sources (more than 2,048 a pass), the client's packet behind half of them.
+    let junk = vec![0x01u8; 64];
+    let mut n = 0u32;
+    let mut waits = Vec::new();
+    for tick in 0..12 {
+        for half in 0..2 {
+            for _ in 0..2_500 {
+                n += 1;
+                end.inject(
+                    SocketAddr::from(((0x0c00_0000 + n).to_be_bytes(), 9_000)),
+                    &junk,
+                );
+            }
+            if half == 0 {
+                let now = s.vm.sim_time();
+                let p = client.protocol_mut().expect("connected");
+                end.inject(addr, &p.ack_packet(now));
+                waits.push((tick, p.last_send_seq()));
+            }
+        }
+        s.run(TICK_MS, |_| false);
+        carry(&s, &end, &mut client, addr, &table);
+        let read = shared
+            .borrow()
+            .hs
+            .connection(conn)
+            .map(|c| c.protocol.last_seq_recvd())
+            .expect("the client is still connected");
+        waits.retain(|&(sent, seq)| {
+            assert!(
+                tick - sent < 2,
+                "the client's packet {seq} waited past 2 ticks"
+            );
+            seq > read
+        });
+    }
+    assert!(
+        end.waiting() < 5_000,
+        "the flood is drained as it comes: {} wait",
+        end.waiting()
+    );
+}
+
+#[test]
+fn junk_from_many_sources_never_starves_a_joined_client() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(b"new SimGroup(ClientGroup);").unwrap();
+    let addr = SocketAddr::from(([127, 0, 0, 1], 50_000));
+    let (mut client, conn) = join(&mut s, &shared, &end, addr);
+    let table = Table::torque();
+    // 20,000 datagrams from 20,000 addresses over 32 ticks (a challenge, a game-looking 1,400 bytes, a ping request), with the
+    // client's own packet in the middle of each tick's: every one of the client's is read within 2 ticks.
+    let challenge = Client::new(1, ConnectFields::standard(b"", Vec::new())).challenge_request();
+    let junk: [Vec<u8>; 3] = [challenge, vec![0x01; 1_400], vec![14, 0, 0, 0, 0, 0]];
+    let mut n = 0u32;
+    let mut waits = Vec::new();
+    for tick in 0..32 {
+        for half in 0..2 {
+            for _ in 0..313 {
+                n += 1;
+                let from = SocketAddr::from(((0x0b00_0000 + n).to_be_bytes(), 9_000));
+                end.inject(from, &junk[n as usize % 3]);
+            }
+            if half == 0 {
+                let now = s.vm.sim_time();
+                let p = client.protocol_mut().expect("connected");
+                end.inject(addr, &p.ack_packet(now));
+                waits.push((tick, p.last_send_seq()));
+            }
+        }
+        s.run(TICK_MS, |_| false);
+        carry(&s, &end, &mut client, addr, &table);
+        let read = shared
+            .borrow()
+            .hs
+            .connection(conn)
+            .map(|c| c.protocol.last_seq_recvd());
+        let read = read.expect("the client is still connected");
+        waits.retain(|&(sent, seq)| {
+            assert!(
+                tick - sent < 2,
+                "the client's packet {seq} waited past 2 ticks"
+            );
+            seq > read
+        });
+    }
+    let sh = shared.borrow();
+    assert!(sh.counters.strangers_dropped > 0, "{:?}", sh.counters);
+    assert!(
+        sh.hs.connection(conn).is_some(),
+        "the client did not time out"
+    );
 }
 
 #[test]
@@ -401,5 +634,394 @@ new Camera(TheCamera);",
         layer.queued(conn).map(|(ordered, ..)| ordered),
         Some(0),
         "the client acknowledged the packets that carried the sun's ghost"
+    );
+}
+
+/// Sends a client's connect request and runs the server until the client hears an accept or a reject: the client's final event.
+fn handshake(
+    s: &mut NetServer,
+    end: &MemoryEnd,
+    addr: SocketAddr,
+    fields: ConnectFields,
+) -> ClientEvent {
+    handshake_as(s, end, addr, Client::new(9, fields))
+}
+
+/// [`handshake`] for a client that is already made.
+fn handshake_as(
+    s: &mut NetServer,
+    end: &MemoryEnd,
+    addr: SocketAddr,
+    mut client: Client,
+) -> ClientEvent {
+    let table = Table::torque();
+    end.inject(addr, &client.challenge_request());
+    let mut last = ClientEvent::Nothing;
+    for _ in 0..6 {
+        s.run(TICK_MS, |_| false);
+        for (_, datagram) in end.take_sent() {
+            match client.on_datagram(&table, &datagram, s.vm.sim_time()) {
+                ClientEvent::Send(bytes) => {
+                    end.inject(addr, &bytes);
+                }
+                event @ (ClientEvent::Rejected(_) | ClientEvent::Accepted(_)) => last = event,
+                _ => {}
+            }
+        }
+        if !matches!(last, ClientEvent::Nothing) {
+            break;
+        }
+    }
+    last
+}
+
+fn rope_manifest(version: u32) -> Manifest {
+    Manifest::new(12, 12)
+        .with_plugin("torque.rope", version)
+        .with_ghosts(["Rope"])
+}
+
+fn with_manifest(manifest: Manifest, ticket: Option<Vec<u8>>) -> ConnectFields {
+    ConnectFields::standard(b"", Vec::new()).with_block(ConnectBlock {
+        manifest: Some(manifest),
+        ticket,
+        ..Default::default()
+    })
+}
+
+/// A client that dials `dialed` and signs its ticket for `name` under `key` for the connection it gets the challenge for.
+fn signing_client(key: [u8; 16], name: &'static str, dialed: SocketAddr) -> Client {
+    let mut client = Client::new(9, ConnectFields::standard(b"", Vec::new()));
+    client.set_block_source(
+        dialed,
+        BlockSource::new(move |cx| {
+            Ok(Some(ConnectBlock {
+                manifest: Some(rope_manifest(2)),
+                ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+                ..Default::default()
+            }))
+        }),
+    );
+    client
+}
+
+#[test]
+fn a_mismatched_client_is_refused_before_the_scripts_see_it_and_before_any_ghost() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(
+        b"new SimGroup(ClientGroup);\nfunction GameConnection::onConnectRequest(%c, %a) { echo(\"asked\"); return \"\"; }\nfunction GameConnection::onConnect(%c) { echo(\"connected\"); }",
+    )
+    .unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
+    let addr = SocketAddr::from(([127, 0, 0, 1], 50_001));
+
+    // A client with an older rope: refused with the reason, the script never asked, nothing in the table.
+    let event = handshake(
+        &mut s,
+        &end,
+        addr,
+        with_manifest(rope_manifest(1), Some(b"unchecked".to_vec())),
+    );
+    let ClientEvent::Rejected(reason) = event else {
+        panic!("not refused: {event:?}")
+    };
+    assert_eq!(reason, b"server needs plugin torque.rope 2, you have 1");
+    // A client with no manifest at all.
+    let addr2 = SocketAddr::from(([127, 0, 0, 1], 50_002));
+    let event = handshake(
+        &mut s,
+        &end,
+        addr2,
+        ConnectFields::standard(b"", Vec::new()),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"server needs plugin torque.rope 2, you do not have it"),
+        "{event:?}"
+    );
+    // A matching client with a forged ticket: refused by the auth provider, still before the scripts.
+    let addr3 = SocketAddr::from(([127, 0, 0, 1], 50_003));
+    let event = handshake_as(
+        &mut s,
+        &end,
+        addr3,
+        signing_client([5; 16], "ada", SERVER_ADDR),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"your sign-in was not accepted"),
+        "{event:?}"
+    );
+    assert!(!lines(&s).iter().any(|l| l == "asked" || l == "connected"));
+    assert_eq!(
+        shared.borrow().hs.len(),
+        0,
+        "no connection was made for them"
+    );
+    assert_eq!(shared.borrow().counters.accepted, 0);
+
+    // A ticket made for another server is refused here, whoever relays it.
+    let addr5 = SocketAddr::from(([127, 0, 0, 2], 50_005));
+    let elsewhere = SocketAddr::from(([203, 0, 113, 9], 28_000));
+    let event = handshake_as(
+        &mut s,
+        &end,
+        addr5,
+        signing_client([4; 16], "ada", elsewhere),
+    );
+    assert!(
+        matches!(&event, ClientEvent::Rejected(r) if r == b"your sign-in was not accepted"),
+        "{event:?}"
+    );
+    assert!(!lines(&s).iter().any(|l| l == "asked" || l == "connected"));
+
+    // The matching client with a good ticket is accepted, and the script is asked.
+    let addr4 = SocketAddr::from(([127, 0, 0, 1], 50_004));
+    let event = handshake_as(
+        &mut s,
+        &end,
+        addr4,
+        signing_client([4; 16], "ada", SERVER_ADDR),
+    );
+    assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
+    assert!(lines(&s).iter().any(|l| l == "asked"));
+    assert_eq!(shared.borrow().counters.accepted, 1);
+    let sh = shared.borrow();
+    let conn = sh
+        .conns
+        .values()
+        .find(|r| r.addr == addr4)
+        .and_then(|r| r.conn)
+        .expect("accepted");
+    assert_eq!(
+        sh.hs
+            .connection(conn)
+            .and_then(|c| c.identity.as_ref())
+            .map(|i| (i.id(), i.name())),
+        Some((&b"ada"[..], Some("ada"))),
+        "the verified identity is kept with the connection"
+    );
+}
+
+/// The identity lines the script of [`identity_script`] printed, in order: what the server called each connection that joined.
+fn identities(s: &NetServer) -> Vec<String> {
+    lines(s)
+        .into_iter()
+        .filter_map(|l| l.strip_prefix("who ").map(str::to_owned))
+        .collect()
+}
+
+const IDENTITY_SCRIPT: &[u8] = b"new SimGroup(ClientGroup);
+    function GameConnection::onConnectRequest(%c, %a) { return \"\"; }
+    function GameConnection::onConnect(%c) { echo(\"who \" @ %c.getIdentity() @ \"|\" @ %c.getIdentityName()); }
+    function GameConnection::onDrop(%c, %reason) { echo(\"drop \" @ %c.getIdentityName() @ \": \" @ %reason); }";
+
+/// A client that signs in as `name` under `key` and also says `claim` in every field it controls (its connect arguments).
+fn claiming_client(key: [u8; 16], name: &'static str, claim: &str) -> Client {
+    let args = vec![claim.as_bytes().to_vec()];
+    let mut client = Client::new(9, ConnectFields::standard(claim.as_bytes(), args));
+    client.set_block_source(
+        SERVER_ADDR,
+        BlockSource::new(move |cx| {
+            Ok(Some(ConnectBlock {
+                manifest: Some(rope_manifest(2)),
+                ticket: Some(SharedSecret::new(key, name).ticket(cx)?),
+                ..Default::default()
+            }))
+        }),
+    );
+    client
+}
+
+#[test]
+fn a_signed_in_player_is_the_same_identity_on_every_connection_whatever_the_client_claims() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
+    // Ada joins twice (two connections, as after a reconnect) and Bob once; Bob's arguments and password name Ada's identity.
+    let ada = "id:616461";
+    for (port, name, claim) in [
+        (50_021, "ada", ""),
+        (50_022, "ada", ""),
+        (50_023, "bob", ada),
+    ] {
+        // Each from its own address: a pending connection holds its source's place until its first game packet.
+        let addr = SocketAddr::from(([127, 0, 0, (port % 100) as u8], port));
+        let event = handshake_as(&mut s, &end, addr, claiming_client([4; 16], name, claim));
+        assert!(
+            matches!(event, ClientEvent::Accepted(_)),
+            "{port}: {event:?}"
+        );
+    }
+    assert_eq!(
+        identities(&s),
+        ["id:616461|ada", "id:616461|ada", "id:626f62|bob"]
+    );
+    // A client that signs with the wrong secret cannot be Ada by claiming it: it is refused and no connection is made.
+    let addr = SocketAddr::from(([127, 0, 0, 24], 50_024));
+    let event = handshake_as(&mut s, &end, addr, claiming_client([5; 16], "ada", ada));
+    assert!(matches!(event, ClientEvent::Rejected(_)), "{event:?}");
+    assert_eq!(identities(&s).len(), 3);
+}
+
+/// Joins `names` in order, each from its own address, and returns the `drop` lines the script printed.
+fn join_accounts(s: &mut NetServer, end: &MemoryEnd, names: &[&'static str]) -> Vec<String> {
+    for (n, name) in (0u8..).zip(names) {
+        let addr = SocketAddr::from(([127, 0, 1, n + 1], 50_100 + u16::from(n)));
+        let event = handshake_as(s, end, addr, claiming_client([4; 16], name, ""));
+        assert!(
+            matches!(event, ClientEvent::Accepted(_)),
+            "{name}: {event:?}"
+        );
+    }
+    lines(s)
+        .into_iter()
+        .filter(|l| l.starts_with("drop "))
+        .collect()
+}
+
+fn account_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    let gate =
+        ManifestGate::new(rope_manifest(2)).with_auth(Arc::new(SharedSecret::new([4; 16], "")));
+    shared.borrow_mut().set_connect_gate(gate);
+    shared.borrow_mut().set_public_address(Some(SERVER_ADDR));
+    (s, shared, end)
+}
+
+#[test]
+fn an_account_that_connects_again_ends_its_older_connection_by_default() {
+    let (mut s, shared, end) = account_server();
+    let drops = join_accounts(&mut s, &end, &["ada", "bob", "ada"]);
+    assert_eq!(drops, ["drop ada: You signed in from another place."]);
+    let sh = shared.borrow();
+    assert_eq!(sh.hs.len(), 2, "bob and the newer ada");
+    let held: Vec<_> = sh
+        .by_conn
+        .keys()
+        .filter_map(|&c| sh.hs.connection(c))
+        .filter_map(|c| c.identity.as_ref().and_then(|i| i.name()))
+        .collect();
+    assert_eq!(held.len(), 2);
+    assert!(held.contains(&"ada") && held.contains(&"bob"));
+}
+
+#[test]
+fn a_game_can_allow_several_sessions_per_account() {
+    let (mut s, shared, end) = account_server();
+    s.vm.set_global("$Pref::Server::OneSessionPerAccount", "0");
+    let drops = join_accounts(&mut s, &end, &["ada", "ada", "ada"]);
+    assert!(drops.is_empty(), "{drops:?}");
+    assert_eq!(shared.borrow().hs.len(), 3);
+}
+
+#[test]
+fn an_anonymous_connection_is_its_own_player_and_no_ticket_makes_it_anyone_else() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(IDENTITY_SCRIPT).unwrap();
+    // A gate with no auth provider: the ticket a client sends is not read.
+    shared
+        .borrow_mut()
+        .set_connect_gate(ManifestGate::new(rope_manifest(2)));
+    for port in [50_031, 50_032] {
+        let addr = SocketAddr::from(([127, 0, 0, (port % 100) as u8], port));
+        let client = claiming_client([4; 16], "ada", "id:616461");
+        let event = handshake_as(&mut s, &end, addr, client);
+        assert!(matches!(event, ClientEvent::Accepted(_)), "{event:?}");
+    }
+    let who = identities(&s);
+    assert_eq!(who.len(), 2);
+    for line in &who {
+        let key = line.strip_suffix('|').and_then(|k| k.strip_prefix("conn:"));
+        assert!(key.is_some_and(|n| n.parse::<u32>().is_ok()), "{line}");
+    }
+    assert_ne!(who[0], who[1], "one anonymous connection is not the next");
+    let sh = shared.borrow();
+    assert!(
+        sh.conns
+            .values()
+            .filter_map(|r| r.conn)
+            .all(|c| { sh.hs.connection(c).is_some_and(|c| c.identity.is_none()) })
+    );
+}
+
+#[test]
+fn a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_answered() {
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(b"function onServerInfoQuery() { $Runs++; return \"ready\"; }")
+        .unwrap();
+    // 200 padded info requests from 200 sources (spoofed, unproven) in one tick: the script runs once, and each is answered
+    // from its output.
+    let padded = torque_net::profile::QueryProfile {
+        request_bytes: torque_net::serverquery::PADDED_REQUEST_BYTES,
+        ..torque_net::profile::QueryProfile::default()
+    };
+    let query = padded.request(torque_net::serverquery::GAME_INFO_REQUEST, 0, 1, 2);
+    for n in 0..200u32 {
+        end.inject(
+            SocketAddr::from(((0x0b00_0000 + (n << 8)).to_be_bytes(), 9_000)),
+            &query,
+        );
+    }
+    s.run(TICK_MS, |_| false);
+    let runs = |s: &NetServer| {
+        s.vm.global("$Runs")
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+    };
+    assert_eq!(runs(&s).as_deref(), Some("1"));
+    let replies = shared.borrow().counters.info_replies;
+    assert!(replies >= 60, "{replies} answered in the tick");
+    // A second later the script runs again for the next request.
+    for _ in 0..40 {
+        s.run(TICK_MS, |_| false);
+    }
+    end.inject(SocketAddr::from(([11, 9, 9, 9], 9_000)), &query);
+    s.run(TICK_MS, |_| false);
+    assert_eq!(runs(&s).as_deref(), Some("2"));
+}
+
+#[test]
+fn a_query_spoofed_with_a_connected_players_address_reflects_no_more_than_any_stranger_gets() {
+    use torque_net::cap::{
+        NET_INFO_AMPLIFIED_BYTES_PER_S, NET_INFO_REPLY_FACTOR, NET_NETWORK_SHARE,
+    };
+    use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_INFO_RESPONSE, REQUEST_BYTES};
+    let (mut s, shared, end) = net_server();
+    s.vm.eval(format!("$Pref::Server::Info = \"{}\";", "x".repeat(1_000)).as_bytes())
+        .unwrap();
+    let player = SocketAddr::from(([127, 0, 0, 1], 50_010));
+    let (_client, _conn) = join(&mut s, &shared, &end, player);
+    end.take_sent();
+    // The player's address names a datagram anyone can send: bare info requests from it get the answers a stranger's get, each
+    // within three times its request, or the little the amplified budget lets a network's requests reflect in all.
+    let bare = torque_net::profile::QueryProfile::default().request(GAME_INFO_REQUEST, 0, 1, 2);
+    assert_eq!(bare.len(), REQUEST_BYTES);
+    const ASKED: usize = 40;
+    for _ in 0..ASKED {
+        end.inject(player, &bare);
+    }
+    s.run(TICK_MS, |_| false);
+    let answers: Vec<usize> = end
+        .take_sent()
+        .into_iter()
+        .filter(|(to, d)| *to == player && d.first() == Some(&GAME_INFO_RESPONSE))
+        .map(|(_, d)| d.len())
+        .collect();
+    assert!(!answers.is_empty(), "the player is still answered");
+    let reflected: usize = answers.iter().sum();
+    let share = (NET_INFO_AMPLIFIED_BYTES_PER_S / NET_NETWORK_SHARE) as usize;
+    assert!(
+        reflected <= ASKED * REQUEST_BYTES * NET_INFO_REPLY_FACTOR + share,
+        "{reflected} bytes reflected at the player by {ASKED} requests of {REQUEST_BYTES} bytes ({answers:?})"
+    );
+    assert!(
+        answers.len() < 16,
+        "a connected address is not exempt from the factor: {} answers",
+        answers.len()
     );
 }

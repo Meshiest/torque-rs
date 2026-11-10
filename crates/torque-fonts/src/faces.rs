@@ -10,7 +10,7 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::ttf::SharedFace;
-use crate::{CacheFormat, Fallback, Font, FontCache, sheet_pixels};
+use crate::{CacheFormat, Fallback, Font, FontCache, FontUse, sheet_pixels};
 
 /// The most faces one cache registers.
 pub const MAX_REGISTERED: usize = 8;
@@ -71,6 +71,16 @@ impl Fallback for RegistryFallback {
     fn name(&self) -> &'static str {
         self.next.name()
     }
+
+    fn dropped(&self, face: &str, font: &Font) {
+        let mut reg = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
+        if reg.faces.contains_key(face) {
+            reg.made_pixels = reg.made_pixels.saturating_sub(sheet_pixels(font));
+        } else {
+            drop(reg);
+            self.next.dropped(face, font);
+        }
+    }
 }
 
 /// Fonts by face and size, loaded once: a registered face's, else the cache file through `read`, else the host's [`Fallback`].
@@ -112,21 +122,38 @@ impl FaceCache {
         self.registry.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The font for `face` at `size`, loading it on first use with `read` (a path relative to the root the files are served from).
+    /// [`get_for`](Self::get_for) of a font a profile names.
     pub fn get(
         &mut self,
         face: &str,
         size: i32,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Found> {
+        self.get_for(face, size, FontUse::Profile, read)
+    }
+
+    /// The font for `face` at `size`, loading it on first use with `read` (a path relative to the root the files are served from),
+    /// kept under the quota of `user` ([`FontCache::get_for`]).
+    pub fn get_for(
+        &mut self,
+        face: &str,
+        size: i32,
+        user: FontUse,
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Option<Found> {
         let registered = self.is_registered(face);
         let found = if registered {
             // A registered face never reads a cache file.
-            self.inner.get(face, size, &|_| None)
+            self.inner.get_for(face, size, user, &|_| None)
         } else {
-            self.inner.get(face, size, read)
+            self.inner.get_for(face, size, user, read)
         };
         found.map(|(font, source)| (font, source_of(source, registered)))
+    }
+
+    /// [`FontCache::next_frame`].
+    pub fn next_frame(&mut self) {
+        self.inner.next_frame();
     }
 
     /// Registers `face` as a TrueType face, looked up before the cache files from now on (by its lower-case name): what this cache
@@ -137,22 +164,15 @@ impl FaceCache {
             return false;
         }
         let key = face.to_ascii_lowercase();
-        let was_registered = {
+        {
             let reg = self.registry();
-            let was = reg.faces.contains_key(&key);
-            if !was && reg.faces.len() >= MAX_REGISTERED {
+            if !reg.faces.contains_key(&key) && reg.faces.len() >= MAX_REGISTERED {
                 return false;
             }
-            was
-        };
-        // What is dropped gives its pixels back to the budgets.
-        let dropped = self.inner.remove_face(face);
-        let mut reg = self.registry();
-        if was_registered {
-            let px: u64 = dropped.iter().map(|(font, _)| sheet_pixels(font)).sum();
-            reg.made_pixels = reg.made_pixels.saturating_sub(px);
         }
-        reg.faces.insert(key, ttf);
+        // What is dropped gives its pixels back to the budgets (a face registered before, through `RegistryFallback::dropped`).
+        self.inner.remove_face(face);
+        self.registry().faces.insert(key, ttf);
         true
     }
 

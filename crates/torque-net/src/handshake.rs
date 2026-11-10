@@ -8,14 +8,29 @@
 //! 32-bit words, strings are the Huffman form without the packet string buffer (at most 255 bytes).
 //!
 //! **No state before the digest returns.** A challenge request stores nothing: the reply carries a keyed hash (SipHash-2-4 under a
-//! 128-bit key the caller draws from the OS, two runs for 128 bits) of the source address, port and the client's sequence. A connect
-//! request is looked at only after its digest verifies. The per-address and global challenge counters are bounded
-//! ([`NET_LIMITER_ENTRIES`]) and forget old entries. The challenge digest of a standard server is opaque to the client and is not copied.
+//! 128-bit key the caller draws from the OS, two runs for 128 bits) of the source address, port, the client's sequence and a time epoch
+//! ([`CHALLENGE_PERIOD_MS`]; a digest verifies in its epoch and the next, so it lives one to two periods). A connect
+//! request is looked at only after its digest verifies. The challenge and request counters are kept per address and per network
+//! ([`crate::fair`]) in bounded tables that forget the least recently used entry first. The challenge digest of a standard
+//! server is opaque to the client and is not copied.
+//!
+//! **Fair caps.** A source holds at most [`SourceCaps`] connections: pending ones per address and per network (a request past
+//! them is silence) and all of them per address and per network (refused with
+//! [`RejectStrings::too_many_from_source`](crate::profile::RejectStrings::too_many_from_source)). When
+//! [`NET_MAX_PENDING_CONNECTS`] are pending, or the table is full, a requester whose network already holds its fair share of
+//! the pending connections (those held over the networks holding them, the requester's counted) is refused; any other's
+//! accept evicts the oldest pending connection of a network over its share ([`Finished::Accepted`]'s `evicted`), else one
+//! at least [`NET_PENDING_EVICT_AGE_MS`] old, else it is refused. So addresses that are accepted and never speak cannot lock
+//! others out, and cannot evict an honest client of another network; a pending connection expires after
+//! [`NET_PENDING_TIMEOUT_MS`]. The caps count each
+//! connection by its peer's own IP address ([`Connection::ip`]), which a host behind stand-in addresses passes in
+//! ([`Server::handle_datagram_from`]).
 //!
 //! **Order of the reject strings** (the connect request's fields, in the order they are checked; the strings and the versions are
 //! the [`HandshakeProfile`]'s): group and CRC (`CHR_INVALID`), game (`CHR_GAME`), current protocol below the oldest accepted
 //! (`CHR_PROTOCOL_LESS`), minimum protocol above the newest spoken (`CHR_PROTOCOL_GREATER`), password (`CHR_PASSWORD`), more than 16
-//! arguments (`CR_INVALID_ARGS`); then the host's script decides. Everything else (bad digest, unknown class, switched-off
+//! arguments (`CR_INVALID_ARGS`); then the server's gate when it has one ([`crate::connect`]: the build's manifest, then the auth
+//! ticket); then the host's script decides. Everything else (bad digest, unknown class, switched-off
 //! connections, a short datagram) is silence.
 //!
 //! **Deviations from Torque.** A repeated request is answered only if its digest verifies (the accept is not re-sent before the
@@ -26,20 +41,38 @@
 //! GarageGames, LLC) and `T3D/gameBase/gameConnection.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust
 //! Logic, Inc.); the code here is this crate's own.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::net::{IpAddr, SocketAddr};
+use std::collections::{BTreeMap, HashMap};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::{
-    self, NET_CHALLENGE_REPLIES_PER_S, NET_CHALLENGES_PER_ADDR_PER_S,
+    self, NET_CHALLENGES_PER_ADDR_PER_S, NET_CHALLENGES_PER_NETWORK_PER_S,
     NET_CONNECT_SCRIPT_PER_SRC_PER_S, NET_CONNECTIONS_MARGIN, NET_DISCONNECTS_PER_CONN_PER_S,
-    NET_LIMITER_ENTRIES, NET_MAX_CONNECT_ARGS, NET_MAX_DATAGRAM, NET_MAX_PENDING_CONNECTS,
-    NET_PACKETS_PER_CONN_PER_S, NET_PENDING_PER_ADDR, NET_PENDING_TIMEOUT_MS, NET_STRING_BYTES,
+    NET_MAX_CONNECT_ARGS, NET_MAX_DATAGRAM, NET_MAX_PENDING_CONNECTS, NET_NETWORK_SHARE,
+    NET_PACKETS_PER_CONN_PER_S, NET_PENDING_EVICT_AGE_MS, NET_PENDING_TIMEOUT_MS, NET_STRING_BYTES,
 };
+use crate::connect::{AuthContext, ConnectBlock, ConnectGate, Identity};
+use crate::fair::{
+    CapHit, Eviction, FairLimiter, FairLimits, PendingSlot, SourceCaps, SourceCount, Stage,
+    choose_eviction,
+};
+
+pub use crate::fair::{RateWindow, SourceLimiter};
 use crate::huffman::Table;
 use crate::profile::{DEFAULT_GHOST_LIMIT, HandshakeProfile};
 use crate::protocol::{Dropped, Protocol, RateConfig, Received, Role, SendPacing, Timeout};
+
+/// What [`Server::make_room`] found for one more pending connection.
+enum Room {
+    /// There is room.
+    Free,
+    /// This pending connection left to make room (the host drops it).
+    Evicted(ConnId),
+    /// No room, and nothing was removed.
+    Full,
+}
 
 /// The first bytes of the handshake's datagrams (`NetInterface::PacketTypes`). [`HandshakeTypes::TORQUE`] is TGE's numbering; the
 /// codecs are methods so a game's numbering travels with its [`HandshakeProfile`].
@@ -134,8 +167,20 @@ pub fn siphash24(key: &[u8; 16], data: &[u8]) -> u64 {
     v[0] ^ v[1] ^ v[2] ^ v[3]
 }
 
-/// The challenge digest: four words, the keyed hash of the source address, port and the client's sequence.
+/// How long a challenge digest stays in one epoch (milliseconds on the caller's clock, which wraps every 2^32 ms: the server
+/// counts the wraps itself, so an epoch never comes round again). A digest made in one epoch verifies in it and in the next, so a
+/// digest lives between one and two periods and one older than that is refused, whatever the source. The clients only echo the
+/// digest, so the period is the server's own business.
+pub const CHALLENGE_PERIOD_MS: u32 = 120_000;
+
+/// The challenge digest of epoch 0 ([`challenge_digest_at`]).
 pub fn challenge_digest(key: &[u8; 16], from: SocketAddr, seq: u32) -> [u32; 4] {
+    challenge_digest_at(key, from, seq, 0)
+}
+
+/// The challenge digest: four words, the keyed hash of the source address, port, the client's sequence and the epoch (the
+/// caller's clock over [`CHALLENGE_PERIOD_MS`]).
+pub fn challenge_digest_at(key: &[u8; 16], from: SocketAddr, seq: u32, epoch: u64) -> [u32; 4] {
     let mut data = Vec::with_capacity(32);
     data.push(0);
     match from.ip() {
@@ -150,6 +195,7 @@ pub fn challenge_digest(key: &[u8; 16], from: SocketAddr, seq: u32) -> [u32; 4] 
     }
     data.extend_from_slice(&from.port().to_le_bytes());
     data.extend_from_slice(&seq.to_le_bytes());
+    data.extend_from_slice(&epoch.to_le_bytes());
     let a = siphash24(key, &data);
     data[0] = 1;
     let b = siphash24(key, &data);
@@ -170,6 +216,9 @@ pub struct ConnectFields {
     /// What the profile's [`crate::profile::HandshakeForm`] carries after the password (empty in Torque).
     pub extra: Vec<u8>,
     pub args: Vec<Vec<u8>>,
+    /// What follows the arguments: the sender's manifest and auth ticket ([`ConnectBlock`]). `None` for a plain Torque request,
+    /// which is then the request it always was; a server reads it only when it has a [`ServerConfig::gate`].
+    pub block: Option<Box<ConnectBlock>>,
 }
 
 impl ConnectFields {
@@ -185,7 +234,15 @@ impl ConnectFields {
             password: password.to_vec(),
             extra: profile.form.default_request(),
             args,
+            block: None,
         }
+    }
+
+    /// These fields with `block` after the arguments.
+    #[must_use]
+    pub fn with_block(mut self, block: ConnectBlock) -> ConnectFields {
+        self.block = Some(Box::new(block));
+        self
     }
 
     /// [`ConnectFields::new`] for Torque's profile.
@@ -319,6 +376,17 @@ pub fn connect_request(
     for arg in &fields.args {
         table.write(&mut w, arg, NET_STRING_BYTES);
     }
+    if let Some(block) = &fields.block {
+        // A block that cannot be written (a manifest over its limit, a ticket too long) is left off: the server then judges
+        // the request as one with nothing, and says what it needs. Whoever builds a block checks it first
+        // ([`ConnectBlock::validate`]; `Engine::connect_block` does), so this is a bug in the caller: loud in a debug build.
+        let mark = w.mark();
+        let written = block.write(&mut w);
+        debug_assert!(written.is_ok(), "an unwritable connect block: {written:?}");
+        if written.is_err() {
+            w.rewind(mark);
+        }
+    }
     w.into_bytes()
 }
 
@@ -332,11 +400,31 @@ pub fn connect_accept(
     ghost_bits: u8,
     extension: bool,
 ) -> Vec<u8> {
+    connect_accept_with(profile, seq, protocol, ghost_bits, extension, false)
+}
+
+/// The word that ends an accept sent to a client whose manifest listed bulk channels, when the server's gate matched them: from the
+/// next packet on, the server writes the channels' section and the client reads it. Only a request that carried a manifest with
+/// channels is ever answered with it, so a peer without plugins sees Torque's accept.
+pub const CHANNELS_ACCEPT_WORD: u32 = 0x4c4e_4843;
+
+/// [`connect_accept`] that also says `channels` (see [`CHANNELS_ACCEPT_WORD`]), after the extension's word.
+pub fn connect_accept_with(
+    profile: &HandshakeProfile,
+    seq: u32,
+    protocol: u32,
+    ghost_bits: u8,
+    extension: bool,
+    channels: bool,
+) -> Vec<u8> {
     let mut w = header(profile.types.connect_accept, seq);
     w.write_u32(protocol);
     profile.form.write_accept(&mut w, protocol, ghost_bits);
     if let Some(ext) = profile.extension.as_ref().filter(|_| extension) {
         w.write_u32(ext.accept_word);
+    }
+    if channels {
+        w.write_u32(CHANNELS_ACCEPT_WORD);
     }
     w.into_bytes()
 }
@@ -358,6 +446,9 @@ pub struct Accept {
     /// The accept ended with the profile's extension word: the server granted the extension (only a request that named the
     /// extension's argument gets it).
     pub extension: bool,
+    /// The accept ended with [`CHANNELS_ACCEPT_WORD`]: the server's gate matched the bulk channels the client's manifest
+    /// listed, and it writes their section from its first data packet.
+    pub channels: bool,
 }
 
 /// The accept, read as a client of `profile` reads it: the protocol, what the profile's form reads after it (the ghost-id width
@@ -370,15 +461,25 @@ pub fn parse_accept(profile: &HandshakeProfile, data: &[u8]) -> Result<Accept, N
     let seq = r.read_u32()?;
     let protocol = r.read_u32()?;
     let ghost_bits = profile.form.read_accept(&mut r, protocol)?;
-    let extension = profile
-        .extension
-        .as_ref()
-        .is_some_and(|ext| r.read_u32().is_ok_and(|w| w == ext.accept_word));
+    let mut next = None;
+    let mut extension = false;
+    if let Some(ext) = profile.extension.as_ref() {
+        next = r.read_u32().ok();
+        if next == Some(ext.accept_word) {
+            extension = true;
+            next = r.read_u32().ok();
+        }
+    }
+    let channels = match next {
+        Some(word) => word == CHANNELS_ACCEPT_WORD,
+        None => r.read_u32().is_ok_and(|w| w == CHANNELS_ACCEPT_WORD),
+    };
     Ok(Accept {
         seq,
         protocol,
         ghost_bits,
         extension,
+        channels,
     })
 }
 
@@ -424,9 +525,9 @@ pub struct ServerConfig {
     pub rates: RateConfig,
     /// What a game adds to the send gate of every connection the server makes; `None` is TGE's gate.
     pub pacing: Option<Box<dyn SendPacing>>,
-    /// Pending connections one source IP address may hold ([`NET_PENDING_PER_ADDR`]; a harness running many fake clients from
-    /// one address raises it).
-    pub pending_per_addr: usize,
+    /// The connections one source IP address and one source network may hold, pending and in all ([`SourceCaps::default`]; a
+    /// harness running many fake clients from one address raises them).
+    pub caps: SourceCaps,
     /// Verified connect requests one source IP address gets per second ([`NET_CONNECT_SCRIPT_PER_SRC_PER_S`]).
     pub connect_requests_per_src_per_s: u32,
     /// The size every network connection's sections fill a packet to ([`Protocol::set_packet_bytes`]); None is the standard rule
@@ -434,6 +535,16 @@ pub struct ServerConfig {
     pub packet_bytes: Option<u32>,
     /// The size the local connection's sections fill a packet to (its packets stay in memory); None is the standard rule.
     pub local_packet_bytes: Option<u32>,
+    /// A judgment of every request that passed the standard checks, before the host's scripts see it ([`ConnectGate`]); `None`
+    /// is Torque's server, which reads nothing after the arguments.
+    pub gate: Option<Arc<dyn ConnectGate>>,
+    /// The address clients reach this server by (its public address: a socket bound to every interface, a NAT or a relay hides it),
+    /// which the gate's auth provider binds tickets to ([`AuthContext::server`]). `None` when the host was never told one: a
+    /// provider that binds to the address then refuses every ticket.
+    pub address: Option<SocketAddr>,
+    /// The host has the bulk channels' layer installed: a client the gate says has the same channels
+    /// ([`ConnectGate::matches_channels`]) gets the accept's channels word ([`CHANNELS_ACCEPT_WORD`]). Off, no accept carries it.
+    pub channels: bool,
 }
 
 impl ServerConfig {
@@ -452,10 +563,13 @@ impl ServerConfig {
             ghost_limit: DEFAULT_GHOST_LIMIT,
             rates: RateConfig::standard(),
             pacing: None,
-            pending_per_addr: NET_PENDING_PER_ADDR,
+            caps: SourceCaps::default(),
             connect_requests_per_src_per_s: NET_CONNECT_SCRIPT_PER_SRC_PER_S,
             packet_bytes: None,
             local_packet_bytes: None,
+            gate: None,
+            address: None,
+            channels: false,
         }
     }
 
@@ -511,6 +625,15 @@ pub fn read_connect_fields(
     for _ in 0..argc {
         args.push(c_string(table.read(r)?));
     }
+    // Only a server with a gate looks past the arguments.
+    let block = if config.gate.is_some() {
+        match ConnectBlock::read(r) {
+            Ok(block) => block.map(Box::new),
+            Err(error) => return Ok(Fields::Reject(crate::connect::reason(&error.to_string()))),
+        }
+    } else {
+        None
+    };
     Ok(Fields::Ok(ConnectFields {
         group,
         crc,
@@ -520,53 +643,8 @@ pub fn read_connect_fields(
         password,
         extra,
         args,
+        block,
     }))
-}
-
-// ---- rate counters ------------------------------------------------------------------------------------------------------------
-
-/// A count of events in a one-second window.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RateWindow {
-    start: u32,
-    count: u32,
-}
-
-impl RateWindow {
-    /// Counts one event at `now`; false when `limit` were already counted in the current second.
-    pub fn allow(&mut self, now: u32, limit: u32) -> bool {
-        if self.count == 0 || now.wrapping_sub(self.start) >= 1000 {
-            self.start = now;
-            self.count = 0;
-        }
-        if self.count >= limit {
-            return false;
-        }
-        self.count += 1;
-        true
-    }
-}
-
-/// Per-source counters with a bounded table: when it is full the source that entered first is forgotten (a queue of keys in
-/// insertion order, so a new source costs O(1)).
-#[derive(Debug, Default)]
-pub(crate) struct SourceLimiter {
-    windows: HashMap<IpAddr, RateWindow>,
-    order: VecDeque<IpAddr>,
-}
-
-impl SourceLimiter {
-    pub(crate) fn allow(&mut self, ip: IpAddr, now: u32, limit: u32) -> bool {
-        if !self.windows.contains_key(&ip) {
-            if self.windows.len() >= NET_LIMITER_ENTRIES
-                && let Some(oldest) = self.order.pop_front()
-            {
-                self.windows.remove(&oldest);
-            }
-            self.order.push_back(ip);
-        }
-        self.windows.entry(ip).or_default().allow(now, limit)
-    }
 }
 
 // ---- the tables ---------------------------------------------------------------------------------------------------------------
@@ -580,6 +658,9 @@ pub struct ConnId(pub u32);
 pub struct Connection {
     pub id: ConnId,
     pub addr: SocketAddr,
+    /// The peer's own IP address, which the source caps count by: `addr`'s, or the real one a transport knows behind a
+    /// stand-in address.
+    pub ip: IpAddr,
     /// The client's connect sequence (the request's).
     pub sequence: u32,
     pub protocol: Protocol,
@@ -588,6 +669,9 @@ pub struct Connection {
     pub ghost_bits: u8,
     /// What the profile's form read after the request's password (empty in Torque).
     pub extra: Vec<u8>,
+    /// What the gate's auth provider verified the client as, when there is one ([`Identity`]). `None` is an anonymous player,
+    /// held by this connection's id alone: it is a new player on every connection.
+    pub identity: Option<Identity>,
     /// Accepted, but no valid game packet has arrived yet.
     pub pending: bool,
     /// The server half of a local connection (`connectLocal`): never pinged or timed out (TGE's `checkTimeout` acts only
@@ -595,17 +679,49 @@ pub struct Connection {
     pub local: bool,
     /// The connection has the profile's extension: the local connection, or a request that ended with the extension's argument.
     pub extension: bool,
+    /// The client's manifest listed bulk channels and this server's gate accepted it, so the channels are the same on both
+    /// sides: the accept told the client so ([`CHANNELS_ACCEPT_WORD`]) and the server writes the channels' section.
+    pub channels: bool,
+    /// What the client said about taking content from the server ([`ConnectGate::mods_support`]); `None` unless the connection has
+    /// channels.
+    pub mods: Option<crate::modsync::ModsSection>,
+    /// The connection's packets ride an engine-mode session ([`crate::engine`]) the host keeps: this table never pings it or
+    /// times it out, and its `protocol` only keeps the sequence numbers and the packet size its payload is written with.
+    pub engine: bool,
     created: u32,
     packets: RateWindow,
     disconnects: RateWindow,
+}
+
+impl Connection {
+    /// Where the connection is, as the source caps count it.
+    #[must_use]
+    pub fn stage(&self) -> Stage {
+        if self.pending {
+            Stage::Pending
+        } else {
+            Stage::Established
+        }
+    }
+}
+
+/// The verified connect requests a second: `per_ip` from one address, and `NET_NETWORK_SHARE / 2` times that from one network
+/// (a few addresses of one network can each retry; the host's total is shared out per network on top).
+#[must_use]
+pub fn verified_limits(per_ip: u32) -> FairLimits {
+    FairLimits::per_source(per_ip, per_ip.saturating_mul(NET_NETWORK_SHARE / 2))
 }
 
 /// A connect request that passed every check the protocol can make; the host runs `onConnectRequest` over it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingRequest {
     pub addr: SocketAddr,
+    /// The peer's own IP address ([`Connection::ip`]).
+    pub ip: IpAddr,
     pub seq: u32,
     pub fields: ConnectFields,
+    /// What the gate's auth provider verified the client as, when there is one.
+    pub identity: Option<Identity>,
     /// `min(current, profile's current)`.
     pub protocol_version: u32,
     /// An older connection from the same address that this request replaces. It is still in the table: the host removes it once it admits the
@@ -613,6 +729,20 @@ pub struct PendingRequest {
     pub replaced: Option<ConnId>,
     /// The request ended with the profile's extension argument (taken off `fields.args`).
     pub extension: bool,
+}
+
+/// What [`Server::insert_engine`] enters: an engine-mode connection the host accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineAccepted {
+    pub addr: SocketAddr,
+    /// The peer's own IP address ([`Connection::ip`]).
+    pub ip: IpAddr,
+    /// The ghost-id width the accept carried.
+    pub ghost_bits: u8,
+    /// What the gate's auth provider verified the client as, when there is one.
+    pub identity: Option<Identity>,
+    /// What the client said about taking content from the server.
+    pub mods: Option<crate::modsync::ModsSection>,
 }
 
 /// The host's answer to a [`PendingRequest`].
@@ -631,6 +761,9 @@ pub enum Finished {
         conn: ConnId,
         reply: Vec<u8>,
         replaced: Option<ConnId>,
+        /// The oldest pending connection, taken out of the table to make room (the pending table or the whole table was
+        /// full). The host drops it as it drops one whose pending time ran out.
+        evicted: Option<ConnId>,
     },
     Rejected {
         reply: Vec<u8>,
@@ -654,8 +787,10 @@ pub enum Ignore {
     /// A connect request older than the connection from that address.
     StaleSequence,
     UnknownClass,
-    PendingFull,
+    /// The source's address holds [`SourceCaps::pending_per_ip`] pending connections.
     PendingPerAddr,
+    /// The source's network holds [`SourceCaps::pending_per_network`] pending connections.
+    PendingPerNetwork,
     /// A game packet from an address with no connection.
     UnknownSource,
     /// A disconnect that did not carry the connection's sequence, or came from the wrong address.
@@ -717,9 +852,12 @@ pub struct Server {
     conns: BTreeMap<ConnId, Connection>,
     by_addr: HashMap<SocketAddr, ConnId>,
     next_id: u32,
-    per_addr: SourceLimiter,
-    replies: RateWindow,
-    verified: SourceLimiter,
+    challenges: FairLimiter,
+    verified: FairLimiter,
+    /// The caller's clock counted past the 32-bit clock's wraps, starting at the first time the server was given (see
+    /// [`Server::epoch`]).
+    clock: u64,
+    last_now: Option<u32>,
 }
 
 impl Server {
@@ -731,10 +869,35 @@ impl Server {
             conns: BTreeMap::new(),
             by_addr: HashMap::new(),
             next_id: 1,
-            per_addr: SourceLimiter::default(),
-            replies: RateWindow::default(),
-            verified: SourceLimiter::default(),
+            challenges: FairLimiter::new(FairLimits::per_source(
+                NET_CHALLENGES_PER_ADDR_PER_S,
+                NET_CHALLENGES_PER_NETWORK_PER_S,
+            )),
+            verified: FairLimiter::new(verified_limits(NET_CONNECT_SCRIPT_PER_SRC_PER_S)),
+            clock: 0,
+            last_now: None,
         }
+    }
+
+    /// The challenge epoch at `now`: the caller's 32-bit clock is unwrapped into a 64-bit one that only goes forward (a step
+    /// back of under half a wrap is a clock that is not quite monotonic and is ignored; a step forward of under half a wrap is
+    /// time passing), so an epoch is never reached twice and a digest from before a wrap stays refused. Every datagram and
+    /// every [`Server::poll_timeouts`] pass moves it, so a host that calls at least once in 24 days never loses a wrap.
+    fn epoch(&mut self, now: u32) -> u64 {
+        match self.last_now {
+            None => {
+                self.clock = u64::from(now);
+                self.last_now = Some(now);
+            }
+            Some(last) => {
+                let step = now.wrapping_sub(last);
+                if step < 1 << 31 {
+                    self.clock += u64::from(step);
+                    self.last_now = Some(now);
+                }
+            }
+        }
+        self.clock / u64::from(CHALLENGE_PERIOD_MS)
     }
 
     pub fn config(&self) -> &ServerConfig {
@@ -826,11 +989,24 @@ impl Server {
         Some((conn.addr, types.disconnect(table, conn.sequence, reason)))
     }
 
-    /// Everything the server does with one received datagram.
+    /// Everything the server does with one received datagram, its source's own address being `from`'s.
     pub fn handle_datagram(
         &mut self,
         table: &Table,
         from: SocketAddr,
+        data: &[u8],
+        now: u32,
+    ) -> Handled {
+        self.handle_datagram_from(table, from, from.ip(), data, now)
+    }
+
+    /// [`Server::handle_datagram`] from `from`, whose peer's own IP address is `ip` (the real one a transport knows behind a
+    /// stand-in address): the rate limits and the source caps count by `ip`.
+    pub fn handle_datagram_from(
+        &mut self,
+        table: &Table,
+        from: SocketAddr,
+        ip: IpAddr,
         data: &[u8],
         now: u32,
     ) -> Handled {
@@ -845,28 +1021,31 @@ impl Server {
         }
         let types = self.config.profile.types;
         match data[0] {
-            ty if ty == types.challenge_request => self.challenge_request(from, data, now),
-            ty if ty == types.connect_request => self.connect_request(table, from, data, now),
+            ty if ty == types.challenge_request => self.challenge_request(from, ip, data, now),
+            ty if ty == types.connect_request => self.connect_request(table, from, ip, data, now),
             ty if ty == types.disconnect => self.disconnect_request(table, from, data, now),
             _ => Handled::Ignored(Ignore::UnknownType),
         }
     }
 
-    fn challenge_request(&mut self, from: SocketAddr, data: &[u8], now: u32) -> Handled {
+    fn challenge_request(
+        &mut self,
+        from: SocketAddr,
+        ip: IpAddr,
+        data: &[u8],
+        now: u32,
+    ) -> Handled {
         if !self.config.allow_connections {
             return Handled::Ignored(Ignore::Refused);
         }
         let Ok((_, seq)) = peek_type(data) else {
             return Handled::Ignored(Ignore::Malformed);
         };
-        if !self
-            .per_addr
-            .allow(from.ip(), now, NET_CHALLENGES_PER_ADDR_PER_S)
-            || !self.replies.allow(now, NET_CHALLENGE_REPLIES_PER_S)
-        {
+        if self.challenges.allow(ip, now).is_err() {
             return Handled::Ignored(Ignore::RateLimited);
         }
-        let digest = challenge_digest(&self.key, from, seq);
+        let epoch = self.epoch(now);
+        let digest = challenge_digest_at(&self.key, from, seq, epoch);
         Handled::Reply(self.config.profile.types.challenge_response(seq, digest))
     }
 
@@ -874,6 +1053,7 @@ impl Server {
         &mut self,
         table: &Table,
         from: SocketAddr,
+        ip: IpAddr,
         data: &[u8],
         now: u32,
     ) -> Handled {
@@ -891,18 +1071,21 @@ impl Server {
                 Err(_) => return Handled::Ignored(Ignore::Malformed),
             }
         }
-        let expect = challenge_digest(&self.key, from, seq);
-        let diff = digest
-            .iter()
-            .zip(&expect)
-            .fold(0u32, |acc, (a, b)| acc | (a ^ b));
-        if diff != 0 {
+        // The current epoch's digest or the last one's (a handshake that straddles a change still succeeds); both are compared in full.
+        let epoch = self.epoch(now);
+        let differs = |epoch| {
+            let expect = challenge_digest_at(&self.key, from, seq, epoch);
+            digest
+                .iter()
+                .zip(&expect)
+                .fold(0u32, |acc, (a, b)| acc | (a ^ b))
+        };
+        let (now_diff, last_diff) = (differs(epoch), differs(epoch.wrapping_sub(1)));
+        if now_diff != 0 && last_diff != 0 {
             return Handled::Ignored(Ignore::BadDigest);
         }
-        if !self
-            .verified
-            .allow(from.ip(), now, self.config.connect_requests_per_src_per_s)
-        {
+        let limits = verified_limits(self.config.connect_requests_per_src_per_s);
+        if self.verified.allow_within(limits, ip, now).is_err() {
             return Handled::Ignored(Ignore::RateLimited);
         }
 
@@ -911,12 +1094,14 @@ impl Server {
             && let Some(existing) = self.conns.get_mut(&id)
         {
             if existing.sequence == seq {
-                return Handled::Reply(connect_accept(
+                // The accept again, the same bytes (the first may have been lost): the channels word too.
+                return Handled::Reply(connect_accept_with(
                     &self.config.profile,
                     seq,
                     existing.protocol_version,
                     existing.ghost_bits,
                     existing.extension,
+                    existing.channels,
                 ));
             }
             if existing.sequence > seq {
@@ -941,30 +1126,52 @@ impl Server {
             Err(_) => return Handled::Ignored(Ignore::Malformed),
         };
 
-        let others = |c: &&Connection| Some(c.id) != replaced;
-        let pending = self
-            .conns
-            .values()
-            .filter(others)
-            .filter(|c| c.pending)
-            .count();
-        if pending >= NET_MAX_PENDING_CONNECTS {
-            return Handled::Ignored(Ignore::PendingFull);
+        // The source's caps, counted over the network connections but the one this request replaces. A full pending table is
+        // no refusal (the accept evicts the oldest pending connection); a table full of established connections is.
+        let others = || {
+            self.conns
+                .values()
+                .filter(move |c| Some(c.id) != replaced && !c.local)
+        };
+        let count = SourceCount::of(ip, others().map(|c| (c.ip, c.stage())));
+        let profile = &self.config.profile;
+        match self.config.caps.admits(&count) {
+            Ok(()) => {}
+            Err(CapHit::PendingPerIp) => return Handled::Ignored(Ignore::PendingPerAddr),
+            Err(CapHit::PendingPerNetwork) => return Handled::Ignored(Ignore::PendingPerNetwork),
+            Err(CapHit::PerIp | CapHit::PerNetwork) => {
+                let text = &profile.rejects.too_many_from_source;
+                return Handled::Reply(profile.types.connect_reject(table, seq, text));
+            }
         }
-        let pending_here = self
-            .conns
-            .values()
-            .filter(others)
-            .filter(|c| c.pending && c.addr.ip() == from.ip())
-            .count();
-        if pending_here >= self.config.pending_per_addr {
-            return Handled::Ignored(Ignore::PendingPerAddr);
-        }
-        if self.conns.values().filter(others).count() >= self.config.max_connections() {
-            let profile = &self.config.profile;
+        if others().filter(|c| !c.pending).count() >= self.config.max_connections() {
             let full = &profile.rejects.server_full;
             return Handled::Reply(profile.types.connect_reject(table, seq, full));
         }
+
+        // The gate (and an auth provider's check in it) runs last: a request the table could not take anyway, or one over a
+        // source's pending limit, never costs the server a verification.
+        let cx = AuthContext {
+            server: self
+                .config
+                .address
+                .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
+            sequence: seq,
+            challenge: digest,
+        };
+        let identity = match self
+            .config
+            .gate
+            .as_ref()
+            .map(|g| g.check(from, &cx, &fields))
+        {
+            None => None,
+            Some(Ok(identity)) => identity,
+            Some(Err(reason)) => {
+                let types = &self.config.profile.types;
+                return Handled::Reply(types.connect_reject(table, seq, &reason));
+            }
+        };
 
         let protocol_version = fields
             .current_protocol
@@ -972,8 +1179,10 @@ impl Server {
         let extension = self.config.profile.take_extension_arg(&mut fields.args);
         Handled::Request(Box::new(PendingRequest {
             addr: from,
+            ip,
             seq,
             fields,
+            identity,
             protocol_version,
             replaced,
             extension,
@@ -1008,11 +1217,28 @@ impl Server {
                     self.remove(old);
                     replaced = Some(old);
                 }
-                if self.conns.len() >= self.config.max_connections() {
-                    return reject(&self.config.profile.rejects.server_full);
-                }
+                let evicted = match self.make_room(request.ip, now) {
+                    Room::Free => None,
+                    Room::Evicted(id) => Some(id),
+                    Room::Full => return reject(&self.config.profile.rejects.server_full),
+                };
                 let id = self.fresh_id();
                 let profile = &self.config.profile;
+                // The host writes channels, and the gate that accepted the request found its channels the same as its own.
+                let channels = self.config.channels
+                    && self
+                        .config
+                        .gate
+                        .as_ref()
+                        .is_some_and(|g| g.matches_channels(&request.fields));
+                let mods = if channels {
+                    self.config
+                        .gate
+                        .as_ref()
+                        .and_then(|g| g.mods_support(&request.fields))
+                } else {
+                    None
+                };
                 let ghost_bits = self.network_ghost_bits(request.extension);
                 let mut protocol = Protocol::new(Role::Server, request.seq, self.config.rates, now);
                 protocol.set_pacing(self.config.pacing.clone());
@@ -1023,14 +1249,19 @@ impl Server {
                 let conn = Connection {
                     id,
                     addr: request.addr,
+                    ip: request.ip.to_canonical(),
                     sequence: request.seq,
                     protocol,
                     protocol_version: request.protocol_version,
                     ghost_bits,
                     extra: request.fields.extra,
+                    identity: request.identity,
                     pending: true,
                     local: false,
                     extension: request.extension,
+                    channels,
+                    mods,
+                    engine: false,
                     created: now,
                     packets: RateWindow::default(),
                     disconnects: RateWindow::default(),
@@ -1039,16 +1270,49 @@ impl Server {
                 self.conns.insert(id, conn);
                 Finished::Accepted {
                     conn: id,
-                    reply: connect_accept(
+                    reply: connect_accept_with(
                         &self.config.profile,
                         request.seq,
                         request.protocol_version,
                         ghost_bits,
                         request.extension,
+                        channels,
                     ),
                     replaced,
+                    evicted,
                 }
             }
+        }
+    }
+
+    /// Room for one more pending connection from `ip` at `now`: when [`NET_MAX_PENDING_CONNECTS`] are pending or the table is
+    /// full, [`choose_eviction`]'s rule over the evictable pending connections ([`NET_PENDING_EVICT_AGE_MS`] the age past
+    /// which one may go however fair its network). Nothing is removed when no eviction would make room.
+    fn make_room(&mut self, ip: IpAddr, now: u32) -> Room {
+        let max = self.config.max_connections();
+        if self.pending_len() < NET_MAX_PENDING_CONNECTS && self.conns.len() < max {
+            return Room::Free;
+        }
+        // One eviction frees one slot of each: it makes room only if one is all that is short.
+        if self.pending_len() > NET_MAX_PENDING_CONNECTS || self.conns.len() > max {
+            return Room::Full;
+        }
+        let pending: Vec<PendingSlot<ConnId>> = self
+            .conns
+            .values()
+            .filter(|c| c.pending && !c.local && !c.engine)
+            .map(|c| PendingSlot {
+                key: c.id,
+                ip: c.ip,
+                age_ms: u64::from(now.wrapping_sub(c.created)),
+            })
+            .collect();
+        match choose_eviction(&pending, ip, u64::from(NET_PENDING_EVICT_AGE_MS)) {
+            Eviction::Evict(id) => {
+                self.remove(id);
+                Room::Evicted(id)
+            }
+            Eviction::Refuse => Room::Full,
         }
     }
 
@@ -1074,20 +1338,61 @@ impl Server {
         let conn = Connection {
             id,
             addr,
+            ip: addr.ip().to_canonical(),
             sequence: 0,
             protocol,
             protocol_version,
             ghost_bits,
             extra: Vec::new(),
+            identity: None,
             pending: false,
             local: true,
             extension,
-
+            channels: false,
+            mods: None,
+            engine: false,
             created: now,
             packets: RateWindow::default(),
             disconnects: RateWindow::default(),
         };
         self.by_addr.insert(addr, id);
+        self.conns.insert(id, conn);
+        id
+    }
+
+    /// Enters a connection whose session the host accepted in engine mode ([`crate::engine`]): established at once (the
+    /// session's connect flow already ran), under the peer's address, every peer the engine's own (the extension and the
+    /// channels, when the host writes them). The host checks the player count first ([`ServerConfig::max_connections`]); an
+    /// older connection from the same address is replaced. The table never pings or times it out: the session does.
+    pub fn insert_engine(&mut self, accepted: EngineAccepted, now: u32) -> ConnId {
+        if let Some(old) = self.by_addr.get(&accepted.addr).copied() {
+            self.remove(old);
+        }
+        let id = self.fresh_id();
+        let protocol_version = self.config.profile.protocol_current;
+        let mut protocol = Protocol::new(Role::Server, 0, self.config.rates, now);
+        protocol.set_engine_packet(0, 0);
+        let conn = Connection {
+            id,
+            addr: accepted.addr,
+            ip: accepted.ip.to_canonical(),
+            sequence: 0,
+            protocol,
+            protocol_version,
+            ghost_bits: accepted.ghost_bits,
+            extra: Vec::new(),
+            identity: accepted.identity,
+            pending: false,
+            local: false,
+            extension: true,
+            channels: self.config.channels,
+            mods: accepted.mods,
+            engine: true,
+            created: now,
+            packets: RateWindow::default(),
+            disconnects: RateWindow::default(),
+        };
+        self.by_addr.insert(accepted.addr, id);
         self.conns.insert(id, conn);
         id
     }
@@ -1168,10 +1473,11 @@ impl Server {
 
     /// The time pass: pings for idle connections, and the connections that timed out or never spoke, which leave the table.
     pub fn poll_timeouts(&mut self, now: u32) -> Vec<TimeoutEvent> {
+        self.epoch(now);
         let mut events = Vec::new();
         let mut gone = Vec::new();
         for conn in self.conns.values_mut() {
-            if conn.local {
+            if conn.local || conn.engine {
                 continue;
             }
             if conn.pending && now.wrapping_sub(conn.created) > NET_PENDING_TIMEOUT_MS {

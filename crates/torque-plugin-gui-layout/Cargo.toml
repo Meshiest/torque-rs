@@ -1,0 +1,32 @@
+[package]
+name = "torque-plugin-gui-layout"
+description = "Flex and grid layout for torque-rs GUIs: container controls that lay their children out with taffy, inside ordinary absolute-positioned GUIs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "gui", "layout", "flexbox", "plugin"]
+categories = ["gui", "game-development"]
+
+# Two control classes (torque-gui's `add_gui_control`): `GuiFlexCtrl` and `GuiGridCtrl`. Their children are any controls; the
+# layout reads each child's layout fields (`flexGrow`, `gridColumn`, ...) as dynamic fields, so the engine's controls go
+# inside unchanged.
+
+[dependencies]
+# Flexbox and CSS grid (MIT). Only the two algorithms and the tree are built: no block layout, no CSS parser.
+taffy = { version = "0.15.1", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+# The props of the client-script format's `flex` and `grid` kinds, which the plugin names the fields of ([`RealmLayout`]).
+torque-client-script-format = { path = "../torque-client-script-format" }
+torque-engine = { path = "../torque-engine" }
+torque-gui = { path = "../torque-gui" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+# The tests' clients (the GUI plugin gives each its controls) and the offscreen pictures.
+torque-app = { path = "../torque-app", features = ["renderer"] }
+torque-render-core = { path = "../torque-render-core" }
+
+[lints]
+workspace = true

@@ -39,8 +39,9 @@ pub const MAX_TAG_BYTES: usize = 64 << 20;
 /// The table's checks, where a game's differ. The defaults are Torque3D's.
 #[derive(Debug, Clone, Copy)]
 pub struct TagRules {
-    /// A script removal of an id whose two counts are both 0 is ignored (TGE); false: the script count wraps to
-    /// `u32::MAX`, and the string comes back to life.
+    /// A script removal of an id whose two counts are both 0 is ignored silently (TGE); false: it prints the "Ref count
+    /// is already 0" line. Either way the counts stay 0 (TGE's own wrap to `u32::MAX` would keep a freed slot's string
+    /// alive and visible, and the slot would never be freed again).
     pub ignore_dead_removal: bool,
     /// Lookups, script references and removals of an id above the table's size print
     /// [`range_message`](Self::range_message) (and do nothing); an id equal to the size passes the check and is absent.
@@ -229,13 +230,19 @@ impl TagTable {
         if let Some(message) = self.out_of_range("removeString", id) {
             return Some(message);
         }
-        let guard = self.rules.ignore_dead_removal;
+        let quiet = self.rules.ignore_dead_removal;
         let slot = self.slots.get_mut(id as usize)?;
+        // A freed slot (on the free list, or never used) has nothing to remove.
+        if slot.script_refs == 0 && slot.refs == 0 {
+            return (script && !quiet).then(|| {
+                format!(
+                    "removeTaggedString failed!  Ref count is already 0 for string: {}",
+                    String::from_utf8_lossy(&slot.string)
+                )
+            });
+        }
         if script {
-            if guard && slot.script_refs == 0 && slot.refs == 0 {
-                return None;
-            }
-            if slot.script_refs == 0 && slot.refs != 0 {
+            if slot.script_refs == 0 {
                 return Some(format!(
                     "removeTaggedString failed!  Ref count is already 0 for string: {}",
                     String::from_utf8_lossy(&slot.string)

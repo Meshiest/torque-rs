@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::map::MapShape;
-use crate::math::{Box3, F3, IDENTITY, Matrix, matrix_product, mul_box};
+use crate::math::{Box3, F3, IDENTITY, Matrix, affine_inverse, matrix_product, mul_box, sqrt_f32};
 use crate::mesh::Hull;
 use crate::poly::PolyList;
 use crate::{Exhausted, ObjectId, work};
@@ -78,6 +78,34 @@ impl ObjectView {
     }
 }
 
+/// An object's view at `m` with object box `obj_box` and `scale` (`resetWorldBox`'s world box and radius).
+pub fn view_of(m: Matrix, obj_box: Box3, scale: F3, type_mask: u32) -> ObjectView {
+    let scaled = Box3::new(
+        [0, 1, 2].map(|i| (f64::from(obj_box.min[i]) * f64::from(scale[i])) as f32),
+        [0, 1, 2].map(|i| (f64::from(obj_box.max[i]) * f64::from(scale[i])) as f32),
+    );
+    let mut w = mul_box(&m, &scaled);
+    if !(w.max[0] >= w.min[0] && w.max[1] >= w.min[1] && w.max[2] >= w.min[2]) {
+        w = Box3::new([-1.0; 3], [1.0; 3]);
+    }
+    let c = |i: usize| ((f64::from(w.max[i]) + f64::from(w.min[i])) * 0.5) as f32;
+    let center = [c(0), c(1), c(2)];
+    let dd = |i: usize| (f64::from(w.max[i]) - f64::from(center[i])) as f32;
+    let (dx, dy, dz) = (dd(0), dd(1), dd(2));
+    let sq = ((f64::from(dx) * f64::from(dx) + f64::from(dy) * f64::from(dy))
+        + f64::from(dz) * f64::from(dz)) as f32;
+    ObjectView {
+        obj_to_world: m,
+        world_to_obj: affine_inverse(&m),
+        scale,
+        obj_box,
+        world_box: w,
+        world_radius: sqrt_f32(sq),
+        type_mask,
+        collision_disabled: false,
+    }
+}
+
 /// One collision slot of a shape datablock: its index, the detail's bounds (unscaled), and whether the slot names a
 /// detail (`-1` does not).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -85,6 +113,27 @@ pub struct HullSlot {
     pub slot: u32,
     pub present: bool,
     pub bounds: Box3,
+}
+
+impl HullSlot {
+    /// The first `count` slots of a shape whose collision entries name the details `details` (`-1` for none) with the boxes
+    /// `bounds` (`[min.x, min.y, min.z, max.x, max.y, max.z]`): a slot past either list is absent (a shape lists only the
+    /// collision details it has, as TGE's lists grow by one per detail).
+    pub fn of_shape(count: usize, details: &[i32], bounds: &[[f32; 6]]) -> Rc<[HullSlot]> {
+        (0..count)
+            .map(|i| {
+                let b = bounds.get(i).copied().unwrap_or_default();
+                HullSlot {
+                    slot: i as u32,
+                    present: details.get(i).is_some_and(|&d| d >= 0),
+                    bounds: Box3 {
+                        min: [b[0], b[1], b[2]],
+                        max: [b[3], b[4], b[5]],
+                    },
+                }
+            })
+            .collect()
+    }
 }
 
 /// A class's `buildConvex` override, for an object class a game adds (Torque's virtual on `SceneObject`). The host resolves
@@ -114,7 +163,7 @@ pub enum ConvexSource {
     /// `ShapeBase::buildConvex`: `has_shape` is the object's shape flag; the datablock's slots.
     Shape {
         has_shape: bool,
-        slots: Vec<HullSlot>,
+        slots: Rc<[HullSlot]>,
     },
     /// `PhysicalZone::buildConvex`.
     Zone,
@@ -571,16 +620,14 @@ impl WorkingSet {
     ) -> Result<(), Exhausted> {
         self.overflowed = false;
         // Drop what no longer overlaps or no longer collides (a gone object too: its convexes were nuked with it).
-        let mut kept = VecDeque::with_capacity(self.entries.len());
         let mut spent = false;
-        for c in self.entries.drain(..) {
+        self.entries.retain(|c| {
             // Once the budget is spent the rest stay as they are and the update stops after this walk.
             if spent || !world.charge(work::CONVEX) {
                 spent = true;
-                kept.push_back(c);
-                continue;
+                return true;
             }
-            let keep = match (world.object(c.object), c.bounding_box(world)) {
+            match (world.object(c.object), c.bounding_box(world)) {
                 (Some(view), Some(bb)) => {
                     let missed = query.max[0] < bb.min[0]
                         || query.max[1] < bb.min[1]
@@ -591,12 +638,8 @@ impl WorkingSet {
                     !missed && !view.collision_disabled
                 }
                 _ => false,
-            };
-            if keep {
-                kept.push_back(c);
             }
-        }
-        self.entries = kept;
+        });
         if spent {
             return Err(Exhausted);
         }

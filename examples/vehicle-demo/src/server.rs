@@ -25,6 +25,7 @@ use std::ops::{Deref, DerefMut};
 
 use torque::app::server::{GameServer, Listen, ServerStart};
 use torque::collide::math::F3;
+use torque::engine::Engine;
 use torque::vehicle::VehicleState;
 
 use crate::files::{GameFiles, MISSION};
@@ -51,50 +52,62 @@ pub struct WorldServer(pub GameServer);
 
 impl WorldServer {
     /// A server bound as `options` say that has run `server.cs` and started the map.
-    pub fn start(files: &GameFiles, options: &ServerOptions) -> Result<WorldServer, String> {
+    pub fn start(
+        engine: &Engine,
+        files: &GameFiles,
+        options: &ServerOptions,
+    ) -> Result<WorldServer, String> {
         let listen = Listen::Udp {
             address: options.address,
             port: options.port,
             public: false,
         };
-        WorldServer::start_on(files, listen, &options.name, false)
+        WorldServer::start_on(engine, files, listen, &options.name, false)
     }
 
     /// A server for a game played alone, on the in-memory transport at [`ALONE_ADDR`] (module docs), that has run `server.cs`
     /// and started the map.
-    pub fn start_alone(files: &GameFiles, name: &str) -> Result<WorldServer, String> {
-        WorldServer::start_on(files, Listen::Memory(ALONE_ADDR), name, false)
+    pub fn start_alone(
+        engine: &Engine,
+        files: &GameFiles,
+        name: &str,
+    ) -> Result<WorldServer, String> {
+        WorldServer::start_on(engine, files, Listen::Memory(ALONE_ADDR), name, false)
     }
 
     /// A dedicated server (`$Server::Dedicated`: the LAN list shows it as one) named `name` on `listen` (UDP, the web
     /// beside it or instead, or a room's host transport: module docs).
     pub fn start_dedicated_on(
+        engine: &Engine,
         files: &GameFiles,
         listen: Listen,
         name: &str,
     ) -> Result<WorldServer, String> {
-        WorldServer::start_on(files, listen, name, true)
+        WorldServer::start_on(engine, files, listen, name, true)
     }
 
     /// A server named `name` on a transport the caller made and bound (a browser host's worker relays its links).
     pub fn start_bound(
+        engine: &Engine,
         files: &GameFiles,
         transport: torque::server::net::transport::SharedTransport,
         name: &str,
     ) -> Result<WorldServer, String> {
         use torque::app::server::BoundTransport;
-        let listen = Listen::Bound(BoundTransport(transport));
-        WorldServer::start_on(files, listen, name, true)
+        let listen = Listen::Bound(BoundTransport::new(BoundTransport::RELAY, transport));
+        WorldServer::start_on(engine, files, listen, name, true)
     }
 
     fn start_on(
+        engine: &Engine,
         files: &GameFiles,
         listen: Listen,
         name: &str,
         dedicated: bool,
     ) -> Result<WorldServer, String> {
         let dedicated = if dedicated { "1" } else { "0" };
-        GameServer::start_with(
+        GameServer::start_engine(
+            engine,
             files.mem_files(),
             &ServerStart {
                 listen,
@@ -105,7 +118,6 @@ impl WorldServer {
                 start: "startWorld",
                 args: &[MISSION],
             },
-            crate::seats::install,
         )
         .map(WorldServer)
     }

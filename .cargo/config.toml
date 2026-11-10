@@ -2,3 +2,8 @@
 # deepest script the parser accepts needs far more (the compiler's worker thread natively has 64 MiB).
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=-zstack-size=33554432"]
+
+# Native Windows programs run the script `Vm` on their main thread, whose stack is the executable's (1 MiB by default):
+# deep script recursion below the call-depth cap, under the window's and the renderer's frames, needs more in a debug build.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/STACK:8388608"]

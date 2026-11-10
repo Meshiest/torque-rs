@@ -97,7 +97,17 @@ fn a_cube_is_twelve_triangles_clockwise_from_outside_a_block_a_meter() {
         let n = (b - a).cross(c - a);
         let mid = (a + b + c) / 3.0;
         assert!(n.dot(mid - center) < 0.0, "a triangle facing in");
+        // Each corner's normal is its face's own, outward: flat, as Blockbench draws it.
+        for i in [t[0], t[1], t[2]] {
+            let normal = glam::Vec3::from(mesh.normals[i as usize]);
+            assert!((normal.length() - 1.0).abs() < 1e-5);
+            assert!(
+                normal.dot(mid - center) > 0.0 && normal.cross(n).length() < 1e-4 * n.length(),
+                "{normal} at a face of {n}"
+            );
+        }
     }
+    assert_eq!(mesh.normals.len(), mesh.positions.len());
     // The up face's rectangle is the texture's top-left quarter: its corners' coordinates within 0..0.5.
     // Faces in order north, east, south, west, up, down, four corners each.
     let up = &mesh.uv0[16..20];
@@ -374,4 +384,43 @@ fn a_blockbench_model_becomes_a_shape_sampled_nearest() {
     );
     let back = crate::dts::from_dts(&shape).unwrap();
     assert!(back.materials.iter().all(|m| m.nearest));
+}
+
+/// Every corner of every triangle of `mesh` carries its face's outward normal: unit, and the other way from the clockwise
+/// triangle's own winding normal.
+fn assert_flat_and_outward(mesh: &Mesh) {
+    assert_eq!(mesh.normals.len(), mesh.positions.len());
+    for p in &mesh.primitives {
+        for t in p.indices.chunks(3) {
+            let [a, b, c] =
+                [t[0], t[1], t[2]].map(|i| glam::Vec3::from(mesh.positions[i as usize]));
+            let outward = -(b - a).cross(c - a).normalize();
+            for &i in t {
+                let n = glam::Vec3::from(mesh.normals[i as usize]);
+                assert!(n.distance(outward) < 1e-4, "{n} at a face facing {outward}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_turned_cube_and_a_free_mesh_carry_their_faces_outward_normals() {
+    let mut c = cube("turned", [0., 0., 0.], [16., 8., 16.]);
+    c["rotation"] = json!([20, 45, 0]);
+    c["origin"] = json!([8, 0, 8]);
+    let m = read_json(&file(vec![c], vec![])).unwrap();
+    assert_flat_and_outward(&m.meshes[0]);
+    // A turned cube's up face looks up and toward its turn, not straight up.
+    let up = glam::Vec3::from(m.meshes[0].normals[16]);
+    assert!(up.z > 0.5 && up.z < 0.99, "{up}");
+
+    let ramp = json!({ "name": "ramp", "type": "mesh", "uuid": "m1", "origin": [0, 0, 0], "rotation": [0, 0, 0],
+        "vertices": { "a": [0, 0, 0], "b": [16, 0, 0], "c": [16, 0, 16], "d": [0, 0, 16], "e": [0, 16, 0] },
+        "faces": {
+            "bottom": { "vertices": ["a", "b", "c", "d"], "uv": { "a": [0, 0], "b": [16, 0], "c": [16, 16], "d": [0, 16] },
+                "texture": 0 },
+            "tri": { "vertices": ["a", "e", "b"], "uv": { "a": [0, 0], "e": [0, 16], "b": [16, 0] }, "texture": 0 }
+        } });
+    let m = read_json(&file(vec![ramp], vec![])).unwrap();
+    assert_flat_and_outward(&m.meshes[0]);
 }

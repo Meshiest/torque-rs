@@ -159,6 +159,9 @@
   // a 1920x1080 screen's worth); and the frame-rate display (also F8), from the game's `data-torque-fps` and
   // `data-torque-frame-ms`. All are kept in the browser's storage.
   //
+  // `data-torque-lua="1"` on the root element (`build.mjs --lua`): the page loads the Lua module (lua.js, torque_lua.wasm)
+  // before the game's; without it the page fetches neither.
+  //
   // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
   // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
   //
@@ -370,6 +373,16 @@
       return;
     }
     show('module');
+    // A game with Lua (`build.mjs --lua`): its module first, so the game's Lua files find it (lua.js). A browser that cannot
+    // load it (no WebAssembly exception handling) still plays; its Lua files print that they cannot run.
+    if (document.documentElement.dataset.torqueLua === '1') {
+      try {
+        const { loadLua } = await import('./lua.js');
+        await loadLua(new URL('torque_lua.wasm', document.baseURI));
+      } catch (error) {
+        console.error('the Lua module did not load:', error);
+      }
+    }
     const module = await import('./game.js');
     const wasm = await readStreamed(await fetch(new URL('game_bg.wasm', document.baseURI)), (done, total) =>
       show('module', done, total));

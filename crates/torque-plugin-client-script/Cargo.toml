@@ -1,0 +1,52 @@
+[package]
+name = "torque-plugin-client-script"
+description = "Server scripts for a game: the player's consent, the server's messages and RPC calls, and the realm of the Lua a server sends to its players"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "lua", "sandbox", "consent", "gamedev"]
+categories = ["game-engines", "network-programming"]
+
+# The glue of client scripts that the realm's host (`torque-client-script-host`, the sandbox) and the GUI (`torque-gui`, the
+# controls and layers) leave to the game: whether the player allows a server's scripts (and which abilities), the engine-owned
+# file that remembers it, the messages and RPC calls between the realm and its server, and the server's half. A game adds
+# `ClientScriptsPlugin` and drives a `Realms` each frame. The sandbox's runner (Wasmtime natively, a Worker on the web) is the
+# game's to supply, so this crate has no Wasmtime in its tree. It is in no default plugin set.
+
+[features]
+# `ui` and `net` have passed their review, so a build offers them unless it turns the defaults off.
+default = ["ui", "net"]
+# The host modules of the tiers (see `torque-client-script-host`): without one, a server's request for that tier is not offered.
+ui = ["torque-client-script-host/ui"]
+net = ["torque-client-script-host/net"]
+# Tiers granted before their review, for tests and for working on a tier. Debug builds only.
+unreviewed-tiers = ["torque-client-script-host/unreviewed-tiers"]
+
+[dependencies]
+torque-client-script-format = { path = "../torque-client-script-format" }
+torque-client-script-host = { path = "../torque-client-script-host", default-features = false }
+torque-engine = { path = "../torque-engine" }
+torque-ghosts = { path = "../torque-ghosts" }
+torque-gui = { path = "../torque-gui" }
+torque-mods = { path = "../torque-mods" }
+torque-net = { path = "../torque-net" }
+torque-server = { path = "../torque-server" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+torque-engine = { path = "../torque-engine", features = ["testing"] }
+torque-fonts = { path = "../torque-fonts" }
+torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
+torque-images = { path = "../torque-images" }
+# The bench's images.
+png = "0.18"
+torque-client-script-host = { path = "../torque-client-script-host", features = ["ui", "net", "unreviewed-tiers", "wasmtime"] }
+# The end-to-end test: the engine's own server and client over the memory transport (tests/end_to_end.rs).
+torque = { path = "../torque", default-features = false, features = ["app", "mods"] }
+torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
+
+[lints]
+workspace = true

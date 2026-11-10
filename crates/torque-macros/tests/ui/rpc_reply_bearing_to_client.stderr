@@ -1,0 +1,16 @@
+error[E0599]: the method `to_client` exists for struct `RpcBuilder<'_, Ask, Answer, Unset>`, but its trait bounds were not satisfied
+  --> tests/ui/rpc_reply_bearing_to_client.rs:18:44
+   |
+10 | struct Answer {
+   | ------------- doesn't satisfy `Answer: Notification`
+...
+18 |     engine.net().rpc::<Ask, Answer>("ask").to_client();
+   |                                            ^^^^^^^^^ method cannot be called on `RpcBuilder<'_, Ask, Answer, Unset>` due to unsatisfied trait bounds
+   |
+   = note: the following trait bounds were not satisfied:
+           `Answer: Notification`
+note: the trait `Notification` must be implemented
+  --> $WORKSPACE/crates/torque-engine/src/rpc.rs
+   |
+   | pub trait Notification: NetMessage {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

@@ -11,9 +11,12 @@ keywords = ["torque", "game-engine", "torquescript", "gamedev"]
 categories = ["game-engines", "game-development"]
 
 [dependencies]
+torque-app-server = { path = "../torque-app-server", optional = true }
 torque-audio = { path = "../torque-audio", optional = true }
 torque-client = { path = "../torque-client", optional = true }
 torque-collide = { path = "../torque-collide", optional = true }
+torque-content = { path = "../torque-content", optional = true }
+torque-engine = { path = "../torque-engine", optional = true }
 torque-fonts = { path = "../torque-fonts", optional = true }
 torque-game = { path = "../torque-game", optional = true }
 torque-ghost-world = { path = "../torque-ghost-world", optional = true }
@@ -22,7 +25,9 @@ torque-gui = { path = "../torque-gui", optional = true }
 torque-images = { path = "../torque-images", optional = true }
 torque-mapcore = { path = "../torque-mapcore", optional = true }
 torque-maps = { path = "../torque-maps", optional = true }
+torque-mods = { path = "../torque-mods", optional = true }
 torque-net = { path = "../torque-net", optional = true }
+torque-plugin-loader = { path = "../torque-plugin-loader", optional = true }
 torque-resource = { path = "../torque-resource", optional = true }
 torque-scene = { path = "../torque-scene", optional = true }
 torque-server = { path = "../torque-server", optional = true }
@@ -35,17 +40,24 @@ torque-ts-text = { path = "../torque-ts-text", optional = true }
 torque-ts-vm = { path = "../torque-ts-vm", optional = true }
 torque-vehicle = { path = "../torque-vehicle", optional = true }
 # `app`: the drawing crates, the window and the pictures' encoder.
-torque-app = { path = "../torque-app", optional = true }
+torque-app = { path = "../torque-app", optional = true, default-features = false }
 
 [features]
 # Everything that needs no GPU, no window and no system library.
 default = [
     "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
-    "server", "images", "fonts", "gui", "audio", "client",
+    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content", "mods",
 ]
 # TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
 collide = ["dep:torque-collide", "dep:torque-mapcore"]
+# Plugins, plugin groups and the engine builder that replays their recipes into every server and client script engine.
+engine = ["dep:torque-engine", "script"]
+# The content formats as asset loaders (`torque::content`): glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer.
+content = ["dep:torque-content", "engine"]
+# Local mods (`torque::mods`): folders and zips of scripts and assets mounted over a game's files, with replaceable rules for how
+# they are found, ordered and enabled.
+mods = ["dep:torque-mods", "engine", "resource"]
 shapes = ["dep:torque-shapes"]
 # Builds shape models from code: nodes, box and prism meshes, details, materials and sequences.
 shape-builder = ["dep:torque-shape-builder", "shapes"]
@@ -65,6 +77,13 @@ scene = ["dep:torque-scene"]
 game = ["dep:torque-game", "script", "collide", "shapes", "sim", "vehicle", "net", "scene", "resource"]
 # A dedicated server's pacing, platform values and datagram transport.
 server = ["dep:torque-server", "net", "game"]
+# The server half of what a game shares (`torque::app_server`): its files, a server, the terrain and water blocks, the dedicated
+# runner and `MinimalPlugins`. No drawing, GUI, audio or window crates.
+app-server = ["dep:torque-app-server", "engine", "server"]
+# Native extensions (`torque::extensions`): libraries loaded at run time from a local `plugins/` folder over the C ABI,
+# approved by hash, off until game.toml or a flag turns them on. Never in a default build: an extension runs with the
+# game's full rights.
+native-extensions = ["dep:torque-plugin-loader", "engine"]
 images = ["dep:torque-images"]
 fonts = ["dep:torque-fonts", "images"]
 gui = ["dep:torque-gui", "fonts", "images", "script"]
@@ -78,15 +97,22 @@ audio-device = ["audio", "torque-audio/device"]
 # The system's fonts as the fallback for a face and size with no font cache.
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
-# pictures (`torque-app`). Needs a GPU.
-app = ["client-window", "system-fonts", "shapes", "dep:torque-app"]
+# pictures (`torque-app`), with the engine's renderer. Needs a GPU.
+app = ["app-core", "renderer", "gizmos"]
+# `app` without the engine's renderer: a game registers its own on the renderer slot.
+app-core = ["client-window", "system-fonts", "shapes", "engine", "dep:torque-app", "torque-plugin-loader?/render"]
+# The engine's renderer and its feature plugins on the renderer slot (`torque::app::renderers`).
+renderer = ["app-core", "torque-app/renderer"]
+# Debug gizmos (`torque::app::gizmos`): lines, boxes, spheres and labels drawn in world space by `GizmosPlugin`. In `app`; a shipped
+# build takes `app-core` and `renderer` without it.
+gizmos = ["app-core", "torque-app/gizmos"]
 # Browsers as players: the server's web transport (HTTP and WebSocket on one port, UDP beside it) and the client's game
 # socket over WebSocket.
-web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web"]
+web = ["server", "client", "torque-server/web", "torque-client/web-socket", "torque-app?/web", "torque-app-server?/web"]
 # Browsers on WebRTC data channels beside their game sockets: the web transport's data channels and the client's side.
-webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc", "torque-app?/webrtc"]
+webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc", "torque-app?/webrtc", "torque-app-server?/webrtc"]
 # Player-hosted games: a host found by room code through a room service (torque-rooms), joiners on data channels to it.
-p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p", "torque-app?/p2p"]
+p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p", "torque-app?/p2p", "torque-app-server?/p2p"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]

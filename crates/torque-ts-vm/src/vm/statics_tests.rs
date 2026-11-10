@@ -42,6 +42,7 @@ fn typed(name: &str, ty: crate::fields::FieldType, count: u16) -> crate::sim::St
         count,
         offset: None,
         validator: None,
+        doc: None,
     }
 }
 

@@ -77,6 +77,17 @@ pub fn priority_compare(a: f32, b: f32) -> i32 {
     if d < 0.0 { -1 } else { i32::from(d > 0.0) }
 }
 
+/// One connection's ghosts as a packer asks about them ([`ObjectSource::pack_update_on`]).
+pub trait ConnectionGhosts {
+    /// `getGhostIndex`: the wire id of an object whose first record was acknowledged, `None` otherwise.
+    fn index(&self, obj: ObjId) -> Option<u32>;
+
+    /// Whether the connection holds a ghost of the object that is not going: in scope, its first record due, sent or
+    /// acknowledged. An object it does not hold may never reach its client (a full table, a `ScopeLocal` object, a class
+    /// its peer does not know).
+    fn holds(&self, obj: ObjId) -> bool;
+}
+
 /// The world as the ghost manager reads it. Everything but [`ObjectSource::pack_update`] takes `&self`, so a scope walk can hold the
 /// source while it hands objects to the manager.
 pub trait ObjectSource {
@@ -88,6 +99,45 @@ pub trait ObjectSource {
 
     /// `NetObject::mNetFlags`, see [`net_flags`].
     fn net_flags(&self, obj: ObjId) -> u32;
+
+    /// The net flags of an object that exists, `None` for one that does not: [`ObjectSource::exists`] and
+    /// [`ObjectSource::net_flags`] in one call, which a scope walk makes for every object it meets (a host whose look-ups are
+    /// not free answers it with one).
+    fn scope_flags(&self, obj: ObjId) -> Option<u32> {
+        self.exists(obj).then(|| self.net_flags(obj))
+    }
+
+    /// Whether the host keeps `obj` out of this connection's scope now (a plugin's veto, [`ObjectSource::scope_hidden_stamp`]).
+    /// No scope walk makes a ghost of it, whatever it is (always in scope, scoped by a script), and the ghost it has is dropped
+    /// when the stamp moves. False for every object by default.
+    fn scope_hidden(&self, obj: ObjId) -> bool {
+        let _ = obj;
+        false
+    }
+
+    /// A number that changes whenever [`ObjectSource::scope_hidden`] may answer another way for any object of this connection.
+    /// The manager drops the ghosts of the objects hidden since it last saw this stamp, at the start of its next scan, and a
+    /// settled full query is not taken for settled any more. 0 (the default) for a source that hides nothing.
+    fn scope_hidden_stamp(&self) -> u64 {
+        0
+    }
+
+    /// Whether the full scope query around `scope` (its view `cam`, over `radius`) takes `obj`: an object with a distance when it or
+    /// its box is within the radius, and, by default, no object without one (a source whose query takes such objects, as Torque's
+    /// takes what is not a SceneObject, says so in its own override, so no source inherits a permissive answer). What a host asks
+    /// without walking the objects ([`crate::ghost::GhostManager::scope_would_take`]).
+    fn scope_includes(&self, obj: ObjId, scope: ObjId, cam: &CamInfo, radius: f32) -> bool {
+        self.scope_distance(obj, scope).is_some_and(|d| d < radius)
+            || self.reaches_scope(obj, cam.eye, radius)
+    }
+
+    /// A stamp of everything a full scope query reads from this source to decide which objects it scopes, when that is nothing
+    /// but the set of objects (no distance, no view): equal stamps mean the same objects are scoped, in the same order. A source
+    /// that answers one lets the manager skip scoping the objects of a query it has run to its end already with the stamp (see
+    /// [`crate::ghost::GhostPolicy::plain_query`]). `None` (the default): the query depends on more than the stamp can say. A settled query makes no ghost, so it never asks for [`ObjectSource::dependents`] (they are walked only for an object that has just got its ghost); a ghost that only a dependents walk made is left to the query's detach as it is without the skip (`ghost::tests::a_query_that_only_counts_...`).
+    fn scope_stamp(&self) -> Option<u64> {
+        None
+    }
 
     /// `packUpdate(conn, mask, stream)`: writes the object's state for the dirty bits `mask` and returns the bits it could not send
     /// (`retMask`; 0 for all sent). **It must be repeatable**: the manager rolls a record back, and measures nothing twice,
@@ -104,9 +154,43 @@ pub trait ObjectSource {
         ghost_of: &dyn Fn(ObjId) -> Option<u32>,
     ) -> u32;
 
+    /// [`ObjectSource::pack_update`] with the connection's ghosts to ask about: the manager packs every record through this
+    /// one. A host whose records name other objects in ways that depend on more than their index overrides it; by default it
+    /// is `pack_update` with [`ConnectionGhosts::index`].
+    fn pack_update_on(
+        &mut self,
+        obj: ObjId,
+        mask: u32,
+        w: &mut BitWriter,
+        ghosts: &dyn ConnectionGhosts,
+    ) -> u32 {
+        self.pack_update(obj, mask, w, &|o| ghosts.index(o))
+    }
+
     /// `getUpdatePriority(&camInfo, mask, skipCount)` (a virtual method). Called when the pending ghosts are sorted by priority
     /// (the policy's [`super::policy::GhostPolicy::pending_order`]).
     fn update_priority(&self, obj: ObjId, cam: &CamInfo, mask: u32, skip: u8) -> f32;
+
+    /// How much more the object's first record counts than [`ObjectSource::update_priority`] (or a share group's first
+    /// record) says: a scene hierarchy's parent goes ahead of its children, whose links wait for its ghost. Its later updates
+    /// get nothing more. 0 (the default) for every object of Torque's.
+    fn first_record_bonus(&self, _obj: ObjId) -> f32 {
+        0.0
+    }
+
+    /// The objects whose ghosts on a connection have bits to send again once `obj` gets its ghost there, with the bits,
+    /// appended to `out`: a scene hierarchy's children, whose links name their parent by its ghost on that connection.
+    /// Asked for every ghost made; the manager marks the bits on the ghosts the connection holds. None by default.
+    fn marks_on_ghost(&self, _obj: ObjId, _out: &mut Vec<(ObjId, u32)>) {}
+
+    /// The share of each packet the object's updates belong to: `Some((group, part))` holds the updates (and first records) of
+    /// all the objects of `group` in one packet to `part` (0 to 1) of the packet's bits; an update that would take its group
+    /// past that is passed over and stays dirty for a later packet, so a flood of one kind of object cannot crowd the others
+    /// out. `None` (the default, and every TGE object) is no share: the update goes as TGE's would.
+    fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
+        let _ = obj;
+        None
+    }
 
     /// The scope object's camera data (eye, forward, field of view), `None` if it has none. The manager fills
     /// `visible_distance` itself.
@@ -118,6 +202,12 @@ pub trait ObjectSource {
 
     /// The object the scope object is mounted on (`ShapeBase::mMount`), scoped with it.
     fn mount_of(&self, scope: ObjId) -> Option<ObjId>;
+
+    /// The object the scope object rides, which a veto must not hide from it either ([`ObjectSource::scope_hidden`]). It is
+    /// [`ObjectSource::mount_of`] unless the host scopes that one first (and so in another order) and answers here on its own.
+    fn rides(&self, scope: ObjId) -> Option<ObjId> {
+        self.mount_of(scope)
+    }
 
     /// `ShapeBase::onCameraScopeQuery`'s container walk (`Container::findObjects`): calls `visit` for every object in the box of
     /// half-size `radius` around the camera, in the container's order (the bins y-outer x-inner, then the overflow list; a host

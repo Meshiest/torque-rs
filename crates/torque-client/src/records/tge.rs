@@ -15,7 +15,8 @@ use collide::math::F3;
 use ghost_world::tge::{TgeClientSet, TgeDatablock, TgeTail, shape_part};
 use ghosts::codec::F32;
 use ghosts::tails::{
-    PlayerTail, PlayerTailMotion, ShapeTail, TailData, VehicleTail, WheelTail, WheeledTail,
+    PlayerTail, PlayerTailMotion, ShapeTail, TailData, TailFrame, VehicleTail, WheelTail,
+    WheeledTail,
 };
 use ghosts::vehicle::VehiclePart;
 use ghosts::{TgeClass, TgePacketData, TgeRecord, TgeShapeBase, Value};
@@ -24,10 +25,10 @@ use vehicle::words::{KindWords, VehicleWords, WheelWords};
 
 use super::{
     ClassKind, EngineDatablock, EngineRecord, EngineSet, EngineTail, FreeMotion, PlayerPacket,
-    PlayerWords, ShapeState, VehiclePose, VehicleUpdate, WheelDatablocks,
+    PlayerWords, ShapeState, ShotRecord, VehiclePose, VehicleUpdate, WheelDatablocks,
 };
 
-fn player_words(p: &PlayerTail, translation: [f32; 3]) -> PlayerWords {
+fn player_words(p: &PlayerTail, translation: [f32; 3], frame: TailFrame) -> PlayerWords {
     PlayerWords {
         energy: p.shape.energy.get(),
         flag: false,
@@ -40,6 +41,7 @@ fn player_words(p: &PlayerTail, translation: [f32; 3]) -> PlayerWords {
         head_z: p.head[1].get(),
         rot_z: p.rotation_z.get(),
         translation,
+        frame,
     }
 }
 
@@ -70,6 +72,7 @@ impl EngineSet for TgeClientSet {
             TgeClass::AiPlayer => ClassKind::AiPlayer,
             TgeClass::WheeledVehicle | TgeClass::AiWheeledVehicle => ClassKind::WheeledVehicle,
             TgeClass::FlyingVehicle => ClassKind::FlyingVehicle,
+            TgeClass::StaticShape => ClassKind::StaticShape,
             _ => ClassKind::Other,
         }
     }
@@ -80,7 +83,7 @@ impl EngineSet for TgeClientSet {
             return None;
         };
         Some(PlayerPacket {
-            words: player_words(t, p.position),
+            words: player_words(t, p.position, p.frame),
             controlled: t.control.zip(p.nested.as_deref()),
         })
     }
@@ -110,6 +113,7 @@ impl EngineSet for TgeClientSet {
             data: TailData::Player(tail),
             position: words.translation,
             nested,
+            frame: words.frame,
         })
     }
 
@@ -173,6 +177,7 @@ impl EngineSet for TgeClientSet {
             data,
             position: translation,
             nested: None,
+            frame: TailFrame::Absent,
         })
     }
 }
@@ -265,6 +270,30 @@ impl EngineRecord<TgeClientSet> for TgeRecord {
         let head = ghost_world::tge::head_fractions(self).map_or(0.0, |h| h[0]);
         Some((velocity, head))
     }
+
+    fn shot(&self) -> Option<ShotRecord> {
+        let TgeRecord::Projectile(p) = self else {
+            return None;
+        };
+        let initial = p.initial.as_ref()?;
+        // The bounce block's raw floats, when the record has it, over the initial block's coarser direction.
+        let (start, velocity) = match p.bounce {
+            Some((at, v)) => (Some(at.map(|c| c.get())), v.map(|c| c.get())),
+            None => (
+                None,
+                initial.velocity.map_or([0.0; 3], |v| {
+                    v.value(ghosts::projectile::VELOCITY_NORMAL_BITS)
+                }),
+            ),
+        };
+        Some(ShotRecord {
+            start,
+            velocity,
+            tick: initial.tick,
+            source: initial.source.map(|s| s.object),
+            exploded: p.explosion.map(|x| x.position.map(|c| c.get())),
+        })
+    }
 }
 
 impl EngineDatablock for TgeDatablock {
@@ -281,7 +310,7 @@ impl EngineTail for TgeTail {
     fn player(&self) -> Option<PlayerWords> {
         match self {
             TgeTail::Data(p) => match &p.data {
-                TailData::Player(t) => Some(player_words(t, p.position)),
+                TailData::Player(t) => Some(player_words(t, p.position, p.frame)),
                 _ => None,
             },
             _ => None,

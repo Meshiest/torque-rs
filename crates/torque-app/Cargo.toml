@@ -17,22 +17,31 @@ categories = ["game-engines", "game-development"]
 glam = { workspace = true }
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
+# The audio plugin: the null sink only (no `device` feature, so no sound card library).
+torque-audio = { path = "../torque-audio", features = ["engine"] }
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
+# The content formats' loaders in `DefaultPlugins` (`ContentFormatPlugins`).
+torque-content = { path = "../torque-content" }
 torque-fonts = { path = "../torque-fonts", features = ["system-fonts"] }
+# The plugins that wire a server's and a client's script engine.
+torque-engine = { path = "../torque-engine" }
+# The server half: the files, the server, the water block, the dedicated runner and the server plugins.
+torque-app-server = { path = "../torque-app-server" }
 torque-game = { path = "../torque-game" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 torque-ghosts = { path = "../torque-ghosts" }
 torque-gui = { path = "../torque-gui" }
-# A TerrainBlock's file and its heightfield.
+# The interiors' map importers and surfaces.
 torque-mapcore = { path = "../torque-mapcore" }
 torque-maps = { path = "../torque-maps" }
 torque-render-core = { path = "../torque-render-core" }
 torque-render-hd = { path = "../torque-render-hd" }
 torque-render-scene = { path = "../torque-render-scene" }
+torque-net = { path = "../torque-net" }
 torque-server = { path = "../torque-server" }
 torque-shapes = { path = "../torque-shapes" }
-# The water zone a Player swims in.
+# A Player's swim pose.
 torque-sim = { path = "../torque-sim" }
 # The page bridge's syntax check of the page's script text.
 torque-ts-compiler = { path = "../torque-ts-compiler" }
@@ -40,9 +49,8 @@ torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 png = "0.18"
-# The list of a web build's files (`manifest`): its JSON and its files' hashes.
+# The page bridge's JSON.
 serde_json = "1.0.140"
-sha2 = "0.10"
 
 # In a browser: the canvas's device is asked for without blocking; the page's address and root element, a panic shown in its
 # console.
@@ -55,16 +63,30 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Element", "History", "Location", "Window"] }
 
 [features]
+default = ["renderer", "gizmos"]
+# The engine's renderer on the renderer slot and its feature plugins (`RendererPlugin`, `RenderFeaturePlugins`), in
+# `DefaultPlugins`. Without it a game registers its own renderers on the slot.
+renderer = []
+# Debug gizmos: `GizmosPlugin`'s lines, boxes, spheres, arrows, crosses and labels, and the pass that draws them. Without it the
+# plugin only registers the console functions as ones that do nothing: leave it out of a shipped build.
+gizmos = ["torque-render-hd/gizmos"]
+# The `.map` loader in `ContentFormatPlugins` (added off): a Quake or Valve 220 `.map` built into an interior by
+# torque-interior-builder, which builds no other way into a client.
+map-builder = ["torque-content/map-builder"]
 # Browsers as players: a server listening on the web (`Listen::Web`) and a client's game socket over WebSocket.
-web = ["torque-server/web", "torque-client/web-socket"]
+web = ["torque-app-server/web", "torque-server/web", "torque-client/web-socket"]
 # Browsers on WebRTC data channels beside their game sockets (the server's `WebSetup::rtc`, the client's `web_rtc`).
-webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc"]
+webrtc = ["web", "torque-app-server/webrtc", "torque-server/webrtc", "torque-client/webrtc"]
 # Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
 # `net::web::p2p`) and a client's datagrams to it (torque-client's `net::room_join`).
-p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p"]
+p2p = ["webrtc", "torque-app-server/p2p", "torque-server/p2p", "torque-client/p2p"]
 
 [dev-dependencies]
 criterion = { workspace = true }
+# The interiors bench's yards.
+torque-interior-builder = { path = "../torque-interior-builder" }
+# The hashes the web page tests check the files against.
+sha2 = "0.10"
 
 [[bench]]
 name = "app"

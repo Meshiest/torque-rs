@@ -48,6 +48,8 @@ pub struct RejectStrings {
     pub invalid_args: Vec<u8>,
     /// The connection table is full.
     pub server_full: Vec<u8>,
+    /// The source's address or network holds as many connections as one may ([`crate::fair::SourceCaps`]).
+    pub too_many_from_source: Vec<u8>,
     /// What a client reports for an accept whose protocol it does not speak.
     pub protocol: Vec<u8>,
     /// What a client reports for an accept whose ghost-id width it cannot use.
@@ -56,7 +58,7 @@ pub struct RejectStrings {
 
 impl Default for RejectStrings {
     /// Torque's strings (`GameConnection::readConnectRequest` and `readConnectAccept`); an unusable ghost-id width is reported as
-    /// an unusable protocol.
+    /// an unusable protocol, and a source over its connection caps as a full server (a Torque client's scripts know that one).
     fn default() -> RejectStrings {
         RejectStrings {
             invalid: b"CHR_INVALID".to_vec(),
@@ -66,6 +68,7 @@ impl Default for RejectStrings {
             password: b"CHR_PASSWORD".to_vec(),
             invalid_args: b"CR_INVALID_ARGS".to_vec(),
             server_full: b"CR_SERVERFULL".to_vec(),
+            too_many_from_source: b"CR_SERVERFULL".to_vec(),
             protocol: b"CHR_PROTOCOL".to_vec(),
             ghost_bits: b"CHR_PROTOCOL".to_vec(),
         }
@@ -235,6 +238,10 @@ pub struct QueryProfile {
     /// The last datagram type the info handler gets (TGE's `GameHeartbeat`, 22): every even type up to it is an info packet
     /// ([`QueryProfile::is_info_type`]).
     pub info_type_max: u8,
+    /// The size a client pads its ping and info requests to with zeros, so that a server that bounds what it reflects at an
+    /// unproven source ([`crate::serverquery::InfoLimiter`]) answers it in full; 0 (Torque's) sends the bare 6 bytes. A Torque
+    /// server reads only the first 6.
+    pub request_bytes: usize,
 }
 
 impl Default for QueryProfile {
@@ -245,7 +252,9 @@ impl Default for QueryProfile {
 }
 
 impl QueryProfile {
-    /// Torque's version string and info types, the protocol versions of `handshake`, build number 0.
+    /// Torque's version string and info types, the protocol versions of `handshake`, build number 0; the requests are padded
+    /// to [`crate::serverquery::PADDED_REQUEST_BYTES`] when `handshake` has an extension (this engine's own clients), else
+    /// they are Torque's.
     pub fn for_handshake(handshake: &HandshakeProfile) -> QueryProfile {
         QueryProfile {
             version_string: b"VER1".to_vec(),
@@ -253,7 +262,19 @@ impl QueryProfile {
             protocol_min: handshake.protocol_min,
             version: 0,
             info_type_max: crate::serverquery::GAME_HEARTBEAT,
+            request_bytes: if handshake.extension.is_some() {
+                crate::serverquery::PADDED_REQUEST_BYTES
+            } else {
+                0
+            },
         }
+    }
+
+    /// The request datagram of type `ty` a client of this profile sends ([`crate::serverquery::request`], padded to
+    /// [`QueryProfile::request_bytes`]).
+    #[must_use]
+    pub fn request(&self, ty: u8, flags: u8, session: u32, key: u32) -> Vec<u8> {
+        crate::serverquery::padded_request(ty, flags, session, key, self.request_bytes)
     }
 
     /// Whether the info handler gets a datagram whose first byte is `ty` (`processPacketReceiveEvent`: an even type up to

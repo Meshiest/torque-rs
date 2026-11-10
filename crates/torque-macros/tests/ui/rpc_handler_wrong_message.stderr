@@ -1,0 +1,20 @@
+error[E0271]: expected `{closure@rpc_handler_wrong_message.rs:23:17}` to return `Result<Answer, RpcError>`, but it returns `Result<Ask, RpcError>`
+  --> tests/ui/rpc_handler_wrong_message.rs:23:48
+   |
+23 |         .server(|_cx: &mut RpcCx, ask: Ask| -> Result<Ask, RpcError> { Ok(ask) });
+   |          ------ -------------------------------^^^^^^^^^^^^^^^^^^^^^
+   |          |      |                              |
+   |          |      |                              expected `Result<Answer, RpcError>`, found `Result<Ask, RpcError>`
+   |          |      this closure
+   |          required by a bound introduced by this call
+   |
+   = note: expected enum `Result<Answer, RpcError>`
+              found enum `Result<Ask, RpcError>`
+note: required by a bound in `RpcBuilder::<'_, Req, Resp, torque_engine::rpc::ToServer>::server`
+  --> $WORKSPACE/crates/torque-engine/src/rpc.rs
+   |
+   |     pub fn server<F>(self, handler: F) -> RpcRef<Req, Resp>
+   |            ------ required by a bound in this associated function
+   |     where
+   |         F: for<'c> Fn(&mut RpcCx<'c>, Req) -> Result<Resp, RpcError> + 'static,
+   |                                               ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RpcBuilder::<'_, Req, Resp, ToServer>::server`

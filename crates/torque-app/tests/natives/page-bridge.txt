@@ -1,0 +1,2 @@
+callPage 2..18 callPage(name, args...);
+setRenderQuality 2..2 setRenderQuality(low|medium|high|ultra);

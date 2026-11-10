@@ -76,9 +76,13 @@ pub fn controlling_object(vm: &Vm, id: ObjId) -> Option<ObjId> {
 }
 
 /// `ShapeBase::mountObject(obj, node)` on `mount`: refused when `obj` is `mount` or carries it (the chain up from `mount`
-/// meets `obj`); `obj` leaves its old mount first; it joins the head of the list with its node (0 for 32 and above), follows
+/// meets `obj`), or (engine-only) when the scene hierarchy refuses it ([`crate::scene::links::mount_refused`]: `obj` has a
+/// parent, or carries `mount` through parents); `obj` leaves its old mount first; it joins the head of the list with its node (0 for 32 and above), follows
 /// `mount` in the process list unless `mount`'s controlling object is `obj`, is marked 0x80 and its `onMount` runs.
 pub fn mount_object(vm: &mut Vm, mount: ObjId, obj: ObjId, node: u32) -> Result<(), VmError> {
+    if crate::scene::links::mount_refused(vm, mount, obj) {
+        return Ok(());
+    }
     let mut at = Some(mount);
     let mut steps = 0;
     while let Some(m) = at {
@@ -228,7 +232,8 @@ fn fail(r: Result<(), VmError>) -> Option<Native> {
 /// The console methods.
 pub fn register(vm: &mut Vm) {
     // `mountObject(obj, node)`: the object by name or id (a ShapeBase or a SpotLight, else false); the node by `%d` (-1 when
-    // unparsed); a node 0..31 mounts. True whenever the object was found.
+    // unparsed); a node 0..31 mounts. True whenever the object was found, except (engine-only) false when the scene hierarchy
+    // refuses the mount.
     register_method(vm, "ShapeBase", "mountObject", |vm, c| {
         let Some(this) = c.this_object else {
             return Native::Bool(false);
@@ -237,6 +242,9 @@ pub fn register(vm: &mut Vm) {
         if let Some(light) = vm.objects().find(arg(c, 2))
             && crate::scene::lights::is_spot(vm, light)
         {
+            if crate::scene::links::mount_refused(vm, this, light) {
+                return Native::Bool(false);
+            }
             let node = scan_int(arg(c, 3)).unwrap_or(-1);
             if let Ok(node) = u32::try_from(node)
                 && node < MOUNT_NODES
@@ -248,6 +256,9 @@ pub fn register(vm: &mut Vm) {
         let Some(obj) = shape_base(vm, arg(c, 2)) else {
             return Native::Bool(false);
         };
+        if crate::scene::links::mount_refused(vm, this, obj) {
+            return Native::Bool(false);
+        }
         let node = scan_int(arg(c, 3)).unwrap_or(-1);
         if let Ok(node) = u32::try_from(node)
             && node < MOUNT_NODES

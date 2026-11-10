@@ -16,6 +16,8 @@ categories = ["game-development", "simulation", "mathematics"]
 [dependencies]
 # The format-neutral map layer the map collision reads.
 torque-mapcore = { path = "../torque-mapcore" }
+# The hash of the engine's own ids in the movers' hot maps (`hash`).
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 # The Torque map importer and synthetic files for the map collision's tests.

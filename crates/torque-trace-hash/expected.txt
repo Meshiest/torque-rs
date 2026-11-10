@@ -1,0 +1,48 @@
+# The lines `just trace-hash` must print (natively and as wasm32), one per scenario and fold. A change to a line comes with
+# its reason here, one `#` line above it. The `tge` lines are Torque's protocol and never move.
+figure tge ea637b68aa3eaf81
+buggy tge 590baa604ba3b7aa
+# The engine's own protocol over the memory link: one packet a tick each way, the ghost lane at the byte rate's size
+# (256 KiB/s), the session's acks in place of TGE's.
+figure engine 45159b8e603266ea
+buggy engine a8c6b4dadf0a29ef
+all tge f8cf53d9d1a33026
+all engine cb53dd915036b58d
+figure-smooth tge 218cc5e67d025571
+predictors tge c63f6b6b971854cc
+rapier-drop none 31a5ce13c9db549d
+# rapier-compound: 24 bodies, 16 of them compounds of two to four overlapping, off-centre boxes (so the summed mass, centre of mass and
+# inertia, the compound's BVH and its contacts with the hills and the keep are all covered), four with a tilted-plane hull among sound
+# ones, four single hulls of points in a tilted plane or on a line (made as their boxes). It first printed two values, native and
+# wasm32: Rapier's `std` feature gave the 3x3 inertia eigen solver the platform's `acos` and `cos`. Without that feature it goes
+# through `libm` and both targets print this one; rapier-drop did not move.
+rapier-compound none 19dbcc3382c7596e
+# physics: the fold of the two physics scenarios (it moved only because rapier-compound joined it).
+physics none 34ce915c49a2fd14
+# Players' and vehicles' boxes are kinematic bodies of the props' world: a crate falls onto a figure, not through it.
+props-drop tge 7447efc2cab8db1c
+# Joints between props (tether, winch, weld, hinge) and a Player's grapple; the figure's box is a kinematic body of the
+# props' world.
+props-joints tge 8b5a56153052676e
+# carry: the figure walks a crate held on a grapple past two others; the client predicts the crate with the figure's own moves, and the grapple pulls it by the pair's reduced mass.
+carry tge f7c0ef4cd6a55e3d
+# projectile-props: the figure holds a crate among four others while its own shots and blasts hit it; the client makes a hit's push at the move of the hit.
+# The figure's box is a kinematic body of the props' world, which the crates around it meet.
+projectile-props tge f5be5e5c2ceb0604
+# The fold of the plugin scenarios: props-drop, props-joints, carry and projectile-props.
+plugins tge e43f138fb2c89d6d
+# The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
+# reparents with both keep modes. The engine's protocol sends the links to clients, so every local
+# pose is rounded to the wire's steps on the server (1/1024 units, 15-bit rotation parts) and the worlds move by that much.
+# The client's figure rides a deck hung on a moving lift, the server's figure and the client's prediction hashed each tick.
+hierarchy engine d5bdc4032123d6c1
+# Props in the scene hierarchy (engine mode): four crates driven by a lift that slides, rises and turns with a loose crate on
+# each, three bodies with two parts each under a walking figure, and the changes between (a driven crate let go, a crate hung on a
+# body, a body frozen and thawed, a part's local pose set, a body with parts deleted, a driven crate hung on another). Every
+# prop's state, every part's pose in its body's frame and every local pose are hashed each tick.
+hierarchy-props engine 51b44f0b0b721733
+# turret: one client drives the buggy as a tank while a second controls a Player turret hung on its roof, aiming it; the
+# server sends the turret's state in the tank's frame and the gunner predicts it there and draws it on the drawn tank.
+turret engine 54b46db5a559244e
+# The fold of the scene scenarios: hierarchy, hierarchy-props and turret (it moved only because the three now fold together).
+scene engine 338997006c72880d

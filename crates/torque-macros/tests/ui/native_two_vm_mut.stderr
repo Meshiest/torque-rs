@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: a native takes at most one `VmMut`
+ --> tests/ui/native_two_vm_mut.rs:5:4
+  |
+5 | fn twice(_first: VmMut, _second: VmMut) {}
+  |    ^^^^^ evaluation of `_` failed here

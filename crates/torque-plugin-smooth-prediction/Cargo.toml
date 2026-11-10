@@ -1,0 +1,21 @@
+[package]
+name = "torque-plugin-smooth-prediction"
+description = "A client predictor for torque-rs that corrects as TGE does but eases the correction out of what is drawn, so the player never sees a snap"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "prediction", "netcode", "plugin", "gamedev"]
+categories = ["game-development"]
+
+# A predictor on the client's prediction slot (`torque_client::predict::slot`): TGE's scheme runs unchanged (the same moves,
+# checksums and bytes on the wire), and only the drawn body, eye and camera carry the correction's error, shrinking each tick.
+
+[dependencies]
+torque-client = { path = "../torque-client" }
+torque-engine = { path = "../torque-engine" }
+
+[lints]
+workspace = true

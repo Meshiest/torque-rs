@@ -1,13 +1,22 @@
-//! The view's vector math: shots against an interior's faces, the camera boom and an interior's panes.
+//! The view's vector math: shots against an interior's faces, the camera boom, an interior's panes and a frame of the map's
+//! interiors.
 
+use std::collections::BTreeMap;
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use torque_app::camera_boom::CameraBoom;
 use torque_app::ghosts::first_hit;
-use torque_app::interiors::panes;
-use torque_render_scene::Vertex;
+use torque_app::interiors::{Interiors, panes};
+use torque_app::view::WorldView;
+use torque_ghost_world::tge::TgeClientSet;
+use torque_ghost_world::world::{ClientWorld, Ghost};
+use torque_ghosts::interior::{InteriorInit, InteriorInstance};
+use torque_ghosts::{F32, TgeClass, TgeRecord};
+use torque_interior_builder::{Brush, Options, TexGen, build, materials};
+use torque_render_core::Gpu;
 use torque_render_scene::decals::Triangle;
+use torque_render_scene::{Assets, Vertex};
 
 /// A room's faces: a wavy floor and four walls, `n` triangles in all.
 fn room(n: usize) -> Vec<Triangle> {
@@ -102,5 +111,101 @@ fn interior_panes(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, shots, booms, interior_panes);
+fn cube(min: [f64; 3], max: [f64; 3], material: &str) -> Brush {
+    Brush::cuboid(min.into(), max.into(), material, |n| TexGen::world(n, 4.0))
+}
+
+/// A floor with forty glass blocks on it (see-through: drawn each frame as panes).
+fn glass_yard() -> Vec<u8> {
+    let mut brushes = vec![cube([-20.0, -20.0, -1.0], [20.0, 20.0, 0.0], "floor")];
+    for i in 0..40 {
+        let x = -19.0 + f64::from(i) * 0.9;
+        brushes.push(cube([x, -2.0, 0.0], [x + 0.5, 2.0, 3.0], "glass"));
+    }
+    let mut built = build(&brushes, &Options::default()).expect("the yard builds");
+    let flags = BTreeMap::from([(
+        "glass".to_string(),
+        torque_maps::dif::surface_flags::TRANSLUCENT,
+    )]);
+    materials::mark(&mut built.dif, &flags);
+    built.bytes().expect("the yard writes")
+}
+
+struct Yard(Vec<u8>);
+
+impl Assets for Yard {
+    fn read(&self, path: &str) -> Option<Vec<u8>> {
+        path.eq_ignore_ascii_case("bench/yard.dif")
+            .then(|| self.0.clone())
+    }
+}
+
+/// 100 interiors of the glass yard, 50 units apart.
+fn yards() -> ClientWorld<TgeClientSet> {
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    for i in 0..100u32 {
+        let mut matrix = [F32::new(0.0); 16];
+        for k in [0, 5, 10, 15] {
+            matrix[k] = F32::new(1.0);
+        }
+        matrix[3] = F32::new((i % 10) as f32 * 50.0);
+        matrix[7] = F32::new((i / 10) as f32 * 50.0);
+        let record = InteriorInstance {
+            init: Some(InteriorInit {
+                crc: 0,
+                file: b"bench/yard.dif".to_vec(),
+                show_terrain_inside: false,
+                matrix,
+                scale: [F32::new(1.0); 3],
+                alarm: false,
+                skin_base: Vec::new(),
+                audio_profile: None,
+                audio_environment: None,
+                gl_lighting: false,
+            }),
+            transform: None,
+            alarm: false,
+        };
+        let ghost = Ghost {
+            class: Some(TgeClass::InteriorInstance),
+            serial: i as usize + 1,
+            always: false,
+            record: Some(TgeRecord::InteriorInstance(record)),
+            part: (),
+            position: None,
+            updates: 0,
+        };
+        w.ghosts.insert(i + 1, ghost);
+    }
+    w
+}
+
+/// A frame's interiors when 100 are kept and none changed: what the view is handed every frame.
+fn interiors_update(c: &mut Criterion) {
+    let gpu = match Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("interiors update skipped: {e}");
+            return;
+        }
+    };
+    let mut view = WorldView::new(&gpu);
+    let files = Yard(glass_yard());
+    let world = yards();
+    let mut interiors = Interiors::default();
+    let panes = interiors.update(&mut view, &files, &world, &mut |_, _| {});
+    assert!(!panes.is_empty(), "the yards have panes");
+    view.set_objects(panes);
+    // Each frame's panes are handed to the view, as a frame does: the next frame's are made from them.
+    c.bench_function("interiors update 100 kept", |b| {
+        b.iter(|| {
+            let panes = interiors.update(&mut view, &files, &world, &mut |_, _| {});
+            let n = panes.len();
+            view.set_objects(panes);
+            black_box(n)
+        })
+    });
+}
+
+criterion_group!(benches, shots, booms, interior_panes, interiors_update);
 criterion_main!(benches);

@@ -27,6 +27,7 @@ pub mod host;
 pub mod look;
 pub mod pose;
 pub mod shape_base;
+pub mod tether;
 pub mod transform;
 pub mod update_move;
 mod update_pos;
@@ -176,6 +177,9 @@ pub struct PlayerState {
     pub head: F3,
     pub rot: F3,
     pub velocity: F3,
+    /// The yaw in its parent's frame of a Player that moves in one (a scene-hierarchy child), turned by its moves as `rot`'s
+    /// yaw is and kept in one turn; `None` for any other Player (Torque's have none).
+    pub frame_yaw: Option<f32>,
     /// The impact flag, and the flag that blocks `onImpact` when set.
     pub impact_flag: u32,
     pub impact_block: u32,
@@ -293,6 +297,7 @@ impl PlayerState {
             head: [0.0; 3],
             rot: [0.0, 0.0, yaw],
             velocity: [0.0; 3],
+            frame_yaw: None,
             impact_flag: 0,
             impact_block: 0,
             speeds: [
@@ -517,6 +522,16 @@ impl Player {
             .is_none_or(|_| crate::ai::update_move_runs(false, self.s.client.is_some()));
         if result.is_ok() && runs {
             result = self.update_move(db, &m, host);
+        }
+        // The host's tether (a grapple), when it gives one: between the velocity `updateMove` made and the sweep along it. None
+        // (the default) leaves Torque's step as it is.
+        if result.is_ok()
+            && let Some(t) = host.tether(&self.s)
+        {
+            let change = tether::apply(&mut self.s, &t, DT);
+            if change != [0.0; 3] {
+                host.tethered(&self.s, change);
+            }
         }
         if result.is_ok() {
             look::update_look_animation(&mut self.s, db, host);

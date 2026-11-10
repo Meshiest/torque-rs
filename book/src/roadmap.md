@@ -8,6 +8,8 @@ What is planned, roughly in order. Items marked *tool* are build-time features.
 - TGE 1.4's networked objects: the ghost and datablock record codecs, the parent parts and the client's world of ghosts:
   see [Networked objects](networked-objects.md).
 - An example dedicated server and client over the loopback address: see [Server and client](server-and-client.md).
+- Plugins: the engine builder, plugin groups, `DefaultPlugins` and `Engine::run`, with the minimal example rebuilt on them: see
+  [Plugins](plugins.md).
 
 ## Foundations
 

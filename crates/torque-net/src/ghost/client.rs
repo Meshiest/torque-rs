@@ -164,6 +164,7 @@ impl<C: GhostCodec> GhostClient<C> {
         let index = r.read_bits(self.ghost_bits)?;
         self.last_index = Some(index);
         if !r.read_flag()? {
+            self.check_room(index)?;
             let placeholder = self.codec.placeholder();
             self.ghosts.insert(index, placeholder);
             self.note(GhostChange::Created(index));
@@ -180,8 +181,16 @@ impl<C: GhostCodec> GhostClient<C> {
         class: ClassForm,
         r: &mut BitReader,
     ) -> Result<(), NetError> {
-        // The connection's ghost table holds `2^ghost_bits` (24 bits at most): an index past it is a hostile server's, and so is a
-        // ghost past its count.
+        self.check_room(index)?;
+        let object = self.codec.create(class, r)?;
+        self.ghosts.insert(index, object);
+        self.note(GhostChange::Created(index));
+        Ok(())
+    }
+
+    /// Whether a ghost may be entered at `index`: the connection's ghost table holds `2^ghost_bits` (24 bits at most), so an
+    /// index past it is a hostile server's, and so is a ghost past its count (a real one or a placeholder alike).
+    fn check_room(&self, index: u32) -> Result<(), NetError> {
         let limit = self.table_size();
         if index >= limit {
             return Err(NetError::Cap {
@@ -197,9 +206,6 @@ impl<C: GhostCodec> GhostClient<C> {
                 cap: u64::from(limit),
             });
         }
-        let object = self.codec.create(class, r)?;
-        self.ghosts.insert(index, object);
-        self.note(GhostChange::Created(index));
         Ok(())
     }
 
@@ -222,10 +228,8 @@ impl<C: GhostCodec> GhostClient<C> {
                 }
                 self.note(GhostChange::Deleted(index));
                 report.deleted += 1;
-            } else if let Some(mut object) = self.ghosts.remove(&index) {
-                let result = self.codec.update(&mut object, r);
-                self.ghosts.insert(index, object);
-                result?;
+            } else if let Some(object) = self.ghosts.get_mut(&index) {
+                self.codec.update(object, r)?;
                 self.note(GhostChange::Updated(index));
                 report.updated += 1;
             } else {

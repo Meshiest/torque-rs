@@ -198,8 +198,9 @@ pub fn install_keys_with(vm: &mut Vm, keys: &DatablockKeys, rule: Option<StaticW
     let keys = keys.clone();
     vm.set_static_write_observer(Some(Rc::new(
         move |vm: &mut Vm, id: Option<ObjId>, class: ClassId| {
-            // The observer this one replaces (the simulation work: a PlayerData's Players rebuild their products).
-            torque_game::sim::player::datablock_written(vm, id, class);
+            // The observer this one replaces (the scene hierarchy hears a moved object; a PlayerData's Players rebuild their
+            // products).
+            torque_game::scene::object::static_written(vm, id, class);
             let classes = &vm.objects().classes;
             if !classes.is_a(class, SIM_DATA_BLOCK) {
                 return;
@@ -360,6 +361,8 @@ pub struct ConnDatablocks {
     window: Option<usize>,
     /// The message that ends a chain ([`NetCodecs::datablocks_done_message`]; none: Torque's `DataBlocksDone`).
     done_message: Option<u8>,
+    /// The connection may be sent the plugins' datablock classes ([`set_plugin_classes`](Self::set_plugin_classes)).
+    plugin_classes: bool,
 }
 
 /// What a `transmitDataBlocks` call did.
@@ -395,6 +398,13 @@ impl ConnDatablocks {
     /// The events its chains keep out (set at the accept, before any chain), at most [`MAX_DATABLOCK_WINDOW`].
     pub fn set_window(&mut self, window: usize) {
         self.window = Some(window.clamp(1, MAX_DATABLOCK_WINDOW));
+    }
+
+    /// Whether the connection's peer can read the plugins' datablock classes (`torque_ghosts::plugin`: the engine's own client,
+    /// or every client of a server that says they all are). Off by default: such a datablock goes out as the one 0 bit of a
+    /// datablock the client has, so a TGE client is never sent a class id it does not know.
+    pub fn set_plugin_classes(&mut self, on: bool) {
+        self.plugin_classes = on;
     }
 
     /// The events a chain keeps queued or unacked.
@@ -691,6 +701,12 @@ impl ConnDatablocks {
         let Some(class) = datablock_class(objects, object, codecs) else {
             return none;
         };
+        let plugin = codecs
+            .plugin_classes()
+            .is_some_and(|p| p.datablock(class).is_some());
+        if plugin && !self.plugin_classes {
+            return none;
+        }
         let view = ObjectView {
             objects,
             object,

@@ -10,6 +10,16 @@
 //! - [`behind`]: the camera behind a figure, looking where the figure looks (a switch to the first person moves it, never turns
 //!   it).
 //! - [`names_camera`]: the camera the names over the other players are placed from, the one the example draws the world from.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - `game/pause.cs` keeps at most `$Client::MaxMapChoices` (64) of a server's map names
+//!   (`a_server_sending_ten_thousand_map_choices_leaves_sixty_four`, `torque-example-fps`'s `talk` test).
+//! - `game/server.cs` refuses a line over its network's allowance before cleaning it (`a_client_over_its_allowance_pays_only_the_cut`),
+//!   counts lines per /24, and makes room for a new network by forgetting the allowance with the most lines left
+//!   (`a_new_network_chats_once_its_allowance_fills_with_256_others_holding_one`); that new allowance starts empty, so
+//!   cycling through networks never sends past the rate (`cycling_through_networks_never_sends_past_the_rate`).
 
 pub mod behind;
 pub mod camera_log;

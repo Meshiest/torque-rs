@@ -1,0 +1,14 @@
+[package]
+name = "torque-plugin-abi-header"
+description = "Writes, or checks, the C header of the native extension ABI (include/torque_plugin.h) with cbindgen"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Its own workspace, apart from the engine's: cbindgen is a build tool here, never a dependency of the engine. Run it with
+# `just c-header` (write) or `just c-header-check` (fail when the checked-in header is not what the ABI makes).
+[workspace]
+
+[dependencies]
+cbindgen = { version = "0.28", default-features = false }

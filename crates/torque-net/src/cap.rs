@@ -24,21 +24,42 @@ pub const NET_MAX_DATAGRAM: usize = 1_500;
 /// connection is below `1 << its width`, so what a client keeps by index is bounded by it.
 pub const NET_MAX_GHOST_BITS: u8 = 24;
 
-/// Connections that have been accepted but have not yet carried a valid game packet (TGE's `MaxPendingConnects`).
+/// Connections that have been accepted but have not yet carried a valid game packet (TGE's `MaxPendingConnects`). Past it, the
+/// oldest pending connection makes room for a new one: an honest client sends its first packet one round trip after its accept,
+/// so it is never the oldest for long.
 pub const NET_MAX_PENDING_CONNECTS: usize = 20;
 
 /// Pending connections one source IP address may hold at once.
 pub const NET_PENDING_PER_ADDR: usize = 2;
 
+/// Pending connections one source network (an IPv4 /24, an IPv6 /64: [`crate::fair::NetworkKey`]) may hold at once.
+pub const NET_PENDING_PER_NETWORK: usize = 4;
+
+/// Connections, pending or established, one source IP address may hold at once.
+pub const NET_CONNS_PER_ADDR: usize = 4;
+
+/// Connections, pending or established, one source network may hold at once.
+pub const NET_CONNS_PER_NETWORK: usize = 8;
+
+/// The share of a global per-second budget one source network may take: at most one [`NET_NETWORK_SHARE`]th
+/// ([`crate::fair::FairLimits::shared`]).
+pub const NET_NETWORK_SHARE: u32 = 8;
+
 /// How long a connection may stay pending before it is dropped.
-pub const NET_PENDING_TIMEOUT_MS: u32 = 10_000;
+pub const NET_PENDING_TIMEOUT_MS: u32 = 3_000;
+
+/// How old a pending connection must be before a full table evicts it for a network with no more than its share: an honest
+/// client has sent its first packet well before.
+pub const NET_PENDING_EVICT_AGE_MS: u32 = 2_000;
 
 /// Challenge replies one source IP address is given per second (a spoofed source can make the server answer a 5-byte request with
-/// a 21-byte reply; this and [`NET_CHALLENGE_REPLIES_PER_S`] bound that).
+/// a 21-byte reply; this and [`NET_CHALLENGES_PER_NETWORK_PER_S`] bound what one victim is sent). There is no total: a reply
+/// barely larger than its request reflects nothing worth bounding, and a total would let a spoofed flood take every honest
+/// client's challenge.
 pub const NET_CHALLENGES_PER_ADDR_PER_S: u32 = 4;
 
-/// Challenge replies the whole server sends per second.
-pub const NET_CHALLENGE_REPLIES_PER_S: u32 = 2_000;
+/// Challenge replies one source network is given per second.
+pub const NET_CHALLENGES_PER_NETWORK_PER_S: u32 = 32;
 
 /// Established connections allowed beyond `MaxPlayers` (the table holds `MaxPlayers + 4`).
 pub const NET_CONNECTIONS_MARGIN: usize = 4;
@@ -56,8 +77,8 @@ pub const NET_CONNECT_SCRIPT_PER_SRC_PER_S: u32 = 4;
 /// game packets); a 32-bit sequence cannot be guessed at this rate.
 pub const NET_DISCONNECTS_PER_CONN_PER_S: u32 = 8;
 
-/// Source addresses the per-address rate counters remember at once (the oldest is forgotten first).
-pub const NET_LIMITER_ENTRIES: usize = 1_024;
+/// Source addresses (or networks) a per-source rate counter remembers at once (the least recently used is forgotten first).
+pub const NET_LIMITER_ENTRIES: usize = 4_096;
 
 /// Arguments a connect request may carry (more are rejected with a reject string).
 pub const NET_MAX_CONNECT_ARGS: usize = 16;
@@ -141,13 +162,17 @@ pub const NET_PATH_ENTRIES: usize = 4_096;
 /// `queryLanServers` asks a server at most 1 broadcast ping, 4 pings and 4 info requests; this leaves room for a few in a row.
 pub const NET_INFO_REPLIES_PER_SRC_PER_S: u32 = 16;
 
-/// Info replies the whole server sends per second: an info reply is at most 1,500 bytes for a 6-byte request, so this
-/// bounds what spoofed requests can make the server send.
-pub const NET_INFO_REPLIES_PER_S: u32 = 256;
+/// Info replies one source network is sent per second.
+pub const NET_INFO_REPLIES_PER_NETWORK_PER_S: u32 = 32;
 
-/// Info requests a second whose reply runs the script's `onServerInfoQuery()` (the run also draws on the network's
-/// script window).
-pub const NET_INFO_SCRIPT_RUNS_PER_S: u32 = 32;
+/// How many times its request's size a reply may be, to any source (a connected player's address included): the server
+/// query's answers amplify nothing past it. This engine's clients pad their requests
+/// ([`crate::profile::QueryProfile::request_bytes`]) so a full answer fits.
+pub const NET_INFO_REPLY_FACTOR: usize = 3;
+
+/// The bytes a second of replies past [`NET_INFO_REPLY_FACTOR`] the whole server sends (a stock client's short requests),
+/// one source network at most a [`NET_NETWORK_SHARE`]th of them: what a spoofed flood can reflect off one server.
+pub const NET_INFO_AMPLIFIED_BYTES_PER_S: u32 = 16_384;
 
 /// The number of elements a wire count of `count` may stand for: `count` if it is at most `cap` and the `bits_left` can hold
 /// that many elements of `min_bits_each` bits (at least one bit each), else the error naming `what`.
@@ -185,3 +210,12 @@ pub fn vec_for<T>(
 #[cfg(test)]
 #[path = "cap_tests.rs"]
 mod tests;
+
+/// The longest prefix of `text` of at most `max` bytes that ends on a character.
+pub fn cut_str(text: &str, max: usize) -> &str {
+    let mut end = text.len().min(max);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.get(..end).unwrap_or("")
+}

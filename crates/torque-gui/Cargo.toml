@@ -11,13 +11,23 @@ keywords = ["torque", "gui", "torquescript", "gamedev"]
 categories = ["gui", "game-development"]
 
 [dependencies]
+# `ScriptClass`: a control class declared in Rust has its fields as a class does, and `EngineBuilder` takes the controls.
+torque-client-script-format = { path = "../torque-client-script-format" }
+torque-engine = { path = "../torque-engine" }
 torque-fonts = { path = "../torque-fonts" }
 torque-images = { path = "../torque-images" }
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The time a realm's image decodes and layouts cost, charged to the realm (a clock that works on the web too).
+web-time = "1.1"
 
 [dev-dependencies]
 # The draw tests' synthetic bitmaps.
 png = "0.18"
+criterion = { workspace = true }
+
+[[bench]]
+name = "gui"
+harness = false
 
 [lints]
 workspace = true

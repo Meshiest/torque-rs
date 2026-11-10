@@ -452,4 +452,52 @@ impl ZipMount {
             None
         }
     }
+
+    /// The first `max` bytes of the entry called `name`, inflating no more than them: a `max` of the entry's size or more is a
+    /// whole [`read`](Self::read) (its size and CRC checked). None when there is none, it failed before, or its stream ends early
+    /// or is not one (the entry is then unreadable, and what was inflated counts as wasted). The CRC of a prefix is not checked
+    /// (it covers the whole entry).
+    pub fn read_prefix(&self, name: &[u8], max: usize) -> Option<Vec<u8>> {
+        let slot = *self.by_name.get(&fold(name))?;
+        let entry = self.entries.get(slot)?;
+        if entry.folder {
+            return Some(Vec::new());
+        }
+        let want = u64::try_from(max).unwrap_or(u64::MAX);
+        if want >= entry.size {
+            return self.read(name);
+        }
+        let unreadable = self.unreadable.get(slot)?;
+        if unreadable.get() || self.wasted.get() >= MAX_WASTED_INFLATE {
+            return None;
+        }
+        let mut archive = self.archive.try_borrow_mut().ok()?;
+        let options = ZipReadOptions::new().ignore_encryption_flag(true);
+        let mut out = Vec::new();
+        let ok = match archive.by_index_with_options(entry.index, options) {
+            Ok(file) => {
+                // As `read`: room for what the stream can produce at most, never more than asked for; grown as it comes.
+                let room = want.min(
+                    file.compressed_size()
+                        .saturating_mul(1032)
+                        .saturating_add(1033),
+                );
+                out.try_reserve_exact(usize::try_from(room).unwrap_or(0))
+                    .is_ok()
+                    && file.take(want).read_to_end(&mut out).is_ok()
+                    && out.len() as u64 == want
+            }
+            Err(_) => false,
+        };
+        self.inflated
+            .set(self.inflated.get().saturating_add(out.len() as u64));
+        if ok {
+            Some(out)
+        } else {
+            unreadable.set(true);
+            self.wasted
+                .set(self.wasted.get().saturating_add(out.len() as u64));
+            None
+        }
+    }
 }

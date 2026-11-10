@@ -23,6 +23,8 @@ use torque::app::serve::{Bind, WebFlags};
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_vehicle_demo::files::{GameFiles, MISSION};
 #[cfg(not(target_arch = "wasm32"))]
+use torque_example_vehicle_demo::seats::server_engine;
+#[cfg(not(target_arch = "wasm32"))]
 use torque_example_vehicle_demo::server::{DEFAULT_PORT, WorldServer};
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -53,7 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("vehicle-demo-server: warning: {warning}");
     }
     let served = web.listen(bind, "vehicle-demo")?;
-    let mut server = WorldServer::start_dedicated_on(&files, served.listen.clone(), &name)?;
+    let engine = server_engine()?;
+    let mut server =
+        WorldServer::start_dedicated_on(&engine, &files, served.listen.clone(), &name)?;
     for line in served.start_lines(&mut server, &name, MISSION, "/?join") {
         println!("vehicle-demo-server: {line}");
     }

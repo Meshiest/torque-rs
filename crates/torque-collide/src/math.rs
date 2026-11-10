@@ -114,6 +114,11 @@ pub fn mul_p(m: &Matrix, p: F3) -> F3 {
     (library::get().mul_p)(m, p)
 }
 
+/// Where `m` puts the origin: its translation.
+pub fn translation(m: &Matrix) -> F3 {
+    [m[3], m[7], m[11]]
+}
+
 /// `MatrixF::mulV` (through the table).
 pub fn mul_v(m: &Matrix, v: F3) -> F3 {
     (library::get().mul_v)(m, v)
@@ -253,6 +258,51 @@ pub fn set_euler(e: F3) -> Matrix {
 /// whose squared length is below `10e-20` gives the identity.
 pub fn quat_matrix(q: [f32; 4]) -> Matrix {
     (library::get().quat_matrix)(q)
+}
+
+/// A quaternion `(x, y, z, w)` as `QuatF` stores it.
+pub type Quat = [f32; 4];
+
+/// The identity quaternion.
+pub const QUAT_IDENTITY: Quat = [0.0, 0.0, 0.0, 1.0];
+
+/// `QuatF::normalize()`: a zero quaternion becomes the identity.
+pub fn plain_quat_normalize(q: &Quat) -> Quat {
+    let [x, y, z, w] = *q;
+    let l = (x * x + y * y + z * z + w * w).sqrt();
+    if l == 0.0 {
+        return QUAT_IDENTITY;
+    }
+    [x / l, y / l, z / l, w / l]
+}
+
+/// `QuatF::set(const MatrixF&)`: from the trace when it is positive, else from the largest diagonal element. The inverse of
+/// [`quat_matrix`].
+pub fn plain_quat_from_matrix(m: &Matrix) -> Quat {
+    let trace = m[0] + m[5] + m[10];
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt();
+        let w = s * 0.5;
+        let s = 0.5 / s;
+        return [(m[6] - m[9]) * s, (m[8] - m[2]) * s, (m[1] - m[4]) * s, w];
+    }
+    let mut i = 0usize;
+    if m[5] > m[0] {
+        i = 1;
+    }
+    if m[10] > m[5 * i] {
+        i = 2;
+    }
+    let j = (i + 1) % 3;
+    let k = (j + 1) % 3;
+    let s = ((m[5 * i] - (m[5 * j] + m[5 * k])) + 1.0).sqrt();
+    let mut q = [0.0f32; 4];
+    q[i] = s * 0.5;
+    let s = 0.5 / s;
+    q[j] = (m[4 * i + j] + m[4 * j + i]) * s;
+    q[k] = (m[4 * i + k] + m[4 * k + i]) * s;
+    q[3] = (m[4 * j + k] - m[4 * k + j]) * s;
+    q
 }
 
 /// `m_point3F_interpolate` (through the table): `from * (1 - t) + to * t` per component.

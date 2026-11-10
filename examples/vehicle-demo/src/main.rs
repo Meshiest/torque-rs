@@ -3,8 +3,9 @@
 //! `vehicle-demo` opens the window on the menu: play alone, host a game (the others on the network join it), or join one from the
 //! list of games on the network or at a typed address. `--solo` plays alone at once (no socket for the game, nobody on the network
 //! sees it), `--host` hosts at once, `--join <address>` joins at once (one of the three), `--name <name>` sets the player's name,
-//! `--bind <address>` hosts on that address instead of this computer's LAN address. `--shots <dir>` draws its pictures offscreen
-//! into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit;
+//! `--bind <address>` hosts on that address instead of this computer's LAN address, `--gamepad` plays with gamepads (a build with
+//! the `gamepad` feature: the left stick walks or drives, the right stick looks, A jumps or brakes, X takes a seat, B gets out).
+//! `--shots <dir>` draws its pictures offscreen into `dir` (two clients over the loopback address, no window); `--lit-particle-shots <dir>` the tires' dust unlit and lit;
 //! `--cloud-shots <dir>` the sky's clouds through the day, with the engine's clouds and with the demo's; `--name-shots <dir>` the
 //! other player's name over his head on foot and in a seat (at 1280x720 and at 640x360); `--switch-shots <dir>` the figure on
 //! foot from behind and from its eyes, looking down, level and up. `--web-files <dir>`
@@ -16,9 +17,16 @@
 //! dedicated server is `vehicle-demo-server`.
 
 #[cfg(not(target_arch = "wasm32"))]
+use std::cell::Cell;
+
+#[cfg(not(target_arch = "wasm32"))]
 use torque::app::cli::{Args, unknown};
 #[cfg(not(target_arch = "wasm32"))]
-use torque_example_vehicle_demo::client::{ClientOptions, Start, VehicleDemo};
+use torque::app::run::EngineRun as _;
+#[cfg(not(target_arch = "wasm32"))]
+use torque::engine::EngineBuilder;
+#[cfg(not(target_arch = "wasm32"))]
+use torque_example_vehicle_demo::client::{ClientOptions, DemoPlugins, Start, VehicleDemo};
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_vehicle_demo::files::{self, GameFiles};
 #[cfg(not(target_arch = "wasm32"))]
@@ -75,6 +83,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--join" => join = Some(args.value(&arg, "an address")?),
             "--name" => options.name = args.value(&arg, "a name")?,
             "--bind" => options.host_address = args.ipv4(&arg)?,
+            "--gamepad" if cfg!(feature = "gamepad") => options.gamepad = true,
+            "--gamepad" => return Err("--gamepad needs a build with the gamepad feature".into()),
             _ => return Err(unknown(&arg).into()),
         }
     }
@@ -117,8 +127,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
-    let mut game = VehicleDemo::new(GameFiles::bundled()?, options)?;
-    start.apply(&mut game)?;
-    torque::app::window::run(game)?;
+    let files = GameFiles::bundled()?;
+    let plugins = DemoPlugins::new(&files, &options)?;
+    // The runner makes the game from the built engine, once.
+    let files = Cell::new(Some(files));
+    EngineBuilder::new()
+        .add_plugins(plugins)
+        .app(move |engine| {
+            let files = files.take().ok_or("the game is made once")?;
+            let mut game = VehicleDemo::from_engine(engine, files, options.clone())?;
+            start.clone().apply(&mut game)?;
+            Ok(game)
+        })
+        .run()?;
     Ok(())
 }

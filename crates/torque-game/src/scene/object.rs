@@ -20,8 +20,8 @@
 //! visible and are not kept.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree:
-//! `scene/sceneObject.cpp` and, for `getDataBlock`, `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012 GarageGames, LLC;
-//! Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
+//! `scene/sceneObject.cpp` and, for `getDataBlock` and `setDataBlock`, `T3D/gameBase/gameBase.cpp` (each Copyright (c) 2012
+//! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
 
 use std::rc::Rc;
 
@@ -124,9 +124,9 @@ pub fn set_transform(vm: &mut Vm, id: ObjId, matrix: Matrix) {
         return;
     }
     if camera::is_camera(vm, id) {
-        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those.
+        // `Camera::setTransform` rebuilds the matrix from a pitch and a yaw and keeps those; it marks nothing (only a tick
+        // with a move marks `MoveMask`).
         camera::set_transform(vm, id, &matrix);
-        ghosts::mark(vm, id, camera::MOVE_MASK);
     } else if crate::sim::item::is_item(vm, id) {
         crate::sim::item::set_transform(vm, id, &matrix);
     } else if crate::sim::vehicle::is_vehicle(vm, id) {
@@ -161,8 +161,10 @@ impl EngineClass for SceneBehaviour {
         Ok(true)
     }
 
-    /// `SceneObject::onRemove` takes the object out of the container (the bins), charged (always carried out).
+    /// `SceneObject::onRemove` takes the object out of the container (the bins), charged (always carried out), after the
+    /// scene hierarchy, if the server has one, let go of it ([`super::links::removed`]).
     fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+        super::links::removed(vm, id);
         let vm: &Vm = vm;
         self.container
             .bins_mut()
@@ -239,8 +241,105 @@ fn world_box_of(vm: &Vm, id: ObjId) -> Option<SceneState> {
     ext::get(vm.objects(), id)?.scene
 }
 
-/// Registers the `SceneObject` behaviour and the ten console methods, and `getType`.
+/// The observer of a server's static-field writes (`Vm::set_static_write_observer`): a script's write of `position`,
+/// `rotation` or `scale` reaches the scene hierarchy ([`super::links::written`], which compares the transform it holds,
+/// so other fields cost one lookup), then a datablock's write its Players and images
+/// ([`crate::sim::player::datablock_written`]).
+pub fn static_written(vm: &mut Vm, id: Option<ObjId>, class: ts_vm::sim::ClassId) {
+    if let Some(id) = id {
+        super::links::written(vm, id);
+    }
+    crate::sim::player::datablock_written(vm, id, class);
+}
+
+/// `GameBase`'s `DataBlockMask`: the update bit that sends a connection the object's datablock again (the ghost codecs' own).
+pub const DATABLOCK_MASK: u32 = torque_ghosts::parts::mask::DATABLOCK;
+
+/// The datablock class an object of each class below `GameBase` takes (`dynamic_cast` in the class's `onNewDataBlock`), the
+/// most derived first.
+const DATABLOCK_CLASSES: [(&str, &str); 8] = [
+    ("Player", "PlayerData"),
+    ("Item", "ItemData"),
+    ("StaticShape", "StaticShapeData"),
+    ("Camera", "CameraData"),
+    ("WheeledVehicle", "WheeledVehicleData"),
+    ("FlyingVehicle", "FlyingVehicleData"),
+    ("Projectile", "ProjectileData"),
+    ("ShapeBase", "ShapeBaseData"),
+];
+
+/// Whether `db` is a datablock of the class `id`'s `onNewDataBlock` takes (a `GameBaseData` for a class that names none).
+fn takes_datablock(vm: &Vm, id: ObjId, db: ObjId) -> bool {
+    let wanted = DATABLOCK_CLASSES
+        .iter()
+        .find(|(object, _)| camera::is_class(vm, id, object))
+        .map_or("GameBaseData", |(_, data)| data);
+    camera::is_class(vm, db, wanted)
+}
+
+/// The classes' `onNewDataBlock` work for `db`, parent classes first: the camera's, the shape's, the Player's, the Item's and
+/// the vehicles'. A class that is not `id`'s, or a datablock that is not its class's, does nothing. It runs for the first
+/// datablock (`GameBase::onAdd`) and again for each later one (`setDataBlock`), so each keeps the state of the datablock it
+/// had.
+///
+/// # Errors
+/// A class's work ran past the script engine's limits.
+pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
+    camera::new_datablock(vm, id);
+    super::shapebase::new_datablock(vm, id, db)?;
+    crate::sim::player::new_datablock(vm, id, db)?;
+    crate::sim::item::new_datablock(vm, id, db);
+    crate::sim::vehicle::new_datablock(vm, id, db);
+    Ok(())
+}
+
+/// `GameBase::setDataBlock`: an object that is not added yet only takes the pointer; an added one given another datablock
+/// writes the pointer, marks [`DATABLOCK_MASK`] so every connection that ghosts it reads the new datablock, runs the classes'
+/// `onNewDataBlock` ([`new_datablock`]), then the new datablock's script `onNewDataBlock(%db, %obj)`. False for a datablock
+/// the object's class does not take, with nothing changed; true otherwise, also for the datablock it already has.
+///
+/// # Errors
+/// A class's work or the script callback ran past the script engine's limits.
+pub fn set_data_block(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<bool, VmError> {
+    // `GameBase`'s `on_add` hands the object to the process list as its last step, which is when TGE's `isProperlyAdded` turns
+    // true; the script callbacks that run before that only write the pointer.
+    let added = ext::get(vm.objects(), id).is_some_and(|e| e.process.is_some());
+    if !added {
+        set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
+        return Ok(true);
+    }
+    if super::access::object_field(vm, id, b"dataBlock") == Some(db) {
+        return Ok(true);
+    }
+    if !takes_datablock(vm, id, db) {
+        return Ok(false);
+    }
+    set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
+    ghosts::mark(vm, id, DATABLOCK_MASK);
+    new_datablock(vm, id, db)?;
+    vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()])?;
+    Ok(true)
+}
+
+/// The server's container, kept in its script engine for code that has no other way to it (the scene hierarchy's
+/// [`super::links::carry`]).
+struct ServerContainer(Rc<Container>);
+
+/// The container [`register`] was given.
+pub fn container_of(vm: &Vm) -> Option<Rc<Container>> {
+    vm.extension::<ServerContainer>().map(|c| Rc::clone(&c.0))
+}
+
+/// The object's transform after the scene hierarchy wrote its children's, so a script never reads a child's stale pose.
+fn current_matrix(vm: &mut Vm, id: Option<ObjId>) -> Option<Matrix> {
+    super::links::resolve(vm);
+    id.and_then(|id| matrix_of(vm, id))
+}
+
+/// Registers the `SceneObject` behaviour and the ten console methods, `getType`, and `GameBase`'s `getDataBlock` and
+/// `setDataBlock`.
 pub fn register(vm: &mut Vm, container: &Rc<Container>) {
+    vm.set_extension(Rc::new(ServerContainer(Rc::clone(container))));
     vm.set_class_behaviour(
         SCENE_OBJECT_CLASS,
         Rc::new(SceneBehaviour {
@@ -254,6 +353,28 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
             .and_then(|id| crate::scene::access::object_field(vm, id, b"dataBlock"));
         Native::Int(db.map_or(0, |d| i32::try_from(d).unwrap_or(0)))
     });
+    // `GameBase::setDataBlock`: false (and a console error) for a name that is not a datablock.
+    register_method(vm, "GameBase", "setDataBlock", |vm, c| {
+        let Some(id) = c.this_object else {
+            return Native::Bool(false);
+        };
+        let name = c.argv.get(2).map_or(&b""[..], Vec::as_slice);
+        let found = vm
+            .objects()
+            .find(name)
+            .filter(|db| camera::is_class(vm, *db, "GameBaseData"));
+        let Some(db) = found else {
+            vm.error(format!(
+                "Could not find data block \"{}\"",
+                String::from_utf8_lossy(name)
+            ));
+            return Native::Bool(false);
+        };
+        match set_data_block(vm, id, db) {
+            Ok(done) => Native::Bool(done),
+            Err(e) => Native::Fail(e),
+        }
+    });
     // The type mask lives in the object's ext, for every object: 0 until a class sets it.
     vm.register_in("SimObject", "getType", 2, 2, "obj.getType()", |vm, c| {
         let mask = c
@@ -263,20 +384,20 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         Native::Int(i32::from_ne_bytes(mask.to_ne_bytes()))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getTransform", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| transform_text(crate::geometry::of(vm), &m)))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getPosition", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3(position_of(&m))))
     });
     // Columns 1 and 2 of the rotation: where the object's y and z axes point.
     register_method(vm, SCENE_OBJECT_CLASS, "getForwardVector", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3([m[1], m[5], m[9]])))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getUpVector", |vm, c| {
-        let matrix = c.this_object.and_then(|id| matrix_of(vm, id));
+        let matrix = current_matrix(vm, c.this_object);
         Native::Str(matrix.map_or_else(Vec::new, |m| text3([m[2], m[6], m[10]])))
     });
     let w = Rc::clone(container);
@@ -315,10 +436,12 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         Native::Void
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getWorldBox", |vm, c| {
+        super::links::resolve(vm);
         let state = c.this_object.and_then(|id| world_box_of(vm, id));
         Native::Str(state.map_or_else(Vec::new, |s| text6(s.world_min, s.world_max)))
     });
     register_method(vm, SCENE_OBJECT_CLASS, "getWorldBoxCenter", |vm, c| {
+        super::links::resolve(vm);
         let state = c.this_object.and_then(|id| world_box_of(vm, id));
         Native::Str(state.map_or_else(Vec::new, |s| {
             text3(grid::box_center(s.world_min, s.world_max))

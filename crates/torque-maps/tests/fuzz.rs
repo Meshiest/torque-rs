@@ -55,6 +55,9 @@ fn hostile_map_files_never_panic_and_the_allocation_caps_hold() {
         println!("first failure: {f}");
     }
     assert!(summary.clean(), "{}", summary.line());
+    // A reader whose work is tied to its input takes milliseconds on a file this small; a case near this is a quadratic path.
+    let bound = std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 });
+    assert!(summary.longest < bound, "{}", summary.line());
     assert_eq!(summary.cases, cases.max(seeds.len()));
     // Not vacuous: most mutations are refused, some still read, and some of those fail the check.
     assert!(summary.refused > cases / 4, "{}", summary.line());

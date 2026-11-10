@@ -12,6 +12,9 @@
 //! |---|---|---|---|
 //! | `script` | `script` | `torque-ts-*` | TorqueScript: text rules, compiled scripts (DSO), the compiler and the runtime |
 //! | `collide` | `collide` | `torque-collide` | convexes, GJK, polygon lists, working sets, object type masks |
+//! | `engine` | `engine` | `torque-engine` | plugins, plugin groups and the engine builder that replays their recipes into each script engine |
+//! | `content` | `content` | `torque-content` | the content formats as asset loaders: glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer |
+//! | `mods` | `mods` | `torque-mods` | local mods: folders and zips of scripts and assets mounted over a game's files, with replaceable rules for finding, ordering and enabling them |
 //! | `shapes` | `shapes` | `torque-shapes` | DTS shapes and DSQ sequences, collision meshes, animated poses |
 //! | `sim` | `sim` | `torque-sim` | the process list, players, AI players, items, projectiles, mounted images |
 //! | `vehicle` | `vehicle` | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
@@ -28,7 +31,11 @@
 //! | `gui` | `gui` | `torque-gui` | the GUI object model, layout and the script methods of GUI classes |
 //! | `audio` | `audio` | `torque-audio` | sound decoding, sources, channels and the mixer |
 //! | `client` | `client` | `torque-client` | the client's engine half: the connection, prediction, action maps, the server query |
+//! | `app_server` | `app-server` | `torque-app-server` | the server half of `app`: files, a server, terrain and water, the dedicated runner, `MinimalPlugins` (no GPU) |
 //! | `app` | `app` (off by default) | `torque-app` | what a game made on the engine shares: files, server, client, window, world view, pictures |
+//!
+//! `app` is `app-core` with the engine's renderer (`renderer`); a game that draws only with renderers of its own takes
+//! `app-core` and registers them on the renderer slot (see `torque::app::renderers`).
 //!
 //! Optional features that are off by default:
 //!
@@ -37,6 +44,8 @@
 //! - `client-window`: the client's window glue (`client::platform`, over winit).
 //! - `shape-builder`: `shape_builder`, a builder of shape models from code (`torque-shape-builder`).
 //! - `full`: everything above.
+//! - `native-extensions`: `extensions`, libraries loaded at run time from a local `plugins/` folder over the engine's C ABI
+//!   (`torque-plugin-loader`); not in `full`, since an extension runs with the game's full rights.
 //!
 //! The crates that draw (the renderer and its back ends) need a GPU and join as features that are off by default:
 //!
@@ -45,8 +54,8 @@
 //!   `torque-render-scene` and winit; the `torque-app` crate).
 //!
 //! The examples in this crate's `examples/` folder run headless: `cargo run -p torque --example script` (also `shape`,
-//! `collide` and `net`). The `torque-example` crate holds a dedicated server and a client built on this crate, which
-//! connect over the loopback address (see the guide's "Server and client" chapter).
+//! `collide` and `net`). The `torque-example-minimal` crate (`examples/minimal`) holds a dedicated server and a client built
+//! on this crate, which connect over the loopback address (see the guide's "Server and client" chapter).
 
 #[cfg(feature = "script")]
 pub mod script {
@@ -59,14 +68,30 @@ pub mod script {
     pub use torque_ts_vm as vm;
 }
 
-#[cfg(feature = "app")]
+#[cfg(feature = "app-core")]
 pub use torque_app as app;
+#[cfg(feature = "app-server")]
+pub use torque_app_server as app_server;
 #[cfg(feature = "audio")]
 pub use torque_audio as audio;
 #[cfg(feature = "client")]
 pub use torque_client as client;
 #[cfg(feature = "collide")]
 pub use torque_collide as collide;
+#[cfg(feature = "content")]
+pub use torque_content as content;
+#[cfg(feature = "engine")]
+pub use torque_engine as engine;
+/// Rust functions and impl blocks as TorqueScript natives: `#[torque::function(ns = "Pad")]`,
+/// `#[torque::methods(class = "Player")]`, listed with `torque::natives![...]` for the engine's script registry (see
+/// [`engine::function`] and [`engine::methods`]); `#[derive(torque::Prefs)]` for typed `$Pref::...` globals and
+/// `#[derive(torque::EngineClass)]` for a console class with typed fields (see [`engine::Prefs`] and
+/// [`engine::EngineClass`]); `#[derive(torque::GhostRecord)]` and `#[derive(torque::DatablockCodec)]` for a plugin's ghost
+/// and datablock records (see [`engine::GhostRecord`] and [`engine::DatablockCodec`]).
+#[cfg(feature = "engine")]
+pub use torque_engine::{
+    DatablockCodec, EngineClass, GhostRecord, Prefs, function, methods, natives,
+};
 #[cfg(feature = "fonts")]
 pub use torque_fonts as fonts;
 #[cfg(feature = "game")]
@@ -83,8 +108,13 @@ pub use torque_images as images;
 pub use torque_mapcore as mapcore;
 #[cfg(feature = "maps")]
 pub use torque_maps as maps;
+#[cfg(feature = "mods")]
+pub use torque_mods as mods;
 #[cfg(feature = "net")]
 pub use torque_net as net;
+/// Native extensions: libraries loaded at run time over the C ABI (the `native-extensions` feature).
+#[cfg(feature = "native-extensions")]
+pub use torque_plugin_loader as extensions;
 #[cfg(feature = "resource")]
 pub use torque_resource as resource;
 #[cfg(feature = "scene")]

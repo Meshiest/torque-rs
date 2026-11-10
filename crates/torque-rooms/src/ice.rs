@@ -5,9 +5,13 @@
 //! the user name is `<expiry>:<id>` (the expiry in Unix seconds) and the password is the Base64 of HMAC-SHA1 over the user
 //! name, keyed with the secret the service and the TURN server share. The TURN server checks the expiry itself, so the
 //! service keeps no list of credentials. A relayed connection ends when its credential expires (the TURN server refuses
-//! the allocation's refresh), so the lifetime ([`Ice::ttl`]) should cover a game session. The service hands credentials
-//! only to a socket that hosts or has joined a room; the TURN server must keep its own quotas (allocations per user and
-//! in all, bandwidth), since anyone can open a room.
+//! the allocation's refresh), so the lifetime ([`Ice::ttl`]) should cover a game session ([`DEFAULT_TTL`] two hours). The
+//! service hands credentials only to a socket that hosts or has joined a room, and each user name names the player's own
+//! address alone ([`user_id`]), so a TURN server's per-user quotas count per player.
+//!
+//! **The TURN server's own settings are required**, since anyone can open a room: [`TURN_SERVER_SETTINGS`] (coturn's names)
+//! refuses relays into private, loopback, link-local and shared (CGNAT) ranges, so a credential cannot reach the TURN
+//! host's own network, and caps the relays' bandwidth and count.
 
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -47,7 +51,61 @@ impl std::fmt::Debug for Ice {
 }
 
 /// The default lifetime of a TURN credential: long enough for a game session.
-pub const DEFAULT_TTL: Duration = Duration::from_secs(4 * 3600);
+pub const DEFAULT_TTL: Duration = Duration::from_secs(2 * 3600);
+
+/// The settings a TURN server the service hands credentials for must have (coturn's `turnserver.conf` names): no relay
+/// into the private, loopback, link-local, site-local, shared-address (CGNAT), protocol-assignment, benchmarking, reserved
+/// or multicast ranges, nor through the IPv6 forms that reach IPv4 ones (IPv4-compatible, mapped, both NAT64 prefixes,
+/// 6to4), nor to the TURN host's own public addresses (filled in by the operator); relays over UDP only
+/// (`no-tcp-relay`, a suggestion: TCP relays reach services UDP cannot); and quotas on bandwidth and relays.
+pub const TURN_SERVER_SETTINGS: &str = "\
+use-auth-secret
+static-auth-secret=<the secret in --turn-secret-file>
+no-multicast-peers
+no-loopback-peers
+no-tcp-relay
+denied-peer-ip=0.0.0.0-0.255.255.255
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+denied-peer-ip=192.0.0.0-192.0.0.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=198.18.0.0-198.19.255.255
+denied-peer-ip=240.0.0.0-255.255.255.255
+denied-peer-ip=::-::ffff:ffff
+denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255
+denied-peer-ip=64:ff9b::-64:ff9b::ffff:ffff
+denied-peer-ip=64:ff9b:1::-64:ff9b:1:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fec0::-feff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+# And each of the TURN host's own public addresses, one line each (a relay must not reach the host itself):
+# denied-peer-ip=<the TURN host's public IPv4 address>
+# denied-peer-ip=<the TURN host's public IPv6 address>
+user-quota=4
+total-quota=200
+max-bps=262144
+";
+
+/// The id a TURN user name carries after its expiry: the player's address in hex and nothing else, so every credential of
+/// one player is the same user to the TURN server (its per-user quota is the player's) and a user name is the service's
+/// own text.
+#[must_use]
+pub fn user_id(ip: std::net::IpAddr) -> String {
+    let mut id = String::new();
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.octets().iter().for_each(|b| {
+            let _ = write!(id, "{b:02x}");
+        }),
+        std::net::IpAddr::V6(v6) => v6.octets().iter().for_each(|b| {
+            let _ = write!(id, "{b:02x}");
+        }),
+    }
+    id
+}
 /// The longest lifetime of a TURN credential (a room's longest life).
 pub const MAX_TTL: Duration = Duration::from_secs(48 * 3600);
 
@@ -247,6 +305,50 @@ mod tests {
             ..Ice::default()
         };
         assert_eq!(secret_only.servers(5, "1"), "[]");
+    }
+
+    #[test]
+    fn a_user_name_is_the_services_own_text_and_names_the_player() {
+        let id = user_id(std::net::IpAddr::from([192, 0, 2, 1]));
+        assert_eq!(id, "c0000201");
+        assert!(id.bytes().all(|b| b.is_ascii_alphanumeric()));
+        let mapped = std::net::IpAddr::V6(std::net::Ipv4Addr::new(192, 0, 2, 1).to_ipv6_mapped());
+        assert_eq!(user_id(mapped), id, "a mapped address is its IPv4 one");
+        let (username, _) = credential(b"s", 100, &id);
+        assert_eq!(
+            username, "100:c0000201",
+            "the same user for every credential of the player"
+        );
+    }
+
+    #[test]
+    fn the_turn_settings_deny_private_ranges_and_set_quotas() {
+        for needed in [
+            "no-multicast-peers",
+            "denied-peer-ip=10.0.0.0",
+            "denied-peer-ip=172.16.0.0",
+            "denied-peer-ip=192.168.0.0",
+            "denied-peer-ip=127.0.0.0",
+            "denied-peer-ip=169.254.0.0",
+            "denied-peer-ip=100.64.0.0",
+            "denied-peer-ip=::ffff:0.0.0.0",
+            "denied-peer-ip=::-::ffff:ffff",
+            "denied-peer-ip=192.0.0.0",
+            "denied-peer-ip=64:ff9b:1::",
+            "denied-peer-ip=fec0::",
+            "the TURN host's public IPv4 address",
+            "no-tcp-relay",
+            "denied-peer-ip=::ffff:0.0.0.0-::ffff:255.255.255.255",
+            "denied-peer-ip=64:ff9b::",
+            "denied-peer-ip=2002::",
+            "denied-peer-ip=198.18.0.0",
+            "denied-peer-ip=240.0.0.0",
+            "no-loopback-peers",
+            "total-quota=",
+            "max-bps=",
+        ] {
+            assert!(TURN_SERVER_SETTINGS.contains(needed), "{needed}");
+        }
     }
 
     #[test]

@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn a_vector_drops_its_oldest_lines_past_its_line_and_byte_caps_in_order() {
     // `Vec::remove(0)` per line past the cap, and 65,536 lines of 64 KiB held 4 GiB.
-    let mut l = Lines::default();
+    let mut l = Lines::new(&MemoryAccount::default());
     let big = vec![b'x'; MAX_LINE_BYTES];
     let t = std::time::Instant::now();
     for i in 0..(2 * MAX_VECTOR_BYTES / MAX_LINE_BYTES) {
@@ -32,4 +32,20 @@ fn a_vector_drops_its_oldest_lines_past_its_line_and_byte_caps_in_order() {
         "{:?}",
         t.elapsed()
     );
+}
+
+#[test]
+fn a_vectors_lines_count_in_the_memory_account() {
+    let account = MemoryAccount::with_limit(1 << 20);
+    let mut l = Lines::new(&account);
+    let line = vec![b'x'; 1000];
+    for i in 0..2000 {
+        l.insert(l.len(), line.clone(), i);
+    }
+    // The account refused the line that would have passed it: what the vector holds is what it counts.
+    assert_eq!(l.len(), (1 << 20) / 1000);
+    assert_eq!(account.held(), l.bytes as u64);
+    assert!(account.take_refused());
+    l.clear();
+    assert_eq!(account.held(), 0);
 }

@@ -13,7 +13,7 @@ use torque_ts_bytecode::DsoFile;
 
 use super::{COMPILE_BASE_WORK, MAX_LOG_LINE, Mode, Native, NativeCall, Vm, VmError, lossy};
 use crate::code::CodeBlock;
-use crate::host::{FileRead, Purpose, Refusal};
+use crate::host::{Compiled, FileRead, Purpose, Refusal};
 use crate::text::{atoi, fold, until_nul};
 use crate::vm::{Level, LogLine};
 
@@ -52,6 +52,14 @@ fn arg(c: &NativeCall, i: usize) -> &[u8] {
 }
 
 pub(super) fn register(vm: &mut Vm) {
+    // Running a file or a text is code; `compile` writes the compiled file beside the script.
+    vm.add_native_effects("", "exec", crate::effects::Effects::CODE);
+    vm.add_native_effects("", "eval", crate::effects::Effects::CODE);
+    vm.add_native_effects(
+        "",
+        "compile",
+        crate::effects::Effects::CODE | crate::effects::Effects::FILES,
+    );
     vm.register(
         "exec",
         2,
@@ -114,6 +122,18 @@ fn overflow_message(name: &[u8]) -> String {
     )
 }
 
+/// What [`Vm::checked_dso`] does with a `.dso` of another version: the first lookup reports it, the one after a check
+/// compile (an older `.dso` that would run after all) passes over it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OtherVersion {
+    Report,
+    Skip,
+}
+
+/// The largest `.dso` `exec` loads, as large as the largest source the compiler takes: a loaded block holds several times
+/// its file's size, so a bigger one is refused before it is parsed (and the source, if there is one, runs instead).
+pub const MAX_DSO_BYTES: usize = 16 << 20;
+
 /// The room for the path of a compiled file (`exec`'s and `compile`'s 512-byte name buffer, as in Torque3D's MIT-licensed
 /// `console/torquescript/runtime.cpp`): 511 bytes and the terminator.
 const MAX_DSO_PATH: usize = 511;
@@ -144,6 +164,16 @@ enum Prepared {
     Run(Rc<CodeBlock>, Mode),
     /// The step budget was spent before a compile (see `compile_source`): the run ends with `StepLimit`.
     OutOfBudget,
+    /// A file of another language ([`ScriptLanguage`](crate::policy::ScriptLanguage)): boxed, so this stays as small
+    /// as the frames on the recursion path need.
+    Foreign(Box<Foreign>),
+}
+
+/// A file of another language `exec` runs: the language, the path and the source.
+struct Foreign {
+    language: Rc<dyn crate::policy::ScriptLanguage>,
+    path: Vec<u8>,
+    source: Vec<u8>,
 }
 
 /// How one compile ended. A byte, not a `Result`: the helpers that hold it have frames on the recursion path
@@ -399,7 +429,7 @@ impl Vm {
     }
 
     /// The compiler's messages, as log lines (cut at the console's line length like every other).
-    fn print_report(&mut self, report: Vec<LogLine>) {
+    fn print_report(&mut self, report: &[LogLine]) {
         for line in report {
             self.log_bytes(line.level, &line.text);
         }
@@ -424,22 +454,40 @@ impl Vm {
         name: Option<&[u8]>,
         purpose: Purpose,
     ) -> (Option<DsoFile>, Verdict) {
+        let (compiled, verdict) = self.compile_with(text, name, purpose, None);
+        (compiled.code, verdict)
+    }
+
+    /// [`compile_source`](Self::compile_source), keeping the whole result. With `again` (a [`Purpose::Check`] result of
+    /// the same text that is [`same_as_run`](Compiled::same_as_run)) a [`Purpose::Run`] compile does not run the
+    /// compiler a second time: it bills, prints and gives what that one did.
+    #[inline(never)]
+    fn compile_with(
+        &mut self,
+        text: &[u8],
+        name: Option<&[u8]>,
+        purpose: Purpose,
+        again: Option<Compiled>,
+    ) -> (Compiled, Verdict) {
         if self.running > 0 && self.ensure_budget().is_err() {
-            return (None, Verdict::OutOfBudget);
+            return (Compiled::default(), Verdict::OutOfBudget);
         }
         // The fixed cost of starting a compile (a thread with a big stack), whatever the text: see
         // `COMPILE_BASE_STEPS`. After the budget check, so a compile that has the budget for its text still starts
         // (as before) and the next one is the one that cannot.
         self.objects.add_work(COMPILE_BASE_WORK);
-        let compiled = self.compiler.compile(text, name, purpose);
+        let compiled = match again {
+            Some(compiled) => compiled,
+            None => self.compiler.compile(text, name, purpose),
+        };
         self.objects.add_work(compiled.work);
-        self.print_report(compiled.report);
+        self.print_report(&compiled.report);
         let verdict = if compiled.syntax_error {
             Verdict::SyntaxError
         } else {
             Verdict::Clean
         };
-        (compiled.code, verdict)
+        (compiled, verdict)
     }
 
     /// Runs a loaded block from its start in the current local frame (as `exec` and `eval` do) and
@@ -471,7 +519,45 @@ impl Vm {
                 self.run_here(block, mode)?;
                 Ok(true)
             }
+            Prepared::Foreign(foreign) => {
+                self.run_foreign(*foreign)?;
+                Ok(true)
+            }
         }
+    }
+
+    /// Runs a file of another language inside a run, as `run_here` runs a block.
+    #[inline(never)]
+    fn run_foreign(&mut self, foreign: Foreign) -> Result<(), VmError> {
+        let Foreign {
+            language,
+            path,
+            source,
+        } = foreign;
+        self.objects.add_work(source.len() as u64);
+        let saved = self.enter_run();
+        let result = language.run(self, &path, &source);
+        self.leave_run(saved, result)
+    }
+
+    /// `exec`'s lookup of a file another language runs: the source, its messages, or nothing to run.
+    #[inline(never)]
+    fn prepare_foreign(
+        &mut self,
+        path: &[u8],
+        language: Rc<dyn crate::policy::ScriptLanguage>,
+    ) -> Result<Prepared, VmError> {
+        let name = self.file_name(path);
+        let Some(source) = self.find_file(path)? else {
+            self.warn(format!("Missing file: {}!", lossy(&name)));
+            return Ok(Prepared::Done(false));
+        };
+        self.print(format!("Executing {}.", lossy(&name)).as_bytes());
+        Ok(Prepared::Foreign(Box::new(Foreign {
+            language,
+            path: name,
+            source,
+        })))
     }
 
     /// Everything `exec` does before running the file: the checks, the lookups, the messages, the
@@ -489,6 +575,9 @@ impl Vm {
             && !policy.check(self, &path)?
         {
             return Ok(Prepared::Done(false));
+        }
+        if let Some(language) = self.script_language_of(&path) {
+            return self.prepare_foreign(&path, language);
         }
         // The source, then the compiled file. (A loop: one call site, one set of temporaries in this frame.)
         let mut found: [Option<Vec<u8>>; 2] = [None, None];
@@ -529,10 +618,15 @@ impl Vm {
         let name = self.file_name(path);
         let dso_path = dso_path(path);
         let mut loadable = None;
-        if let Some(bytes) = &dso
+        // The first compile's result, when the second can be that same one.
+        let mut again = None;
+        let mut dso = dso;
+        if dso.is_some()
             && (source.is_none() || self.files.modified(&dso_path) >= self.files.modified(path))
         {
-            loadable = self.checked_dso(&dso_path, bytes);
+            loadable = dso
+                .take()
+                .and_then(|bytes| self.checked_dso(&dso_path, bytes, OtherVersion::Report));
         }
         if let Some(text) = &source
             && loadable.is_none()
@@ -544,12 +638,13 @@ impl Vm {
             if compiled {
                 // `CodeBlock::compile`: only its messages (nothing is written), and an existing (older) DSO
                 // runs after all. A `.mis` has no compiled form and skips this pass.
-                if self.compile_source(text, Some(&name), Purpose::Check).1 == Verdict::OutOfBudget
-                {
+                let (first, verdict) = self.compile_with(text, Some(&name), Purpose::Check, None);
+                if verdict == Verdict::OutOfBudget {
                     return Prepared::OutOfBudget;
                 }
-                let wanted = self.executor.format().version();
-                loadable = dso.filter(|bytes| dso_version(bytes) == wanted);
+                again = Some(first).filter(|first| first.same_as_run);
+                loadable =
+                    dso.and_then(|bytes| self.checked_dso(&dso_path, bytes, OtherVersion::Skip));
             }
         }
         let mode = Mode::top_level(no_calls);
@@ -566,12 +661,12 @@ impl Vm {
         };
         self.print(format!("Executing {}.", lossy(&name)).as_bytes());
         // `compileExec`: its messages again, and the code of the statements before any syntax error.
-        let (code, verdict) = self.compile_source(&text, Some(&name), Purpose::Run);
+        let (compiled, verdict) = self.compile_with(&text, Some(&name), Purpose::Run, again);
         if verdict == Verdict::OutOfBudget {
             return Prepared::OutOfBudget;
         }
-        match code {
-            Some(code) => match self.load_compiled(&code, Some(&name)) {
+        match compiled.code {
+            Some(code) => match self.load_compiled(code, Some(&name)) {
                 Some(block) => Prepared::Run(block, mode),
                 // A block that does not load still counts as executed.
                 None => Prepared::Done(true),
@@ -580,26 +675,36 @@ impl Vm {
         }
     }
 
-    /// The DSO's bytes when its version is the executor's dialect's; otherwise the version error (TGE also shows a
-    /// "Script/Executable version mismatch" message box and quits, which this does not).
-    fn checked_dso(&mut self, path: &[u8], bytes: &[u8]) -> Option<Vec<u8>> {
-        let version = dso_version(bytes);
+    /// The DSO's bytes when its version is the executor's dialect's and it is at most [`MAX_DSO_BYTES`] (every `.dso`
+    /// `exec` loads passes here). A file of another version is refused as `other` says (TGE also shows a
+    /// "Script/Executable version mismatch" message box and quits, which this does not); an oversized one with an error.
+    fn checked_dso(&mut self, path: &[u8], bytes: Vec<u8>, other: OtherVersion) -> Option<Vec<u8>> {
+        let version = dso_version(&bytes);
         let wanted = self.executor.format().version();
-        if version == wanted {
-            return Some(bytes.to_vec());
+        if version != wanted {
+            if other == OtherVersion::Report {
+                self.error(format!(
+                    "ERROR: DSO file \"{}\" is version {version}, expected version {wanted}",
+                    lossy(path)
+                ));
+            }
+            return None;
         }
-        self.error(format!(
-            "ERROR: DSO file \"{}\" is version {version}, expected version {wanted}",
-            lossy(path)
-        ));
-        None
+        if bytes.len() > MAX_DSO_BYTES {
+            self.error(format!(
+                "ERROR: DSO file \"{}\" is larger than {MAX_DSO_BYTES} bytes",
+                lossy(path)
+            ));
+            return None;
+        }
+        Some(bytes)
     }
 
     /// Parses and loads a DSO; a damaged one is reported and gives None.
     fn load_dso(&mut self, path: &[u8], bytes: &[u8], name: &[u8]) -> Option<Rc<CodeBlock>> {
         let executor = Rc::clone(&self.executor);
         match executor.format().parse(bytes) {
-            Ok(dso) => self.load_compiled(&dso, Some(name)),
+            Ok(dso) => self.load_compiled(dso, Some(name)),
             Err(e) => {
                 self.error(format!(
                     "exec: cannot load compiled script {}: {e}",
@@ -610,15 +715,16 @@ impl Vm {
         }
     }
 
-    fn load_compiled(&mut self, dso: &DsoFile, name: Option<&[u8]>) -> Option<Rc<CodeBlock>> {
+    fn load_compiled(&mut self, dso: DsoFile, name: Option<&[u8]>) -> Option<Rc<CodeBlock>> {
         let executor = Rc::clone(&self.executor);
-        match CodeBlock::from_dso(dso, name, executor.format()) {
+        match CodeBlock::from_dso_owned(dso, name, executor.format()) {
             Ok(mut block) => {
                 // Loading a block interns each identifier (`StringTable->insert`, case-insensitive), so every name of the
                 // block is spelled as the string table first saw it anywhere: a function, a variable or a field named by two
                 // files in two cases prints the first file's spelling in both.
                 block.respell_names(|n| self.strings.intern(n));
-                Some(Rc::new(block))
+                // The code counts in the memory account while anything runs it (an `eval`'s functions keep it alive).
+                block.hold(self.objects.memory()).then(|| Rc::new(block))
             }
             Err(e) => {
                 let shown = name.map_or_else(|| "<input>".to_string(), lossy);
@@ -648,6 +754,7 @@ impl Vm {
         slot: Option<usize>,
     ) -> Result<Vec<u8>, VmError> {
         self.quirks.syntax_error = false;
+        self.quirks.evals = self.quirks.evals.wrapping_add(1);
         let (block, verdict) = self.prepare_text(text, None);
         if verdict == Verdict::OutOfBudget {
             return Err(VmError::StepLimit);
@@ -689,7 +796,7 @@ impl Vm {
         // here on, in the compiler's messages, the block's paths and `exec`'s. An `eval`'s text has no name.
         let name = name.map(|n| self.file_name(n));
         let (code, verdict) = self.compile_source(text, name.as_deref(), Purpose::Run);
-        let block = code.and_then(|code| self.load_compiled(&code, name.as_deref()));
+        let block = code.and_then(|code| self.load_compiled(code, name.as_deref()));
         (block, verdict)
     }
 

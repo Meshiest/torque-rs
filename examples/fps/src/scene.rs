@@ -318,16 +318,16 @@ impl ArenaScene {
         self.ghosts.update(assets, world, &input);
     }
 
-    /// The frame's objects: the engine's ghosts and interiors as [`ArenaScene::update`] left them and `world`'s cubes; their
-    /// effects into
-    /// `view`.
+    /// The frame's objects: the engine's ghosts and interiors as [`ArenaScene::update`] left them and `world`'s cubes, for a frame
+    /// drawn from `eye`; their effects into `view`.
     pub fn objects(
         &mut self,
         view: &mut WorldView,
         assets: &KitAssets,
         world: &TgeWorld,
+        eye: &Eye,
     ) -> Vec<DynamicObject> {
-        let mut out = self.ghosts.objects(view, assets, world);
+        let mut out = self.ghosts.objects(view, assets, world, Some(eye));
         let mut seen = Vec::new();
         for (&index, ghost) in &world.records.ghosts {
             let (Some(TgeClass::StaticShape), Some(_), Some(db)) =

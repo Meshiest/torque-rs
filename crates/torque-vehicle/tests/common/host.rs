@@ -15,6 +15,8 @@ pub struct Ground {
     pub no_ground: bool,
     /// The WheeledVehicle subclass the host hands the step (none: Torque's).
     pub class: Option<std::rc::Rc<dyn torque_vehicle::wheeled::WheeledClass>>,
+    /// Makes the body solver of each tick (none: TGE's).
+    pub make_solver: Option<Box<dyn Fn() -> Box<dyn torque_vehicle::BodySolver>>>,
 }
 
 impl World for Ground {
@@ -52,6 +54,9 @@ impl VehicleHost for Ground {
     }
     fn wheeled_class(&self) -> Option<std::rc::Rc<dyn torque_vehicle::wheeled::WheeledClass>> {
         self.class.clone()
+    }
+    fn body_solver(&mut self) -> Option<Box<dyn torque_vehicle::BodySolver>> {
+        self.make_solver.as_ref().map(|make| make())
     }
     /// The plane z = 0 from above: the fraction `start.z / (start.z - end.z)`.
     fn cast_ray(&mut self, start: F3, end: F3, _mask: u32) -> Option<RayHit> {

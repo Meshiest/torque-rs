@@ -409,8 +409,9 @@ pub fn plain_update_forces(
     }
 }
 
-/// The sub-step: the old velocity, the accumulators zeroed, `updateForces`, the contact prep and the rest test unless at
-/// rest, the integration unless (still) at rest, `notifyCollision`, the scan, the impact and the liquid callbacks.
+/// The sub-step: the old velocity, the accumulators zeroed, `updateForces`, the solver's part ([`crate::solver::BodySolver::substep`]:
+/// the contact prep and the rest test unless at rest, the integration unless (still) at rest), `notifyCollision`, the scan, the
+/// impact and the liquid callbacks.
 pub fn substep(
     v: &mut Vehicle<Wheeled>,
     db: &WheeledVehicleData,
@@ -422,18 +423,20 @@ pub fn substep(
     v.s.rigid.force = [0.0; 3];
     v.s.rigid.torque = [0.0; 3];
     update_forces(v, db, dt, host);
-    let mut touched = false;
-    if !v.s.rigid.at_rest {
-        touched = contact_prep(v, db, dt, host);
-        let empty = v.body.list.count == 0;
-        state::rest_test(&mut v.s, empty, dt);
-    }
-    if !v.s.rigid.at_rest {
-        v.s.rigid.integrate(dt);
-    }
+    let Vehicle {
+        s,
+        k,
+        body,
+        scan,
+        solver,
+    } = v;
+    let wheels: &Wheeled = k;
+    let mut hook =
+        |s: &mut VehicleState, host: &mut dyn VehicleHost| host.wheeled_body_contact(s, wheels);
+    let touched = crate::solver::substep(solver, body, s, base, dt, host, Some(&mut hook))?;
     let now = host.sim_time();
-    state::notify_collision(&mut v.s, now, host);
-    state::end_of_step(&mut v.s, base, touched, v0, host, &mut v.scan);
+    state::notify_collision(s, now, host);
+    state::end_of_step(s, base, touched, v0, host, scan);
     Ok(())
 }
 
@@ -445,15 +448,11 @@ pub fn contact_prep(
     dt: f32,
     host: &mut dyn VehicleHost,
 ) -> bool {
-    let base = &db.base;
-    v.body.collide(&v.s, base, host);
-    let touched = state::resolve_collision(&mut v.s, &v.body.list, base, host);
-    if touched {
-        host.wheeled_body_contact(&mut v.s, &v.k);
-    }
-    state::resolve_contacts(&mut v.s, &v.body.list, base, dt);
-    v.body.hold_out(&mut v.s, base, host);
-    touched
+    let wheels = &v.k;
+    let mut hook =
+        |s: &mut VehicleState, host: &mut dyn VehicleHost| host.wheeled_body_contact(s, wheels);
+    v.body
+        .contacts(&mut v.s, &db.base, dt, host, Some(&mut hook))
 }
 
 /// `WheeledVehicle::onNewDataBlock`'s server part after the base's: the box inertia (`massBox` when all three are

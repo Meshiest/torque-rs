@@ -1070,6 +1070,19 @@ impl Vm {
         Ok(Some(id))
     }
 
+    /// [`declare_new_object`](Self::declare_new_object) for a host with no script of its own to name: the object a script's
+    /// `new <class>() { <field> = <value>; ... };` makes, with its `onAdd` and its placement, from Rust and with no text
+    /// compiled (a field's value is only written through its type, never run). Messages of a refused registration name
+    /// evaluated text.
+    pub fn new_object(
+        &mut self,
+        class_name: &[u8],
+        fields: &[(&[u8], &[u8])],
+    ) -> Result<Option<ObjId>, VmError> {
+        let block = CodeBlock::native();
+        self.declare_new_object((&block, 0), class_name, fields)
+    }
+
     /// An object the host makes itself with no `onAdd` of its class (a networked copy of an object, say: the host
     /// constructs the class's object and registers it; the class's `onAdd` there is the host's own, which runs no
     /// script and which the classes, all server halves, do not have). An object of `class_name` with a new dynamic id,
@@ -1237,6 +1250,20 @@ impl Vm {
     /// result is used. Out of line: it runs no script, and the interpreter's frame keeps none of it.
     #[inline(never)]
     pub fn read_field_of(&self, target: FieldTarget, field: &[u8], array: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        self.read_field_into(target, field, array, &mut out);
+        out
+    }
+
+    /// [`read_field_of`](Self::read_field_of) appending the text to `out`, a buffer the caller keeps between reads.
+    #[inline(never)]
+    pub fn read_field_into(
+        &self,
+        target: FieldTarget,
+        field: &[u8],
+        array: &[u8],
+        out: &mut Vec<u8>,
+    ) {
         let object = match target {
             FieldTarget::None => None,
             FieldTarget::Live(id) => self.objects.get(id),
@@ -1247,15 +1274,15 @@ impl Vm {
             },
         };
         let Some(object) = object else {
-            return Vec::new();
+            return;
         };
         if object.engine_made {
-            return Vec::new();
+            return;
         }
         let objects = &self.objects;
         let names = |id: ObjId| objects.get(id).and_then(|o| o.name().map(<[u8]>::to_vec));
         let mut charge = |units: u64| self.charge_work(units);
-        object.data_field_charged(&objects.classes, field, array, &names, &mut charge)
+        object.data_field_charged_into(&objects.classes, field, array, &names, &mut charge, out);
     }
 
     /// The field `field[array]` of `target` set to `value` as `SAVEFIELD_STR` does: through the field's type and

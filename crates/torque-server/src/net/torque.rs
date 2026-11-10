@@ -7,32 +7,39 @@
 //! Credit: the update priority follows `NetObject::getUpdatePriority` in Torque3D's MIT-licensed `sim/netObject.cpp`, and the
 //! views of a player's arm and look action, a projectile and a shape's images follow `T3D/player.cpp`, `T3D/projectile.cpp` and
 //! `T3D/shapeBase.cpp` (each `Copyright (c) 2012 GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`); `quat_of` follows
-//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
+//! `QuatF::set(MatrixF)` in `math/mQuat.cpp` (`Copyright (c) 2012 GarageGames, LLC`); the views of an Item's rotation, rest flag
+//! and velocity (`item_field`) follow `Item::packUpdate` in `T3D/item.cpp` and the angle about an axis `AngAxisF::set` in
+//! `math/mAngAxis.cpp`, and a Camera's rotation (`camera_field`) follows `Camera::packUpdate` in `T3D/camera.cpp` (each
+//! `Copyright (c) 2012 GarageGames, LLC`); the Sky's script fields behind its record
 //! (`sky_field`) are those of TGE 1.4's `terrain/sky.cc` (`Copyright (C) GarageGames.com, Inc.`; Torque3D has no Sky class).
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use torque_ghosts::block::{BLOCK_MASK, CLASS_MASK};
 use torque_ghosts::codec::{NetStr, NetWidths};
-use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::{PLUGIN_CODE_BASE, PluginClasses};
 use torque_ghosts::set::GhostCodecSet;
 use torque_ghosts::tge::{TgeClass, TgeGhosts};
 use torque_ghosts::{Link, ObjectView, PackCtx, Value};
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::events::{ChargeFn, EventCtx, EventIds, WireEvent};
-use torque_net::ghost::{CamInfo, ObjectSource, TorqueGhosts};
+use torque_net::ghost::{CamInfo, ConnectionGhosts, ObjectSource, TorqueGhosts};
 use torque_net::handshake::ConnId;
 use torque_net::huffman::Table;
 use torque_ts_vm::fields::Value as Field;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
-use super::ghosts::{Conns, GhostGame, GhostHub, Registry, SourceEnv};
+use super::ghosts::{Conns, Entry, GhostGame, GhostHub, Registry, SourceEnv};
 use super::hostevent::{GameEvents, ReceiveCx};
+use super::peer::PeerKind;
 use super::{NetGame, NetShared, pump};
 use crate::server::{NetHost, Phase};
+use torque_engine::scope::ScopeControl;
 use torque_game::sim::ProcessHandle;
 use torque_game::sim::pass::{Outcome, advance_objects_within};
 
@@ -124,11 +131,14 @@ impl GhostGame for TgeGhostGame {
     ) -> R {
         let mut guard = hub.0.borrow_mut();
         let hub = &mut *guard;
-        let engine_peer = conn
+        let marked = conn
             .and_then(|c| hub.conns.get(&c))
             .is_some_and(|c| c.engine_peer);
+        let peer = PeerKind::of(env.vm, marked);
+        let hidden = ScopeControl::of(env.vm);
         let always = ghost_always_of(env.vm, &hub.reg);
-        let controlled = hub.conns.values().filter_map(|c| c.control).collect();
+        let mut controlled: Vec<ObjId> = hub.conns.values().filter_map(|c| c.control).collect();
+        controlled.sort_unstable();
         let mut src = TgeSource {
             vm: env.vm,
             reg: &hub.reg,
@@ -136,21 +146,31 @@ impl GhostGame for TgeGhostGame {
             ghost_bits: env.ghost_bits,
             always,
             controlled,
-            engine_peer,
+            sees_engine: peer.sees_engine_classes(),
+            plugins: super::codecs::plugin_classes(env.vm),
+            shares: env
+                .vm
+                .extension::<torque_engine::net_classes::GhostShares>(),
+            connection: conn.and_then(|c| hub.conns.get(&c)).map(|c| c.obj),
+            hidden,
+            blocks: peer
+                .sees_engine_classes()
+                .then(|| super::blocks::of(env.vm))
+                .flatten(),
         };
         f(&mut src, &mut hub.conns)
     }
 }
 
 /// `GhostAlwaysSet` in set order when the `Vm` has it, else the registry's ScopeAlways objects in id order.
-fn ghost_always_of(vm: &Vm, reg: &Registry) -> Vec<ObjId> {
+fn ghost_always_of<'a>(vm: &'a Vm, reg: &Registry) -> Cow<'a, [ObjId]> {
     let objects = vm.objects();
     if let Some(members) = objects
         .find(b"GhostAlwaysSet")
         .and_then(|set| objects.get(set))
         .and_then(|o| o.members())
     {
-        return members.as_slice().to_vec();
+        return Cow::Borrowed(members.as_slice());
     }
     let mut ids: Vec<ObjId> = reg
         .entries
@@ -159,11 +179,11 @@ fn ghost_always_of(vm: &Vm, reg: &Registry) -> Vec<ObjId> {
         .map(|(id, _)| *id)
         .collect();
     ids.sort_unstable();
-    ids
+    Cow::Owned(ids)
 }
 
-/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s) to every client, not only to the
-/// engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
+/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s, and the plugins') to every
+/// client, not only to the engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
 /// engine's (a TGE client cannot read their records).
 pub const ENGINE_CLASSES_GLOBAL: &str = "$Server::EngineClasses";
 
@@ -174,35 +194,76 @@ pub struct TgeSource<'a> {
     /// The string coder's table; a source made for scoping alone has none and packs nothing.
     pub table: Option<&'a Table>,
     pub ghost_bits: u8,
-    always: Vec<ObjId>,
-    /// The objects some connection controls (the ShapeBase part's `controlled` flag).
+    always: Cow<'a, [ObjId]>,
+    /// The objects some connection controls (the ShapeBase part's `controlled` flag), in id order.
     controlled: Vec<ObjId>,
-    /// The connection's peer is the engine's own client: the engine's own classes are ghosted to it (to no other).
-    engine_peer: bool,
+    /// The connection's peer is the engine's own: the engine's own classes are ghosted to the engine's peers (to no other).
+    sees_engine: bool,
+    /// The plugins' classes (`torque_ghosts::plugin`), ghosted like the engine's own.
+    plugins: Option<Rc<PluginClasses>>,
+    /// The packet shares of the plugin classes that have one.
+    shares: Option<Rc<torque_engine::net_classes::GhostShares>>,
+    /// The `GameConnection` object the source packs for, if it is made for one connection.
+    connection: Option<ObjId>,
+    /// What plugins keep out of this connection's ghosts ([`ScopeControl`]), when a plugin asked for the control.
+    hidden: Option<Rc<ScopeControl>>,
+    /// What fills the per-ghost block after each record, for a peer of the engine's own on a server that has one
+    /// ([`super::blocks`]).
+    blocks: Option<Rc<dyn super::blocks::GhostBlocks>>,
 }
 
-impl TgeSource<'_> {
-    fn class(&self, obj: ObjId) -> Option<TgeClass> {
-        let objects = self.vm.objects();
-        let name = objects.classes.name(objects.get(obj)?.class());
-        TgeGhosts::class_by_name(std::str::from_utf8(name).ok()?)
+/// A connection's ghosts known by their indices alone: it holds what it acknowledged.
+struct IndexOnly<'a>(&'a dyn Fn(ObjId) -> Option<u32>);
+
+impl ConnectionGhosts for IndexOnly<'_> {
+    fn index(&self, obj: ObjId) -> Option<u32> {
+        (self.0)(obj)
     }
 
-    /// Whether the connection may know the object's class: TGE's always, the engine's own on an engine peer, or on any
-    /// connection of a server that says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
-    fn known(&self, obj: ObjId) -> bool {
-        let engine = self
-            .reg
-            .entries
-            .get(&obj)
-            .and_then(|e| TgeClass::of_code(e.code))
-            .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name()));
-        !engine
-            || self.engine_peer
-            || self
-                .vm
-                .global(ENGINE_CLASSES_GLOBAL)
-                .is_some_and(|v| torque_ts_vm::text::atof(&v) != 0.0)
+    fn holds(&self, obj: ObjId) -> bool {
+        (self.0)(obj).is_some()
+    }
+}
+
+/// How much more an object's first record counts for each link below it to its deepest descendant: a parent's first record
+/// goes ahead of its children's when their priorities are otherwise even (a child's link waits for its parent's ghost).
+const PARENT_PRIORITY_STEP: f32 = 0.05;
+
+impl TgeSource<'_> {
+    /// The class of a registered object: its entry's code, the place of a TGE class in the set or of a plugin's in its.
+    fn class_of(&self, entry: &Entry) -> Option<TgeClass> {
+        if entry.code >= PLUGIN_CODE_BASE {
+            return self
+                .plugins
+                .as_ref()?
+                .ghost_of_code(entry.code)
+                .map(TgeClass::Plugin);
+        }
+        TgeClass::of_code(entry.code)
+    }
+
+    /// The share of each packet the object's plugin class takes ([`torque_engine::net_classes::GhostShares`]) and its group, if
+    /// it has one.
+    fn share_of<R>(
+        &self,
+        obj: ObjId,
+        f: impl FnOnce(u32, &torque_engine::net_classes::GhostShare) -> R,
+    ) -> Option<R> {
+        let entry = self.reg.entries.get(&obj)?;
+        if entry.code < PLUGIN_CODE_BASE {
+            return None;
+        }
+        let Some(TgeClass::Plugin(class)) = self.class_of(entry) else {
+            return None;
+        };
+        let (group, share) = self.shares.as_ref()?.get(class.name())?;
+        Some(f(group, share))
+    }
+
+    /// Whether the connection may know the class of `entry`: TGE's always, the engine's own and the plugins' only when its peer is
+    /// the engine's ([`PeerKind::sees_engine_classes`]).
+    fn known(&self, entry: &Entry) -> bool {
+        !entry.engine_only || self.sees_engine
     }
 }
 
@@ -280,6 +341,11 @@ impl ObjectView for FieldView<'_> {
 ///   `source_slot`, `hidden` (exploded) and the explosion's `explosion_position`, `explosion_normal` and `collide_hit_type`; the
 ///   link `source_object` (its source object's ghost on the connection, [`GameView::ghost_of`]).
 ///
+/// - for a plugin's ghost class: the names `@now` (the server's simulation time, ms) and `@connection` (the id of the
+///   connection object the record is packed for, so a record can say one thing to its owner and another to everyone else; they
+///   are not console field names), and the link of any other field name that holds an object's id (`startObject = 12`): the
+///   object's ghost on the connection, [`Link::NotGhosted`] while it has none.
+///
 /// The record is never left out for the controlling client (`controlled_here` false): the client draws the control object from
 /// it like any ghost.
 pub struct GameView<'a> {
@@ -288,6 +354,8 @@ pub struct GameView<'a> {
     pub controlled: bool,
     /// The connection's ghost index of an object (`getGhostIndex`; none: no links are resolved).
     pub ghost_of: Option<&'a dyn Fn(ObjId) -> Option<u32>>,
+    /// The `GameConnection` object the record is packed for (none when the view is not of one connection).
+    pub connection: Option<ObjId>,
 }
 
 /// `QuatF::set(MatrixF)` of a row-major matrix's rotation part.
@@ -413,6 +481,41 @@ impl GameView<'_> {
 }
 
 impl GameView<'_> {
+    /// A Camera's `rotation` (`mRot`: pitch, 0, yaw).
+    fn camera_field(&self, field: &str, index: usize) -> Option<Value> {
+        if field != "rotation" {
+            return None;
+        }
+        let camera = torque_game::scene::camera::state(self.fields.vm, self.fields.obj)?;
+        Some(Value::F32(*[camera.pitch, 0.0, camera.yaw].get(index)?))
+    }
+
+    /// An Item's `axis_z` and `angle` (`AngAxisF(mObjToWorld)`: the axis' z and the angle), `at_rest` and `velocity`.
+    fn item_field(&self, field: &str, index: usize) -> Option<Value> {
+        if !matches!(field, "axis_z" | "angle" | "at_rest" | "velocity") {
+            return None;
+        }
+        let item = torque_game::sim::item::state(self.fields.vm, self.fields.obj)?;
+        match field {
+            "at_rest" => return Some(Value::Bool(item.at_rest)),
+            "velocity" => return Some(Value::F32(*item.velocity.get(index)?)),
+            _ => {}
+        }
+        let q = quat_of(&self.matrix()?);
+        // The clamp keeps rounding past 1 from making the angle NaN.
+        let w = q[3].clamp(-1.0, 1.0);
+        if field == "angle" {
+            return Some(Value::F32(w.acos() * 2.0));
+        }
+        // `AngAxisF::set(QuatF)`: no rotation leaves the axis (1, 0, 0), whose z is 0.
+        let sin_half = (1.0 - w * w).sqrt();
+        Some(Value::F32(if sin_half != 0.0 {
+            q[2] / sin_half
+        } else {
+            0.0
+        }))
+    }
+
     /// A simulated vehicle's field from its state, if the object is one (the record's and the packet data's view fields,
     /// `torque_ghosts::vehicle` and `torque_ghosts::tails`).
     fn vehicle(&self, field: &str, index: usize) -> Option<Value> {
@@ -567,7 +670,13 @@ impl ObjectView for GameView<'_> {
             }
             "mount_object" => torque_game::scene::lights::spot_mount(vm, obj).map(|m| m.0),
             "mount" => torque_game::sim::mount::mount_of(vm, obj),
-            _ => None,
+            // Any other field that holds an object's id (a plugin's pointer): the object, if it is there.
+            other => match self.fields.get(other, 0) {
+                Value::Id(Some(id)) => Some(id),
+                Value::Int(n) if n > 0 => u32::try_from(n).ok(),
+                _ => None,
+            }
+            .filter(|&id| vm.objects().contains(id)),
         };
         let (Some(linked), Some(ghost_of)) = (linked, self.ghost_of) else {
             return Link::Null;
@@ -579,6 +688,11 @@ impl ObjectView for GameView<'_> {
     }
 
     fn get(&self, field: &str, index: usize) -> Value {
+        match field {
+            "@now" => return Value::Int(i64::from(self.fields.vm.sim_time())),
+            "@connection" => return Value::Id(self.connection),
+            _ => {}
+        }
         if let Some(v) = self.player(field, index) {
             return v;
         }
@@ -592,6 +706,12 @@ impl ObjectView for GameView<'_> {
             return v;
         }
         if let Some(v) = self.projectile(field, index) {
+            return v;
+        }
+        if let Some(v) = self.camera_field(field, index) {
+            return v;
+        }
+        if let Some(v) = self.item_field(field, index) {
             return v;
         }
         match field {
@@ -672,7 +792,45 @@ fn sky_field(field: &str) -> Option<&'static str> {
 
 impl ObjectSource for TgeSource<'_> {
     fn exists(&self, obj: ObjId) -> bool {
-        self.vm.objects().contains(obj) && self.reg.entries.contains_key(&obj) && self.known(obj)
+        self.scope_flags(obj).is_some()
+    }
+
+    fn scope_flags(&self, obj: ObjId) -> Option<u32> {
+        let entry = self.reg.entries.get(&obj)?;
+        (self.known(entry) && self.vm.objects().contains(obj)).then_some(entry.flags)
+    }
+
+    fn scope_hidden(&self, obj: ObjId) -> bool {
+        self.hidden
+            .as_ref()
+            .is_some_and(|scope| scope.is_hidden(obj, self.connection))
+    }
+
+    fn scope_hidden_stamp(&self) -> u64 {
+        self.hidden
+            .as_ref()
+            .map_or(0, |scope| scope.stamp_for(self.connection))
+    }
+
+    /// The registry's generation and whether the peer sees the engine's classes: all the full query reads (it visits every
+    /// registered object that exists and is known).
+    fn scope_stamp(&self) -> Option<u64> {
+        let stamp = self.reg.entries.generation() << 1 | u64::from(self.sees_engine);
+        // The links change what a first scoping takes in with an object ([`ObjectSource::dependents`]).
+        let links = self.blocks.as_ref().map_or(0, |b| b.revision());
+        Some(stamp ^ links.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17))
+    }
+
+    fn dependents(&self, obj: ObjId, out: &mut Vec<ObjId>) {
+        if let Some(blocks) = &self.blocks {
+            blocks.relatives(obj, out);
+        }
+    }
+
+    fn marks_on_ghost(&self, obj: ObjId, out: &mut Vec<(ObjId, u32)>) {
+        if let Some(blocks) = &self.blocks {
+            blocks.marks_on_ghost(obj, out);
+        }
     }
 
     fn class_id(&self, obj: ObjId) -> Option<u32> {
@@ -680,10 +838,11 @@ impl ObjectSource for TgeSource<'_> {
     }
 
     fn net_flags(&self, obj: ObjId) -> u32 {
-        if !self.known(obj) {
-            return 0;
-        }
-        self.reg.entries.get(&obj).map_or(0, |e| e.flags)
+        self.reg
+            .entries
+            .get(&obj)
+            .filter(|e| self.known(e))
+            .map_or(0, |e| e.flags)
     }
 
     fn pack_update(
@@ -693,25 +852,66 @@ impl ObjectSource for TgeSource<'_> {
         w: &mut BitWriter,
         ghost_of: &dyn Fn(ObjId) -> Option<u32>,
     ) -> u32 {
-        let (Some(class), Some(table)) = (self.class(obj), self.table) else {
+        self.pack_update_on(obj, mask, w, &IndexOnly(ghost_of))
+    }
+
+    fn pack_update_on(
+        &mut self,
+        obj: ObjId,
+        mask: u32,
+        w: &mut BitWriter,
+        ghosts: &dyn ConnectionGhosts,
+    ) -> u32 {
+        let ghost_of = &|o| ghosts.index(o);
+        let class = self
+            .reg
+            .entries
+            .get(&obj)
+            .filter(|_| self.vm.objects().contains(obj))
+            .and_then(|e| self.class_of(e));
+        let (Some(class), Some(table)) = (class, self.table) else {
             return 0;
         };
         let widths = NetWidths::new(self.ghost_bits, torque_net::profile::DEFAULT_DATABLOCK_BITS);
         let ctx = PackCtx::for_writer(w, widths, self.vm.sim_time());
         let view = GameView {
             fields: FieldView { vm: self.vm, obj },
-            controlled: self.controlled.contains(&obj),
+            controlled: self.controlled.binary_search(&obj).is_ok(),
             ghost_of: Some(ghost_of),
+            connection: self.connection,
         };
-        let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
-        // The packers cut every count to its width first, so a record cannot fail to encode.
+        let Some(blocks) = &self.blocks else {
+            let (record, kept) = TgeGhosts::pack(class, &view, mask, &ctx);
+            // The packers cut every count to its width first, so a record cannot fail to encode.
+            let _ = record.encode(w, table, widths);
+            return kept;
+        };
+        // The block owns its mask bits: the class record never sees them, and its kept bits never claim them.
+        let (record, kept) = TgeGhosts::pack(class, &view, mask & CLASS_MASK, &ctx);
         let _ = record.encode(w, table, widths);
-        kept
+        let left = blocks.write(obj, mask & BLOCK_MASK, ghosts, w, self.ghost_bits);
+        (kept & CLASS_MASK) | left
     }
 
-    fn update_priority(&self, _obj: ObjId, _cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
+    fn update_priority(&self, obj: ObjId, cam: &CamInfo, _mask: u32, skip: u8) -> f32 {
+        // A plugin class with a share orders its updates itself.
+        let scope = (cam.object != 0).then_some(cam.object);
+        if let Some(p) = self.share_of(obj, |_, share| share.priority(self.vm, obj, scope, skip)) {
+            return p;
+        }
         // `NetObject::getUpdatePriority`: the skip count over ten.
         f32::from(skip) * 0.1
+    }
+
+    /// A parent's first record goes ahead of its children's: a step for each link down to its deepest descendant.
+    fn first_record_bonus(&self, obj: ObjId) -> f32 {
+        self.blocks
+            .as_ref()
+            .map_or(0.0, |b| b.height(obj) as f32 * PARENT_PRIORITY_STEP)
+    }
+
+    fn packet_share(&self, obj: ObjId) -> Option<(u32, f32)> {
+        self.share_of(obj, |group, share| (group, share.part(self.vm)))
     }
 
     fn camera_info(&self, scope: ObjId) -> Option<CamInfo> {
@@ -727,6 +927,13 @@ impl ObjectSource for TgeSource<'_> {
         None
     }
 
+    /// What a ShapeBase is mounted on (a player on its vehicle): kept out of a veto, so hiding the vehicle cannot blind its
+    /// rider. It is not [`ObjectSource::mount_of`], which would have the full query scope the mount first and change the
+    /// ghosts' order.
+    fn rides(&self, scope: ObjId) -> Option<ObjId> {
+        torque_game::sim::mount::link(self.vm, scope).0
+    }
+
     fn scope_query(
         &self,
         _scope: ObjId,
@@ -734,17 +941,40 @@ impl ObjectSource for TgeSource<'_> {
         _radius: f32,
         visit: &mut dyn FnMut(ObjId) -> bool,
     ) {
-        let mut ids: Vec<ObjId> = self.reg.entries.keys().copied().collect();
-        ids.sort_unstable();
-        for id in ids {
+        for &id in self.reg.entries.sorted_ids().iter() {
             if !visit(id) {
                 return;
             }
         }
     }
 
+    fn scope_query_from(
+        &self,
+        _scope: ObjId,
+        _cam: &CamInfo,
+        _radius: f32,
+        skip: usize,
+        visit: &mut dyn FnMut(ObjId) -> bool,
+    ) -> usize {
+        let ids = self.reg.entries.sorted_ids();
+        let mut walked = skip.min(ids.len());
+        for &id in &ids[walked..] {
+            walked += 1;
+            if !visit(id) {
+                break;
+            }
+        }
+        walked
+    }
+
     fn scope_distance(&self, _obj: ObjId, _scope: ObjId) -> Option<f32> {
         None
+    }
+
+    /// Torque's full query takes every object that is not a SceneObject (it has no distance) and a SceneObject within the radius.
+    fn scope_includes(&self, obj: ObjId, scope: ObjId, cam: &CamInfo, radius: f32) -> bool {
+        self.scope_distance(obj, scope).is_none_or(|d| d < radius)
+            || self.reaches_scope(obj, cam.eye, radius)
     }
 
     fn ghost_always(&self) -> &[ObjId] {
@@ -763,6 +993,10 @@ impl<G: NetGame> NetHost for NetPasses<G> {
 
     fn phase(&self, phase: Phase) {
         self.0.borrow_mut().push_phase(phase);
+    }
+
+    fn set_tick(&self, tick: u64) {
+        self.0.borrow_mut().tick = tick;
     }
 
     fn receive(&self, vm: &mut Vm, now: u32, new_tick: bool) {

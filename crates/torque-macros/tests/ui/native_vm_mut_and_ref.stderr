@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: a native takes either one `VmMut` or any number of `VmRef`, never both
+ --> tests/ui/native_vm_mut_and_ref.rs:5:4
+  |
+5 | fn both(_writer: VmMut, _reader: VmRef) {}
+  |    ^^^^ evaluation of `_` failed here

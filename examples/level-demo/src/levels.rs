@@ -1,7 +1,9 @@
-//! Maps authored as Blockbench models: each `levels/<name>.bbmodel` of the game folder is built into interiors when the
-//! example starts (`torque-import`'s reader, `torque-interior-builder`'s mesh input), written into the kit as
+//! Maps authored as Blockbench models: each `levels/<name>.bbmodel` of the game folder is built when the example starts
+//! (`torque-import`'s reader): its prop groups into props ([`crate::props`]: the furniture and desk items, each its own shape
+//! and `PropData`), the rest into interiors (`torque-interior-builder`'s mesh input), written into the kit as
 //! `kit/<name>.dif` (or `kit/<name>_1.dif`, ... when it is cut into pieces) with its textures, and its map,
-//! `missions/<name>.mis`, made from `levels/<name>.mis` with the line `%interiors%` replaced by the interiors' instances.
+//! `missions/<name>.mis`, made from `levels/<name>.mis` with the line `%interiors%` replaced by the interiors' instances and
+//! the line `%props%` by the props' datablocks and spawns.
 //!
 //! The model's textures are drawn as Blockbench draws them: sampled nearest, a texture with partly see-through texels
 //! see-through (the builder's material flags, [`torque_interior_builder::materials`]). A texture whose name ends in `_glow`
@@ -19,6 +21,7 @@ use torque_interior_builder::mission::{Placement, fragment};
 use torque_render_scene::{Draw, Filter, Sampler};
 
 use crate::files::GameFiles;
+use crate::props::PROPS;
 
 /// The line of a level's map the interiors take the place of.
 pub const INTERIORS: &str = "%interiors%";
@@ -70,6 +73,13 @@ pub fn add_levels(files: &mut GameFiles) -> Result<(), String> {
         };
         let model =
             bbmodel::read(&bytes, &read, &mut |_| true).map_err(|e| format!("{name}: {e}"))?;
+        let (model, props) = crate::props::split(model).map_err(|e| format!("{name}: {e}"))?;
+        if !props.is_empty() && !template.contains(PROPS) {
+            return Err(format!(
+                "levels/{name}.bbmodel has props and levels/{name}.mis no {PROPS} line"
+            ));
+        }
+        let props = crate::props::build(files, &name, &props)?;
         let input = MeshInput::from_model(&model).map_err(|e| format!("{name}: {e}"))?;
         let mut built =
             build_mesh(&input, &MeshOptions::default()).map_err(|e| format!("{name}: {e}"))?;
@@ -104,7 +114,10 @@ pub fn add_levels(files: &mut GameFiles) -> Result<(), String> {
         }
         files.insert(
             &format!("missions/{name}.mis"),
-            template.replace(INTERIORS, &instances).as_bytes(),
+            template
+                .replace(INTERIORS, &instances)
+                .replace(PROPS, props.trim_end())
+                .as_bytes(),
         );
     }
     Ok(())

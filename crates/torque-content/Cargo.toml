@@ -1,0 +1,41 @@
+[package]
+name = "torque-content"
+description = "Content formats as torque-rs asset loaders: glTF, OBJ and Blockbench shapes, .dif interiors, .ter terrains, the map layer's readers and Quake or Valve .map interiors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "gltf", "interior", "terrain", "gamedev"]
+categories = ["game-development", "parser-implementations"]
+
+# Each format a plugin that adds its loaders to the engine's asset registry (`engine.assets().loader`), with its cap and whether
+# it takes files from untrusted sources, and `ContentFormatPlugins`, the group of them. No drawing, GUI, audio or window
+# crates: a dedicated server takes this crate too.
+
+[dependencies]
+torque-engine = { path = "../torque-engine" }
+# glTF, OBJ and Blockbench models, made into the `.dts` bytes every shape reader takes.
+torque-import = { path = "../torque-import", default-features = false }
+torque-shapes = { path = "../torque-shapes" }
+# The map layer and Torque's legacy map files (`.dif`, `.ter`, `.dml`).
+torque-mapcore = { path = "../torque-mapcore" }
+torque-maps = { path = "../torque-maps" }
+# Quake and Valve 220 `.map` files built into interiors (`map-builder`).
+torque-interior-builder = { path = "../torque-interior-builder", optional = true }
+
+[features]
+default = ["gltf"]
+# The glTF (`.glb`, `.gltf`) and Blockbench (`.bbmodel`) loaders: torque-import's JSON reader.
+gltf = ["torque-import/gltf"]
+# The `.map` loader: a Quake or Valve 220 `.map` built into an interior by torque-interior-builder.
+map-builder = ["dep:torque-interior-builder"]
+
+[dev-dependencies]
+# The tests' fixtures: a small shape written as a `.glb`, files held in memory.
+torque-shape-builder = { path = "../torque-shape-builder" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[lints]
+workspace = true

@@ -39,10 +39,12 @@
 use std::cell::RefCell;
 
 use torque::app::manifest::Manifest;
+use torque::app::run::EngineRun;
 use torque::app::view::WorldView;
 use torque::app::web_join::{Mode, SERVER, Target, query, rooms_url, socket_url};
 use torque::app::{App, Host};
 use torque::client::net::web_rtc::{Link, LinkWatch};
+use torque::engine::Engine;
 use torque::gui::GuiDraws;
 use torque::script::text::atoi;
 use torque_render_core::Gpu;
@@ -50,6 +52,7 @@ use torque_render_scene::source::Eye;
 
 use crate::client::{ArenaGame, ClientOptions};
 use crate::files::GameFiles;
+use crate::plugin::{ArenaPlugin, arena_engine};
 
 /// The files the build carries.
 #[cfg(feature = "embed-pack")]
@@ -187,34 +190,55 @@ fn start(files: GameFiles, target: Option<Target>, solo: bool) -> Result<(), Str
             .unwrap_or_else(|| "Browser player".to_string()),
         ..ClientOptions::default()
     };
-    let (socket, watch) = target.open()?;
-    let mut game = ArenaGame::with_socket(files, options, socket)?;
-    game.set_global("$Arena::JoinOnly", "1");
-    if solo {
-        game.set_global("$Arena::Solo", "1");
+    let mut engine = arena_engine(ArenaPlugin::new(&files).with_port(options.port));
+    let start = RefCell::new(Some((files, options, target)));
+    engine
+        .app(move |engine| {
+            let (files, options, target) = start.take().ok_or("the arena starts once")?;
+            WebArena::new(engine, files, options, target, solo)
+        })
+        .run()
+        .map_err(|e| e.to_string())
+}
+
+impl WebArena {
+    /// The client made by `engine`, on a game socket to `target`, joined unless it waits at its menu.
+    fn new(
+        engine: &Engine,
+        files: GameFiles,
+        options: ClientOptions,
+        target: Target,
+        solo: bool,
+    ) -> Result<WebArena, String> {
+        let (socket, watch) = target.open()?;
+        let mut game = ArenaGame::from_engine(engine, files, options, Some(socket))?;
+        game.set_global("$Arena::JoinOnly", "1");
+        if solo {
+            game.set_global("$Arena::Solo", "1");
+        }
+        if target == Target::Page {
+            game.set_global("$Arena::Invited", "1");
+        }
+        game.call("showMainMenu", &[])?;
+        let mut web = WebArena {
+            game,
+            target,
+            frames: 0,
+            watch,
+            ended: false,
+            joined: false,
+            in_link_game: false,
+            asked_back: false,
+        };
+        // Played alone the game waits at the main menu; a link's join waits for its channel (module docs).
+        if !solo && web.target != Target::Page {
+            web.joined = true;
+            web.join()?;
+        } else if web.target == Target::Page {
+            web.status("Waiting for the connection to the host...");
+        }
+        Ok(web)
     }
-    if target == Target::Page {
-        game.set_global("$Arena::Invited", "1");
-    }
-    game.call("showMainMenu", &[])?;
-    let mut web = WebArena {
-        game,
-        target,
-        frames: 0,
-        watch,
-        ended: false,
-        joined: false,
-        in_link_game: false,
-        asked_back: false,
-    };
-    // Played alone the game waits at the main menu; a link's join waits for its channel (module docs).
-    if !solo && web.target != Target::Page {
-        web.joined = true;
-        web.join()?;
-    } else if web.target == Target::Page {
-        web.status("Waiting for the connection to the host...");
-    }
-    torque::app::window::run(web)
 }
 
 /// The arena, its state written on the page as it draws (module docs).

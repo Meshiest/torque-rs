@@ -623,6 +623,9 @@ fn done_void(r: Result<bool, VmError>) -> Native {
 }
 
 pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
+    // `bindCmd` binds script text that runs on the key; `save` writes the binds to a file.
+    vm.add_native_effects("ActionMap", "bindCmd", ts_vm::effects::Effects::CODE);
+    vm.add_native_effects("ActionMap", "save", ts_vm::effects::Effects::FILES);
     reg(
         vm,
         client,

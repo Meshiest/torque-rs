@@ -12,6 +12,7 @@ import {
   nextLinkId,
   peerNumber,
   roomPage,
+  roomService,
   splitCandidates,
 } from './host.js';
 
@@ -273,7 +274,7 @@ test('a room service address no socket can be made for leaves no worker, listene
   }
   const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
   set('document', { documentElement: { dataset } });
-  set('location', { search: '?rooms=ws://', protocol: 'http:', host: '127.0.0.1' });
+  set('location', { search: '', protocol: 'http:', host: '127.0.0.1' });
   set('Worker', FakeWorker);
   set('WebSocket', class {
     constructor() {
@@ -327,7 +328,7 @@ test('at most 4 joiners from one address, and a place frees when one ends', asyn
   }
   const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
   set('document', { documentElement: { dataset: {} } });
-  set('location', { search: '?rooms=ws://127.0.0.1:1/ws', protocol: 'http:', host: '127.0.0.1' });
+  set('location', { search: '?rooms=ws://127.0.0.1:1/ws', protocol: 'http:', host: '127.0.0.1:1' });
   set('Worker', FakeWorker);
   set('WebSocket', FakeSocket);
   set('addEventListener', () => {});
@@ -351,6 +352,50 @@ test('at most 4 joiners from one address, and a place frees when one ends', asyn
     assert.deepEqual(drops(), ['drop 5', 'drop 2', 'drop 8']);
   } finally {
     handle?.stop();
+    for (const [k, d] of Object.entries(saved)) {
+      if (d) Object.defineProperty(globalThis, k, d);
+      else delete globalThis[k];
+    }
+  }
+});
+
+test("a link's ?rooms= names only the page's own host or a service the page lists, and ?lan needs the page's own say", () => {
+  const page = { protocol: 'https:', host: 'game.example' };
+  assert.deepEqual(roomService('', page), { url: 'wss://game.example/ws', lan: false });
+  assert.deepEqual(roomService('?rooms=wss://game.example/other', page), { url: 'wss://game.example/other', lan: false });
+  assert.throws(() => roomService('?rooms=wss://other.example/ws', page), /other\.example/);
+  assert.throws(() => roomService('?rooms=wss://game.example.other.example/ws', page), /neither/);
+  assert.throws(() => roomService('?rooms=https://game.example/ws', page), /ws:\/\/ or wss:/);
+  assert.throws(() => roomService('?rooms=ws://', page), /ws:\/\/ or wss:/);
+  const listed = { rooms: ['wss://rooms.example/ws'] };
+  assert.equal(roomService('?rooms=wss://rooms.example/ws', page, listed).url, 'wss://rooms.example/ws');
+  assert.throws(() => roomService('?rooms=wss://rooms.example/elsewhere', page, listed), /neither/);
+  // `?lan` from a link counts only on a page that allows it.
+  assert.equal(roomService('?lan=1', page).lan, false);
+  assert.equal(roomService('?lan=1', page, { lan: true }).lan, true);
+});
+
+test('hosting with ?rooms= naming another host opens no worker and no socket', async () => {
+  const saved = {};
+  for (const k of ['document', 'location', 'Worker', 'WebSocket']) saved[k] = Object.getOwnPropertyDescriptor(globalThis, k);
+  let opened = 0;
+  const set = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
+  set('document', { documentElement: { dataset: {} } });
+  set('location', { search: '?host=1&lan=1&rooms=wss://other.example/ws', protocol: 'https:', host: 'game.example' });
+  set('Worker', class {
+    constructor() {
+      opened += 1;
+    }
+  });
+  set('WebSocket', class {
+    constructor() {
+      opened += 1;
+    }
+  });
+  try {
+    await assert.rejects(hostGame({}, () => {}, { client: null }), /other\.example/);
+    assert.equal(opened, 0);
+  } finally {
     for (const [k, d] of Object.entries(saved)) {
       if (d) Object.defineProperty(globalThis, k, d);
       else delete globalThis[k];

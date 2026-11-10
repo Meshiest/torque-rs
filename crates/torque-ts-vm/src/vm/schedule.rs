@@ -18,7 +18,7 @@
 //! `console/simEvents.cpp` (Copyright (c) 2012 GarageGames, LLC) and `console/consoleFunctions.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use super::{Native, NativeCall, Vm, VmError};
 use crate::events::{Event, EventKind, EventLimits, EventQueue};
@@ -98,12 +98,23 @@ pub struct OverrideRun {
 /// called as any event is). It is called outside any run; the runs it makes are outermost runs of their own.
 pub type CallOverride = std::rc::Rc<dyn Fn(&mut Vm, &[Vec<u8>], &PassRoom) -> Option<OverrideRun>>;
 
+/// A host's check of a scheduled call as it fires ([`Vm::set_fire_check`]): false skips the call (the host says why).
+pub type FireCheck = std::rc::Rc<dyn Fn(&mut Vm, &Event) -> bool>;
+
+/// A host's note that the scheduled call of the event `seq` its fire check let through has run ([`Vm::set_fire_done`]),
+/// whatever came of it: what the call queued in turn has the sequence numbers since the check.
+pub type FireDone = std::rc::Rc<dyn Fn(&mut Vm, u32)>;
+
 /// The handler of the native events and the host's call override (boxed in the `Vm`).
 #[derive(Default)]
 pub(super) struct NativeEvents {
     handler: Option<NativeEventHandler>,
     /// The folded name of the global function whose scheduled calls the override sees, and the override.
     call_override: Option<(Vec<u8>, CallOverride)>,
+    /// The host's check of each scheduled call as it fires.
+    fire_check: Option<FireCheck>,
+    /// The host's note after each scheduled call its check let through.
+    fire_done: Option<FireDone>,
 }
 
 pub(super) fn register(vm: &mut Vm) {
@@ -169,6 +180,19 @@ impl Vm {
     /// ([`CallOverride`]). A call made any other way (`invoke`, bytecode, `call()`) is not overridden.
     pub fn set_call_override(&mut self, name: &[u8], call: Option<CallOverride>) {
         self.native_events.call_override = call.map(|f| (crate::text::fold(name), f));
+    }
+
+    /// Sets the host's check of every scheduled call (`schedule`, both forms) as it fires, before the function or method
+    /// runs (None removes it): a call it refuses is skipped. A host that lets other code queue calls (a script language)
+    /// holds the call to the rules that applied where it was queued.
+    pub fn set_fire_check(&mut self, check: Option<FireCheck>) {
+        self.native_events.fire_check = check;
+    }
+
+    /// Sets the host's note after each scheduled call its fire check ([`set_fire_check`](Self::set_fire_check)) let run
+    /// (None removes it).
+    pub fn set_fire_done(&mut self, done: Option<FireDone>) {
+        self.native_events.fire_done = done;
     }
 
     /// The steps the last outermost run used (what `advance_time_counted` bills an event): for a host's override, which makes
@@ -273,6 +297,19 @@ impl Vm {
     /// event is pending.
     pub fn event_due(&self, seq: u32) -> Option<u32> {
         self.events.get(seq).map(|event| event.time)
+    }
+
+    /// Takes a pending script event out of the queue, as `cancel` does, without its message; false for a number that
+    /// is not pending or is not a script's event.
+    pub fn cancel_script_event(&mut self, seq: u32) -> bool {
+        match self.events.get(seq) {
+            Some(event) if event.from_script() => {
+                self.events.remove(seq);
+                self.alloc_event_gone(seq);
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Whether an event with this sequence number is pending (of any kind).
@@ -453,6 +490,7 @@ impl Vm {
         let target = self.events.now().wrapping_add(delta_ms);
         // The clock reads the target while events run.
         self.events.set_now(target);
+        self.flush_unknown_commands(target);
         let EventLimits {
             per_advance,
             per_time,
@@ -469,7 +507,7 @@ impl Vm {
         let mut errors = Vec::new();
         let mut fired = 0usize;
         let mut steps = 0u64;
-        let mut per_time_count: HashMap<u32, usize> = HashMap::new();
+        let mut per_time_count: BTreeMap<u32, usize> = BTreeMap::new();
         let mut in_batch = 0usize;
         let mut sliced = false;
         loop {
@@ -576,11 +614,44 @@ impl Vm {
         self.in_run(|vm| handler(vm, event))
     }
 
+    /// Whether the host's fire check lets the scheduled call `event` run (true without one). Out of line.
+    #[inline(never)]
+    fn fire_check_passes(&mut self, event: &Event) -> bool {
+        match self.native_events.fire_check.clone() {
+            Some(check) => check(self, event),
+            None => true,
+        }
+    }
+
     /// Runs one event as an outermost run (or nothing: a delete event, an object that is gone, a missing
     /// function or method). Out of line: `advance_time` holds the loop's state, this holds the argument
     /// vectors.
     #[inline(never)]
     fn fire_event(&mut self, event: Event) -> Result<(), VmError> {
+        let checked =
+            matches!(event.kind, EventKind::Call { .. }) && self.native_events.fire_check.is_some();
+        if checked && !self.fire_check_passes(&event) {
+            return Ok(());
+        }
+        let seq = event.seq;
+        let result = self.fire_event_now(event);
+        if checked {
+            self.fire_done(seq);
+        }
+        result
+    }
+
+    /// The host's note that the checked call `seq` ran. Out of line.
+    #[inline(never)]
+    fn fire_done(&mut self, seq: u32) {
+        if let Some(done) = self.native_events.fire_done.clone() {
+            done(self, seq);
+        }
+    }
+
+    /// Runs one event now, its check passed.
+    #[inline(never)]
+    fn fire_event_now(&mut self, event: Event) -> Result<(), VmError> {
         let (argv, on_object) = match event.kind {
             EventKind::Call { argv, on_object } => (argv, on_object),
             EventKind::Native { tag, arg } => {
@@ -595,18 +666,19 @@ impl Vm {
         if !self.objects.contains(event.dest) {
             return Ok(());
         }
-        let Some((name, args)) = argv.split_first() else {
+        if argv.is_empty() {
             return Ok(());
-        };
-        let started = self.profile.is_some().then(web_time::Instant::now);
-        let result = if on_object {
-            self.call_method(event.dest, name, args).map(|_| ())
-        } else {
-            self.invoke(None, name, args).map(|_| ())
-        };
-        if let Some(t) = started {
-            self.profile_schedule(name, on_object, t.elapsed());
         }
-        result
+        let started = self.profile.is_some().then(web_time::Instant::now);
+        let profiled = started.map(|_| argv[0].clone());
+        let result = if on_object {
+            self.call_method_owned(event.dest, argv, false)
+        } else {
+            self.invoke_owned(None, argv, false)
+        };
+        if let (Some(t), Some(name)) = (started, profiled) {
+            self.profile_schedule(&name, on_object, t.elapsed());
+        }
+        result.map(|_| ())
     }
 }

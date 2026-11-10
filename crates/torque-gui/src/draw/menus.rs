@@ -31,7 +31,7 @@
 
 use std::sync::Arc;
 
-use torque_fonts::TextColors;
+use torque_fonts::{FontUse, TextColors};
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 
@@ -64,20 +64,15 @@ impl Walk<'_> {
     pub(super) fn profile_font(&mut self, p: ObjId) -> Option<FontOf> {
         let face = String::from_utf8_lossy(&text_field(self.vm, p, b"fontType")).into_owned();
         let size = int_field(self.vm, p, b"fontSize");
-        self.font_named(&face, size)
+        self.font_named(&face, size, self.font_use)
     }
 
-    fn font_named(&mut self, face: &str, size: i32) -> Option<FontOf> {
-        let vm = self.vm;
-        let read = |path: &str| match vm.file_host().read(path.as_bytes()) {
-            FileRead::Found(b) => Some(b),
-            _ => None,
-        };
-        match self.cache.fonts.font(face, size, &read) {
+    fn font_named(&mut self, face: &str, size: i32, user: FontUse) -> Option<FontOf> {
+        match self.font_for(face, size, user) {
             Some(f) => Some((f, face.to_string(), size)),
             None => {
                 self.out.draws.report.no_font += 1;
-                if self.out.draws.report.missing_fonts.len() < 64 {
+                if self.out.draws.report.missing_fonts.len() < super::MAX_MISSING_FONTS {
                     self.out
                         .draws
                         .report
@@ -1348,7 +1343,8 @@ impl Walk<'_> {
         let Some(style) = layout.styles.get(atom.style) else {
             return;
         };
-        let Some(f) = self.font_named(&style.font.0, style.font.1) else {
+        // An ML text's fonts are its markup's, whatever control shows it.
+        let Some(f) = self.font_named(&style.font.0, style.font.1, FontUse::Markup) else {
             return;
         };
         let slice = |a: u32, b: u32| -> &[u8] {

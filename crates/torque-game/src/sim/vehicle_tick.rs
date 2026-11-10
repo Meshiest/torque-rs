@@ -150,6 +150,8 @@ pub fn tick(
     body.s_mut().mask_bits = 0;
     vm.hold(id);
     let damage_before = body.s().damage;
+    let solver = object_field(vm, id, b"dataBlock")
+        .and_then(|db| crate::sim_classes::sim_classes(vm).body_solver(vm, db));
     let mut host = HostImpl {
         slot: Slot::Vm(vm),
         env,
@@ -160,6 +162,9 @@ pub fn tick(
         moved: false,
         damage_before,
         class: None,
+        solver,
+        riders: Vec::new(),
+        found: Vec::new(),
     };
     let _ = match (&mut body, &d) {
         (Body::Wheeled(v), Data::Wheeled(d, c)) => {
@@ -202,6 +207,11 @@ pub struct HostImpl<'a> {
     damage_before: f32,
     /// A WheeledVehicle's subclass (the host's), for its step.
     class: Option<Rc<dyn vehicle::wheeled::WheeledClass>>,
+    /// The datablock's solver for the body, handed to the step once ([`SimClasses::body_solver`](crate::sim_classes::SimClasses::body_solver)).
+    solver: Option<Box<dyn vehicle::BodySolver>>,
+    /// The buffers of [`HostImpl::switch`] and [`VehicleHost::scan`], kept across the sub-steps.
+    riders: Vec<ObjId>,
+    found: Vec<ObjectId>,
 }
 
 impl HostImpl<'_> {
@@ -254,30 +264,33 @@ impl HostImpl<'_> {
         self.note(r);
     }
 
-    /// This vehicle and everything mounted on it, at any depth (`disableCollision`'s recursion); charged per object.
-    fn with_riders(&mut self) -> Vec<ObjId> {
+    /// This vehicle and everything mounted on it, at any depth (`disableCollision`'s recursion), into `out`; charged per object.
+    fn with_riders(&mut self, out: &mut Vec<ObjId>) {
         let vm = self.slot.vm();
-        let mut out = vec![self.id];
+        out.clear();
+        out.push(self.id);
         let mut i = 0;
         while i < out.len() && out.len() <= super::mount::SIM_MOUNT_CHAIN {
-            let riders = super::mount::riders(vm, out[i]).to_vec();
+            let riders = super::mount::riders(vm, out[i]);
             if !vm.charge_work(1 + riders.len() as u64) {
                 break;
             }
-            for r in riders {
+            for &r in riders {
                 if !out.contains(&r) {
                     out.push(r);
                 }
             }
             i += 1;
         }
-        out
     }
 
     fn switch(&mut self, disable: bool) {
-        for o in self.with_riders() {
+        let mut riders = std::mem::take(&mut self.riders);
+        self.with_riders(&mut riders);
+        for &o in &riders {
             switch_collision(self.slot.vm(), o, disable);
         }
+        self.riders = riders;
     }
 }
 
@@ -329,27 +342,27 @@ impl<'a> VehicleHost for HostImpl<'a> {
 
     fn scan(&mut self, _s: &mut VehicleState, query: &Box3, out: &mut Vec<ScanHit>) {
         let me = ObjectId(self.id);
-        let mut ids = Vec::new();
+        let mut ids = std::mem::take(&mut self.found);
+        ids.clear();
         let scan = self.type_masks().vehicle_scan;
-        if self
+        let found = self
             .world()
-            .find_objects(query, scan, Some(me), SIM_VEHICLE_SCAN, &mut ids)
-            .is_err()
-        {
-            return;
-        }
-        self.slot.read(|vm| {
-            for o in ids {
-                let m = ext::get(vm.objects(), o.0).map_or(0, |e| e.type_mask);
-                // `findCallback`: triggers are the host's (not called yet, listed), corpses and items are queued.
-                if m & (types::CORPSE | types::ITEM) != 0 {
-                    out.push(ScanHit {
-                        object: o,
-                        velocity: super::item::object_velocity(vm, o.0),
-                    });
+            .find_objects(query, scan, Some(me), SIM_VEHICLE_SCAN, &mut ids);
+        if found.is_ok() {
+            self.slot.read(|vm| {
+                for &o in &ids {
+                    let m = ext::get(vm.objects(), o.0).map_or(0, |e| e.type_mask);
+                    // `findCallback`: triggers are the host's (not called yet, listed), corpses and items are queued.
+                    if m & (types::CORPSE | types::ITEM) != 0 {
+                        out.push(ScanHit {
+                            object: o,
+                            velocity: super::item::object_velocity(vm, o.0),
+                        });
+                    }
                 }
-            }
-        });
+            });
+        }
+        self.found = ids;
     }
 
     fn object_velocity(&mut self, id: ObjectId) -> F3 {
@@ -500,6 +513,10 @@ impl<'a> VehicleHost for HostImpl<'a> {
 
     fn wheeled_class(&self) -> Option<Rc<dyn vehicle::wheeled::WheeledClass>> {
         self.class.clone()
+    }
+
+    fn body_solver(&mut self) -> Option<Box<dyn vehicle::BodySolver>> {
+        self.solver.take()
     }
 
     /// The class's wheel-contact callback, `%db.<name>(%obj, %obj)`, when it names one for these wheels.

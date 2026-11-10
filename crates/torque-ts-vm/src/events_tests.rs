@@ -142,3 +142,23 @@ fn removing_and_dropping_keep_the_indexes_in_step() {
     assert!(queue.get(d).is_none());
     assert!(queue.by_seq.is_empty() && queue.by_dest.is_empty());
 }
+
+#[test]
+fn an_objects_events_are_tracked_from_one_to_many_and_back() {
+    let mut queue = EventQueue::new();
+    let a = queue.post(1, 9, call("a")).unwrap();
+    let b = queue.post(2, 9, call("b")).unwrap();
+    let c = queue.post(3, 9, call("c")).unwrap();
+    let other = queue.post(4, 10, call("o")).unwrap();
+    assert_eq!(queue.remove(b).map(|e| name_of(&e)).as_deref(), Some("b"));
+    assert!(queue.remove(b).is_none());
+    assert_eq!(queue.take_due(1).map(|e| e.seq), Some(a));
+    // One event of object 9 is left, held without a set.
+    assert_eq!(queue.drop_dest_seqs(9), [c]);
+    assert_eq!(queue.drop_dest(9), 0);
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue.get(other).map(name_of).as_deref(), Some("o"));
+    let first = queue.post(5, 11, call("x")).unwrap();
+    let second = queue.post(6, 11, call("y")).unwrap();
+    assert_eq!(queue.drop_dest_seqs(11), [first, second]);
+}

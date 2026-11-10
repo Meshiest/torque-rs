@@ -21,6 +21,29 @@
 //! these, Torque3D carries the bitmap and its PNG loader on in `gfx/bitmap/gBitmap.cpp` and `gfx/bitmap/loaders/bitmapPng.cpp`;
 //! it has no JPEG loader and no MMX mip path. The code here is this crate's own. This software is based in part on the work of the Independent JPEG Group: [`jpeg`] is written from the
 //! algorithms of libjpeg 6b. The PNG chunk rules follow libpng 1.2.8's behaviour; no libpng code is carried over.
+//!
+//! # Maintaining
+//!
+//! **Work is tied to the file's size.** Every decoder allocates and loops for what its input can pay for, so a few bytes never ask
+//! for a large image or a long decode. PNG: the rows may need at most 1,100 times the IDAT bytes. JPEG ([`jpeg::Limits`]): a frame
+//! holds at most `JPEG_SAMPLES_FLOOR` plus `samples_per_byte` samples a file byte, the scans together visit at most
+//! `JPEG_SAMPLES_FLOOR` plus `block_visits_per_byte` blocks a file byte (both charged to the file's bytes, nothing else), and a scan
+//! whose entropy decoder has no input left stops (a restart interval keeps it running while input remains, and is charged). The
+//! coefficient arrays grow a block row at a time as the scans reach them. A new decoder or a new cap gets the same tie and a test
+//! that a header with no data behind it is refused.
+//!
+//! **Invariants and their tests.**
+//! - A frame header with no data behind it is refused by the sample tie, in milliseconds
+//!   (`jpeg::tests::a_frame_header_with_no_data_behind_it_is_refused`), and `header_size` agrees with the decoder.
+//! - Empty scans stop at once, and scans repeated past the visit allowance are refused
+//!   (`scans_with_no_data_stop_at_once`, `the_scans_together_may_visit_only_a_bounded_number_of_blocks`).
+//! - An honest, large, flat progressive file still decodes (`an_honest_large_flat_progressive_file_decodes`): a cap change must keep it.
+//! - The fuzz runs under the default [`jpeg::Limits`], reports its slowest case and fails past a bound
+//!   (`fuzz::hostile_images_never_panic`).
+//! - Coefficient memory follows the data decoded: a frame with no data behind it allocates at most its first block row
+//!   (`jpeg::tests::coefficient_memory_follows_the_rows_the_scans_reach`); the sample tie still bounds a full decode (about 8 KiB
+//!   of memory a file byte at the cap).
+//! - With restart markers on and no input left, the rest of a scan is skipped (`restart_scans_with_no_input_left_stop_at_once`).
 
 pub mod jpeg;
 pub mod lru;

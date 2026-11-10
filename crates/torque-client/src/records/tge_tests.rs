@@ -16,6 +16,23 @@ fn words() -> PlayerWords {
         head_z: -0.5,
         rot_z: 1.5,
         translation: [1.0, 2.0, 3.0],
+        frame: TailFrame::Absent,
+    }
+}
+
+#[test]
+fn a_players_frame_reads_back_with_its_words() {
+    for frame in [
+        TailFrame::World,
+        TailFrame::Parent {
+            ghost: 41,
+            node: Some(3),
+        },
+    ] {
+        let words = PlayerWords { frame, ..words() };
+        let data = TgeClientSet::player_data(&words, None);
+        let read = TgeClientSet::read_player(data.as_ref()).expect("a Player's");
+        assert_eq!(read.words, words);
     }
 }
 
@@ -114,6 +131,10 @@ fn the_classes_sort_as_the_prediction_sorts_them() {
         ClassKind::Other
     );
     assert_eq!(TgeClientSet::class_kind(TgeClass::Item), ClassKind::Other);
+    assert_eq!(
+        TgeClientSet::class_kind(TgeClass::StaticShape),
+        ClassKind::StaticShape
+    );
 }
 
 #[test]

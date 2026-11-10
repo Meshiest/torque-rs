@@ -57,3 +57,24 @@ fn installed_rules_are_used_and_the_first_installation_wins() {
     sort_by(&mut v, |a, b| a - b);
     assert_eq!(v, [3, 2, 1]);
 }
+
+#[test]
+fn atoi_stops_at_a_nul_as_at_any_other_byte_and_reads_only_what_it_takes() {
+    use torque_ts_text::atoi;
+    assert_eq!(atoi(b"12\x0034"), 12);
+    assert_eq!(atoi(b" \t-7x"), -7);
+    assert_eq!(atoi(b"\x00 5"), 0);
+    assert_eq!(atoi(b"+"), 0);
+    assert_eq!(atoi(b"99999999999"), i32::MAX);
+    // The rest of a megabyte's text after the digits is not read: 65,536 calls over it stay quick.
+    let mut text = b"42>".to_vec();
+    text.resize(1 << 20, b'x');
+    let start = std::time::Instant::now();
+    let sum: i64 = (0..65_536).map(|_| i64::from(atoi(&text))).sum();
+    assert_eq!(sum, 42 * 65_536);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
+}

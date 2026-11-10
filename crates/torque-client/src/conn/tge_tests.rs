@@ -277,9 +277,15 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
     let bytes = w.into_bytes();
     let mut r = BitReader::new(&bytes);
     r.enable_string_buffer();
-    let (read, index, total) = read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
-        .unwrap()
-        .expect("a modified datablock");
+    let (read, index, total) = read_datablock(
+        &mut r,
+        &tables.ctx(widths),
+        &tables.classes,
+        &PluginClasses::default(),
+        &mut ghosts::free_charge(),
+    )
+    .unwrap()
+    .expect("a modified datablock");
     assert_eq!((read.id, index, total), (40, 2, 5));
     assert_eq!(read.datablock.class, "StaticShapeData");
     assert_eq!(
@@ -287,6 +293,37 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
         Some(&Value::str("shapes/crate.dts"))
     );
     assert_eq!(read.datablock.get("mass", 0), Some(&Value::F32(4.0)));
+
+    // Datablock events draw on their datagram's budget: what one spends, the next does not have.
+    let spent = std::cell::Cell::new(None::<u64>);
+    let mut probe = |cost: u64| {
+        spent.set(Some(spent.get().unwrap_or(0) + cost));
+        true
+    };
+    let mut r = BitReader::new(&bytes);
+    r.enable_string_buffer();
+    read_datablock(
+        &mut r,
+        &tables.ctx(widths),
+        &tables.classes,
+        &PluginClasses::default(),
+        &mut probe,
+    )
+    .unwrap();
+    let one = spent.get().expect("the event paid");
+    let budget = std::cell::Cell::new(Some(one + one / 2));
+    for (n, want_ok) in [(1, true), (2, false)] {
+        let mut r = BitReader::new(&bytes);
+        r.enable_string_buffer();
+        let read = read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default(),
+            &mut ghosts::cell_charge(&budget),
+        );
+        assert_eq!(read.is_ok(), want_ok, "event {n} of the datagram");
+    }
 
     // The one-bit event of a datablock the client has: nothing.
     let mut w = net::bits::BitWriter::new();
@@ -299,9 +336,15 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
     let bytes = w.into_bytes();
     let mut r = BitReader::new(&bytes);
     assert!(
-        read_datablock(&mut r, &tables.ctx(widths), &tables.classes)
-            .unwrap()
-            .is_none()
+        read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default(),
+            &mut ghosts::free_charge()
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -360,4 +403,470 @@ fn a_packet_whose_compression_point_is_not_finite_is_refused() {
         r.set_compression_point([0.0, bad, 0.0]);
         assert!(stream_point(&r).is_err(), "{bad}");
     }
+}
+
+/// A plugin's datablock class: one struct as the console class (with a preload) and its record.
+#[derive(
+    Debug, Clone, PartialEq, Default, torque_engine::EngineClass, torque_engine::DatablockCodec,
+)]
+#[class(name = "PropData", parent = "SimDataBlock", preload = PropData::check)]
+struct PropData {
+    mass: f32,
+    #[net(max_len = 32)]
+    model: String,
+    #[field(name = "partCount")]
+    parts: i32,
+}
+
+impl PropData {
+    /// The preload: refuses a prop with no model, and notes the ones it took.
+    fn check(&self, vm: &mut Vm, id: ts_vm::sim::ObjId) -> Result<(), String> {
+        if self.model.is_empty() {
+            return Err("a prop needs a model".to_string());
+        }
+        let seen = vm.global("$preloaded").unwrap_or_default();
+        let seen = String::from_utf8_lossy(&seen);
+        vm.set_global(
+            "$preloaded",
+            &format!("{seen}{id}:{}:{} ", self.model, self.parts),
+        );
+        Ok(())
+    }
+}
+
+#[derive(torque_engine::PluginId)]
+#[plugin(id = "test.props")]
+struct PropsPlugin;
+
+impl torque_engine::Plugin for PropsPlugin {
+    fn build(&self, engine: &mut torque_engine::EngineBuilder) {
+        engine.script().class::<PropData>();
+        engine.net().datablock::<PropData>("PropData");
+    }
+}
+
+/// A PropData as the server's view answers it.
+struct PropView(&'static str);
+
+impl torque_server::net::datablock::DatablockView for PropView {
+    fn get(&self, field: &str, _index: usize) -> torque_server::net::datablock::DbValue {
+        use torque_server::net::datablock::DbValue;
+        match field {
+            "mass" => DbValue::F32(12.5),
+            "model" => DbValue::Str(self.0.as_bytes().to_vec()),
+            "partCount" => DbValue::Int(4),
+            _ => DbValue::Null,
+        }
+    }
+}
+
+#[test]
+fn a_plugins_datablock_goes_out_past_tges_class_ids_and_the_client_makes_and_preloads_it() {
+    use torque_engine::{ClientStage, ServerStage};
+    use torque_server::net::codecs::net_codecs;
+    use torque_server::net::datablock::{DatablockBody, DatablockEvent};
+    let engine = torque_engine::EngineBuilder::new()
+        .add_plugins(PropsPlugin)
+        .build()
+        .expect("the engine builds");
+    // The server: its codecs are the engine's own, with the plugin's class.
+    let mut server = Vm::new();
+    for &stage in ServerStage::ALL {
+        engine.replay(stage, &mut server).unwrap();
+    }
+    let codecs = net_codecs(&server);
+    assert_eq!(codecs.datablock_class("PropData"), Some("PropData"));
+    let tables = TgeTables::tge().unwrap();
+    let widths = NetWidths::engine_default();
+    let event = |id: u32, model: &'static str| {
+        let record = codecs
+            .datablock_record(
+                "PropData",
+                id,
+                &PropView(model),
+                &torque_game::dbvalues::DbValues::default(),
+            )
+            .expect("the plugin's class has a record");
+        // The class id past the TGE table's 35.
+        assert_eq!(
+            record
+                .as_any()
+                .downcast_ref::<torque_server::net::codecs::PluginDbRecord>()
+                .map(|r| r.class_id),
+            Some(35)
+        );
+        let event = DatablockEvent {
+            body: Some(DatablockBody::new(
+                id,
+                "PropData",
+                0,
+                2,
+                widths.datablock_bits,
+                record,
+            )),
+            id_bits: widths.datablock_bits,
+        };
+        let mut w = net::bits::BitWriter::new();
+        w.enable_string_buffer();
+        event.pack(&mut w, &tables.table, &tables.classes).unwrap();
+        w.into_bytes()
+    };
+    // The client: the same plugins.
+    let mut client = Vm::new();
+    for &stage in ClientStage::ALL {
+        engine.replay(stage, &mut client).unwrap();
+    }
+    let plugins = torque_server::net::codecs::plugin_classes(&client).expect("the client's set");
+    for (id, model) in [(40, "props/crate.glb"), (41, "")] {
+        let bytes = event(id, model);
+        let mut r = BitReader::new(&bytes);
+        r.enable_string_buffer();
+        let (read, _, _) = read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &plugins,
+            &mut ghosts::free_charge(),
+        )
+        .unwrap()
+        .expect("a modified datablock");
+        assert_eq!(read.datablock.class, "PropData");
+        assert_eq!(read.datablock.get("partCount", 0), Some(&Value::Int(4)));
+        let unpacked = unpack_datablock(FieldRules::default(), &read);
+        let received = crate::datablocks::receive(&mut client, &unpacked, None).unwrap();
+        if model.is_empty() {
+            assert_eq!(
+                received,
+                crate::datablocks::Received::Refused,
+                "the preload refused it"
+            );
+        } else {
+            assert_eq!(received, crate::datablocks::Received::Added(40));
+        }
+    }
+    assert_eq!(
+        client.global("$preloaded").as_deref(),
+        Some(&b"40:props/crate.glb:4 "[..])
+    );
+    assert_eq!(client.eval(b"return 40.mass;").unwrap(), b"12.5");
+    assert_eq!(
+        client.eval(b"return 40.model;").unwrap(),
+        b"props/crate.glb"
+    );
+
+    // A client without the plugin refuses the class id cleanly.
+    let bytes = event(42, "props/barrel.glb");
+    let mut r = BitReader::new(&bytes);
+    r.enable_string_buffer();
+    assert_eq!(
+        read_datablock(
+            &mut r,
+            &tables.ctx(widths),
+            &tables.classes,
+            &PluginClasses::default(),
+            &mut ghosts::free_charge()
+        )
+        .unwrap_err(),
+        NetError::Invalid("datablock class id")
+    );
+}
+
+/// A plugin that gives the engine a network version.
+#[derive(Clone, Copy, Debug)]
+struct RopePlugin(u32);
+
+impl torque_engine::Plugin for RopePlugin {
+    fn net_version(&self) -> Option<u32> {
+        Some(self.0)
+    }
+
+    fn build(&self, _engine: &mut torque_engine::EngineBuilder) {}
+}
+
+impl torque_engine::PluginType for RopePlugin {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("torque.rope");
+}
+
+fn rope_engine(version: u32) -> Engine {
+    torque_engine::EngineBuilder::new()
+        .add_plugins(RopePlugin(version))
+        .build()
+        .expect("an engine")
+}
+
+/// A client whose connections send `engine`'s hello, with the socket's two queues.
+fn networked_client(
+    engine: &Engine,
+) -> (
+    Vm,
+    Rc<RefCell<ClientState<TgeConn>>>,
+    DatagramQueue,
+    DatagramQueue,
+) {
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    let gui = gui::register(&mut vm);
+    let net = Rc::new(RefCell::new(ClientNet {
+        policy: crate::net::NetPolicy::Lan,
+        ..ClientNet::default()
+    }));
+    let mem = MemoryDatagrams::default();
+    let (sent, incoming) = (Rc::clone(&mem.sent), Rc::clone(&mem.incoming));
+    net.borrow_mut().socket = Some(Box::new(mem));
+    let client = Rc::new(RefCell::new(ClientState::<TgeConn> {
+        net,
+        root: ".".into(),
+        ..ClientState::default()
+    }));
+    crate::conn::register(&mut vm, &client, &gui);
+    ConnectHello::install(&mut vm, engine);
+    vm.set_step_limit(Some(50_000_000));
+    vm.advance_time(1_000);
+    (vm, client, sent, incoming)
+}
+
+/// A plugin whose engine signs in as `name` and checks sign-ins, under `key`.
+#[derive(Clone, Copy, Debug)]
+struct SignInPlugin([u8; 16], &'static str);
+
+impl torque_engine::Plugin for SignInPlugin {
+    fn build(&self, engine: &mut torque_engine::EngineBuilder) {
+        engine
+            .net()
+            .auth(net::connect::SharedSecret::new(self.0, self.1));
+    }
+}
+
+impl torque_engine::PluginType for SignInPlugin {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("torque.sign-in");
+}
+
+fn sign_in_engine(key: [u8; 16], name: &'static str) -> Engine {
+    torque_engine::EngineBuilder::new()
+        .add_plugins(SignInPlugin(key, name))
+        .build()
+        .expect("an engine")
+}
+
+/// The address the test client dials.
+fn dialed() -> std::net::SocketAddr {
+    std::net::SocketAddr::from(([192, 168, 1, 20], 28_000))
+}
+
+/// Runs a client of `client_engine` against a bare handshake server of `server_engine`; the reason the client was refused with.
+fn connect_between(client_engine: &Engine, server_engine: &Engine) -> Option<Vec<u8>> {
+    connect_through(client_engine, server_engine, false).0
+}
+
+/// [`connect_between`] with a server that says it is at `address` (the client dials [`dialed`]).
+fn connect_between_at(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    address: std::net::SocketAddr,
+) -> Option<Vec<u8>> {
+    connect_with(client_engine, server_engine, false, address).0
+}
+
+/// [`connect_between`] that can make the server's gate say a client's channels match even when it listed none (a gate that
+/// lies, or an old one): the reason the client was refused with, and the lines its console printed.
+fn connect_through(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    gate_says_channels: bool,
+) -> (Option<Vec<u8>>, Vec<String>) {
+    connect_with(client_engine, server_engine, gate_says_channels, dialed())
+}
+
+fn connect_with(
+    client_engine: &Engine,
+    server_engine: &Engine,
+    gate_says_channels: bool,
+    address: std::net::SocketAddr,
+) -> (Option<Vec<u8>>, Vec<String>) {
+    use net::handshake::{Server, ServerConfig};
+    use std::net::{Ipv4Addr, SocketAddrV4};
+    let (mut vm, client, sent, incoming) = networked_client(client_engine);
+    vm.eval(
+        b"function GameConnection::onConnectRequestRejected(%this, %why) { $Why = %why; } \
+          new GameConnection(TgeTest); TgeTest.connect(\"192.168.1.20:28000\");",
+    )
+    .unwrap();
+    let mut config = ServerConfig::new(8);
+    config.address = Some(address);
+    config.channels = gate_says_channels;
+    config.gate = server_engine.connect_gate(&config.profile).map(|gate| {
+        if gate_says_channels {
+            std::sync::Arc::new(AlwaysChannels(gate)) as _
+        } else {
+            std::sync::Arc::new(gate) as _
+        }
+    });
+    let mut server = Server::new(config, [3; 16]);
+    let table = net::huffman::Table::torque();
+    let peer = std::net::SocketAddr::from(([192, 168, 1, 5], 5000));
+    let to = SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 20), 28_000);
+    for _ in 0..4 {
+        let datagrams: Vec<_> = sent.borrow_mut().drain(..).collect();
+        for (_, bytes) in datagrams {
+            match server.handle_datagram(&table, peer, &bytes, 0) {
+                net::handshake::Handled::Reply(reply) => {
+                    incoming.borrow_mut().push_back((to, reply));
+                }
+                net::handshake::Handled::Request(request) => {
+                    // The host would run `onConnectRequest` here; this one accepts.
+                    if let net::handshake::Finished::Accepted { reply, .. } =
+                        server.finish_request(&table, *request, net::handshake::Decision::Accept, 0)
+                    {
+                        incoming.borrow_mut().push_back((to, reply));
+                    }
+                }
+                _ => {}
+            }
+        }
+        vm.advance_time(32);
+        crate::host::ClientPass::net(&crate::host::EnginePass, &mut vm, &client);
+        crate::host::run_queued(&mut vm, &client);
+    }
+    let lines = vm
+        .log()
+        .iter()
+        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
+        .collect();
+    (vm.global("$Why"), lines)
+}
+
+/// A gate that accepts what the engine's does and says the channels match whatever the client listed.
+#[derive(Debug)]
+struct AlwaysChannels(net::connect::ManifestGate);
+
+impl net::connect::ConnectGate for AlwaysChannels {
+    fn check(
+        &self,
+        from: std::net::SocketAddr,
+        cx: &net::connect::AuthContext,
+        fields: &net::handshake::ConnectFields,
+    ) -> Result<Option<net::connect::Identity>, Vec<u8>> {
+        self.0.check(from, cx, fields)
+    }
+
+    fn matches_channels(&self, _: &net::handshake::ConnectFields) -> bool {
+        true
+    }
+}
+
+#[test]
+fn the_channels_word_sent_to_a_client_without_channels_is_ignored() {
+    // The server's accept ends with the word; this client has no channels, and connects as it always did.
+    let engine = rope_engine(2);
+    let (why, lines) = connect_through(&engine, &engine, true);
+    assert_eq!(why, None);
+    assert!(
+        lines.iter().any(|l| l == "Connection established"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn a_client_shows_the_servers_reason_for_a_manifest_it_refused() {
+    // The client has rope 1, the server wants 2: the script hears why, in the server's words.
+    let reason = connect_between(&rope_engine(1), &rope_engine(2));
+    assert_eq!(
+        reason.as_deref(),
+        Some(&b"server needs plugin torque.rope 2, you have 1"[..])
+    );
+    // Matching engines connect: nothing is refused.
+    assert_eq!(connect_between(&rope_engine(2), &rope_engine(2)), None);
+    // An engine with nothing on the wire sends a plain request, which a plain server accepts, and a gated server refuses.
+    let plain = torque_engine::EngineBuilder::new().build().unwrap();
+    assert_eq!(connect_between(&plain, &plain), None);
+    assert_eq!(
+        connect_between(&plain, &rope_engine(2)).as_deref(),
+        Some(&b"server needs plugin torque.rope 2, you do not have it"[..])
+    );
+}
+
+#[test]
+fn a_client_signs_in_for_the_server_it_dialed_and_the_challenge_it_was_given() {
+    let key = [7; 16];
+    let server = sign_in_engine(key, "");
+    // The same secret, at the address the client dialed: accepted.
+    assert_eq!(connect_between(&sign_in_engine(key, "ada"), &server), None);
+    // A server that believes it is somewhere else is not the server the ticket was made for.
+    let elsewhere = std::net::SocketAddr::from(([192, 168, 1, 21], 28_000));
+    assert_eq!(
+        connect_between_at(&sign_in_engine(key, "ada"), &server, elsewhere).as_deref(),
+        Some(&b"your sign-in was not accepted"[..])
+    );
+    // Another secret is refused, and a client that is not signed in stops with its own reason.
+    assert_eq!(
+        connect_between(&sign_in_engine([8; 16], "ada"), &server).as_deref(),
+        Some(&b"your sign-in was not accepted"[..])
+    );
+    assert_eq!(
+        connect_between(&sign_in_engine(key, ""), &server).as_deref(),
+        Some(&b"not signed in"[..])
+    );
+}
+
+#[test]
+fn a_mission_ending_keeps_the_plugin_classes_the_world_draws_as_shapes() {
+    use ghosts::codec::{Codec, Layout, R, Xf};
+    use ghosts::plugin::{
+        DatablockRef, DrawnShapes, FieldSpec, GhostRecord, NetField, NetRecord, PluginClass,
+        Replicate, ShapeDraw, ShapeFn,
+    };
+    use ghosts::{ObjectView, PackCtx};
+
+    #[derive(Debug, Clone, PartialEq, Default)]
+    struct Marker {
+        pose: Xf,
+        data: DatablockRef,
+    }
+
+    impl Layout for Marker {
+        fn layout<C: Codec>(&mut self, c: &mut C) -> R {
+            self.pose.layout(c, "transform", FieldSpec::DEFAULT)?;
+            self.data.layout(c, "dataBlock", FieldSpec::DEFAULT)
+        }
+    }
+
+    impl NetRecord for Marker {
+        fn merge(&mut self, sent: &Marker) {
+            *self = sent.clone();
+        }
+        fn datablock(&self) -> Option<u32> {
+            self.data.datablock()
+        }
+        fn transform(&self) -> Option<Xf> {
+            Some(self.pose)
+        }
+        fn script_fields(&self) -> Vec<(String, u32, Value)> {
+            Vec::new()
+        }
+    }
+
+    impl GhostRecord for Marker {
+        fn pack(_: &dyn ObjectView, _: u32, _: &PackCtx) -> (Marker, u32) {
+            (Marker::default(), 0)
+        }
+    }
+
+    let class = PluginClass::ghost::<Marker>("Marker", Replicate::Interpolated);
+    let mut world = ClientWorld::<TgeClientSet>::default();
+    world.plugin_shapes.insert(
+        class,
+        ShapeFn::new::<Marker>(|_, _| Some(ShapeDraw::new("a.dts"))),
+    );
+    world.ghosts.insert(
+        1,
+        ghost(
+            TgeClass::Plugin(class),
+            TgeRecord::Plugin(class, Box::new(Marker::default())),
+        ),
+    );
+    let kept = world.plugin_shapes.clone();
+    end_ghosting(&mut world);
+    assert!(world.ghosts.is_empty());
+    assert_eq!(world.plugin_shapes, kept);
+    assert_ne!(world.plugin_shapes, DrawnShapes::default());
 }

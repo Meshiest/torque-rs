@@ -184,6 +184,12 @@ impl CameraBlend {
         }
     }
 
+    /// Makes the blend cover 95% of the way from standing in `settle` seconds from now on (0 cuts); a blend that runs carries on
+    /// from where it is.
+    pub fn set_settle(&mut self, settle: f32) {
+        self.rate = CameraBlend::new(settle).rate;
+    }
+
     /// The spring's rate (its three poles, per second); 0 cuts.
     pub fn rate(&self) -> f32 {
         self.rate

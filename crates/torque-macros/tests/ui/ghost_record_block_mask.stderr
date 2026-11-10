@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `glow`'s `mask` takes a bit of the per-ghost block (bits 30 and 31, `block::BLOCK_MASK`)
+ --> tests/ui/ghost_record_block_mask.rs:4:44
+  |
+4 | #[derive(Debug, Clone, PartialEq, Default, GhostRecord)]
+  |                                            ^^^^^^^^^^^ evaluation of `_` failed here

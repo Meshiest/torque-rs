@@ -26,9 +26,43 @@ fn arg(c: &NativeCall, i: usize) -> &[u8] {
     until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
 }
 
-/// `strcspn`: the length of the run at the start of `s` that holds no byte of `set`.
+/// `strcspn`: the length of the run at the start of `s` that holds no byte of `set`. For the natives' own short sets;
+/// a set a script passes goes through [`ByteSet`].
 pub fn span(s: &[u8], set: &[u8]) -> usize {
     s.iter().position(|b| set.contains(b)).unwrap_or(s.len())
+}
+
+/// A set of bytes with a constant-time test, built once from a set a script passes, so that testing N bytes against
+/// it is linear in N whatever the set's length (a scan of the set per byte is N times its length).
+#[derive(Clone)]
+pub struct ByteSet([bool; 256]);
+
+impl ByteSet {
+    #[must_use]
+    pub fn new(bytes: &[u8]) -> ByteSet {
+        let mut set = [false; 256];
+        for &b in bytes {
+            set[usize::from(b)] = true;
+        }
+        ByteSet(set)
+    }
+
+    #[must_use]
+    pub fn contains(&self, byte: u8) -> bool {
+        self.0[usize::from(byte)]
+    }
+
+    /// The length of the run at the start of `s` that holds no byte of the set (`strcspn`).
+    #[must_use]
+    pub fn span(&self, s: &[u8]) -> usize {
+        s.iter().position(|&b| self.contains(b)).unwrap_or(s.len())
+    }
+
+    /// The length of the run at the start of `s` that holds only bytes of the set (`strspn`).
+    #[must_use]
+    pub fn run(&self, s: &[u8]) -> usize {
+        s.iter().position(|&b| !self.contains(b)).unwrap_or(s.len())
+    }
 }
 
 /// Where unit `index` starts, skipping each unit before it together with the one separator after it
@@ -292,6 +326,8 @@ pub(super) fn register(vm: &mut Vm) {
         "nextToken(text, tokenVariable, delimiters) - stores the first token, returns the rest",
         |vm, c| Native::Str(vm.next_token(arg(c, 1), arg(c, 2), arg(c, 3))),
     );
+    // It stores its token in the variable its second argument names.
+    vm.add_native_effects("", "nextToken", crate::effects::Effects::VARIABLES);
 }
 
 impl Vm {
@@ -301,17 +337,11 @@ impl Vm {
     /// one), or a global (`$` prefixed unless it starts with one) when no frame runs. Only the frame's existence
     /// is tested (TGE also wants it named); the top level of a host's `run` has a frame.
     pub(crate) fn next_token(&mut self, s: &[u8], token: &[u8], delim: &[u8]) -> Vec<u8> {
-        let skip = |from: usize| {
-            from + s
-                .get(from..)
-                .unwrap_or_default()
-                .iter()
-                .take_while(|b| delim.contains(b))
-                .count()
-        };
+        let delim = ByteSet::new(delim);
+        let skip = |from: usize| from + delim.run(s.get(from..).unwrap_or_default());
         let start = skip(0);
         let tail = s.get(start..).unwrap_or_default();
-        let end = start + span(tail, delim);
+        let end = start + delim.span(tail);
         let value = s.get(start..end).unwrap_or_default();
         let rest_from = if end < s.len() { skip(end + 1) } else { end };
         let local = !self.frames.is_empty();
@@ -325,7 +355,9 @@ impl Vm {
             Some(frame) if local => frame.add(&name),
             _ => self.globals.add(&name),
         };
-        entry.set_string(value);
+        if let Some(entry) = entry {
+            entry.set_string(value);
+        }
         s.get(rest_from..).unwrap_or_default().to_vec()
     }
 }

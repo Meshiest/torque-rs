@@ -4,7 +4,7 @@
 //! The conversions follow Torque3D's MIT-licensed `ConsoleValue` (`console.h`, `console.cpp`), Copyright (c) 2012
 //! GarageGames, LLC; the code here is this crate's own.
 
-use crate::text::{atof, atoi, format_g9, to_f32, to_f64, until_nul};
+use crate::text::{I64_TEXT, atof, atoi, i64_text, to_f32, to_f64, until_nul, with_format_g9};
 
 /// A value on the executor's stacks or in a register.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +84,16 @@ impl Value {
         }
     }
 
+    /// [`string`](Self::string) handed to `f`: a number's text is written to the stack.
+    #[inline]
+    pub(super) fn with_string<R>(&self, f: impl FnOnce(&[u8]) -> R) -> R {
+        match self {
+            Value::Str(s) => f(s),
+            Value::Int(i) => f(i64_text(*i, &mut [0; I64_TEXT])),
+            Value::Float(x) => with_format_g9(*x, f),
+        }
+    }
+
     /// The text, taken out of the value.
     #[inline]
     pub(super) fn into_string(self) -> Vec<u8> {
@@ -105,7 +115,7 @@ impl Value {
 
 /// `%.9g`, the text a float value converts to.
 pub(super) fn format_float(f: f64) -> Vec<u8> {
-    format_g9(f)
+    with_format_g9(f, <[u8]>::to_vec)
 }
 
 /// The strings `dAtob` reads as false besides the empty one.

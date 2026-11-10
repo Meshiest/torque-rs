@@ -38,6 +38,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-sim` | the process list, Player, AIPlayer, Item, Projectile, ShapeBase images |
 | `torque-vehicle` | rigid bodies, wheeled and flying vehicles |
 | `torque-scene` | the scene container: bins, searches, a scene object's transform math |
+| `torque-hierarchy` | parent and child transforms for scene objects: the tree, caps, resolve order, keep-world reparenting, local-pose quantizer |
 | `torque-resource` | the resource layer: a game folder, its zips mounted as folders, the scripts' writes in memory |
 | `torque-game` | the TGE game classes as console classes: scene objects and their container, shapes, players, items, vehicles |
 | `torque-server` | a dedicated server's main-loop pacing, platform values and transports (UDP, WebSocket, WebRTC data channels) |
@@ -45,6 +46,7 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-mapcore` | the format-neutral map layer |
 | `torque-maps` | Torque interior, terrain and material-list files; a `.dif` writer |
 | `torque-interior-builder` | interiors (`.dif`) built from brushes made in code or read from a `.map`, or from glTF, OBJ and Blockbench meshes |
+| `torque-content` | the content formats as asset-loader plugins: glTF, OBJ and Blockbench shapes, `.dif`, `.ter`, the map layer, `.map` interiors |
 | `torque-net` | NetConnection, ghosting, events, BitStream, string compression |
 | `torque-ghosts` | ghost record codecs: the layout framework, the class registry, the parent parts and the engine's object layouts |
 | `torque-ghost-world` | the client's world of ghosts: records merged, datablocks, the control object, mounted images, script threads, effects |
@@ -55,9 +57,10 @@ telnet console, journaling) are build-time features, so a finished game can leav
 | `torque-render-core` | the renderers' device layer: the GPU, offscreen targets, a frame read back, a window's surface, the GUI pass |
 | `torque-render-scene` | a frame as plain data: the camera, the sun, textures and draws with their fixed-function state; maps, shapes, particles, decals, tire tracks and the HD renderer's scene |
 | `torque-render-hd` | the HD renderer on the GPU: shadows, sky and clouds, water, reflections, AO, TAA, bloom and exposure |
+| `torque-app-server` | the server half of `torque-app`: its files, a server, the terrain and water blocks, the dedicated runner and `MinimalPlugins`; no drawing, GUI, audio or window crates (CI checks its dependency tree) |
 | `torque-app` | what a game made on the engine shares: its files, a server, a client, a window, the world view and offscreen pictures (needs a GPU) |
 | `torque` | the umbrella crate: the crates above behind features, and headless examples |
-| `torque-example` | an example dedicated server and client over the loopback address (`just examples/min-server`, `just examples/min-client`) |
+| `torque-example-minimal` (`examples/minimal`) | a dedicated server and a client over the loopback address, wired by hand on the lower crates (`just examples/min-server`, `just examples/min-client`) |
 | `torque-example-assets` (`examples/assets`) | the example games' asset kit: a cube, a box figure, a pistol, a buggy, terrains, trees, interiors and their textures, made from code (`just examples/assets`) |
 | `torque-example-common` (`examples/common`) | what the example games share beyond `torque::app`: the kit as files, the shared scripts, the prediction over the kit's cubes and interiors |
 | `torque-example-character` (`examples/character`) | an animated box figure in a window, with an orbit camera |

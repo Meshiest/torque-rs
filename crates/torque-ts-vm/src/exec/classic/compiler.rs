@@ -38,6 +38,7 @@ impl Compiler for ClassicCompiler {
                 })
                 .collect(),
             syntax_error: output.syntax_error,
+            same_as_run: !output.syntax_error && !output.run_differs,
             code: output.dso,
             work: output.work,
         }

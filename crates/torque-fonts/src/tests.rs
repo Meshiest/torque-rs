@@ -463,3 +463,189 @@ fn removing_a_face_drops_its_fonts_and_gives_their_pixels_back() {
     assert!(cache.get("Arial", 10, &none).is_some());
     assert_eq!(cache.fallbacks, 4);
 }
+
+/// A fallback that makes a font of one sheet of `size` x `size` x 64 pixels at any size and counts what it made.
+#[derive(Default)]
+struct CountingFallback(Arc<std::sync::atomic::AtomicU32>);
+
+impl Fallback for CountingFallback {
+    fn make(&self, _face: &str, size: i32) -> Option<Font> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let side = size.max(1) as u32;
+        Some(Font {
+            height: side,
+            baseline: side,
+            ascent: side,
+            descent: 0,
+            glyphs: Vec::new(),
+            sheets: vec![Bitmap {
+                width: side * 8,
+                height: side * 8,
+                format: torque_images::Format::Alpha,
+                bits: vec![0; (side * side * 64) as usize],
+            }],
+            remap: Remap::default(),
+            units: Units::Utf16,
+            tab: Tab::Spaces,
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "counting"
+    }
+}
+
+fn counting_cache() -> (FontCache, Arc<std::sync::atomic::AtomicU32>) {
+    let made = Arc::default();
+    let fallback = CountingFallback(Arc::clone(&made));
+    (FontCache::new(CACHE_DIR, Box::new(fallback)), made)
+}
+
+#[test]
+fn markup_fonts_are_dropped_first_and_never_take_a_profile_font() {
+    let (mut cache, _) = counting_cache();
+    let none = |_: &str| None;
+    assert!(cache.get("Profile", 14, &none).is_some());
+    // Markup naming every face and size: kept to its own caps, the least recently used dropped.
+    for i in 0..1024 {
+        cache.next_frame();
+        let _ = cache.get_for(&format!("f{i}"), 1 + i % 128, FontUse::Markup, &none);
+    }
+    let (px, keys) = cache.markup_usage();
+    assert!(keys <= MAX_MARKUP_FONTS && px <= MAX_MARKUP_SHEET_PIXELS);
+    assert!(cache.evicted > 0);
+    // The profile's font is still there, and one it names for the first time still loads.
+    assert_eq!(
+        cache.get("Profile", 14, &none).map(|f| f.1),
+        Some(Source::Fallback)
+    );
+    assert!(cache.get("Other", 16, &none).is_some());
+}
+
+#[test]
+fn a_spent_budget_refuses_a_font_before_making_it() {
+    let (mut cache, made) = counting_cache();
+    cache.markup_pixel_cap = 64 * 64 * 64;
+    let none = |_: &str| None;
+    // Held fonts cannot be dropped: once they fill the cap, no font is made at all.
+    let held: Vec<_> = (0..1024)
+        .filter_map(|i| cache.get_for(&format!("f{i}"), 64, FontUse::Markup, &none))
+        .collect();
+    assert_eq!(held.len(), 1);
+    assert_eq!(made.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(cache.over_budget, 1023);
+    // A profile's font is not under the markup cap.
+    assert!(cache.get("Profile", 64, &none).is_some());
+}
+
+#[test]
+fn a_markup_font_looked_up_this_frame_or_held_is_not_dropped() {
+    let (mut cache, _) = counting_cache();
+    cache.markup_pixel_cap = 2 * 8 * 8 * 64;
+    let none = |_: &str| None;
+    let a = cache.get_for("a", 8, FontUse::Markup, &none).expect("a");
+    assert!(cache.get_for("b", 8, FontUse::Markup, &none).is_some());
+    // Same frame: b is not dropped for c.
+    assert!(cache.get_for("c", 8, FontUse::Markup, &none).is_none());
+    cache.next_frame();
+    // Next frame: a is held, so b goes.
+    assert!(cache.get_for("c", 8, FontUse::Markup, &none).is_some());
+    assert_eq!(cache.evicted, 1);
+    drop(a);
+    assert!(cache.found().iter().any(|f| f.0 == "a"));
+    assert!(!cache.found().iter().any(|f| f.0 == "b"));
+}
+
+#[test]
+fn a_profile_lookup_keeps_a_markup_font_for_the_session() {
+    let (mut cache, made) = counting_cache();
+    cache.markup_pixel_cap = 8 * 8 * 64;
+    let none = |_: &str| None;
+    assert!(cache.get_for("a", 8, FontUse::Markup, &none).is_some());
+    assert!(cache.get("a", 8, &none).is_some());
+    assert_eq!(cache.markup_usage(), (0, 0));
+    cache.next_frame();
+    assert!(cache.get_for("b", 8, FontUse::Markup, &none).is_some());
+    cache.next_frame();
+    assert!(cache.get_for("c", 8, FontUse::Markup, &none).is_some());
+    assert!(cache.get("a", 8, &none).is_some());
+    assert_eq!(made.load(std::sync::atomic::Ordering::Relaxed), 3);
+}
+
+#[test]
+fn a_servers_gui_takes_only_its_share_and_the_games_ml_text_still_loads() {
+    let (mut cache, _) = counting_cache();
+    let none = |_: &str| None;
+    // A server's GUI naming every face and size, every font held (drawn this frame).
+    let held: Vec<_> = (0..1024)
+        .filter_map(|i| cache.get_for(&format!("s{i}"), 1 + i % 16, FontUse::Server, &none))
+        .collect();
+    assert_eq!(held.len(), MAX_SERVER_FONTS);
+    let (_, server_keys) = cache.server_usage();
+    assert_eq!(server_keys, MAX_SERVER_FONTS);
+    // The game's own ML text has the rest of the markup quota.
+    let game: Vec<_> = (0..64)
+        .filter_map(|i| cache.get_for(&format!("g{i}"), 8, FontUse::Markup, &none))
+        .collect();
+    assert_eq!(game.len(), MAX_MARKUP_FONTS - MAX_SERVER_FONTS);
+    // A server's next font drops only one of its own, never the game's.
+    drop(held);
+    cache.next_frame();
+    assert!(cache.get_for("s-new", 8, FontUse::Server, &none).is_some());
+    assert_eq!(cache.markup_usage().1 - cache.server_usage().1, game.len());
+}
+
+#[test]
+fn a_refusal_asked_again_in_its_frame_is_answered_at_once_until_something_changes() {
+    let (mut cache, made) = counting_cache();
+    cache.markup_pixel_cap = 8 * 8 * 64;
+    let none = |_: &str| None;
+    let a = cache.get_for("a", 8, FontUse::Markup, &none).expect("a");
+    // Every glyph run of a text asks for its missing font again: each is refused before any work.
+    let start = std::time::Instant::now();
+    for i in 0..100_000 {
+        assert!(
+            cache
+                .get_for(&format!("b{}", i % 7), 8, FontUse::Markup, &none)
+                .is_none()
+        );
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(made.load(std::sync::atomic::Ordering::Relaxed), 1);
+    // The font let go and a new frame: the next one fits.
+    drop(a);
+    cache.next_frame();
+    assert!(cache.get_for("b0", 8, FontUse::Markup, &none).is_some());
+}
+
+#[test]
+fn the_revision_changes_with_every_change_to_the_fonts_a_face_gives() {
+    let (mut cache, _made) = counting_cache();
+    let none = |_: &str| None;
+    let start = cache.revision();
+    cache.get_for("a", 8, FontUse::Profile, &none).expect("a");
+    let loaded = cache.revision();
+    assert_ne!(loaded, start, "a font loaded");
+    // A font looked up again, and one that was kept, change nothing.
+    cache.get_for("a", 8, FontUse::Profile, &none).expect("a");
+    cache.next_frame();
+    assert_eq!(cache.revision(), loaded);
+    // A face forgotten, even one nothing was kept for, may give another font next time.
+    cache.remove_face("nothing kept");
+    assert_ne!(cache.revision(), loaded);
+    let forgotten = cache.revision();
+    cache.remove_face("a");
+    assert_ne!(cache.revision(), forgotten);
+    // A markup font dropped to make room.
+    let (mut cache, _made) = counting_cache();
+    cache.markup_pixel_cap = 8 * 8 * 64;
+    cache.get_for("a", 8, FontUse::Markup, &none).expect("a");
+    cache.next_frame();
+    let before = cache.revision();
+    cache.get_for("b", 8, FontUse::Markup, &none).expect("b");
+    assert!(cache.evicted > 0);
+    assert!(
+        cache.revision() >= before + 2,
+        "the font dropped and the one loaded"
+    );
+}

@@ -175,6 +175,13 @@ pub trait PlayerHost {
     fn zone_velocity_mod(&mut self, _id: ObjectId) -> Option<f32> {
         None
     }
+    /// The tether on this Player this tick ([`super::tether`]), asked after `updateMove`; `None` (the default) is Torque's step.
+    fn tether(&mut self, _s: &PlayerState) -> Option<super::tether::Tether> {
+        None
+    }
+    /// The tether changed this Player's velocity by `change` this tick (the host gives the thing at its other end the equal and
+    /// opposite impulse, `-s.mass * change`).
+    fn tethered(&mut self, _s: &PlayerState, _change: F3) {}
     /// The control object's kind.
     fn controlled_info(&mut self, _id: ObjectId) -> ControlledInfo {
         ControlledInfo::default()

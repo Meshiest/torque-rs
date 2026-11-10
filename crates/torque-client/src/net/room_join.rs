@@ -6,7 +6,8 @@
 //! and candidates come back. Once the channel is open the room socket is closed and every datagram goes on the channel;
 //! none ever goes through the service, and before the channel opens a datagram sent is dropped (the game's connect
 //! request is sent again). When the channel closes, ICE fails, or the room refuses, the link ends for good and says why
-//! (`LinkState::ended`): the game ends with a message. Received datagrams are hostile as on UDP: each is cut to
+//! (`LinkState::ended`): the game ends with a message. The one refusal tried again is `busy` (the joiner's network is past
+//! a budget of the present second): up to [`BUSY_RETRIES`] times, backing off from [`BUSY_RETRY_MS`] ([`JoinRetry`]). Received datagrams are hostile as on UDP: each is cut to
 //! `RECV_BYTES` and at most `MAX_INBOX` wait.
 //!
 //! In a browser the peer connection is the page's `RTCPeerConnection`; natively it is made here over UDP with str0m (not
@@ -27,6 +28,42 @@ pub const OPEN_TIMEOUT_MS: f64 = 20_000.0;
 const DISCONNECTED_MS: f64 = 5_000.0;
 /// The most candidates sent to the host.
 pub const MAX_CANDIDATES: usize = 16;
+/// How long a joiner waits to ask again after the room service first said `busy` (its budgets are per second); each
+/// later wait is twice the one before.
+pub const BUSY_RETRY_MS: f64 = 1_500.0;
+/// How many times a joiner asks again after `busy`.
+pub const BUSY_RETRIES: u32 = 3;
+
+/// What a joiner does with the room service's refusals: `busy` is tried again up to [`BUSY_RETRIES`] times, the first
+/// [`BUSY_RETRY_MS`] later and each next one twice as long; any other refusal, or a `busy` past them, ends the link.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct JoinRetry {
+    tries: u32,
+    at: Option<f64>,
+}
+
+impl JoinRetry {
+    /// A refusal for `why` at `now`: true when the join is to be tried again later, false when it ends the link.
+    pub fn refused(&mut self, why: &str, now: f64) -> bool {
+        if why != "busy" || self.tries >= BUSY_RETRIES {
+            return false;
+        }
+        self.at = Some(now + BUSY_RETRY_MS * f64::from(1u32 << self.tries));
+        self.tries += 1;
+        true
+    }
+
+    /// Whether the join is to be sent again at `now` (true once, when its time has come).
+    pub fn due(&mut self, now: f64) -> bool {
+        match self.at {
+            Some(at) if now >= at => {
+                self.at = None;
+                true
+            }
+            _ => false,
+        }
+    }
+}
 /// The most room messages kept waiting.
 #[cfg(target_arch = "wasm32")]
 const MAX_ROOM_MESSAGES: usize = 64;
@@ -160,6 +197,7 @@ mod web {
         watch: LinkWatch,
         started: f64,
         candidates_sent: usize,
+        retry: JoinRetry,
     }
 
     fn now_ms() -> f64 {
@@ -216,6 +254,7 @@ mod web {
                 watch,
                 started: now_ms(),
                 candidates_sent: 0,
+                retry: JoinRetry::default(),
             })
         }
 
@@ -388,7 +427,11 @@ mod web {
                         _ => {}
                     }
                 }
-                Some(FromService::Refused(why)) => self.fail(why),
+                Some(FromService::Refused(why)) => {
+                    if !self.retry.refused(why, now_ms()) {
+                        self.fail(why);
+                    }
+                }
                 Some(FromService::Closed(why)) if !self.shared.borrow().open => self.fail(why),
                 _ => {}
             }
@@ -405,6 +448,10 @@ mod web {
             };
             if room_open && !self.asked {
                 self.asked = true;
+                self.say(&ToService::Join(&self.code));
+            }
+            if room_open && self.retry.due(now_ms()) {
+                self.started = now_ms();
                 self.say(&ToService::Join(&self.code));
             }
             loop {
@@ -486,12 +533,35 @@ mod web {
         fn port(&self) -> u16 {
             0
         }
+
+        /// A room's data channel.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind::WEB_RTC
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_is_tried_again_three_times_backing_off_and_nothing_else_is() {
+        let mut retry = JoinRetry::default();
+        assert!(!retry.due(0.0));
+        let mut now = 100.0;
+        for wait in [BUSY_RETRY_MS, BUSY_RETRY_MS * 2.0, BUSY_RETRY_MS * 4.0] {
+            assert!(retry.refused("busy", now));
+            assert!(!retry.due(now + wait - 1.0));
+            assert!(retry.due(now + wait));
+            assert!(!retry.due(now + wait * 2.0), "once a refusal");
+            now += wait;
+        }
+        assert!(!retry.refused("busy", now), "a fourth busy ends the link");
+        let mut other = JoinRetry::default();
+        assert!(!other.refused("no-room", 0.0));
+        assert!(!other.refused("rate", 0.0));
+    }
 
     #[test]
     fn every_reason_reads_as_a_sentence() {

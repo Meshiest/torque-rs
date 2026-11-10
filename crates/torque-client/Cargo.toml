@@ -18,6 +18,8 @@ torque-scene = { path = "../torque-scene" }
 torque-game = { path = "../torque-game" }
 torque-server = { path = "../torque-server" }
 ghost-world = { path = "../torque-ghost-world", package = "torque-ghost-world" }
+# The scene hierarchy's node references and depth, for placing a ghost's children in the prediction's collision world.
+hierarchy = { path = "../torque-hierarchy", package = "torque-hierarchy" }
 net = { path = "../torque-net", package = "torque-net" }
 ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
 collide = { package = "torque-collide", path = "../torque-collide" }
@@ -28,6 +30,8 @@ torque-import = { path = "../torque-import" }
 vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
 images = { package = "torque-images", path = "../torque-images" }
 gui = { package = "torque-gui", path = "../torque-gui" }
+# `InputBuilderExt`: a plugin adds input sources to the engine being built.
+torque-engine = { path = "../torque-engine" }
 ts-text = { package = "torque-ts-text", path = "../torque-ts-text" }
 ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -43,6 +47,8 @@ open = { version = "5.4.4", default-features = false, features = ["shellexecute-
 tungstenite = { version = "0.30", default-features = false, optional = true }
 # A data channel beside it (the `webrtc` feature): natively ICE, DTLS and SCTP over a UDP socket made here...
 str0m = { version = "0.24.1", default-features = false, features = ["aws-lc-rs"], optional = true }
+# The connect sequence's and the engine nonce's random bits, from the operating system.
+getrandom = "0.3"
 
 # ... and in a browser the page's own `WebSocket`.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -105,6 +111,10 @@ p2p = [
 
 [[bench]]
 name = "client"
+harness = false
+
+[[bench]]
+name = "ghost_read"
 harness = false
 
 [lints]

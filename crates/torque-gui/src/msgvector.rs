@@ -21,6 +21,7 @@
 
 use std::collections::VecDeque;
 
+use torque_ts_vm::memory::{MemoryAccount, MemoryCharge};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
@@ -35,11 +36,12 @@ pub const MAX_LINE_BYTES: usize = 1 << 16;
 pub const MAX_VECTOR_BYTES: usize = 16 << 20;
 
 /// A MessageVector's lines (the object's `ext`): a double-ended queue, so dropping the oldest is not a shift of every line,
-/// and the bytes of text they hold.
-#[derive(Debug, Default)]
+/// and the bytes of text they hold, which count in the script engine's memory account.
+#[derive(Debug)]
 struct Lines {
     lines: VecDeque<(Vec<u8>, i32)>,
     bytes: usize,
+    held: MemoryCharge,
 }
 
 impl Lines {
@@ -55,14 +57,24 @@ impl Lines {
         self.lines.iter()
     }
 
+    fn new(account: &MemoryAccount) -> Lines {
+        Lines {
+            lines: VecDeque::new(),
+            bytes: 0,
+            held: MemoryCharge::new(account),
+        }
+    }
+
     fn clear(&mut self) {
         self.lines.clear();
         self.bytes = 0;
+        self.held.set(0);
     }
 
     fn taken(&mut self, line: Option<(Vec<u8>, i32)>) -> Option<(Vec<u8>, i32)> {
         if let Some((text, _)) = &line {
             self.bytes -= text.len();
+            self.held.set(self.bytes);
         }
         line
     }
@@ -83,7 +95,11 @@ impl Lines {
     }
 
     /// A line before `at` (at most the end), then the oldest dropped while the vector is past [`MAX_LINES`] or [`MAX_VECTOR_BYTES`].
+    /// A line the memory account cannot take is not inserted (the script's run ends at its next instruction).
     fn insert(&mut self, at: usize, text: Vec<u8>, tag: i32) {
+        if !self.held.resize(self.bytes + text.len()) {
+            return;
+        }
         let at = at.min(self.lines.len());
         self.bytes += text.len();
         self.lines.insert(at, (text, tag));
@@ -96,8 +112,11 @@ impl Lines {
 }
 
 fn lines<R>(vm: &mut Vm, id: ObjId, f: impl FnOnce(&mut Lines) -> R) -> Option<R> {
+    let account = vm.objects().memory().clone();
     let object = vm.objects_mut().get_mut(id)?;
-    let ext = object.ext.get_or_insert_with(|| Box::new(Lines::default()));
+    let ext = object
+        .ext
+        .get_or_insert_with(|| Box::new(Lines::new(&account)));
     ext.downcast_mut::<Lines>().map(f)
 }
 

@@ -287,12 +287,18 @@ fn guessing_codes_is_refused_after_a_few_tries() {
     let mut ws = open(&mut s, addr, None).unwrap();
     let mut got = Got::default();
     for n in 0..25 {
-        send(&mut ws, &format!("join {:08}", n));
+        send(&mut ws, &format!("join {:016}", n));
         until(&mut s, &mut ws, &mut got, |g| g.messages.len() > n);
     }
     let refused: Vec<&str> = got.messages.iter().map(String::as_str).collect();
+    // The misses of a second from one network, then that network's share of them is spent, then the address's joins.
+    let share = torque_rooms::RoomLimits::default().failed_joins_per_network_per_s as usize;
     assert!(
-        refused[..20].iter().all(|m| *m == "refused no-room"),
+        refused[..share].iter().all(|m| *m == "refused no-room"),
+        "{refused:?}"
+    );
+    assert!(
+        refused[share..20].iter().all(|m| *m == "refused busy"),
         "{refused:?}"
     );
     assert!(

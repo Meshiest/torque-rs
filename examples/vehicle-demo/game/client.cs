@@ -6,7 +6,7 @@
 // the server for a seat (serverCmdGetIn), which points the figure's arm where it looks when the click meets no free seat. In a seat ($Drive::Seat: 0 the driver's, 1 the passenger's, -1 on foot) the keys
 // set $Drive::Throttle and $Drive::Steer, which the host turns into the moves that drive the buggy each step (the driver's
 // only), Space is the brake (the jump trigger, the buggy's for a driver), and the mouse turns $Drive::OrbitYaw and
-// $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab ($World::FirstPerson) puts the
+// $Drive::OrbitPitch, the camera's place round the buggy (in first person, the head's turn). Tab (setCameraMode) puts the
 // camera at the figure's eyes or behind it, on foot and in a seat. Esc opens the examples' pause menu (common/pause.cs: Resume,
 // Controls, Leave game, Quit) and T the chat (common/chat.cs). The other players' names show over their heads. The host
 // writes the hint line (setHint).
@@ -337,7 +337,11 @@ function jump(%v) { if (!poseJumpKey(%v)) $mvTriggerCount2++; }
 function turn(%v) { $mvYaw += %v * 0.003; }
 function look(%v) { $mvPitch += %v * 0.003; }
 // Tab: the camera at the figure's eyes or behind it (in a seat: behind the buggy).
-function switchCamera(%v) { if (%v) $World::FirstPerson = !$World::FirstPerson; }
+function switchCamera(%v)
+{
+   if (%v)
+      setCameraMode(getCameraMode() $= "first-person" ? "third-person" : "first-person");
+}
 function restart(%v) { if (%v && isObject(ServerConnection)) commandToServer('Respawn'); }
 // The left button: a click on a buggy takes a seat in it, one on anything else points where the figure looks while the button
 // is held (the server holds it a second at least).
@@ -412,6 +416,62 @@ DriveMap.bind(keyboard, r, restart);
 DriveMap.bind(keyboard, rbracket, dayFaster);
 DriveMap.bind(keyboard, lbracket, daySlower);
 DriveMap.bind(keyboard, backslash, dayNormal);
+
+// ---- a gamepad (the `gamepad` feature adds the plugin; its prefs exist only then, so without it nothing below binds)
+
+// The left stick walks or drives, the right stick looks or turns the camera, A jumps or brakes, X takes a seat, B gets out, Y
+// changes the camera, the left stick pressed sprints. A held stick sends no more events, so its look is applied each tick.
+function padWalkX(%v) { $World::Left = %v < 0 ? -%v : 0; $World::Right = %v > 0 ? %v : 0; updateMove(); }
+function padWalkY(%v) { $World::Forward = %v < 0 ? -%v : 0; $World::Back = %v > 0 ? %v : 0; updateMove(); }
+function padDriveX(%v) { $Drive::Steer = -%v; }
+function padDriveY(%v) { $Drive::Throttle = -%v; }
+// A function binds to one key of a map (binding it again moves it), so the pad's buttons call functions of their own.
+function padJump(%v) { jump(%v); }
+function padGetIn(%v) { getIn(%v); }
+function padCamera(%v) { switchCamera(%v); }
+function padSprint(%v) { sprint(%v); }
+function padBrake(%v) { brake(%v); }
+function padGetOut(%v) { getOut(%v); }
+function padLight(%v) { toggleLight(%v); }
+function padLookX(%v) { $Pad::LookX = %v; }
+function padLookY(%v) { $Pad::LookY = %v; }
+function padTick()
+{
+   if ($World::InWorld && ($Pad::LookX != 0 || $Pad::LookY != 0))
+   {
+      if ($Drive::Seat >= 0)
+      {
+         orbitYaw($Pad::LookX * 12);
+         orbitPitch($Pad::LookY * 9);
+      }
+      else
+      {
+         turn($Pad::LookX * 14);
+         look($Pad::LookY * 9);
+      }
+   }
+   schedule(32, 0, "padTick");
+}
+if ($Pref::Gamepad::DeadZone !$= "")
+{
+   PlayMap.bind(joystick0, xaxis, padWalkX);
+   PlayMap.bind(joystick0, yaxis, padWalkY);
+   PlayMap.bind(joystick0, rxaxis, padLookX);
+   PlayMap.bind(joystick0, ryaxis, padLookY);
+   PlayMap.bind(joystick0, button0, padJump);
+   PlayMap.bind(joystick0, button2, padGetIn);
+   PlayMap.bind(joystick0, button3, padCamera);
+   PlayMap.bind(joystick0, button8, padSprint);
+   DriveMap.bind(joystick0, xaxis, padDriveX);
+   DriveMap.bind(joystick0, yaxis, padDriveY);
+   DriveMap.bind(joystick0, rxaxis, padLookX);
+   DriveMap.bind(joystick0, ryaxis, padLookY);
+   DriveMap.bind(joystick0, button0, padBrake);
+   DriveMap.bind(joystick0, button1, padGetOut);
+   DriveMap.bind(joystick0, button3, padCamera);
+   DriveMap.bind(joystick0, button4, padLight);
+   padTick();
+}
 
 // Lets go of every key of both maps (a map change leaves no key held).
 function releaseKeys()
@@ -537,7 +597,7 @@ function joinRoomCode()
    %code = trim(AddressEdit.getValue());
    if (%code $= "")
    {
-      MenuStatus.setText("Type the room's code first (like ABCD-EFGH).");
+      MenuStatus.setText("Type the room's code first (like ABCD-EFGH-JKMN-PQRS).");
       return;
    }
    MenuStatus.setText("Joining room " @ %code @ "...");

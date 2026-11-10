@@ -19,12 +19,14 @@ glam = { workspace = true }
 torque-modelcore = { path = "../torque-modelcore" }
 torque-shapes = { path = "../torque-shapes" }
 torque-shape-builder = { path = "../torque-shape-builder" }
+# Opens a side file without following a link.
+torque-resource = { path = "../torque-resource", optional = true }
 gltf = { version = "1.4.1", default-features = false, features = ["names", "extras", "utils"], optional = true }
 serde_json = { version = "1.0.140", optional = true }
 
 [features]
 default = ["gltf"]
-gltf = ["dep:gltf", "dep:serde_json"]
+gltf = ["dep:gltf", "dep:serde_json", "dep:torque-resource"]
 
 [dev-dependencies]
 serde_json = "1.0.140"

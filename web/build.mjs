@@ -1,7 +1,7 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed] [--solo]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
+// Usage: node build.mjs <example> [--embed] [--solo] [--lua]      (level-demo, fps, vehicle-demo; vehicle-demo fetches its files only)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
@@ -9,6 +9,9 @@
 // With `--solo` the page is marked to be played alone (its root element's `data-torque-solo`, for a site with no game server:
 // the arena then plays on its own server in the page's worker, and no menu offers to host or join) and the folder is
 // <target>/web/<name>-solo/ (`-embedded-solo` with `--embed`).
+// With `--lua` the page loads the Lua module before the game starts (its root element's `data-torque-lua`, web/lua.js): the
+// folder also holds lua.js and torque_lua.wasm, which `just lua-web` builds into <target>/lua-web/. Without it the page never
+// fetches either, and a Lua file of the game prints that it cannot run.
 //
 // The folder, served as it is: index.html, files.js, loading.js, settings.js, bridge.js, host.js and host-worker.js (a
 // browser host), codes.js and invites.js (games joined by invite links), game.js, game_bg.wasm, and files.json with
@@ -32,8 +35,9 @@ const example = EXAMPLES[name];
 const flags = process.argv.slice(3);
 const embed = flags.includes('--embed');
 const solo = flags.includes('--solo');
-if (!example || flags.some((a) => a !== '--embed' && a !== '--solo')) {
-  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed] [--solo]`);
+const lua = flags.includes('--lua');
+if (!example || flags.some((a) => a !== '--embed' && a !== '--solo' && a !== '--lua')) {
+  console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [--embed] [--solo] [--lua]`);
   process.exit(2);
 }
 if (embed && !example.embed) {
@@ -47,6 +51,11 @@ if (embed && solo && name === 'fps') {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const target = resolve(process.env.CARGO_TARGET_DIR ?? join(root, 'target'));
 const out = join(target, 'web', `${name}${embed ? '-embedded' : ''}${solo ? '-solo' : ''}`);
+const luaModule = join(target, 'lua-web', 'torque_lua.wasm');
+if (lua && !existsSync(luaModule)) {
+  console.error(`${luaModule} is not there: build it with \`just lua-web\` first`);
+  process.exit(2);
+}
 const pack = embed ? join(target, 'web', `${name}.pack`) : join(out, 'game.pack');
 const tools = join(target, 'web-tools');
 // A program's file name ends as Node's own does (nothing outside Windows).
@@ -109,11 +118,18 @@ for (const page of pages) copyFileSync(join(root, 'web', page), join(out, page))
 // The page, marked to be played alone with `--solo`.
 const html = readFileSync(join(root, 'web', 'index.html'), 'utf8');
 const marked = solo ? html.replace('<html lang="en">', '<html lang="en" data-torque-solo="1">') : html;
+// A game with Lua: the page loads its module (and the page's shim) before the game starts.
+if (lua) {
+  copyFileSync(join(root, 'web', 'lua.js'), join(out, 'lua.js'));
+  copyFileSync(luaModule, join(out, 'torque_lua.wasm'));
+}
+
 if (solo && marked === html) {
   console.error('web/index.html has no <html lang="en"> to mark');
   process.exit(1);
 }
-writeFileSync(join(out, 'index.html'), marked);
+const page = lua ? marked.replace('<html lang="en"', '<html lang="en" data-torque-lua="1"') : marked;
+writeFileSync(join(out, 'index.html'), page);
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
 const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
-console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)${solo ? ', played alone' : ''}`);
+console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)${solo ? ', played alone' : ''}${lua ? ', with Lua' : ''}`);

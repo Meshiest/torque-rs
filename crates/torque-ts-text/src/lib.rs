@@ -13,6 +13,13 @@
 //! carries no notice). [`is_match`] follows the Torque Game Engine's `FindMatch::isMatch` (`core/findMatch.cc`, TGE
 //! 1.4, Copyright (C) GarageGames.com, Inc.; the Torque engine is MIT-licensed as Torque3D, Copyright (c) 2012 GarageGames,
 //! LLC, whose own `findMatch.cpp` matches differently). The code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - [`atoi`] reads only the bytes it takes (whitespace, a sign, digits): callers pass it the rest of a text, so a scan of the
+//!   whole input per call would make a pass over many numbers quadratic
+//!   (`atoi_stops_at_a_nul_as_at_any_other_byte_and_reads_only_what_it_takes`).
 
 use std::sync::OnceLock;
 
@@ -146,10 +153,10 @@ pub fn with_folded<R>(s: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
     }
 }
 
-/// C `atoi`: optional whitespace, optional sign, decimal digits, stop at the first other byte.
-/// Out-of-range values saturate to `i32::MIN` / `i32::MAX`, as C's `strtol` does.
+/// C `atoi`: optional whitespace, optional sign, decimal digits, stop at the first other byte (a NUL included).
+/// Out-of-range values saturate to `i32::MIN` / `i32::MAX`, as C's `strtol` does. Its cost is the bytes it takes, not the
+/// length of `s`: an ML reflow reads every tag's number from the rest of its text.
 pub fn atoi(s: &[u8]) -> i32 {
-    let s = until_nul(s);
     let mut i = 0;
     while i < s.len() && is_c_space(s[i]) {
         i += 1;
@@ -414,36 +421,51 @@ fn trim_zeros(s: &str) -> &str {
 /// C `printf("%g", v)` with the default precision of six significant digits: the exact binary value rounded to
 /// nearest, `inf`, `-inf`, and a NaN as [`TextRules::nan_text`] spells it.
 pub fn format_g(v: f64) -> String {
+    with_format_g(v, |text| String::from_utf8_lossy(text).into_owned())
+}
+
+/// [`format_g`] handed to `f` as bytes: whole numbers and short decimals, which are nearly every value a script
+/// prints, are written to the stack, so a conversion that only reads the text allocates nothing.
+pub fn with_format_g<R>(v: f64, f: impl FnOnce(&[u8]) -> R) -> R {
     if v.is_nan() {
-        return rules().nan_text(v);
+        return f(rules().nan_text(v).as_bytes());
     }
     if v.is_infinite() {
-        return if v < 0.0 { "-inf" } else { "inf" }.to_string();
+        return f(if v < 0.0 { b"-inf" as &[u8] } else { b"inf" });
     }
     if v == 0.0 {
-        return if v.is_sign_negative() { "-0" } else { "0" }.to_string();
+        return f(if v.is_sign_negative() {
+            b"-0" as &[u8]
+        } else {
+            b"0"
+        });
     }
-    if let Some(whole) = format_whole(v, 1e6) {
-        return whole;
+    if let Some(text) = format_whole(v, 1e6).or_else(|| format_g_short(v)) {
+        return f(text.as_bytes());
     }
-    if let Some(short) = format_g_short(v) {
-        return short;
-    }
-    format_g_exact(v)
+    f(format_g_exact(v).as_bytes())
 }
 
 /// `%.<p>g` of a whole number `v` (not 0) below `limit` = `10^p` in magnitude: its decimal digits, as the conversion
 /// prints them (the exponent is below the precision, so the fixed form, and nothing after the point survives the
 /// trimming). None for any other value.
-fn format_whole(v: f64, limit: f64) -> Option<String> {
+fn format_whole(v: f64, limit: f64) -> Option<NumText> {
     if v.fract() != 0.0 || v.abs() >= limit {
         return None;
     }
     // Below 10^9 in magnitude, so exact in an `i64`.
-    let mut n = v as i64;
-    let negative = n < 0;
-    n = n.abs();
-    let mut buf = [0u8; 24];
+    let mut out = NumText::new();
+    out.push_bytes(i64_text(v as i64, &mut [0; I64_TEXT]))?;
+    Some(out)
+}
+
+/// The longest decimal text of an `i64`: `-9223372036854775808`.
+pub const I64_TEXT: usize = 20;
+
+/// The decimal text of `value`, written at the end of `buf`: the one integer-to-text routine of the crate (and of the
+/// script engine's stacks), which never allocates.
+pub fn i64_text(value: i64, buf: &mut [u8; I64_TEXT]) -> &[u8] {
+    let mut n = value.unsigned_abs();
     let mut at = buf.len();
     loop {
         at -= 1;
@@ -453,28 +475,65 @@ fn format_whole(v: f64, limit: f64) -> Option<String> {
             break;
         }
     }
-    if negative {
+    if value < 0 {
         at -= 1;
         buf[at] = b'-';
     }
-    std::str::from_utf8(&buf[at..]).ok().map(str::to_string)
+    &buf[at..]
 }
 
-/// A small stack buffer for `write!`.
-struct StackText {
-    bytes: [u8; 48],
+/// Text written on the stack, up to `N` bytes. A write that does not fit is refused, never cut: `push` and `push_str`
+/// answer `None` (the fast paths below then give up and the exact one runs), and `write!` gets a `fmt::Error`.
+#[derive(Debug, PartialEq, Eq)]
+struct StackText<const N: usize> {
+    bytes: [u8; N],
     len: usize,
 }
 
-impl std::fmt::Write for StackText {
-    fn write_str(&mut self, s: &str) -> std::fmt::Result {
-        let end = self.len + s.len();
-        self.bytes
-            .get_mut(self.len..end)
-            .ok_or(std::fmt::Error)?
-            .copy_from_slice(s.as_bytes());
+/// The text of a number as `%g` prints it: at most 16 bytes (`-1.23456789e-300`), so it always fits.
+type NumText = StackText<40>;
+
+impl<const N: usize> StackText<N> {
+    fn new() -> StackText<N> {
+        StackText {
+            bytes: [0; N],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, byte: u8) -> Option<()> {
+        self.push_bytes(&[byte])
+    }
+
+    fn push_bytes(&mut self, bytes: &[u8]) -> Option<()> {
+        let end = self.len.checked_add(bytes.len())?;
+        self.bytes.get_mut(self.len..end)?.copy_from_slice(bytes);
         self.len = end;
-        Ok(())
+        Some(())
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl<const N: usize> std::ops::Deref for StackText<N> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl<const N: usize> PartialEq<String> for StackText<N> {
+    fn eq(&self, other: &String) -> bool {
+        self.as_bytes() == other.as_bytes()
+    }
+}
+
+impl<const N: usize> std::fmt::Write for StackText<N> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.push_bytes(s.as_bytes()).ok_or(std::fmt::Error)
     }
 }
 
@@ -482,30 +541,27 @@ impl std::fmt::Write for StackText {
 /// has at most six significant digits: that decimal is then also the value's correct rounding to six digits, since it lies within
 /// half a binary unit of the value (at most 2^-24 of it) while any other six-digit decimal lies at least 10^-6 of it away. The
 /// rounding then carries nothing, and `%g` prints those digits as they are. None for any other value (the exact path's).
-fn format_g_short(v: f64) -> Option<String> {
+fn format_g_short(v: f64) -> Option<NumText> {
     format_g_shortest(v, 6, true)
 }
 
 /// `%.<precision>g` (without flags) of a finite non-zero value whose shortest round-trip decimal has at most `precision`
 /// significant digits, for the reason [`format_g_short`] gives: with `narrow`, the decimal of an `f32` when the value is one
 /// (half a binary unit is 2^-24 of the value: sound for six digits), else of the `f64` (2^-53: sound up to 15 digits).
-fn format_g_shortest(v: f64, precision: usize, narrow: bool) -> Option<String> {
+fn format_g_shortest(v: f64, precision: usize, narrow: bool) -> Option<NumText> {
     use std::fmt::Write as _;
     // Subnormal binary values have fewer digits than the argument needs.
     if !v.is_normal() {
         return None;
     }
-    let mut text = StackText {
-        bytes: [0; 48],
-        len: 0,
-    };
+    let mut text = StackText::<48>::new();
     let narrowed = v as f32;
     if narrow && narrowed.is_normal() && f64::from(narrowed) == v {
         write!(text, "{narrowed:e}").ok()?;
     } else {
         write!(text, "{v:e}").ok()?;
     }
-    let s = text.bytes.get(..text.len)?;
+    let s = text.as_bytes();
     let (negative, s) = match s.split_first() {
         Some((b'-', rest)) => (true, rest),
         _ => (false, s),
@@ -530,48 +586,45 @@ fn format_g_shortest(v: f64, precision: usize, narrow: bool) -> Option<String> {
     }
     let exponent: i32 = std::str::from_utf8(exponent).ok()?.parse().ok()?;
     let digits = &digits[..count];
-    let mut out = String::with_capacity(16);
+    let mut out = NumText::new();
     if negative {
-        out.push('-');
+        out.push(b'-')?;
     }
-    let push = |out: &mut String, bytes: &[u8]| {
-        for &b in bytes {
-            out.push(char::from(b));
-        }
-    };
     if (-4..precision as i32).contains(&exponent) {
         if exponent >= 0 {
             let whole = exponent as usize + 1;
             if count <= whole {
-                push(&mut out, digits);
+                out.push_bytes(digits)?;
                 for _ in count..whole {
-                    out.push('0');
+                    out.push(b'0')?;
                 }
             } else {
-                push(&mut out, &digits[..whole]);
-                out.push('.');
-                push(&mut out, &digits[whole..]);
+                out.push_bytes(&digits[..whole])?;
+                out.push(b'.')?;
+                out.push_bytes(&digits[whole..])?;
             }
         } else {
-            out.push_str("0.");
+            out.push_bytes(b"0.")?;
             for _ in 0..(-exponent - 1) {
-                out.push('0');
+                out.push(b'0')?;
             }
-            push(&mut out, digits);
+            out.push_bytes(digits)?;
         }
     } else {
-        push(&mut out, &digits[..1]);
+        out.push_bytes(&digits[..1])?;
         if count > 1 {
-            out.push('.');
-            push(&mut out, &digits[1..]);
+            out.push(b'.')?;
+            out.push_bytes(&digits[1..])?;
         }
-        out.push('e');
-        out.push(if exponent < 0 { '-' } else { '+' });
-        let shown = exponent.unsigned_abs();
-        if shown < 10 {
-            out.push('0');
+        out.push(b'e')?;
+        out.push(if exponent < 0 { b'-' } else { b'+' })?;
+        if exponent.unsigned_abs() < 10 {
+            out.push(b'0')?;
         }
-        let _ = write!(out, "{shown}");
+        out.push_bytes(i64_text(
+            i64::from(exponent.unsigned_abs()),
+            &mut [0; I64_TEXT],
+        ))?;
     }
     Some(out)
 }
@@ -593,18 +646,28 @@ fn format_g_exact(v: f64) -> String {
 
 /// `sprintf_double(b"%.9g", v, 31)`: whole numbers and values with a short decimal without the general conversion.
 pub fn format_g9(v: f64) -> Vec<u8> {
+    with_format_g9(v, <[u8]>::to_vec)
+}
+
+/// [`format_g9`] handed to `f`, with no allocation for the values the fast paths cover.
+pub fn with_format_g9<R>(v: f64, f: impl FnOnce(&[u8]) -> R) -> R {
     if v != 0.0 && v.is_finite() {
         let fast = format_whole(v, 1e9).or_else(|| format_g_shortest(v, 9, false));
         if let Some(text) = fast {
-            return text.into_bytes();
+            return f(text.as_bytes());
         }
     }
-    sprintf_double(b"%.9g", v, 31)
+    f(&sprintf_double(b"%.9g", v, 31))
 }
 
 /// `printf("%d", value)` for a 32-bit word a script holds unsigned: it prints as signed.
 pub fn format_int(value: u32) -> String {
     (value as i32).to_string()
+}
+
+/// [`format_int`] handed to `f` as bytes, written to the stack.
+pub fn with_format_int<R>(value: u32, f: impl FnOnce(&[u8]) -> R) -> R {
+    f(i64_text(i64::from(value as i32), &mut [0; I64_TEXT]))
 }
 
 /// The script engine's float to unsigned conversion (`(U32)value`): for `-2^63 <= x < 2^63` the value is truncated
@@ -1417,11 +1480,14 @@ mod format_g_tests {
             (f64::from(1.570_796_4f32), "1.5708"),
         ] {
             let short = format_g_short(v);
-            assert!(short.is_none() || short.as_deref() == Some(text), "{v}");
+            assert!(short.is_none_or(|s| s.as_bytes() == text.as_bytes()), "{v}");
             assert_eq!(format_g_exact(v), text);
         }
-        assert_eq!(format_g_short(12.5).as_deref(), Some("12.5"));
-        assert_eq!(format_g_short(f64::from(0.6f32)).as_deref(), Some("0.6"));
+        assert_eq!(format_g_short(12.5).as_deref(), Some(&b"12.5"[..]));
+        assert_eq!(
+            format_g_short(f64::from(0.6f32)).as_deref(),
+            Some(&b"0.6"[..])
+        );
     }
 }
 
@@ -1690,5 +1756,90 @@ mod format_fast_tests {
         assert_eq!(format_whole(1e6, 1e6), None);
         assert_eq!(format_whole(0.5, 1e6), None);
         assert_eq!(format_whole(f64::NAN, 1e6), None);
+    }
+}
+
+#[cfg(test)]
+mod stack_text_tests {
+    use super::{I64_TEXT, i64_text, with_format_g, with_format_g9, with_format_int};
+
+    fn g(v: f64) -> String {
+        with_format_g(v, |t| String::from_utf8(t.to_vec()).unwrap())
+    }
+
+    fn g9(v: f64) -> String {
+        with_format_g9(v, |t| String::from_utf8(t.to_vec()).unwrap())
+    }
+
+    fn int(v: u32) -> String {
+        with_format_int(v, |t| String::from_utf8(t.to_vec()).unwrap())
+    }
+
+    /// The expected texts are what C's `%g` and `%.9g` print, written out by hand.
+    #[test]
+    fn the_stack_forms_print_what_printf_does() {
+        for (v, six, nine) in [
+            (0.0, "0", "0"),
+            (-0.0, "-0", "-0"),
+            (1.0, "1", "1"),
+            (-1.0, "-1", "-1"),
+            (0.5, "0.5", "0.5"),
+            (0.1, "0.1", "0.1"),
+            (-2.5, "-2.5", "-2.5"),
+            (12.5, "12.5", "12.5"),
+            (100_000.0, "100000", "100000"),
+            (123_456.0, "123456", "123456"),
+            (999_999.0, "999999", "999999"),
+            (1e6, "1e+06", "1000000"),
+            (1_234_567.0, "1.23457e+06", "1234567"),
+            (123_456_789.0, "1.23457e+08", "123456789"),
+            (1e9, "1e+09", "1e+09"),
+            (1_234_567_890.0, "1.23457e+09", "1.23456789e+09"),
+            (0.0001, "0.0001", "0.0001"),
+            (0.000_123_456_789, "0.000123457", "0.000123456789"),
+            (0.00001, "1e-05", "1e-05"),
+            (1e-7, "1e-07", "1e-07"),
+            (1.5e-7, "1.5e-07", "1.5e-07"),
+            (1e21, "1e+21", "1e+21"),
+            (1e100, "1e+100", "1e+100"),
+            (1e300, "1e+300", "1e+300"),
+            (1.5e-300, "1.5e-300", "1.5e-300"),
+            (-1.234_567_89e-300, "-1.23457e-300", "-1.23456789e-300"),
+            (f64::MAX, "1.79769e+308", "1.79769313e+308"),
+            (f64::MIN_POSITIVE, "2.22507e-308", "2.22507386e-308"),
+            (f64::from(1.1f32), "1.1", "1.10000002"),
+            (0.123_456_789_012_345, "0.123457", "0.123456789"),
+            (f64::INFINITY, "inf", "inf"),
+            (f64::NEG_INFINITY, "-inf", "-inf"),
+            (f64::NAN, "nan", "nan"),
+        ] {
+            assert_eq!(g(v), six, "%g of {v:e}");
+            assert_eq!(g9(v), nine, "%.9g of {v:e}");
+        }
+    }
+
+    #[test]
+    fn integers_print_as_signed_words() {
+        for (v, text) in [
+            (0, "0"),
+            (1, "1"),
+            (7, "7"),
+            (255, "255"),
+            (65_535, "65535"),
+            (i32::MAX as u32, "2147483647"),
+            (i32::MIN as u32, "-2147483648"),
+            (u32::MAX, "-1"),
+            (4_000_000_000, "-294967296"),
+        ] {
+            assert_eq!(int(v), text);
+        }
+        for (v, text) in [
+            (i64::MIN, "-9223372036854775808"),
+            (i64::MAX, "9223372036854775807"),
+            (0, "0"),
+            (-10, "-10"),
+        ] {
+            assert_eq!(i64_text(v, &mut [0; I64_TEXT]), text.as_bytes());
+        }
     }
 }

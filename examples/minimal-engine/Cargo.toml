@@ -1,0 +1,32 @@
+[package]
+name = "torque-example-minimal-engine"
+description = "The minimal example again, built on Engine and DefaultPlugins: a dedicated server and a client that connect over the loopback address"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "server", "example", "gamedev"]
+categories = ["game-development", "network-programming"]
+
+# The same game as `examples/minimal` (its scripts and mission are read from there), with the engine's helpers doing the wiring: an
+# `Engine` of `DefaultPlugins` and one small game plugin makes the server, the client and the window client.
+
+[dependencies]
+torque-example-assets = { path = "../assets" }
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "mods"] }
+# The window client (feature `window`): the app trait names the renderer's types.
+torque-render-core = { path = "../../crates/torque-render-core", optional = true }
+torque-render-scene = { path = "../../crates/torque-render-scene", optional = true }
+
+[features]
+# `example-window`: the example's client in a window (a GPU and a display). The tests stay headless.
+window = ["dep:torque-render-core", "dep:torque-render-scene"]
+
+[[bin]]
+name = "example-window-engine"
+required-features = ["window"]
+
+[lints]
+workspace = true

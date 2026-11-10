@@ -11,10 +11,12 @@ keywords = ["torque", "macros", "proc-macro", "torquescript"]
 categories = ["development-tools::procedural-macro-helpers"]
 
 [dependencies]
+# Where the engine crate is in the deriving crate's dependencies: `torque-engine`, or `torque` (`torque::engine`).
+proc-macro-crate = "3"
 proc-macro2 = "1"
 quote = "1"
-# `full` parses any item, not just a derive input.
-syn = { version = "3", features = ["full"] }
+# `full` parses any item, not just a derive input; `visit-mut` rewrites a parameter's lifetimes.
+syn = { version = "3", features = ["full", "visit", "visit-mut"] }
 
 [lints]
 workspace = true

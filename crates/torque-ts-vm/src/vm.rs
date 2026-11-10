@@ -12,8 +12,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::code::CodeBlock;
 use crate::events::{EventLimits, EventQueue};
 pub(crate) use crate::exec::RunMode as Mode;
-use crate::exec::{Executor, ScriptCall, argc_ok, script_name_ref, script_target};
+use crate::exec::{Executor, RunMark, ScriptCall, argc_ok, script_name_ref, script_target};
 use crate::host::{Clock, Compiler, FileHost, NoCompiler, NoFiles, SystemClock};
+use crate::memory::{DEFAULT_SCRIPT_BYTES, MEMORY_LIMIT_PREF};
 use crate::ns::{Activation, Callable, EntryRef, Holder, Namespaces};
 use crate::sim::{ClassId, ObjId, Objects, SimObject};
 use crate::tags::TagTable;
@@ -23,6 +24,7 @@ use crate::vars::{Dictionary, Entry};
 mod console;
 mod file_natives;
 mod files;
+pub use files::MAX_DSO_BYTES;
 pub use files::{EVAL_ERROR_TEXT_BYTES, EvalReport};
 mod interface;
 mod lifecycle;
@@ -137,6 +139,8 @@ pub enum VmError {
     StringTooLong,
     /// The `Vm` has no executor to run script with ([`NoExecutor`](crate::exec::NoExecutor)).
     NoExecutor,
+    /// A store would have taken what scripts hold past the memory limit ([`crate::memory`]); it was not made.
+    MemoryLimit,
 }
 
 impl std::fmt::Display for VmError {
@@ -166,6 +170,7 @@ impl std::fmt::Display for VmError {
             VmError::EventLimit => write!(f, "too many events fired in one advance of the clock"),
             VmError::StringTooLong => write!(f, "a string grew past {MAX_STRING_BYTES} bytes"),
             VmError::NoExecutor => write!(f, "this Vm has no executor to run script"),
+            VmError::MemoryLimit => write!(f, "scripts would hold more than their memory limit"),
         }
     }
 }
@@ -283,6 +288,8 @@ struct Quirks {
     /// `gSyntaxError`: set by an `eval` whose text has a syntax error, cleared at the start of each `eval` and by
     /// nothing else. The `eval` that ran a bad text reports only if it is still set after the run.
     syntax_error: bool,
+    /// How many times text was evaluated (`eval`, the native or the host's), for hosts that must show none ran.
+    evals: u64,
     /// `call("eval", ...)` is about to run the native `eval`: it is handed the static argument array one
     /// slot on, so its report shows the array's second slot. Set by `call` and taken by `eval` at its entry.
     eval_via_call: bool,
@@ -302,7 +309,7 @@ pub struct FrameMark {
 
 /// What a finished run must put back after an error (and the executor's current variable even after a success).
 struct RunState {
-    exec: Box<dyn std::any::Any>,
+    exec: RunMark,
 }
 
 /// The `Class::method` keys still registered as the class table's stubs (a newtype so that the set stays boxed in `Vm`).
@@ -423,6 +430,8 @@ pub struct Vm {
     /// What the `FileObject`s have open (`classes::file_object`; a table of the `Vm`'s own, so that no borrow of
     /// it can be held across anything that runs script code or prints).
     pub(crate) file_objects: crate::classes::file_object::FileObjects,
+    /// What scripts wrote in the current window of the write quota ([`WriteQuota`](crate::policy::WriteQuota)).
+    pub(crate) writes: file_natives::WriteWindow,
     /// Tells this `Vm` apart from others: tagged-literal conversions are stamped with it.
     id: u64,
     /// The stamp of this `Vm`'s call-site bindings: `id` at first, a fresh one after the host resets the
@@ -441,6 +450,37 @@ pub struct Vm {
     host_budget: lifecycle::HostBudget,
     /// The script profile while a host has it on ([`Vm::set_profiling`]; boxed, off by default).
     profile: Option<Box<profile::Profiler>>,
+    /// The "Unknown command" warnings of each source's second in progress ([`MAX_UNKNOWN_COMMAND_LINES`]).
+    unknown_commands: std::collections::HashMap<CommandSource, UnknownCommands>,
+}
+
+/// Who asked [`Vm::invoke_from`] for a function: [`CommandSource::LOCAL`] for the host itself, else a number the host gives each
+/// remote party (a server's connection object on the server, the server on a client).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommandSource(pub u64);
+
+impl CommandSource {
+    /// The host's own calls ([`Vm::invoke`]).
+    pub const LOCAL: CommandSource = CommandSource(0);
+    /// Where the sources past [`MAX_COMMAND_SOURCES`] are counted together.
+    const OVERFLOW: CommandSource = CommandSource(u64::MAX);
+}
+
+/// The most `<name>: Unknown command.` warnings one source's calls print in one second of the simulation's time (a server's
+/// remote commands name functions; thousands a tick of ones that do not exist filled the console log in a second). Past it they
+/// are counted, and once the second is over (at the next [`Vm::advance_time`], or the source's next unknown command) one line
+/// says how many were not printed.
+pub const MAX_UNKNOWN_COMMAND_LINES: u32 = 32;
+/// The most sources counted apart; the ones past it share one count.
+pub const MAX_COMMAND_SOURCES: usize = 1024;
+
+/// The second [`MAX_UNKNOWN_COMMAND_LINES`] counts in for one source: when it started (`sim_time`), the lines printed, the ones
+/// left out.
+#[derive(Debug, Clone, Copy)]
+struct UnknownCommands {
+    since: u32,
+    printed: u32,
+    left_out: u64,
 }
 
 impl Default for Vm {
@@ -453,6 +493,10 @@ impl Vm {
     /// A `Vm` that runs Torque3D's TorqueScript: the [`Torque3dExecutor`](crate::exec::torque3d::Torque3dExecutor),
     /// its compiler and natives ([`torque3d::install`](crate::exec::torque3d::install)). A game with a dialect of its
     /// own makes its `Vm` with [`with_executor`](Self::with_executor).
+    ///
+    /// A new `Vm` has no step limit: a script that never ends hangs its host, and `charge_work` and `ensure_budget` refuse
+    /// nothing. A host that runs scripts it does not trust sets one ([`set_step_limit`](Self::set_step_limit); a
+    /// server made with `torque_server::server::Server` has 50 million steps). Its memory limit is [`DEFAULT_SCRIPT_BYTES`].
     pub fn new() -> Vm {
         let mut vm = Vm::with_executor(Rc::new(crate::exec::torque3d::Torque3dExecutor::new()));
         crate::exec::torque3d::install(&mut vm);
@@ -467,13 +511,15 @@ impl Vm {
 
     /// [`with_executor`](Self::with_executor) with the object tables started as `sim` says.
     pub fn with_config(executor: Rc<dyn Executor>, sim: crate::sim::SimConfig) -> Vm {
+        let objects = Objects::with_config(sim);
+        objects.memory().set_limit(DEFAULT_SCRIPT_BYTES);
         let mut vm = Vm {
             executor,
-            globals: Dictionary::default(),
+            globals: Dictionary::with_account(objects.memory().clone()),
             frames: Vec::new(),
             frame_pool: Vec::new(),
             namespaces: Namespaces::default(),
-            objects: Objects::with_config(sim),
+            objects,
             this_object: None,
             creating: Vec::new(),
             traces: Vec::new(),
@@ -499,6 +545,7 @@ impl Vm {
             native_events: Box::default(),
             preload_error: Box::default(),
             file_objects: Default::default(),
+            writes: Default::default(),
             id: 0,
             binding_epoch: 0,
             log: Box::default(),
@@ -509,10 +556,22 @@ impl Vm {
             step_limit: None,
             host_budget: Default::default(),
             profile: None,
+            unknown_commands: std::collections::HashMap::new(),
         };
         vm.id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         vm.binding_epoch = vm.id;
         console::register(&mut vm);
+        // `call` runs the function it names: a policy checking the call sees only `call`.
+        vm.add_native_effects("", "call", crate::effects::Effects::CODE);
+        // Switching packages switches the functions every script sees, as switching a mod does. `$instantGroup` says where
+        // every new object goes, and the `$Con::` globals are the console's own settings.
+        for name in ["activatePackage", "deactivatePackage"] {
+            vm.add_native_effects("", name, crate::effects::Effects::ENGINE);
+        }
+        vm.add_global_effects("$instantGroup", crate::effects::Effects::ENGINE);
+        vm.add_global_effects("$Con::*", crate::effects::Effects::ENGINE);
+        // The memory limit of every later run.
+        vm.add_global_effects(MEMORY_LIMIT_PREF, crate::effects::Effects::ENGINE);
         vm.register(
             "call",
             2,
@@ -621,6 +680,15 @@ impl Vm {
         self.seed_names();
     }
 
+    /// Replaces the files scripts load with what `wrap` makes of them: a layer over the host that is there, which it must
+    /// keep serving whatever it does not change. The names of the new host's list go into the string table as for
+    /// [`set_file_host`](Self::set_file_host).
+    pub fn wrap_file_host(&mut self, wrap: impl FnOnce(Box<dyn FileHost>) -> Box<dyn FileHost>) {
+        let inner = std::mem::replace(&mut self.files, Box::new(NoFiles));
+        self.files = wrap(inner);
+        self.seed_names();
+    }
+
     /// Sets the clocks scripts read (the default is [`SystemClock`]).
     pub fn set_clock(&mut self, clock: impl Clock + 'static) {
         self.clock = Box::new(clock);
@@ -642,6 +710,13 @@ impl Vm {
     /// each re-entry from Rust one more): the measure of how much of the Rust stack scripts needed.
     pub fn peak_depth(&self) -> usize {
         self.peak_depth
+    }
+
+    /// The call depth now, in the units of `MAX_CALL_DEPTH` (see [`peak_depth`](Self::peak_depth)): a host that runs
+    /// script from Rust through frames of its own checks it against `MAX_CALL_DEPTH` first (a native's call into script
+    /// that calls the native again is otherwise checked only when a script function is entered).
+    pub fn call_depth(&self) -> usize {
+        self.depth
     }
 
     /// Runs `f` (a host's call into script) with `units` more call-depth units charged while it runs: for a host whose
@@ -797,6 +872,17 @@ impl Vm {
             .collect()
     }
 
+    /// Every native registered, one line each, sorted, as text for a snapshot test: see `Namespaces::native_listing`.
+    /// Each line ends with a line break.
+    pub fn native_listing(&self) -> String {
+        let mut out = String::new();
+        for line in self.namespaces.native_listing() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
     /// Replaces the usage text of the native `namespace::name` (`namespace` empty for a global function), keeping the
     /// function and its argument counts; false when there is no such native.
     pub fn set_native_usage(&mut self, namespace: &str, name: &str, usage: &str) -> bool {
@@ -895,9 +981,21 @@ impl Vm {
         name: &[u8],
         args: &[Vec<u8>],
     ) -> Result<Vec<u8>, VmError> {
+        self.invoke_from(CommandSource::LOCAL, namespace, name, args)
+    }
+
+    /// [`invoke`](Self::invoke) for `source` (a remote party's command): its "Unknown command" warnings are limited apart from
+    /// every other source's ([`MAX_UNKNOWN_COMMAND_LINES`]).
+    pub fn invoke_from(
+        &mut self,
+        source: CommandSource,
+        namespace: Option<&[u8]>,
+        name: &[u8],
+        args: &[Vec<u8>],
+    ) -> Result<Vec<u8>, VmError> {
         let Some(entry) = self.namespaces.lookup(namespace.unwrap_or(b""), name) else {
             if namespace.is_none_or(<[u8]>::is_empty) && self.console_rules().unknown_command {
-                self.warn_unknown_command(name);
+                self.warn_unknown_command(source, name);
             }
             return Ok(Vec::new());
         };
@@ -905,17 +1003,100 @@ impl Vm {
         argv.push(name.to_vec());
         argv.extend(args.iter().cloned());
         let saved = self.enter_run();
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
         self.leave_run(saved, result)
+    }
+
+    /// [`invoke`](Self::invoke) with the argument list made by the caller, which gives it up (`argv[0]` is the
+    /// function's name, then the arguments): nothing is copied. `keep` is whether the result is wanted; a caller that
+    /// drops it (a scheduled event) skips the copy, and gets the empty string.
+    pub fn invoke_owned(
+        &mut self,
+        namespace: Option<&[u8]>,
+        argv: Vec<Vec<u8>>,
+        keep: bool,
+    ) -> Result<Vec<u8>, VmError> {
+        let name = argv.first().map(Vec::as_slice).unwrap_or_default();
+        let Some(entry) = self.namespaces.lookup(namespace.unwrap_or(b""), name) else {
+            if namespace.is_none_or(<[u8]>::is_empty) && self.console_rules().unknown_command {
+                let name = argv.into_iter().next().unwrap_or_default();
+                self.warn_unknown_command(CommandSource::LOCAL, &name);
+            }
+            return Ok(Vec::new());
+        };
+        let saved = self.enter_run();
+        let result = self.invoke_callable(entry, argv, keep);
+        self.leave_run(saved, result)
+    }
+
+    /// Whether `name` is a function of `namespace` (`None`: the global one), looked up as [`invoke`](Self::invoke) and
+    /// `isFunction` look it up: a host that charges a remote party for a name with no function asks first.
+    #[must_use]
+    pub fn is_function(&self, namespace: Option<&[u8]>, name: &[u8]) -> bool {
+        self.namespaces
+            .lookup(namespace.unwrap_or(b""), name)
+            .is_some()
     }
 
     /// `Con::execute`'s line for a global function that does not exist.
     #[cold]
     #[inline(never)]
-    fn warn_unknown_command(&mut self, name: &[u8]) {
+    fn warn_unknown_command(&mut self, source: CommandSource, name: &[u8]) {
+        let now = self.sim_time();
+        self.flush_unknown_commands(now);
+        let source = if self.unknown_commands.contains_key(&source)
+            || self.unknown_commands.len() < MAX_COMMAND_SOURCES
+        {
+            source
+        } else {
+            CommandSource::OVERFLOW
+        };
+        let u = self
+            .unknown_commands
+            .entry(source)
+            .or_insert(UnknownCommands {
+                since: now,
+                printed: 0,
+                left_out: 0,
+            });
+        if u.printed >= MAX_UNKNOWN_COMMAND_LINES {
+            u.left_out = u.left_out.saturating_add(1);
+            return;
+        }
+        u.printed += 1;
         let mut line = until_nul(name).to_vec();
         line.extend_from_slice(b": Unknown command.");
         self.log_bytes(Level::Warning, &line);
+    }
+
+    /// Ends the seconds of the sources whose second is over at `now`: each that left lines out prints how many.
+    pub(crate) fn flush_unknown_commands(&mut self, now: u32) {
+        if self.unknown_commands.is_empty() {
+            return;
+        }
+        let mut lines = Vec::new();
+        self.unknown_commands.retain(|source, u| {
+            if now.wrapping_sub(u.since) < 1000 {
+                return true;
+            }
+            if u.left_out > 0 {
+                lines.push((*source, u.left_out));
+            }
+            false
+        });
+        lines.sort_unstable_by_key(|(source, _)| source.0);
+        for (source, n) in lines {
+            let line = match source {
+                CommandSource::LOCAL => format!("{n} more unknown commands were not printed."),
+                CommandSource::OVERFLOW => {
+                    format!("{n} more unknown commands from other sources were not printed.")
+                }
+                CommandSource(s) => {
+                    format!("{n} more unknown commands from source {s} were not printed.")
+                }
+            };
+            self.log_bytes(Level::Warning, line.as_bytes());
+        }
     }
 
     /// Runs the method `name` of an object from Rust, as `Con::executef(object, ...)`:
@@ -934,7 +1115,31 @@ impl Vm {
         let argv = method_argv(object, name, args);
         let saved = self.enter_run();
         let outer = self.this_object.replace(object);
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
+        self.this_object = outer;
+        self.leave_run(saved, result)
+    }
+
+    /// [`call_method`](Self::call_method) with the argument list made by the caller, which gives it up (`argv[0]` is
+    /// the method's name, then the arguments, without the object's id: it is put in here). `keep` as for
+    /// [`invoke_owned`](Self::invoke_owned).
+    pub fn call_method_owned(
+        &mut self,
+        object: ObjId,
+        mut argv: Vec<Vec<u8>>,
+        keep: bool,
+    ) -> Result<Vec<u8>, VmError> {
+        let name = argv.first().map(Vec::as_slice).unwrap_or_default();
+        let Some(entry) = self.method_entry(object, name) else {
+            return Ok(Vec::new());
+        };
+        argv.insert(
+            1.min(argv.len()),
+            crate::text::format_int(object).into_bytes(),
+        );
+        let saved = self.enter_run();
+        let outer = self.this_object.replace(object);
+        let result = self.invoke_callable(entry, argv, keep);
         self.this_object = outer;
         self.leave_run(saved, result)
     }
@@ -970,7 +1175,7 @@ impl Vm {
         argv.extend(args.iter().cloned());
         let saved = self.enter_run();
         let outer = self.this_object.replace(object);
-        let result = self.invoke_callable(entry, argv, name);
+        let result = self.invoke_callable(entry, argv, true);
         self.this_object = outer;
         self.leave_run(saved, result)
     }
@@ -1001,17 +1206,28 @@ impl Vm {
 
     /// `$name = <float>` as `SAVEVAR_FLT` stores it (a float variable: the text is `%g` of the 32-bit value).
     pub fn set_global_float(&mut self, name: &[u8], value: f64) {
-        self.globals.add(name).set_float(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_float(value);
+        }
     }
 
     /// `$name = <uint>` as `SAVEVAR_UINT` stores it.
     pub fn set_global_uint(&mut self, name: &[u8], value: u32) {
-        self.globals.add(name).set_int(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_int(value);
+        }
     }
 
     /// `$name = <text>` as `SAVEVAR_STR` stores it, by a name of any bytes.
     pub fn set_global_text(&mut self, name: &[u8], value: &[u8]) {
-        self.globals.add(name).set_string(value);
+        if let Some(entry) = self.globals.add(name) {
+            entry.set_string(value);
+        }
+    }
+
+    /// How many times text has been evaluated here (`eval`, the native or the host's `Vm::eval`).
+    pub fn eval_count(&self) -> u64 {
+        self.quirks.evals
     }
 
     /// The method `name` in the namespace chain of `object`, if both exist.
@@ -1125,6 +1341,7 @@ impl Vm {
             self.drop_events_of_unregistered();
             // A host budget with run steps (a tick's callbacks) lowers this run's limit to what it has left.
             self.begin_charged_run();
+            self.begin_memory_run();
         } else {
             self.depth = self.depth.saturating_add(REENTRY_COST);
         }
@@ -1152,6 +1369,9 @@ impl Vm {
         self.executor.restore(saved.exec, result.is_err() || cut);
         if cut && result.is_ok() {
             return Err(VmError::StringTooLong);
+        }
+        if self.running == 0 && result.is_ok() && self.objects.memory().take_refused() {
+            return Err(VmError::MemoryLimit);
         }
         result
     }
@@ -1182,40 +1402,40 @@ impl Vm {
         &mut self,
         entry: EntryRef,
         argv: Vec<Vec<u8>>,
-        name: &[u8],
+        keep: bool,
     ) -> Result<Vec<u8>, VmError> {
         let Some((block, offset)) = script_target(&entry) else {
-            return self.invoke_native(&entry, argv, name);
+            return self.invoke_native(&entry, argv);
         };
         if offset == 0 {
             return Ok(Vec::new());
         }
         let call = self.new_call(argv, entry);
         self.run_block(&block, offset, Some(call), Mode::PLAIN)?;
-        Ok(self.executor.result())
+        Ok(if keep {
+            self.executor.result()
+        } else {
+            Vec::new()
+        })
     }
 
     /// A native called from Rust: the file is the code block that is executing (the one that called
     /// `call`, say), the current object the one of the method that is running.
     #[inline(never)]
-    fn invoke_native(
-        &mut self,
-        entry: &EntryRef,
-        argv: Vec<Vec<u8>>,
-        name: &[u8],
-    ) -> Result<Vec<u8>, VmError> {
+    fn invoke_native(&mut self, entry: &EntryRef, argv: Vec<Vec<u8>>) -> Result<Vec<u8>, VmError> {
         let Callable::Native { min, max, usage, f } = entry.borrow().callable.clone() else {
             return Ok(Vec::new());
         };
+        let name = argv.first().cloned().unwrap_or_default();
         if !argc_ok(argv.len(), min, max) {
-            self.warn_wrong_argc(entry, name, &usage)?;
+            self.warn_wrong_argc(entry, &name, &usage)?;
             return Ok(Vec::new());
         }
         let call = NativeCall {
             argv,
             this_object: self.this_object,
             from_bytecode: false,
-            name: name.to_vec(),
+            name,
             namespace: Rc::clone(&entry.borrow().namespace),
             file: self.blocks.last().and_then(|b| b.name_shared()),
         };
@@ -1646,14 +1866,12 @@ impl Vm {
     }
 
     pub fn set_global(&mut self, name: &str, value: &str) {
-        self.globals
-            .add(name.as_bytes())
-            .set_string(value.as_bytes());
+        self.set_global_text(name.as_bytes(), value.as_bytes());
     }
 
     /// [`set_global`](Self::set_global) with a value of any bytes (a host's text from the network: not necessarily UTF-8).
     pub fn set_global_bytes(&mut self, name: &str, value: &[u8]) {
-        self.globals.add(name.as_bytes()).set_string(value);
+        self.set_global_text(name.as_bytes(), value);
     }
 
     /// Runs a block from its start in a fresh local frame and returns the string left on the string
@@ -1706,7 +1924,10 @@ impl Vm {
             traces: self.traces.len(),
         };
         if call.is_some() || mode.has_own_frame() {
-            let frame = self.frame_pool.pop().unwrap_or_default();
+            let frame = self
+                .frame_pool
+                .pop()
+                .unwrap_or_else(|| Dictionary::with_account(self.objects.memory().clone()));
             self.frames.push(frame);
             self.alloc_frame_entered();
         }
@@ -1783,7 +2004,7 @@ impl Vm {
         }
         let want = want.cloned();
         match want.as_ref().and_then(|block| block.name()) {
-            Some(name) => self.globals.add(CON_FILE).set_string(name),
+            Some(name) => self.set_global_text(CON_FILE, name),
             None => {
                 self.globals.remove(CON_FILE);
             }
@@ -1874,7 +2095,7 @@ fn native_to_string(result: Native) -> Result<Vec<u8>, VmError> {
 }
 
 /// Appends as much of `text` as fits below [`MAX_LOG_LINE`] bytes.
-fn push_capped(out: &mut Vec<u8>, text: &[u8]) {
+pub(crate) fn push_capped(out: &mut Vec<u8>, text: &[u8]) {
     let room = MAX_LOG_LINE.saturating_sub(out.len());
     out.extend_from_slice(text.get(..room).unwrap_or(text));
 }

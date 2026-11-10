@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: a native's script arguments go required first, then `Option`s, then one `Rest` last
+ --> tests/ui/native_option_first.rs:5:4
+  |
+5 | fn backwards(first: Option<i32>, second: i32) -> i32 {
+  |    ^^^^^^^^^ evaluation of `_` failed here

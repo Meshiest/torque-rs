@@ -27,6 +27,8 @@ sim = { package = "torque-sim", path = "../torque-sim" }
 vehicle = { package = "torque-vehicle", path = "../torque-vehicle" }
 # The control object's moves and camera state as the network carries them.
 net = { package = "torque-net", path = "../torque-net" }
+# GameBase's update-mask bits, which the objects' hooks mark.
+torque-ghosts = { path = "../torque-ghosts" }
 # The scene container's core and the transform maths.
 torque-scene = { path = "../torque-scene" }
 # The game folder's files the shapes are read from.

@@ -29,6 +29,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 
 use torque_net::cap::NET_MAX_DATAGRAM;
+use torque_net::engine::LinkKind;
 use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_PING_REQUEST};
 
 use crate::platform::{Network, inet_addr};
@@ -113,6 +114,19 @@ pub trait Transport {
     /// datagram socket.
     fn status(&mut self) -> Vec<String> {
         Vec::new()
+    }
+    /// What the link to `peer` guarantees and the largest datagram it takes, as engine mode reads it
+    /// ([`torque_net::engine::LinkKind`]): plain UDP unless the transport says otherwise. The client's end of the same link
+    /// must say the same.
+    fn link_kind(&self, peer: SocketAddr) -> LinkKind {
+        let _ = peer;
+        LinkKind::PLAIN_UDP
+    }
+    /// The IP address the host's per-address and per-network caps count `peer` by: its own, unless `peer` is a stand-in the
+    /// transport knows the real address behind. A transport that cannot know it (a data channel through a room service or a
+    /// relay) answers the stand-in, whose network then means nothing.
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        peer.ip()
     }
 }
 
@@ -217,6 +231,34 @@ impl fmt::Display for PolicyRefusal {
 }
 
 impl std::error::Error for PolicyRefusal {}
+
+/// Plain engine-mode UDP on an address outside the private set: it has no encryption, no address validation of its own past
+/// the cookie, and binds a ticket only to the address, so it is for LAN and development only, whatever the bind policy
+/// allows. A public server speaks it over an encrypted link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlainEngineRefusal(pub IpAddr);
+
+impl fmt::Display for PlainEngineRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is not a private address; the engine's protocol takes plain UDP on private addresses only (LAN and development)",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for PlainEngineRefusal {}
+
+/// Whether plain engine-mode UDP may listen on `ip`: only in `rules`' private set (`0.0.0.0` listens on every interface, so
+/// it is refused too).
+pub fn check_plain_engine_bind(rules: &LanRules, ip: IpAddr) -> Result<(), PlainEngineRefusal> {
+    if rules.is_private(ip) {
+        Ok(())
+    } else {
+        Err(PlainEngineRefusal(ip))
+    }
+}
 
 /// What the host allows: the one address a bind may use.
 #[derive(Debug, Clone, Copy)]
@@ -525,6 +567,8 @@ struct Queues {
     bound: Option<SocketAddr>,
     /// Every address `bind` was asked for, in order (a test reads it).
     binds: Vec<SocketAddr>,
+    /// Stand-in addresses and the real IP behind each ([`MemoryEnd::stand_in`]).
+    stand_ins: std::collections::HashMap<SocketAddr, IpAddr>,
 }
 
 /// An in-memory transport: a queue in and a queue out.
@@ -604,9 +648,27 @@ impl Transport for MemoryTransport {
     fn is_real(&self) -> bool {
         false
     }
+
+    fn link_kind(&self, _peer: SocketAddr) -> LinkKind {
+        LinkKind::MEMORY
+    }
+
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        self.queues
+            .borrow()
+            .stand_ins
+            .get(&peer)
+            .copied()
+            .unwrap_or(peer.ip())
+    }
 }
 
 impl MemoryEnd {
+    /// Datagrams from `stand_in` come from a peer whose own address is `real`, as a web transport's peers do.
+    pub fn stand_in(&self, stand_in: SocketAddr, real: IpAddr) {
+        self.queues.borrow_mut().stand_ins.insert(stand_in, real);
+    }
+
     /// A datagram arrives from `from`. False when the queue is full (dropped, like a full socket buffer).
     pub fn inject(&self, from: SocketAddr, data: &[u8]) -> bool {
         let mut queues = self.queues.borrow_mut();

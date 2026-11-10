@@ -35,7 +35,6 @@ mod value;
 pub use compiler::Torque3dCompiler;
 pub use natives::install;
 
-use std::any::Any;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
@@ -44,8 +43,9 @@ use torque_ts_bytecode::opcodes::Op;
 use self::value::{Value, is_space};
 use crate::code::CodeBlock;
 use crate::exec::{
-    Executor, RunMode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
+    Executor, RunMark, RunMode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
 };
+use crate::memory::MemoryCharge;
 use crate::ns::{Callable, EntryRef};
 use crate::sim::ObjId;
 use crate::tags::tag_text;
@@ -110,8 +110,16 @@ enum IterVar {
 
 /// What a `foreach` loop walks: the words of a text (`foreach$`) or the members of a set.
 enum IterOver {
-    Words { text: Vec<u8>, at: usize },
-    Set { set: ObjId, index: usize },
+    /// The text, which counts in the memory account while the loop runs.
+    Words {
+        text: Vec<u8>,
+        at: usize,
+        _held: MemoryCharge,
+    },
+    Set {
+        set: ObjId,
+        index: usize,
+    },
 }
 
 struct Iter {
@@ -161,6 +169,8 @@ struct State {
     /// The array index of the current field and of the one before (shared by all frames, as Torque3D's).
     cur_field_array: Vec<u8>,
     prev_field_array: Vec<u8>,
+    /// A buffer for the value a field write copies, kept between writes.
+    field_value: Vec<u8>,
     /// The value whose text the last call or object lookup left (Torque3D's return variable), for field components:
     /// kept as the value and converted only when a component reads it (the conversion gives the same text later).
     ret: Value,
@@ -182,6 +192,19 @@ impl State {
 
     fn pop(&mut self) -> Result<Value, VmError> {
         self.stack.pop().ok_or(VmError::StackUnderflow)
+    }
+
+    /// Counts `bytes` of text copied or scanned against the step budget.
+    fn charge(&mut self, bytes: usize) {
+        self.work = self.work.saturating_add(bytes as u64);
+    }
+
+    /// The top value, its text's bytes charged: for an operation that copies or scans the value it leaves on the stack (a
+    /// save, an `_NP` jump), so that one long string read again and again costs its bytes each time.
+    fn top_charged(&mut self) -> Result<&mut Value, VmError> {
+        let len = self.stack.last().ok_or(VmError::StackUnderflow)?.text_len();
+        self.charge(len);
+        self.top()
     }
 
     fn top(&mut self) -> Result<&mut Value, VmError> {
@@ -278,7 +301,8 @@ impl Torque3dExecutor {
 }
 
 /// What a run started from Rust puts back after an error (see [`Executor::save`]).
-struct Saved {
+#[derive(Clone, Copy, Debug)]
+pub struct Torque3dMark {
     stack: usize,
     args: usize,
     arg_frames: usize,
@@ -313,24 +337,24 @@ impl Executor for Torque3dExecutor {
         self.st().result = Value::text(text);
     }
 
-    fn save(&self) -> Box<dyn Any> {
+    fn save(&self) -> RunMark {
         let st = self.st();
-        Box::new(Saved {
+        RunMark::Torque3d(Torque3dMark {
             stack: st.stack.len(),
             args: st.args.len(),
             arg_frames: st.arg_frames.len(),
         })
     }
 
-    fn restore(&self, saved: Box<dyn Any>, unwind: bool) {
-        let Ok(saved) = saved.downcast::<Saved>() else {
+    fn restore(&self, saved: RunMark, unwind: bool) {
+        let RunMark::Torque3d(mark) = saved else {
             return;
         };
         if unwind {
             let mut st = self.st();
-            st.stack.truncate(saved.stack);
-            st.args.truncate(saved.args);
-            st.arg_frames.truncate(saved.arg_frames);
+            st.stack.truncate(mark.stack);
+            st.args.truncate(mark.args);
+            st.arg_frames.truncate(mark.arg_frames);
         }
     }
 
@@ -402,7 +426,7 @@ impl<'a> Cx<'a> {
         let mark = self.vm.enter_frame(block, call, mode.with_own_frame());
         let mut st = self.st();
         let regs = st.registers.len();
-        st.work = st.work.saturating_add(count as u64);
+        st.charge(count);
         st.registers.resize(regs + count, Value::default());
         let (iters, creation) = (st.iters.len(), st.creation.len());
         st.frames.push(Frame {
@@ -450,6 +474,11 @@ impl<'a> Cx<'a> {
     ) -> Result<usize, VmError> {
         let code = block.words();
         let declared = fetch(code, ip + 8)? as usize;
+        // Each parameter is a register, so a count past the register cap is a broken file; the rounds are charged.
+        if declared > MAX_REGISTERS {
+            return Err(VmError::BadIndex { ip: ip + 8 });
+        }
+        self.st().charge(declared);
         let passed = args.len().saturating_sub(1).min(declared);
         for (i, value) in args.into_iter().skip(1).take(passed).enumerate() {
             let reg = fetch(code, ip + 10 + i)?;
@@ -619,7 +648,7 @@ impl<'a> Cx<'a> {
                 Ok(ip + 2)
             }
             Op::SetCurVarArray | Op::SetCurVarArrayCreate => {
-                let name = self.st().top()?.string().into_owned();
+                let name = self.st().top_charged()?.string().into_owned();
                 self.set_cur_var(&name, op == Op::SetCurVarArrayCreate);
                 Ok(ip)
             }
@@ -689,14 +718,14 @@ impl<'a> Cx<'a> {
                 let mut st = self.st();
                 let top = st.pop()?;
                 let second = st.pop()?;
-                let joined = st.concat(&second, &top.string())?;
+                let joined = top.with_string(|b| st.concat(&second, b))?;
                 st.push(joined)?;
                 Ok(ip)
             }
             Op::CompareStr => {
                 let mut st = self.st();
                 let (top, second) = st.top_two()?;
-                let equal = top.string().eq_ignore_ascii_case(&second.string());
+                let equal = top.with_string(|a| second.with_string(|b| a.eq_ignore_ascii_case(b)));
                 *second = Value::from_bool(equal);
                 Ok(ip)
             }
@@ -741,14 +770,14 @@ impl<'a> Cx<'a> {
             // Both read the value as a float (`JMPIF` too, as Torque3D's does).
             Op::JmpIfF | Op::JmpIf => st.pop()?.float() != 0.0,
             Op::JmpIfNotNp => {
-                let taken = st.top()?.int() == 0;
+                let taken = st.top_charged()?.int() == 0;
                 if !taken {
                     st.pop()?;
                 }
                 taken
             }
             _ => {
-                let taken = st.top()?.int() != 0;
+                let taken = st.top_charged()?.int() != 0;
                 if !taken {
                     st.pop()?;
                 }
@@ -875,7 +904,7 @@ impl<'a> Cx<'a> {
         };
         st.cur_var = table.and_then(|table| {
             let slot = if create {
-                Some(table.add_slot_folded(key, name))
+                table.add_slot_folded(key, name)
             } else {
                 table.slot_folded(key)
             }?;
@@ -919,11 +948,11 @@ impl<'a> Cx<'a> {
     /// float or text. Nothing without a variable.
     #[inline(never)]
     fn save_var(&mut self, op: Op) -> Result<(), VmError> {
-        let value = self.st().top()?.clone();
+        let value = self.st().top_charged()?.clone();
         self.with_var(|e| match op {
             Op::SaveVarUint => e.set_int(value.int() as u32),
             Op::SaveVarFlt => e.set_float(value.float()),
-            _ => e.set_string(&value.string()),
+            _ => value.with_string(|text| e.set_string(text)),
         });
         Ok(())
     }
@@ -951,7 +980,7 @@ impl<'a> Cx<'a> {
                     Op::SaveLocalVarFlt => Value::Float(top.float()),
                     _ => Value::Str(top.string().into_owned()),
                 };
-                st.work = st.work.saturating_add(value.text_len() as u64);
+                st.charge(value.text_len());
                 *st.register(reg, ip)? = value;
                 Ok(())
             }
@@ -980,7 +1009,12 @@ impl<'a> Cx<'a> {
         };
         let name = ident(fetch(code, ip)?)?.unwrap_or_default();
         let namespace = ident(fetch(code, ip + 2)?)?.unwrap_or_default();
-        let package = ident(fetch(code, ip + 4)?)?;
+        let package = ident(fetch(code, ip + 4)?)?.or_else(|| {
+            self.vm
+                .namespaces()
+                .declare_package_for(block.name())
+                .map(<[u8]>::to_vec)
+        });
         let has_body = fetch(code, ip + 6)? & 1 != 0;
         let label = if namespace.is_empty() {
             b"(null)".to_vec()
@@ -1405,7 +1439,7 @@ impl<'a> Cx<'a> {
             }
             Op::SetCurFieldArray => {
                 let mut st = self.st();
-                let index = st.top()?.string().into_owned();
+                let index = st.top_charged()?.string().into_owned();
                 st.cur_field_array = index.get(..MAX_FIELD_ARRAY).unwrap_or(&index).to_vec();
             }
             Op::SetCurFieldType => {
@@ -1541,7 +1575,7 @@ impl<'a> Cx<'a> {
     /// act on it. When none is found the text becomes the return variable (a field component reads it).
     #[inline(never)]
     fn set_cur_object(&mut self) -> Result<(), VmError> {
-        let text = self.st().top()?.string().into_owned();
+        let text = self.st().top_charged()?.string().into_owned();
         let found = if text.contains(&b' ') {
             None
         } else {
@@ -1570,7 +1604,7 @@ impl<'a> Cx<'a> {
             FieldTarget::Live(id) => Some(id).filter(|id| self.vm.objects().contains(*id)),
             _ => None,
         };
-        let name = self.st().top()?.string().into_owned();
+        let name = self.st().top_charged()?.string().into_owned();
         let found = match object {
             Some(set) if self.vm.objects().is_set(set) => {
                 self.vm.objects().find_internal(set, &name, recurse)
@@ -1634,18 +1668,23 @@ impl<'a> Cx<'a> {
     /// 64-bit) or text; without an object, a component of the value before (see `component`).
     #[inline(never)]
     fn load_field(&mut self, op: Op) -> Result<(), VmError> {
-        let (target, field, array) = {
-            let mut st = self.st();
-            let array = st.cur_field_array.clone();
-            let frame = st.frame();
-            (frame.cur_object, frame.cur_field.clone(), array)
-        };
+        let target = self.st().frame().cur_object;
         let text = if target == FieldTarget::None {
+            let field = self.st().frame().cur_field.clone();
             self.component(field.as_deref().unwrap_or(b""))
         } else {
-            let text = self
-                .vm
-                .read_field_of(target, field.as_deref().unwrap_or(b""), &array);
+            let mut text = Vec::new();
+            {
+                // Reading runs no script: the name and the index are read in place.
+                let st = self.st();
+                let field = st.frames.last().and_then(|f| f.cur_field.as_deref());
+                self.vm.read_field_into(
+                    target,
+                    field.unwrap_or(b""),
+                    &st.cur_field_array,
+                    &mut text,
+                );
+            }
             if op == Op::LoadFieldStr {
                 self.st().clear_ret();
             }
@@ -1663,21 +1702,41 @@ impl<'a> Cx<'a> {
     /// an object, into a component of the value before (see `set_component`).
     #[inline(never)]
     fn save_field(&mut self) -> Result<(), VmError> {
+        // The name, index and value are moved out while the write runs (a static-write observer may run script) and put
+        // back after, so a write copies nothing but the value's text.
         let (target, field, array, value) = {
             let mut st = self.st();
-            let value = st.top()?.string().into_owned();
-            let array = st.cur_field_array.clone();
+            let st = &mut *st;
+            let mut value = std::mem::take(&mut st.field_value);
+            value.clear();
+            st.top_charged()?
+                .with_string(|text| value.extend_from_slice(text));
+            let array = std::mem::take(&mut st.cur_field_array);
             let frame = st.frame();
-            (frame.cur_object, frame.cur_field.clone(), array, value)
+            (frame.cur_object, frame.cur_field.take(), array, value)
         };
         if target == FieldTarget::None {
-            self.set_component(field.as_deref().unwrap_or(b""), &value)?;
-            self.st().frame().prev_object = FieldTarget::None;
-        } else {
-            self.vm
-                .write_field_of(target, field.as_deref().unwrap_or(b""), &array, &value);
+            let done = self.set_component(field.as_deref().unwrap_or(b""), &value);
+            if done.is_ok() {
+                self.st().frame().prev_object = FieldTarget::None;
+            }
+            self.put_back_field(field, array, value);
+            return done;
         }
+        self.vm
+            .write_field_of(target, field.as_deref().unwrap_or(b""), &array, &value);
+        self.put_back_field(field, array, value);
         Ok(())
+    }
+
+    /// What `save_field` moved out of the state, back in.
+    fn put_back_field(&mut self, field: Option<Vec<u8>>, array: Vec<u8>, value: Vec<u8>) {
+        let mut st = self.st();
+        st.cur_field_array = array;
+        st.field_value = value;
+        if let Some(frame) = st.frames.last_mut() {
+            frame.cur_field = field;
+        }
     }
 
     /// The value a field component reads or writes (Torque3D's `.x`, `.y`, `.z`, `.w` and their colour and
@@ -1735,13 +1794,13 @@ impl<'a> Cx<'a> {
                     .register(*reg, 0)
                     .map(|v| v.string().into_owned())
                     .unwrap_or_default();
-                st.work = st.work.saturating_add(text.len() as u64);
+                st.charge(text.len());
                 text
             }
             ComponentSource::Variable => {
                 let text = self.with_var(|e| e.get_string()).unwrap_or_default();
                 let mut st = self.st();
-                st.work = st.work.saturating_add(text.len() as u64);
+                st.charge(text.len());
                 text
             }
             ComponentSource::Text(text) => text.clone(),
@@ -1869,9 +1928,17 @@ impl<'a> Cx<'a> {
                 };
                 let fail = fetch(code, at + if global { 3 } else { 2 })? as usize;
                 *ip = at + if global { 4 } else { 3 };
-                let text = self.st().top()?.string().into_owned();
+                let text = self.st().top_charged()?.string().into_owned();
                 let over = if op == Op::IterBeginStr {
-                    IterOver::Words { text, at: 0 }
+                    let mut held = MemoryCharge::new(self.vm.objects().memory());
+                    if !held.resize(text.len()) {
+                        return Err(VmError::MemoryLimit);
+                    }
+                    IterOver::Words {
+                        text,
+                        at: 0,
+                        _held: held,
+                    }
                 } else {
                     match self.vm.objects().find(&text) {
                         Some(set) if self.vm.objects().is_set(set) => {
@@ -1924,7 +1991,7 @@ impl<'a> Cx<'a> {
                 return Err(VmError::StackUnderflow);
             };
             match &mut iter.over {
-                IterOver::Words { text, at } => {
+                IterOver::Words { text, at, .. } => {
                     let Some(rest) = text.get(*at..).filter(|r| !r.is_empty()) else {
                         return Ok(false);
                     };
@@ -1951,15 +2018,16 @@ impl<'a> Cx<'a> {
         };
         match var {
             Ok(reg) => {
-                st.work = st.work.saturating_add(next.text_len() as u64);
+                st.charge(next.text_len());
                 *st.register(reg, ip)? = next;
             }
             Err(name) => {
                 drop(st);
-                let entry = self.vm.global_table_mut().add(&name);
-                match next {
-                    Value::Int(id) => entry.set_int(id as u32),
-                    other => entry.set_string(&other.string()),
+                if let Some(entry) = self.vm.global_table_mut().add(&name) {
+                    match next {
+                        Value::Int(id) => entry.set_int(id as u32),
+                        other => other.with_string(|text| entry.set_string(text)),
+                    }
                 }
             }
         }

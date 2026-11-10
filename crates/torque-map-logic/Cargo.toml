@@ -1,0 +1,34 @@
+[package]
+name = "torque-map-logic"
+description = "Map logic for torque-rs: the entity input/output system of Hammer-made maps, its logic entities, triggers, filters and movers, with an optional runtime FGD reader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "map", "entities", "plugin", "gamedev"]
+categories = ["game-development"]
+
+# A server-side event bus over a map's entities (the format-neutral `torque_mapcore::scene::Entity`): outputs, target names,
+# delays and a deterministic queue with caps; the logic entities, triggers and filters as server-only records, and movers as a
+# plugin ghost class. Entity definitions from a user's installed FGD files can be read at run time (optional, never shipped);
+# every handler has its own coded defaults. Not in `DefaultPlugins`: a game adds `MapLogicPlugin` itself.
+
+[dependencies]
+torque-engine = { path = "../torque-engine" }
+torque-mapcore = { path = "../torque-mapcore" }
+# The movers' blocking test: the separating axis overlap of convex polytopes.
+torque-collide = { path = "../torque-collide" }
+# The triggers' broad phase: the container's bins.
+torque-scene = { path = "../torque-scene" }
+# The capped, link-refusing read of an FGD file.
+torque-resource = { path = "../torque-resource" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+# The real-map test (skipped when `TORQUE_SOURCE_GAME_DIR` is unset) reads maps through the format crate.
+torque-format-valve = { path = "../torque-format-valve" }
+
+[lints]
+workspace = true

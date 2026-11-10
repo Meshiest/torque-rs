@@ -40,6 +40,7 @@ use torque_client::net::room_join::RoomDatagrams;
 use torque_client::net::web_rtc::{Link, LinkWatch, WebRtcDatagrams};
 use torque_client::net::web_socket::WebSocketDatagrams;
 
+use crate::transports::{Connect, RelayTarget, RoomTarget, WebTarget};
 use crate::web_page::mark;
 
 /// The address the client names its server by: each link goes to its own server whatever it is sent to.
@@ -218,6 +219,11 @@ impl Datagrams for LocalLink {
     fn port(&self) -> u16 {
         0
     }
+
+    /// The worker's link stands for a data channel, as the server's relay transport says.
+    fn link_kind(&self) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
+    }
 }
 
 /// A client's link to a player's host reached by an invite link: the page's data channel to it.
@@ -234,6 +240,11 @@ impl Datagrams for PageLink {
 
     fn port(&self) -> u16 {
         0
+    }
+
+    /// The worker's link stands for a data channel, as the server's relay transport says.
+    fn link_kind(&self) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
     }
 }
 
@@ -275,7 +286,36 @@ impl Target {
         }
     }
 
-    /// The game the page's address asks to join: `?room=<code>` a player's, else with `?join` (or `?server=`) the server
+    /// The id of the client transport that opens this target (`web`, `rooms` or `relay`).
+    pub fn transport_id(&self) -> &'static str {
+        match self {
+            Target::Server(_) => "web",
+            Target::Room { .. } => "rooms",
+            Target::Local | Target::Page => "relay",
+        }
+    }
+
+    /// Connects `client` to the game over the transport that opens this target (the engine's `web`, `rooms` or `relay`
+    /// plugin, [`crate::transports`]), and gives the link's state. The same link as [`Target::open`], through the
+    /// engine's transports: Err when the plugin is off.
+    pub fn connect(&self, client: &mut impl Connect) -> Result<LinkWatch, String> {
+        let info = match self {
+            Target::Server(url) => client.connect_dyn("web", &WebTarget::Url(url.clone()))?,
+            Target::Room { url, code } => client.connect_dyn(
+                "rooms",
+                &RoomTarget {
+                    url: url.clone(),
+                    code: code.clone(),
+                },
+            )?,
+            Target::Local => client.connect_dyn("relay", &RelayTarget::Local)?,
+            Target::Page => client.connect_dyn("relay", &RelayTarget::Page)?,
+        };
+        info.take::<LinkWatch>()
+            .ok_or_else(|| format!("the {} transport gave no link state", self.transport_id()))
+    }
+
+    /// The game the page's address asks to join: `?room=<code>` a player's (Err: not a [`room_code`]), else with `?join` (or `?server=`) the server
     /// that served the page (or `?server=`'s); none asked, or the page is one to be played alone (its root element's
     /// `data-torque-solo="1"`: a site with no game server).
     pub fn from_page() -> Result<Option<Target>, String> {
@@ -285,7 +325,7 @@ impl Target {
         if let Some(code) = query("room") {
             return Ok(Some(Target::Room {
                 url: rooms_url()?,
-                code,
+                code: room_code(&code)?,
             }));
         }
         if query("join").is_some() || query("server").is_some() {
@@ -305,7 +345,7 @@ pub fn solo_page() -> bool {
         .is_some_and(|v| v == "1")
 }
 
-/// The room code a host page shows (`data-torque-room`, `web/host.js`: `ABCD-EFGH`), if it has one yet and it is
+/// The room code a host page shows (`data-torque-room`, `web/host.js`: `ABCD-EFGH-JKMN-PQRS`), if it has one yet and it is
 /// letters, digits and `-` only.
 pub fn page_room() -> Option<String> {
     let code = web_sys::window()?
@@ -322,8 +362,8 @@ pub fn page_room() -> Option<String> {
 /// pointer-lock guard, the host's LAN rule and the map.
 const KEPT: [&str; 5] = ["rooms", "name", "nolock", "lan", "map"];
 
-/// The longest room code [`room_code`] takes (`ABCD-EFGH` with room to spare); a code is letters, digits and `-` only.
-pub const MAX_CODE: usize = 16;
+/// The longest room code [`room_code`] takes (`ABCD-EFGH-JKMN-PQRS` with room to spare); a code is letters, digits and `-` only.
+pub const MAX_CODE: usize = 32;
 
 /// `code` as a room code, trimmed (Err: empty, over [`MAX_CODE`], or not letters, digits and `-` only).
 pub fn room_code(code: &str) -> Result<String, String> {
@@ -332,7 +372,9 @@ pub fn room_code(code: &str) -> Result<String, String> {
         || code.len() > MAX_CODE
         || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
     {
-        return Err(format!("{code:?} is not a room code (like ABCD-EFGH)"));
+        return Err(format!(
+            "{code:?} is not a room code (like ABCD-EFGH-JKMN-PQRS)"
+        ));
     }
     Ok(code.to_string())
 }

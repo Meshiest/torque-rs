@@ -33,6 +33,7 @@
 use super::{Native, NativeCall, Vm, VmError, WORK_PER_STEP, lossy};
 use crate::classes::file_object::Flush;
 use crate::host::{CivilTime, FileStat, civil_time, safe_write_path};
+use crate::policy::WRITE_WINDOW_MS;
 use crate::sim::ObjId;
 use crate::text::{crc32, is_match, match_cost, until_nul};
 
@@ -142,6 +143,37 @@ impl Vm {
         removed
     }
 
+    /// Whether the [`WriteQuota`](crate::policy::WriteQuota) lets scripts open `files` more files for writing and write `bytes` more, which leave
+    /// the file `file_size` bytes long, in the current window of [`WRITE_WINDOW_MS`] of simulation time; they are counted
+    /// when it does.
+    pub(crate) fn admit_write(&mut self, file_size: u64, bytes: u64, files: u32) -> bool {
+        let quota = self.policies.files.write_quota();
+        let now = self.sim_time();
+        let window = &mut self.writes;
+        if now.wrapping_sub(window.start) >= WRITE_WINDOW_MS {
+            *window = WriteWindow {
+                start: now,
+                ..WriteWindow::default()
+            };
+        }
+        let total = window.bytes.saturating_add(bytes);
+        let opened = window.files.saturating_add(files);
+        if file_size > quota.per_file || total > quota.per_hour || opened > quota.files_per_hour {
+            return false;
+        }
+        window.bytes = total;
+        window.files = opened;
+        true
+    }
+
+    /// The line of a write the quota refused.
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn refuse_write_quota(&mut self, path: &str) {
+        let line = self.messages().write_quota_used(path);
+        self.error(line);
+    }
+
     /// A write through the host, charged for the work it did beyond the bytes it was given
     /// (`FileHost::work_done`: the file an append starts from).
     #[inline(never)]
@@ -175,6 +207,10 @@ impl Vm {
         // of `backtrace` can run a script, which can open a file again), and holds none of the messages.
         if !self.check_write_path(path)? {
             return Ok(self.refuse_write_name(path));
+        }
+        if !self.admit_write(0, 0, 1) {
+            self.refuse_write_quota(&lossy(path));
+            return Ok(None);
         }
         Ok(self.begin_stream(path, append))
     }
@@ -224,17 +260,23 @@ impl Vm {
     /// before anything is kept.
     #[inline(never)]
     pub(crate) fn write_line(&mut self, id: ObjId, line: &[u8]) -> Result<(), VmError> {
-        let Some(path_len) = self.file_objects.write_path_len(id) else {
+        let Some((path, size)) = self.file_objects.write_target(id) else {
             if self.file_objects.has_unread(id) {
                 return self.report_write_to_a_reader();
             }
             return Ok(());
         };
         let units = FILE_OP_UNITS
-            .saturating_add(path_len as u64)
+            .saturating_add(path.len() as u64)
             .saturating_add(line.len() as u64);
         if !self.charge_work(units) {
             return Err(VmError::StepLimit);
+        }
+        let bytes = line.len() as u64 + 2;
+        if !self.admit_write(size.saturating_add(bytes), bytes, 0) {
+            let path = self.file_objects.write_target(id).map(|(p, _)| lossy(p));
+            self.refuse_write_quota(&path.unwrap_or_default());
+            return Ok(());
         }
         if let Some(flush) = self.file_objects.buffer_line(id, line) {
             self.flush_file(flush);
@@ -339,6 +381,10 @@ impl Vm {
         }
         if !self.charge_work(FILE_OP_UNITS.saturating_add(len)) {
             return Err(VmError::StepLimit);
+        }
+        if !self.admit_write(len, len, 1) {
+            self.refuse_write_quota(&lossy(to));
+            return Ok(false);
         }
         let mark = self.host_work_mark();
         let copied = self.files.copy(from, to);
@@ -451,6 +497,7 @@ fn found(result: Result<Vec<u8>, VmError>) -> Native {
 }
 
 pub(super) fn register(vm: &mut Vm) {
+    vm.add_native_effects("", "fileDelete", crate::effects::Effects::FILES);
     vm.register(
         "isFile",
         2,
@@ -573,4 +620,13 @@ pub(super) fn register(vm: &mut Vm) {
         "filePath(path) - the folder part of the path",
         |_, c| Native::Str(file_path(arg(c, 1)).to_vec()),
     );
+}
+
+/// What scripts wrote in the current window of the [`WriteQuota`](crate::policy::WriteQuota): since `start` (simulation time), `bytes` written and
+/// `files` opened for writing.
+#[derive(Debug, Default)]
+pub(crate) struct WriteWindow {
+    start: u32,
+    bytes: u64,
+    files: u32,
 }

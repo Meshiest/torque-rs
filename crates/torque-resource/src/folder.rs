@@ -39,13 +39,12 @@
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use torque_ts_vm::host::{
-    DirHost, FileHost, FileRead, FileStat, ResourceRules, collapse_dots, open_found, safe_path,
-    sanitize_component,
+    DirHost, FileHost, FileRead, FileStat, ResourceRules, collapse_dots, open_found, read_up_to,
+    safe_path, sanitize_component,
 };
 use torque_ts_vm::text::fold;
 
@@ -65,7 +64,9 @@ pub const MAX_REPORTED_NAME: usize = 80;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MountPolicy {
     /// The one folder (a top folder of the game folder, any case) whose zips mount, directly in it; `None` mounts every zip the
-    /// start-up scan finds (TGE's rule).
+    /// start-up scan finds (TGE's rule). A zip's entries win over loose files at their stem folder, so a host that lets others put
+    /// files in the game folder (downloads, a mod folder) names one: with `None`, a zip dropped anywhere in it shadows the game's
+    /// own files.
     pub zip_folder: Option<&'static [u8]>,
     /// How the zip folder is spelled when the game folder does not have it: where a host's archives are mounted (with no zip
     /// folder and this empty, a host's archives are refused).
@@ -260,16 +261,7 @@ fn open_plain(root: &Path, rel: &[u8]) -> Option<(std::fs::File, std::fs::Metada
 /// after `max` and one more).
 fn read_file(root: &Path, rel: &[u8], max: u64) -> Option<Vec<u8>> {
     let (file, meta) = open_plain(root, rel)?;
-    if meta.len() > max {
-        return None;
-    }
-    let mut out = Vec::new();
-    out.try_reserve_exact(usize::try_from(meta.len()).ok()?)
-        .ok()?;
-    file.take(max.saturating_add(1))
-        .read_to_end(&mut out)
-        .ok()?;
-    (out.len() as u64 <= max).then_some(out)
+    crate::plain::read_within(file, meta.len(), max).ok()
 }
 
 /// The zips being mounted: the caps and the books.
@@ -969,6 +961,38 @@ impl GameFolder {
         match self.disk_read(&collapse_dots(path)) {
             Some(bytes) => FileRead::Found(bytes),
             None => FileRead::Missing,
+        }
+    }
+
+    /// [`read`](Self::read) of at most the first `max` bytes: a file of the disk reads only them, and a zip's entry inflates only
+    /// them ([`ZipMount::read_prefix`]).
+    pub fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        if let Some((zip, entry)) = self.entry_at(path)
+            && let Some(bytes) = zip.mount.read_prefix(&entry.name, max)
+        {
+            return FileRead::Found(bytes);
+        }
+        if let Some(bytes) = self.archive(path) {
+            return FileRead::Found(bytes[..bytes.len().min(max)].to_vec());
+        }
+        let path = collapse_dots(path);
+        if let Some(bytes) = self.startup_file(&path) {
+            return FileRead::Found(bytes[..bytes.len().min(max)].to_vec());
+        }
+        if let Some(&at) = self.disk.get(&fold(&path)) {
+            return self
+                .listing
+                .get(at)
+                .and_then(|rel| open_plain(&self.root, rel))
+                .and_then(|(file, _)| read_up_to(file, max))
+                .map_or(FileRead::Missing, FileRead::Found);
+        }
+        if self.authoritative(&path) {
+            return FileRead::Missing;
+        }
+        match self.dir.read_prefix(&path, max) {
+            FileRead::Found(bytes) => FileRead::Found(bytes),
+            _ => FileRead::Missing,
         }
     }
 

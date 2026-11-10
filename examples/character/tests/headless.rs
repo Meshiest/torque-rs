@@ -2,9 +2,11 @@
 //! the figure's pose differs between idle and walk; and frames drawn offscreen show it (skipped with a note on a machine with
 //! no GPU adapter).
 
+use torque::app::run::OffscreenRunnerPlugin;
 use torque::client::input::Key;
+use torque::engine::EngineBuilder;
 use torque::shapes::math::mul_p;
-use torque_example_character::game::CharacterGame;
+use torque_example_character::game::{CharacterGame, CharacterPlugin};
 use torque_example_character::motion::State;
 use torque_example_character::shots::{FRAME_MS, Step, picture_camera, play};
 
@@ -202,4 +204,27 @@ fn the_corner_readout_holds_the_frame_rate() {
         .call("eval", &["return CharacterStats.getValue();"])
         .unwrap();
     assert_eq!(text, "60 fps");
+}
+
+#[test]
+fn the_offscreen_runner_plugin_draws_the_game_to_a_picture() {
+    if let Err(e) = torque::app::window::offscreen_gpu() {
+        eprintln!("skipped: {e}");
+        return;
+    }
+    let picture = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("runner/character.png");
+    let _ = std::fs::remove_file(&picture);
+    EngineBuilder::new()
+        .add_plugins((
+            OffscreenRunnerPlugin::new((320, 180), 300).picture(&picture),
+            CharacterPlugin,
+        ))
+        .run()
+        .expect("the offscreen run");
+    let png = std::fs::read(&picture).expect("the picture was written");
+    assert!(png.starts_with(&[0x89, b'P', b'N', b'G']));
+    let size = |at: usize| u32::from_be_bytes(png[at..at + 4].try_into().unwrap());
+    assert_eq!((size(16), size(20)), (320, 180));
+    // A drawn scene (sky, floor, figure) does not compress to a flat color's few hundred bytes.
+    assert!(png.len() > 3000, "{} bytes", png.len());
 }

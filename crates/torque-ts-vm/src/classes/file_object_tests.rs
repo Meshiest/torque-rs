@@ -62,8 +62,8 @@ fn what_is_read_and_what_is_written_are_told_apart() {
     assert_eq!(files.read_line(1), Some((Vec::new(), 0)));
     assert_eq!(files.read_line(2), None);
     assert_eq!(files.read_line(3), None);
-    assert_eq!(files.write_path_len(1), None);
-    assert_eq!(files.write_path_len(2), Some(12));
+    assert_eq!(files.write_target(1), None);
+    assert_eq!(files.write_target(2).map(|(path, _)| path.len()), Some(12));
     // Closing a read gives its bytes back.
     assert!(files.close(1).is_none());
     assert_eq!(files.held(), 0);

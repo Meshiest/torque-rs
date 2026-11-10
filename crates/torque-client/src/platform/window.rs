@@ -234,6 +234,25 @@ pub trait WindowGame {
     }
 }
 
+/// One pass of the window's clock over `wall_ms` of real time since the last: the client's input sources are polled (once per
+/// frame, as TGE polls its joysticks, so a bound axis follows the frame rate and not the 32 ms tick) and its assets looked at
+/// for hot reload ([`ClientHost::poll_assets`](crate::host::ClientHost::poll_assets)), then `owed` (the real
+/// milliseconds not yet run, in whole milliseconds) is run as one pass of TGE's main loop. The server ticks for every 32 ms
+/// boundary the pass's time crosses (a pass cut into ticks of its own would run no tick for a frame under 32 ms); those ticks
+/// do not poll the sources again.
+fn clock_pass<G: WindowGame>(game: &mut G, owed: &mut f64, wall_ms: f64) {
+    *owed += wall_ms;
+    let ms = (*owed as u32).min(MAX_FRAME_MS);
+    game.host().poll_input_frame();
+    game.host().poll_assets();
+    if ms > 0 {
+        *owed -= f64::from(ms);
+        *owed = owed.min(f64::from(MAX_FRAME_MS));
+        game.step(ms);
+    }
+    game.host().end_input_frame();
+}
+
 /// The window's loop state over the game `G`.
 struct WindowApp<G: WindowGame> {
     game: G,
@@ -720,16 +739,9 @@ impl<G: WindowGame> WindowApp<G> {
                 }
             }
         }
-        self.owed += now.duration_since(self.last).as_secs_f64() * 1000.0;
+        let wall_ms = now.duration_since(self.last).as_secs_f64() * 1000.0;
         self.last = now;
-        let ms = (self.owed as u32).min(MAX_FRAME_MS);
-        if ms > 0 {
-            self.owed -= f64::from(ms);
-            self.owed = self.owed.min(f64::from(MAX_FRAME_MS));
-            // One pass of TGE's main loop over the frame's milliseconds: the server ticks for every 32 ms boundary its time
-            // crosses (a pass cut into ticks of its own would run no tick for a frame under 32 ms).
-            self.game.step(ms);
-        }
+        clock_pass(&mut self.game, &mut self.owed, wall_ms);
         if self.game.host_ref().server.vm().quit_requested() {
             event_loop.exit();
             return None;

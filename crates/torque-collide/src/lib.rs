@@ -1,5 +1,5 @@
 //! The collision library: Torque's convexes, GJK `CollisionState`, `CollisionList` and the polygon lists, following the Torque
-//! code, and the math module. Std only. The world (the object octree, the bins, the shape meshes) is reached through
+//! code, and the math module. Std and a fast hash ([`hash`]) only. The world (the object octree, the bins, the shape meshes) is reached through
 //! [`World`], which the host implements.
 //!
 //! **Credits.** This crate follows the MIT-licensed Torque3D release of the Torque engine (GarageGames), whose code TGE 1.4
@@ -25,9 +25,12 @@
 //! - [`mesh`]: a collision mesh at a pose as plain arrays, its polygon feed (`TSShapeInstance::buildPolyList`) and its hull
 //!   accelerator (`TSShape::computeAccelerator`).
 //! - [`map`]: a Torque map's terrain and interiors, their convexes, polygon lists and rays.
+//! - [`source`]: collision a plugin contributes (boxes and convex hulls at a pose, with a type bit of their own) that a host's
+//!   container and a predicting client's world both answer for.
 //! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]).
 //! - [`gjk`] and [`feature`]: `GjkCollisionState` (distance, closest points, 16-iteration limit), `ConvexFeature`, the state
 //!   list and `getCollisionInfo` (vehicles).
+//! - [`hash`]: the hash of the engine's own ids ([`hash::IdMap`]).
 //! - [`sat`]: how deep two convex polytopes overlap (the separating axis test), exact while they overlap; this crate's own.
 //!
 //! **Hostile input.** Positions, scales and boxes come from scripts; meshes from files. Nothing here panics on NaN, infinities,
@@ -35,6 +38,24 @@
 //! a query's work is charged to the host's budget ([`World::charge`]) before doing it. Where Torque has a limit it is kept
 //! (64 collisions, 16 GJK iterations, 30 faces); where it has none, a named cap stops the query and the list says so. Each
 //! comparison is written so that a NaN takes a fixed, documented side (a negated `>=` is "below, or unordered").
+//!
+//! # Maintaining
+//!
+//! **Speed.** A mover's sub-step is the server's hottest loop (eight a vehicle tick, one a Player's). Rules a change must keep;
+//! the benches that show them are torque-vehicle's `tick` ("buggy on tiles": a floor cut into 0.5-unit boxes, a working set
+//! of a few hundred convexes; "buggy beside hulls": 21 hull convexes; and the allocations a tick it prints for each ground):
+//! - [`feature::StateList::update`] and [`WorkingSet::update`] allocate nothing once warm: the state list keeps id maps
+//!   ([`hash::IdMap`]) for its membership tests, cleared each call, and the working set drops entries in place.
+//! - A hull's accelerator is shared ([`mesh::Hull::accel`] is an `Rc`), and a shape's collision slots are one `Rc<[HullSlot]>`
+//!   ([`ConvexSource::Shape`]): a host hands out pointers, never copies, per query.
+//! - [`source::CollisionSources::snapshot`] lists the plugin shapes again only when a source's
+//!   [`source::CollisionSource::revision`] moved (or a source keeps none): a source that keeps one gives it a new
+//!   [`source::next_revision`] at every change of what it lists, or phases meet stale shapes.
+//! - A plugin shape's [`source::CollisionShape::passes`] lets one mover through it (a held prop's holder):
+//!   [`source::ShapeSet`]'s queries and rays skip it only for that mover, every other mover and ray meets it
+//!   (`a_shape_lets_only_the_mover_it_names_pass`).
+//! - A cache or index changes nothing that is charged or returned: the same [`World::charge`] units at the same points, the same
+//!   results in the same order (the trace-hash lines and torque-vehicle's printed rigid trace must not move).
 
 // Comparisons are written so that a NaN takes a fixed side: a negated comparison is the intended form (`!(a >= b)` is "below,
 // or unordered"), not a slip.
@@ -44,12 +65,15 @@ pub mod collision;
 pub mod convex;
 pub mod feature;
 pub mod gjk;
+pub mod hash;
 pub mod library;
 pub mod map;
 pub mod math;
 pub mod mesh;
 pub mod poly;
+pub mod rotation_code;
 pub mod sat;
+pub mod source;
 pub mod types;
 
 pub use collision::{Collision, CollisionList, MAX_COLLISIONS};

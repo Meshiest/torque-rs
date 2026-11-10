@@ -28,6 +28,8 @@ struct Chain {
     /// The groups of the down passes from level 1 and of the up passes (index k: up level k from level k + 1).
     down_groups: Vec<wgpu::BindGroup>,
     up_groups: Vec<wgpu::BindGroup>,
+    /// The prefilter's group and the source it reads (made again only when the source is another).
+    prefilter: Option<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
 pub struct Bloom {
@@ -234,6 +236,7 @@ impl Bloom {
             up,
             down_groups,
             up_groups,
+            prefilter: None,
         });
     }
 
@@ -251,6 +254,19 @@ impl Bloom {
     ) {
         let levels = levels.clamp(1, MAX_LEVELS);
         self.ensure(device, w, h, levels);
+        let stale = self
+            .chain
+            .as_ref()
+            .is_some_and(|c| c.prefilter.as_ref().is_none_or(|(v, _)| v != source));
+        if stale {
+            let group = self
+                .chain
+                .as_ref()
+                .map(|c| self.group(device, 0, source, None, &c.down[0].1));
+            if let (Some(c), Some(group)) = (self.chain.as_mut(), group) {
+                c.prefilter = Some((source.clone(), group));
+            }
+        }
         let Some(chain) = self.chain.as_ref() else {
             return;
         };
@@ -289,11 +305,13 @@ impl Bloom {
             );
         }
         queue.write_buffer(&self.uniforms, 0, &bytes);
-        let prefilter_group = self.group(device, 0, source, None, &chain.down[0].1);
+        let Some((_, prefilter_group)) = chain.prefilter.as_ref() else {
+            return;
+        };
         // The whole chain in one compute pass (it was a render pass a level).
         let mut dispatches = vec![crate::Dispatch {
             pipeline: &self.prefilter,
-            group: &prefilter_group,
+            group: prefilter_group,
             size: chain.sizes[0],
         }];
         for k in 1..chain.down.len() {

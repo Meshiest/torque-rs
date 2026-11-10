@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: `n` holds no floats, so `finite` does nothing
+ --> tests/ui/net_message_finite_on_integer.rs:3:44
+  |
+3 | #[derive(Debug, Clone, PartialEq, Default, NetMessage)]
+  |                                            ^^^^^^^^^^ evaluation of `_` failed here

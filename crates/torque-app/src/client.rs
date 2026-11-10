@@ -14,25 +14,36 @@
 //! **A step** ([`GameClient::step`]): as many server ticks as the time covers when hosting, then the client's ticks (its input,
 //! its scripts, its connection, its query), the link carried around each, and the console's lines kept.
 
+use std::any::Any;
 use std::cell::RefCell;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
 use torque_client::conn::tge::{TgeConn, TgeWorld};
 use torque_client::game::ClientGame;
-use torque_client::host::{ClientHost, EnginePass};
+use torque_client::host::{ClientHost, ClientPass};
 use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
-use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
+use torque_client::net::{Datagrams, NetPolicy};
 use torque_client::state::ClientState;
+use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
+use torque_server::net::channels::ClientChannels;
+use torque_server::net::rpc::{ClientRpc, ClientRpcHost, register_client_natives};
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
+use super::Host;
+use super::plugins::{
+    ClientGamePlugin, ClientHostSetup, ClientWiring, DefaultPlugins, GameClassesPlugin, GuiPlugin,
+    ServerQueryPlugin,
+};
 use super::server::GameServer;
-use super::{Host, draw_cache, layout_fonts};
+use super::transports::{
+    Connect, LinkInfo, MemoryLink, MemoryTarget, UdpTarget, client_transport_warnings, open_connect,
+};
 
 /// The most console lines a client keeps of its own and of its server's (it drops the older half past this).
 pub const LOG_LINES: usize = 4000;
@@ -65,7 +76,7 @@ pub struct ClientSetup {
     pub game_classes: bool,
     /// The game's half of the client's prediction.
     pub client_game: Option<Rc<dyn ClientGame>>,
-    /// Whether the GUI's layout measures text with the fonts it is drawn with ([`layout_fonts`]); else with its default.
+    /// Whether the GUI's layout measures text with the fonts it is drawn with ([`layout_fonts`](crate::layout_fonts)); else with its default.
     pub layout_fonts: bool,
     pub net: ClientNet,
     /// The LAN query's natives (the list of games).
@@ -92,43 +103,126 @@ pub struct ClientBuilder {
     pub gui: Gui,
     pub state: Rc<RefCell<ClientState<TgeConn>>>,
     link: Option<MemoryLink>,
+    engine: Engine,
+    pass: Rc<dyn ClientPass<TgeConn>>,
+    host: ClientHostSetup,
 }
 
 impl ClientBuilder {
     /// The script engine with the GUI's classes, ActionMap's natives (the class itself is a plain SimObject, as TGE's) and the
-    /// screen's, then what `setup` asks for.
+    /// screen's, then what `setup` asks for. It is [`ClientBuilder::from_engine`] over [`DefaultPlugins`] with the plugins
+    /// `setup` does not ask for turned off.
     pub fn new(setup: ClientSetup) -> Result<ClientBuilder, String> {
+        let ClientSetup {
+            files,
+            game_classes,
+            client_game,
+            layout_fonts,
+            net,
+            server_query,
+        } = setup;
+        let mut group = DefaultPlugins.set(GuiPlugin { layout_fonts });
+        if !game_classes {
+            group = group.disable::<GameClassesPlugin>();
+        }
+        if !server_query {
+            group = group.disable::<ServerQueryPlugin>();
+        }
+        let mut engine = EngineBuilder::new();
+        engine.add_plugins(group);
+        if let Some(game) = client_game {
+            engine.add_plugins(ClientGamePlugin::new(game));
+        }
+        let engine = engine.build().map_err(|e| e.to_string())?;
+        ClientBuilder::from_engine(&engine, files, net)
+    }
+
+    /// A client made by `engine`'s plugins: the script engine's client recipes run stage by stage ([`ClientStage`]) up to
+    /// the game's natives, in the order the engine's plugins were added, with `files` as the scripts' files and a socket as
+    /// `net` says. The engine can make any number of clients. It needs the plugins that make the client's parts:
+    /// [`GuiPlugin`] and [`ClientHostPlugin`](crate::plugins::ClientHostPlugin) (with [`DefaultPlugins`], all of them). What the build warned about
+    /// ([`Engine::warnings`]) is printed to the client's console first.
+    pub fn from_engine(
+        engine: &Engine,
+        files: Option<MemFiles>,
+        net: ClientNet,
+    ) -> Result<ClientBuilder, String> {
+        let pass = engine
+            .slot::<dyn ClientPass<TgeConn>>()
+            .ok_or("the engine has no client host (ClientHostPlugin)")?;
+        let host = *engine
+            .resource::<ClientHostSetup>()
+            .ok_or("the engine has no client host (ClientHostPlugin)")?;
         let mut vm = Vm::new();
-        if setup.game_classes {
-            torque_game::specs::install(&mut vm);
+        for warning in engine.warnings() {
+            vm.warn(warning.to_string());
         }
-        if let Some(files) = setup.files {
-            vm.set_file_host(files);
-        }
-        if let Some(game) = setup.client_game {
-            torque_client::game::set_client_game(&mut vm, game);
-        }
-        let gui = torque_gui::register(&mut vm);
-        if setup.layout_fonts {
-            // The controls that measure text as they lay out (a list of games) find their fonts where the drawing does.
-            gui.0.borrow_mut().fonts = torque_gui::SharedFonts::new(Box::new(layout_fonts()));
+        for warning in client_transport_warnings(engine) {
+            vm.warn(warning);
         }
         let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
-        let link = open_socket(&state, setup.net)?;
-        vm.register_class("ActionMap", "SimObject", &[]);
-        torque_client::actionmap::register(&mut vm, &state);
-        torque_client::screen::register(&mut vm, &gui, &state);
-        if setup.net != ClientNet::None {
-            torque_client::conn::register(&mut vm, &state, &gui);
+        let link = open_socket(engine, &state, net)?;
+        let wiring = Rc::new(ClientWiring::new(Rc::clone(&state), net));
+        vm.set_extension(Rc::clone(&wiring));
+        // The engine's bulk channels (read from the front of each server packet once active).
+        let channels = engine.net_channels().map_err(|e| e.to_string())?;
+        if !channels.is_empty() {
+            vm.set_extension(Rc::new(ClientChannels::new(&channels)));
         }
-        if setup.server_query {
-            torque_client::query::register(&mut vm, &state);
+        // The plugins' RPCs ride the reserved channel (the session's RPC lanes in engine mode); the client's tick pumps them.
+        let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+        if !rpcs.is_empty()
+            && let Some(channels) = vm.extension::<ClientChannels>()
+        {
+            // In engine mode the batches ride the session's RPC lanes, which the connection fills and empties.
+            let rpc = if engine.protocol() == torque_engine::ProtocolKind::Engine {
+                let lanes = Rc::new(torque_server::net::rpc::RpcLanes::default());
+                vm.set_extension(Rc::clone(&lanes));
+                Rc::new(ClientRpc::over_lanes(rpcs, Rc::clone(&channels), lanes))
+            } else {
+                Rc::new(ClientRpc::new(rpcs, Rc::clone(&channels)))
+            };
+            rpc.set_host(Rc::new(RpcHost(Rc::clone(&state))));
+            register_client_natives(&mut vm, &rpc);
+            // What the engine's uploads need of the connection (a game with no upload kind never asks).
+            torque_server::net::uploads::install_client(&mut vm, &rpc, &channels);
+            vm.set_extension(rpc);
         }
+        replay(engine, ClientStage::Classes, &mut vm)?;
+        if let Some(files) = files {
+            vm.set_file_host(files);
+        }
+        if let Some(game) = engine.slot::<dyn ClientGame>() {
+            torque_client::game::set_client_game(&mut vm, game);
+        }
+        // The plugins' collision the client's prediction world includes.
+        for warning in torque_game::plugin_collision::install(
+            &mut vm,
+            engine.list::<torque_collide::source::PluginCollision>(),
+            torque_collide::source::Side::Client,
+        ) {
+            vm.warn(warning);
+        }
+        for stage in [
+            ClientStage::Game,
+            ClientStage::Gui,
+            ClientStage::Input,
+            ClientStage::Screen,
+            ClientStage::Conn,
+            ClientStage::Query,
+            ClientStage::Natives,
+        ] {
+            replay(engine, stage, &mut vm)?;
+        }
+        let gui = wiring.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
         Ok(ClientBuilder {
             vm,
             gui,
             state,
             link,
+            engine: engine.clone(),
+            pass,
+            host,
         })
     }
 
@@ -139,6 +233,14 @@ impl ClientBuilder {
         let mut n = st.net.borrow_mut();
         n.policy = policy;
         n.socket = Some(socket);
+    }
+
+    /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
+    /// [`transports`](crate::transports)): a client made with [`ClientNet::External`], or one that changes its transport. Any
+    /// other socket it had is closed. Gives back what the transport has to say about its link ([`LinkInfo`]). Err: no
+    /// transport is registered under `id` (its plugin is off), the target is not its type, or it could not open.
+    pub fn connect<T: Any>(&mut self, id: &str, target: &T) -> Result<LinkInfo, String> {
+        self.connect_dyn(id, target)
     }
 
     /// Runs the script file `path` of the files.
@@ -154,6 +256,17 @@ impl ClientBuilder {
         }
     }
 
+    /// Runs the client's entry script: the one `game.toml` names (`[game] client`), else `main.cs`
+    /// ([`config`](crate::config)). Then the engine's `Entry` stage
+    /// replays, which is where mods' scripts run (`torque_mods`).
+    pub fn exec_entry(&mut self) -> Result<(), String> {
+        let entry = crate::config::client_entry(&self.engine);
+        self.exec(&entry)?;
+        self.engine
+            .replay(ClientStage::Entry, &mut self.vm)
+            .map_err(|e| e.to_string())
+    }
+
     /// Calls the script function `function` with no arguments.
     pub fn invoke(&mut self, function: &str) -> Result<(), String> {
         self.vm
@@ -163,17 +276,44 @@ impl ClientBuilder {
     }
 
     /// The client host over the engine, in a window's mode, with no server hosted yet.
-    pub fn build<S>(self) -> GameClient<S> {
+    pub fn build<S>(mut self) -> GameClient<S> {
+        // The host takes the script engine, so the `Host` stage's recipes are the last to see it.
+        if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
+            self.vm.warn(e.to_string());
+        }
+        let mut ticks = self.engine.list::<ClientTick>().to_vec();
+        if self.vm.extension::<ClientRpc>().is_some() {
+            ticks.insert(
+                0,
+                ClientTick::new(|vm| {
+                    if let Some(rpc) = vm.extension::<ClientRpc>() {
+                        let tick = u64::from(vm.sim_time()) / 32;
+                        rpc.pump(vm, tick);
+                    }
+                }),
+            );
+        }
+        let pass = if ticks.is_empty() {
+            self.pass
+        } else {
+            Rc::new(TickedPass {
+                pass: self.pass,
+                ticks,
+            })
+        };
         let mut host = ClientHost::new(
             Server::new(self.vm),
             self.gui,
             self.state,
-            Rc::new(EnginePass),
-            draw_cache(),
+            pass,
+            (self.host.draw_cache)(),
         );
-        host.set_windowed();
+        if self.host.windowed {
+            host.set_windowed();
+        }
         let mut client = GameClient {
             host,
+            engine: self.engine,
             server: None,
             link: self.link,
             parked: None,
@@ -187,85 +327,86 @@ impl ClientBuilder {
     }
 }
 
-/// An in-memory socket at `client` and its link to a server at `server`.
-fn memory_socket(client: SocketAddrV4, server: SocketAddr) -> (MemoryLink, MemoryDatagrams) {
-    let link = MemoryLink {
-        sent: DatagramQueue::default(),
-        incoming: DatagramQueue::default(),
-        client,
-        server,
-    };
-    let socket = MemoryDatagrams {
-        sent: Rc::clone(&link.sent),
-        incoming: Rc::clone(&link.incoming),
-        local_port: client.port(),
-    };
-    (link, socket)
+impl Connect for ClientBuilder {
+    fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
+        let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
+        self.set_socket(socket, policy);
+        self.link = link;
+        Ok(info)
+    }
 }
 
-/// Opens the client's socket as `net` says; an in-memory one comes with its link.
+/// What the client's RPCs ask of the client: the mirrors of its ghosts, and the way to hang up on a server that sent a malformed batch.
+struct RpcHost(Rc<RefCell<ClientState<TgeConn>>>);
+
+impl ClientRpcHost for RpcHost {
+    fn ghost_object(&self, index: u32) -> Option<torque_ts_vm::sim::ObjId> {
+        torque_client::ghost_objects::object_of(&self.0, index)
+    }
+
+    fn ghost_index(&self, object: torque_ts_vm::sim::ObjId) -> Option<u32> {
+        torque_client::ghost_objects::index_of(&self.0, object)
+    }
+
+    fn drop_malformed(&self, reason: &str) {
+        self.0.borrow_mut().drop_request = Some(reason.to_string());
+    }
+
+    fn run_commands(&self, vm: &mut Vm, bodies: Vec<Vec<u8>>) {
+        torque_client::conn::receive_commands(vm, &self.0, bodies);
+    }
+}
+
+/// The engine's pass with the plugins' per-tick work ([`ClientTick`]) after it, in the order the plugins pushed it.
+struct TickedPass {
+    pass: Rc<dyn ClientPass<TgeConn>>,
+    ticks: Vec<ClientTick>,
+}
+
+impl ClientPass<TgeConn> for TickedPass {
+    fn net(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        self.pass.net(vm, client);
+    }
+
+    fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        self.pass.other(vm, client);
+        torque_game::plugin_collision::report_overflow(vm);
+        for tick in &self.ticks {
+            tick.run(vm);
+        }
+    }
+}
+
+/// Replays `stage` of `engine`'s client recipes on `vm`.
+fn replay(engine: &Engine, stage: ClientStage, vm: &mut Vm) -> Result<(), String> {
+    engine.replay(stage, vm).map_err(|e| e.to_string())
+}
+
+/// Opens the client's socket as `net` says, over the engine's transports (`udp` for [`ClientNet::Loopback`] and
+/// [`ClientNet::Lan`], `memory` for [`ClientNet::Memory`]); an in-memory one comes with its link.
 fn open_socket(
+    engine: &Engine,
     state: &Rc<RefCell<ClientState<TgeConn>>>,
     net: ClientNet,
 ) -> Result<Option<MemoryLink>, String> {
+    let (id, target): (&str, &dyn Any) = match &net {
+        ClientNet::None | ClientNet::External => return Ok(None),
+        ClientNet::Loopback => ("udp", &UdpTarget::Loopback),
+        ClientNet::Lan => ("udp", &UdpTarget::Lan),
+        ClientNet::Memory { client, server } => (
+            "memory",
+            &MemoryTarget {
+                client: *client,
+                server: *server,
+            },
+        ),
+    };
+    let (socket, policy, link, _) = open_connect(engine, id, target)?.split();
     let st = state.borrow();
     let mut n = st.net.borrow_mut();
-    match net {
-        ClientNet::None | ClientNet::External => Ok(None),
-        ClientNet::Loopback | ClientNet::Lan => {
-            let (ip, policy, twin) = match net {
-                ClientNet::Loopback => (Ipv4Addr::LOCALHOST, NetPolicy::Loopback, false),
-                _ => (Ipv4Addr::UNSPECIFIED, NetPolicy::Internet, true),
-            };
-            let socket =
-                UdpDatagrams::open(ip, 0, twin).map_err(|e| format!("the client's socket: {e}"))?;
-            n.policy = policy;
-            n.socket = Some(Box::new(socket));
-            Ok(None)
-        }
-        ClientNet::Memory { client, server } => {
-            let (link, socket) = memory_socket(client, server);
-            n.policy = NetPolicy::Loopback;
-            n.socket = Some(Box::new(socket));
-            Ok(Some(link))
-        }
-    }
-}
-
-/// The datagrams between an in-memory client socket and the transport of a server in the same process.
-struct MemoryLink {
-    sent: DatagramQueue,
-    incoming: DatagramQueue,
-    client: SocketAddrV4,
-    server: SocketAddr,
-}
-
-impl MemoryLink {
-    fn carry(&self, server: &GameServer) {
-        let Some(end) = server.memory_end() else {
-            return;
-        };
-        let client = SocketAddr::V4(self.client);
-        for (to, data) in self.sent.borrow_mut().drain(..) {
-            if SocketAddr::V4(to) == self.server {
-                end.inject(client, &data);
-            }
-        }
-        let SocketAddr::V4(from) = self.server else {
-            return;
-        };
-        let mut incoming = self.incoming.borrow_mut();
-        for (to, data) in end.take_sent() {
-            if to == client {
-                incoming.push_back((from, data));
-            }
-        }
-    }
-
-    fn clear(&self) {
-        self.sent.borrow_mut().clear();
-        self.incoming.borrow_mut().clear();
-    }
+    n.policy = policy;
+    n.socket = Some(socket);
+    Ok(link)
 }
 
 /// What [`GameClient::start_local`] set aside.
@@ -279,6 +420,7 @@ struct Parked {
 /// one when it stops).
 pub struct GameClient<S = GameServer> {
     pub host: Host,
+    engine: Engine,
     /// The server this client runs in its own process, if any.
     pub server: Option<S>,
     link: Option<MemoryLink>,
@@ -294,6 +436,38 @@ pub struct GameClient<S = GameServer> {
     pub client_log: Vec<String>,
 }
 
+impl<S> Connect for GameClient<S> {
+    fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
+        let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
+        {
+            let st = self.host.client.borrow();
+            let mut n = st.net.borrow_mut();
+            n.policy = policy;
+            n.socket = Some(socket);
+        }
+        self.link = link;
+        Ok(info)
+    }
+}
+
+/// Carries the datagrams between `server` (a [`GameServer`] ticked by hand, on [`super::server::Listen::Memory`]) and several
+/// clients made with [`ClientNet::Memory`] that have no server of their own: what each sent goes in, and what the server sent goes
+/// to the client it is addressed to. Call it around each tick of the server and each step of the clients.
+pub fn carry_between<S>(server: &GameServer, clients: &[&GameClient<S>]) {
+    let links: Vec<&MemoryLink> = clients.iter().filter_map(|c| c.link.as_ref()).collect();
+    MemoryLink::carry_all(&links, server);
+}
+
+impl<S> GameClient<S> {
+    /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
+    /// [`transports`](crate::transports)), closing any other socket it had: a browser's client opens a new link to join
+    /// again. Not while a game is played alone ([`GameClient::start_local`]). Err: no transport is registered under `id`, the
+    /// target is not its type, or it could not open.
+    pub fn connect<T: Any>(&mut self, id: &str, target: &T) -> Result<LinkInfo, String> {
+        self.connect_dyn(id, target)
+    }
+}
+
 impl<S> GameClient<S> {
     pub fn vm(&self) -> &Vm {
         self.host.server.vm()
@@ -301,6 +475,17 @@ impl<S> GameClient<S> {
 
     pub fn vm_mut(&mut self) -> &mut Vm {
         self.host.server.vm_mut()
+    }
+
+    /// The client's camera modes (None: its engine has no [`CameraModesPlugin`](crate::camera_modes::CameraModesPlugin)).
+    pub fn camera_modes(&self) -> Option<Rc<crate::camera_modes::CameraModes>> {
+        crate::camera_modes::CameraModes::of(self.vm())
+    }
+
+    /// The client's debug gizmos (None: its engine has no [`GizmosPlugin`](crate::gizmos::GizmosPlugin)).
+    #[cfg(feature = "gizmos")]
+    pub fn gizmos(&self) -> Option<Rc<crate::gizmos::Gizmos>> {
+        crate::gizmos::Gizmos::of(self.vm())
     }
 
     /// A key going down or up, as the window posts it.
@@ -484,22 +669,29 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
 
     /// Runs `server`, started on [`super::server::Listen::Memory`] at `at`, here over an in-memory link from `client` (a game
     /// played alone): the client's socket is set aside until hosting stops, so nothing goes out on the network. The client then
-    /// joins it at `at`.
-    pub fn start_local(&mut self, server: S, client: SocketAddrV4, at: SocketAddr) {
+    /// joins it at `at`. Err: the engine has no `memory` transport (its plugin is off).
+    pub fn start_local(
+        &mut self,
+        server: S,
+        client: SocketAddrV4,
+        at: SocketAddr,
+    ) -> Result<(), String> {
         self.stop_hosting();
-        let (link, socket) = memory_socket(client, at);
+        let target = MemoryTarget { client, server: at };
+        let (socket, policy, link, _) = open_connect(&self.engine, "memory", &target)?.split();
         {
             let st = self.host.client.borrow();
             let mut n = st.net.borrow_mut();
-            let socket = n.socket.replace(Box::new(socket));
-            let policy = std::mem::replace(&mut n.policy, NetPolicy::Loopback);
+            let socket = n.socket.replace(socket);
+            let policy = std::mem::replace(&mut n.policy, policy);
             self.parked = Some(Parked {
                 socket,
                 policy,
-                link: self.link.replace(link),
+                link: std::mem::replace(&mut self.link, link),
             });
         }
         self.start_hosting(server);
+        Ok(())
     }
 
     /// Whether the client plays a game alone ([`GameClient::start_local`]).

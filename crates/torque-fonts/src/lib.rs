@@ -25,6 +25,31 @@
 //! `core/strings/unicode.cpp` (Copyright (c) 2012 GarageGames, LLC). The layout follows TGE's `dglDrawTextN` (`dgl/dgl.cc`,
 //! TGE 1.4, Copyright (C) GarageGames.com, Inc.; the Torque engine is MIT-licensed as Torque3D, Copyright (c) 2012
 //! GarageGames, LLC). The code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! **TrueType.** `fontdue` rasterizes with unchecked writes, so a sweep that only sees panics cannot see a bad write. The sweep
+//! (`ttf_fuzz::sweep`, `ttf_tests::a_short_hostile_sweep_has_no_panics`) reports its slowest case. `just miri-ttf` runs it under
+//! Miri where the nightly `miri` component is installed (`rustup +nightly component add miri`; `TORQUE_FUZZ_TTF` sets the case
+//! count, and under Miri the real-face seeds are left out). It is a local run, not a CI job (CI minutes are tight): run it after
+//! a change to the TrueType path or a `fontdue` update.
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - A font a profile names is never dropped for one markup names: the markup fonts ([`FontUse::Markup`]) are an LRU of their
+//!   own within [`MAX_MARKUP_FONTS`] and [`MAX_MARKUP_SHEET_PIXELS`], and a profile's lookup keeps a markup font for good
+//!   (`markup_fonts_are_dropped_first_and_never_take_a_profile_font`, `a_profile_lookup_keeps_a_markup_font_for_the_session`).
+//! - A font whose [`estimated_sheet_pixels`] do not fit is refused before it is read or made
+//!   (`a_spent_budget_refuses_a_font_before_making_it`).
+//! - A markup font something outside the cache holds, or one looked up this frame, is never dropped
+//!   (`a_markup_font_looked_up_this_frame_or_held_is_not_dropped`).
+//! - A server's GUI ([`FontUse::Server`]) keeps at most [`MAX_SERVER_FONTS`] and drops only its own, so the game's ML text
+//!   always has the rest of the markup quota (`a_servers_gui_takes_only_its_share_and_the_games_ml_text_still_loads`).
+//! - [`FontCache::revision`] changes whenever the font a face and size gives may: a font loaded or refused, dropped to make room,
+//!   or a face forgotten (`remove_face`, which a registration calls, even with nothing kept for it). The GUI keeps what it drew
+//!   from fonts (a client-script layer, a font looked up in a frame) only while it is the same
+//!   (`the_revision_changes_with_every_change_to_the_fonts_a_face_gives`).
+//! - A refusal asked again in its frame with nothing changed costs no pass over the fonts
+//!   (`a_refusal_asked_again_in_its_frame_is_answered_at_once_until_something_changes`).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -67,6 +92,22 @@ pub const MAX_CACHED_FONTS: usize = 1024;
 /// counted, and 1,024 fallback fonts at large sizes were several GiB. A font past it is not kept (counted in
 /// [`FontCache::over_budget`]).
 pub const MAX_FONT_SHEET_PIXELS: u64 = 128 << 20;
+/// The most faces and sizes [`FontUse::Markup`] keeps (misses included), within [`MAX_CACHED_FONTS`]'s own.
+pub const MAX_MARKUP_FONTS: usize = 256;
+/// The most sheet pixels the [`FontUse::Markup`] fonts hold together, within [`MAX_FONT_SHEET_PIXELS`].
+pub const MAX_MARKUP_SHEET_PIXELS: u64 = 32 << 20;
+/// The most faces and sizes and sheet pixels a server's GUI's fonts ([`FontUse::Server`]) hold, within the markup quota: the
+/// rest of it is the game's ML text's.
+pub const MAX_SERVER_FONTS: usize = 192;
+pub const MAX_SERVER_SHEET_PIXELS: u64 = 24 << 20;
+
+/// What a font of `size` is taken to hold in sheets before it is made: the 224 glyphs of the ANSI charset in cells of a quarter
+/// of `size` squared each, padding left out. The fallbacks make more (Arial at 128 is about 1.8 Mpx); a cache file of fewer glyphs
+/// can hold less, and is then refused a little early once the budget is nearly spent.
+pub fn estimated_sheet_pixels(size: i32) -> u64 {
+    let s = u64::try_from(size.clamp(0, 1 << 12)).unwrap_or(0);
+    224 * s * s / 4
+}
 
 /// One glyph's metrics (`PlatformFont::CharInfo`, as the cache files store it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -709,6 +750,8 @@ pub trait Fallback: Send + Sync {
     fn make(&self, face: &str, size: i32) -> Option<Font>;
     /// A name for the reports.
     fn name(&self) -> &'static str;
+    /// The cache dropped `font`, which this fallback made for `face` (lower case): what was counted for it may be given back.
+    fn dropped(&self, _face: &str, _font: &Font) {}
 }
 
 /// No fallback: a face and size without a cache file draws no text (counted).
@@ -736,20 +779,116 @@ pub enum Source {
 /// A font found and where it came from.
 pub type Found = (Arc<Font>, Source);
 
+/// Who names a font, which decides the quota it is kept under ([`FontCache::get_for`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontUse {
+    /// A font the game's own profiles and controls name: kept for the session, at most [`MAX_CACHED_FONTS`] of them.
+    Profile,
+    /// A font ML text's `<font:>` tags name (the game's text or a server's): kept under [`MAX_MARKUP_FONTS`] and
+    /// [`MAX_MARKUP_SHEET_PIXELS`], the least recently used one that nothing holds dropped first, so a server that names every
+    /// face and size never takes a font from the game's profiles.
+    Markup,
+    /// A font a server's own GUI names (its client-script layer): markup within [`MAX_SERVER_FONTS`] and
+    /// [`MAX_SERVER_SHEET_PIXELS`], so the rest of the markup quota stays for the game's ML text.
+    Server,
+}
+
+impl FontUse {
+    /// Whether the font is under the markup quota (and may be dropped).
+    fn is_markup(self) -> bool {
+        self != FontUse::Profile
+    }
+}
+
+/// One face and size the cache looked up.
+struct Entry {
+    found: Option<Found>,
+    /// The sheet pixels `found` holds (0 for a miss).
+    pixels: u64,
+    tier: FontUse,
+    /// The cache's clock at the last lookup (least recently used first).
+    used: u64,
+    /// The frame of the last lookup: a markup font looked up this frame is not dropped while it draws.
+    frame: u64,
+}
+
+/// The kept fonts' sheet pixels and keys, by quota.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Usage {
+    all: u64,
+    /// Every markup font's, a server's included.
+    markup: u64,
+    markup_keys: usize,
+    server: u64,
+    server_keys: usize,
+}
+
+impl Usage {
+    fn add(&mut self, tier: FontUse, pixels: u64) {
+        self.all += pixels;
+        if tier.is_markup() {
+            self.markup += pixels;
+            self.markup_keys += 1;
+        }
+        if tier == FontUse::Server {
+            self.server += pixels;
+            self.server_keys += 1;
+        }
+    }
+
+    fn remove(&mut self, tier: FontUse, pixels: u64) {
+        self.all -= pixels;
+        if tier.is_markup() {
+            self.markup -= pixels;
+            self.markup_keys -= 1;
+        }
+        if tier == FontUse::Server {
+            self.server -= pixels;
+            self.server_keys -= 1;
+        }
+    }
+}
+
+/// A refusal of [`FontCache::make_room`]: while the frame, the usage and the quota are the same, a font as large is refused
+/// again at once (a text asks for its missing font once a glyph run).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Refusal {
+    frame: u64,
+    usage: Usage,
+    tier: FontUse,
+    pixels: u64,
+}
+
 /// Fonts by face and size, loaded once: the cache file through `read` (this crate never writes one), else the
 /// [`Fallback`]. Counts what came from where.
+///
+/// The fonts profiles name ([`FontUse::Profile`]) are never dropped. The fonts markup names ([`FontUse::Markup`],
+/// [`FontUse::Server`]) are an LRU of their own: what is dropped first is the least recently used one that nothing outside the
+/// cache holds and that was not looked up this frame ([`next_frame`](Self::next_frame)); a server's GUI drops only its own. Before
+/// a font is loaded, an estimate of its sheets ([`estimated_sheet_pixels`]) must fit, so a spent budget refuses a font without
+/// rasterizing it.
 pub struct FontCache {
     /// `$GUI::fontCacheDirectory`, the folder the cache files are looked up in.
     pub dir: String,
     format: Box<dyn CacheFormat>,
-    fonts: HashMap<(String, i32), Option<Found>>,
+    fonts: HashMap<(String, i32), Entry>,
     fallback: Box<dyn Fallback>,
-    /// Every kept font's sheet pixels ([`MAX_FONT_SHEET_PIXELS`]).
-    all_pixels: u64,
-    /// The cap on `all_pixels` (a test lowers it).
+    usage: Usage,
+    refused: Option<Refusal>,
+    clock: u64,
+    frame: u64,
+    revision: u64,
+    /// The cap on every kept font's sheet pixels (a test lowers it).
     pub pixel_cap: u64,
-    /// Fonts not kept because they would pass [`pixel_cap`](Self::pixel_cap).
+    /// The caps on the markup fonts' sheet pixels and on a server's GUI's share of them (a test lowers them).
+    pub markup_pixel_cap: u64,
+    pub server_pixel_cap: u64,
+    /// Fonts not kept because they would pass a pixel cap or the markup keys, before or after loading.
     pub over_budget: u64,
+    /// Markup fonts dropped to make room.
+    pub evicted: u64,
+    /// Fonts loaded: every cache file parsed and every font the fallback was asked for.
+    pub loads: u64,
     /// Faces and sizes the fallback made, the ones nothing made, and cache files that did not parse.
     pub fallbacks: u32,
     pub missing: u32,
@@ -774,66 +913,238 @@ impl FontCache {
             format,
             fonts: HashMap::new(),
             fallback,
-            all_pixels: 0,
+            usage: Usage::default(),
+            refused: None,
+            clock: 0,
+            frame: 0,
+            revision: 0,
             pixel_cap: MAX_FONT_SHEET_PIXELS,
+            markup_pixel_cap: MAX_MARKUP_SHEET_PIXELS,
+            server_pixel_cap: MAX_SERVER_SHEET_PIXELS,
             over_budget: 0,
+            evicted: 0,
+            loads: 0,
             fallbacks: 0,
             missing: 0,
             bad_files: Vec::new(),
         }
     }
 
-    /// The font for `face` at `size` loading it on first use with `read` (a path relative
-    /// to the root the files are served from).
+    /// [`get_for`](Self::get_for) of a font a profile names.
     pub fn get(
         &mut self,
         face: &str,
         size: i32,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Found> {
+        self.get_for(face, size, FontUse::Profile, read)
+    }
+
+    /// The font for `face` at `size` loading it on first use with `read` (a path relative to the root the files are served
+    /// from), kept under the quota of `user`. A profile's lookup of a markup font keeps it for the session from then on, and ML
+    /// text's lookup of a server GUI's font takes it out of the server's share.
+    pub fn get_for(
+        &mut self,
+        face: &str,
+        size: i32,
+        user: FontUse,
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Option<Found> {
         let key = (face.to_ascii_lowercase(), size);
-        if let Some(found) = self.fonts.get(&key) {
-            return found.clone();
+        self.clock += 1;
+        if let Some(e) = self.fonts.get_mut(&key) {
+            e.used = self.clock;
+            e.frame = self.frame;
+            let tier = match (e.tier, user) {
+                (FontUse::Profile, _) | (_, FontUse::Profile) => FontUse::Profile,
+                (FontUse::Markup, _) | (_, FontUse::Markup) => FontUse::Markup,
+                (FontUse::Server, FontUse::Server) => FontUse::Server,
+            };
+            if tier != e.tier {
+                self.usage.remove(e.tier, e.pixels);
+                self.usage.add(tier, e.pixels);
+                e.tier = tier;
+            }
+            return e.found.clone();
         }
-        if self.fonts.len() >= MAX_CACHED_FONTS {
+        if user == FontUse::Profile && self.fonts.len() - self.usage.markup_keys >= MAX_CACHED_FONTS
+        {
             return None;
         }
-        let found = self.load(face, size, read);
-        // Every source's sheets count toward the one budget.
-        let found = found.filter(|(f, _)| {
-            let px = sheet_pixels(f);
-            let ok = self.all_pixels.saturating_add(px) <= self.pixel_cap;
-            if ok {
-                self.all_pixels += px;
-            } else {
-                self.over_budget += 1;
+        // Refused before any work when even the estimate does not fit (a markup refusal is not remembered: asking again costs
+        // nothing, and the font may fit once others are dropped).
+        if !self.make_room(user, estimated_sheet_pixels(size)) {
+            self.over_budget += 1;
+            if user == FontUse::Profile {
+                self.insert(key, None, user);
             }
-            ok
-        });
-        self.fonts.insert(key, found.clone());
+            return None;
+        }
+        let mut found = self.load(face, size, read);
+        if let Some((f, _)) = &found
+            && !self.make_room(user, sheet_pixels(f))
+        {
+            // Remembered as missing, so it is not made again on every draw.
+            self.over_budget += 1;
+            if let Some(dropped) = found.take() {
+                self.dropped(&key.0, &dropped);
+            }
+        }
+        self.insert(key, found.clone(), user);
         found
+    }
+
+    fn insert(&mut self, key: (String, i32), found: Option<Found>, tier: FontUse) {
+        let pixels = found.as_ref().map_or(0, |(f, _)| sheet_pixels(f));
+        self.usage.add(tier, pixels);
+        let entry = Entry {
+            found,
+            pixels,
+            tier,
+            used: self.clock,
+            frame: self.frame,
+        };
+        self.fonts.insert(key, entry);
+        self.revision += 1;
+    }
+
+    /// Whether one more font of `pixels` fits `tier`'s caps at `usage`.
+    fn fits(&self, usage: &Usage, tier: FontUse, pixels: u64) -> bool {
+        let all = usage.all.saturating_add(pixels) <= self.pixel_cap;
+        let markup = usage.markup.saturating_add(pixels) <= self.markup_pixel_cap
+            && usage.markup_keys < MAX_MARKUP_FONTS;
+        let server = usage.server.saturating_add(pixels) <= self.server_pixel_cap
+            && usage.server_keys < MAX_SERVER_FONTS;
+        match tier {
+            FontUse::Profile => all,
+            FontUse::Markup => all && markup,
+            FontUse::Server => all && markup && server,
+        }
+    }
+
+    /// Makes room for one more font of `pixels` sheet pixels under `tier`'s caps, dropping the least recently used markup fonts
+    /// that may go (a server's GUI drops only its own); false (and nothing dropped) when even dropping all of them would not
+    /// make it fit. A refusal is one pass over the fonts, and asked again in the same frame with nothing changed, none.
+    fn make_room(&mut self, tier: FontUse, pixels: u64) -> bool {
+        if self.fits(&self.usage, tier, pixels) {
+            return true;
+        }
+        let refusal = Refusal {
+            frame: self.frame,
+            usage: self.usage,
+            tier,
+            pixels,
+        };
+        if self
+            .refused
+            .is_some_and(|r| r.pixels <= pixels && Refusal { pixels, ..r } == refusal)
+        {
+            return false;
+        }
+        let frame = self.frame;
+        let mut victims: Vec<(u64, &(String, i32), FontUse, u64)> = self
+            .fonts
+            .iter()
+            .filter(|(_, e)| {
+                e.tier.is_markup()
+                    && (tier != FontUse::Server || e.tier == FontUse::Server)
+                    && e.frame != frame
+                    && e.found
+                        .as_ref()
+                        .is_none_or(|(f, _)| Arc::strong_count(f) == 1)
+            })
+            .map(|(k, e)| (e.used, k, e.tier, e.pixels))
+            .collect();
+        let mut all_gone = self.usage;
+        for &(_, _, t, px) in &victims {
+            all_gone.remove(t, px);
+        }
+        if !self.fits(&all_gone, tier, pixels) {
+            self.refused = Some(refusal);
+            return false;
+        }
+        victims.sort_unstable_by_key(|v| v.0);
+        let mut usage = self.usage;
+        let mut take = 0;
+        for &(_, _, t, px) in &victims {
+            if self.fits(&usage, tier, pixels) {
+                break;
+            }
+            usage.remove(t, px);
+            take += 1;
+        }
+        let gone: Vec<(String, i32)> = victims[..take].iter().map(|v| v.1.clone()).collect();
+        for key in gone {
+            if let Some(e) = self.fonts.remove(&key) {
+                self.forget(&key.0, e);
+                self.evicted += 1;
+                self.revision += 1;
+            }
+        }
+        true
+    }
+
+    /// Takes a dropped entry's pixels and key off the counts.
+    fn forget(&mut self, face: &str, e: Entry) {
+        self.usage.remove(e.tier, e.pixels);
+        if let Some(found) = &e.found {
+            self.dropped(face, found);
+        }
+    }
+
+    /// Tells the fallback a font it made is gone.
+    fn dropped(&self, face: &str, (font, source): &Found) {
+        if *source == Source::Fallback {
+            self.fallback.dropped(face, font);
+        }
+    }
+
+    /// Starts a frame: the markup fonts looked up from now on are not dropped until the next one starts. A host that never calls
+    /// it drops no markup font, so its markup fonts stop at their caps.
+    pub fn next_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// Counts the changes to which font each face and size gives: a font loaded, refused, dropped to make room or forgotten. A
+    /// draw made while it stood at one value is made again by the same fonts.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Whether `face` at `size` was looked up and is still kept (found or not): a lookup of it loads nothing.
+    pub fn contains(&self, face: &str, size: i32) -> bool {
+        self.fonts.contains_key(&(face.to_ascii_lowercase(), size))
     }
 
     /// The sheet pixels the kept fonts hold.
     pub fn sheet_pixels(&self) -> u64 {
-        self.all_pixels
+        self.usage.all
+    }
+
+    /// The sheet pixels and the faces and sizes the markup fonts hold (a server GUI's included).
+    pub fn markup_usage(&self) -> (u64, usize) {
+        (self.usage.markup, self.usage.markup_keys)
+    }
+
+    /// The sheet pixels and the faces and sizes a server's GUI's fonts hold.
+    pub fn server_usage(&self) -> (u64, usize) {
+        (self.usage.server, self.usage.server_keys)
     }
 
     /// Forgets every font of `face` at any size, including the ones nothing made, so the next [`get`](Self::get) looks again. The
     /// sheet pixels of the dropped fonts go back to the budget; the fonts that were kept are returned.
     pub fn remove_face(&mut self, face: &str) -> Vec<Found> {
         let key = face.to_ascii_lowercase();
+        // Even with nothing kept for it, the next lookup of the face may find what the last did not.
+        self.revision += 1;
+        let keys: Vec<(String, i32)> = self.fonts.keys().filter(|k| k.0 == key).cloned().collect();
         let mut dropped = Vec::new();
-        self.fonts.retain(|(f, _), found| {
-            if *f != key {
-                return true;
+        for k in keys {
+            if let Some(e) = self.fonts.remove(&k) {
+                dropped.extend(e.found.clone());
+                self.forget(&k.0, e);
             }
-            if let Some(found) = found.take() {
-                self.all_pixels = self.all_pixels.saturating_sub(sheet_pixels(&found.0));
-                dropped.push(found);
-            }
-            false
-        });
+        }
         dropped
     }
 
@@ -843,6 +1154,7 @@ impl FontCache {
         size: i32,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Found> {
+        self.loads += 1;
         let path = format!("{}/{}", self.dir, self.format.file_name(face, size));
         let mut found = None;
         if let Some(bytes) = read(&path) {
@@ -868,7 +1180,7 @@ impl FontCache {
         let mut v: Vec<(String, i32)> = self
             .fonts
             .iter()
-            .filter(|(_, f)| f.is_none())
+            .filter(|(_, e)| e.found.is_none())
             .map(|(k, _)| k.clone())
             .collect();
         v.sort();
@@ -880,7 +1192,7 @@ impl FontCache {
         let mut v: Vec<(String, i32, Source)> = self
             .fonts
             .iter()
-            .filter_map(|((f, s), v)| v.as_ref().map(|(_, src)| (f.clone(), *s, *src)))
+            .filter_map(|((f, s), e)| e.found.as_ref().map(|(_, src)| (f.clone(), *s, *src)))
             .collect();
         v.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
         v
@@ -893,7 +1205,7 @@ impl FontCache {
 }
 
 /// The pixels of a font's sheets.
-fn sheet_pixels(f: &Font) -> u64 {
+pub fn sheet_pixels(f: &Font) -> u64 {
     f.sheets
         .iter()
         .map(|s| u64::from(s.width) * u64::from(s.height))

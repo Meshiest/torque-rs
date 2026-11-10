@@ -8,6 +8,9 @@
 //! **Lag compensation** (engine-only, off by default): after each step's pass, a sample of every Player
 //! ([`crate::scene::lag::record_step`]).
 //!
+//! **Scene hierarchy** (engine-only, when a server has one: [`crate::scene::links`]): before each object's turn and after each
+//! step, the children whose parents moved are written, so a child ticks from where its parent's turn left it.
+//!
 //! **Budget** (engine-only): a tick runs outside any script run, so the pass gives each object's turn a host work budget
 //! that `Vm::charge_work` enforces ([`TICK_OBJECT_WORK`], [`TICK_PASS_WORK`]) and charges each visit to the run's step budget
 //! before the turn ([`advance_objects_within`]). The scripts a turn runs (every callback of the tick: `stateScript`, `onMount`,
@@ -111,6 +114,7 @@ pub fn advance_objects_within(
     budget: u64,
 ) -> Outcome {
     let mut out = Outcome::default();
+    let links = crate::scene::links::of(vm);
     list.borrow_mut().order_list_if_dirty();
     'batch: for _ in 0..steps {
         control.begin_step();
@@ -141,6 +145,12 @@ pub fn advance_objects_within(
                 .unwrap_or(u64::MAX)
                 .min(left.saturating_sub(limit.div_ceil(WORK_PER_STEP)));
             let obj = visit.key;
+            // A child ticks from where its parent's turn left it.
+            if let Some(links) = &links
+                && links.pending()
+            {
+                links.resolve(vm);
+            }
             let saved = vm.begin_host_budget_with_runs(limit, scripts);
             // The control branch runs whatever `mProcessTick` says; `processTick(NULL)` only when it is set.
             if !control.run_control(vm, obj, &mut ticker) && visit.ticks {
@@ -172,6 +182,12 @@ pub fn advance_objects_within(
             list.borrow_mut().restore(obj, visit.serial, ticker);
         }
         list.borrow_mut().finish_pass();
+        // The scene hierarchy's resolve at the end of the step: every child where its parent ended it.
+        if let Some(links) = &links
+            && links.pending()
+        {
+            links.resolve(vm);
+        }
         if crate::scene::lag::wants_steps(vm) {
             let order = list.order();
             crate::scene::lag::record_step(vm, &order);

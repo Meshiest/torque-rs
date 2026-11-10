@@ -1,0 +1,39 @@
+[package]
+name = "torque-format-valve"
+description = "Valve's Source formats as torque-rs asset loaders: VPK archives, VTF textures, VMT materials, MDL/VVD/VTX models with their sequences, VBSP maps and PCF particle systems"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "vbsp", "mdl", "vtf", "gamedev"]
+categories = ["game-development", "parser-implementations"]
+
+# Readers of the Source formats, written here from public documentation, each bounds-checked against hostile bytes (a value or
+# an error, never a panic) and fuzzed. A format plugin each adds its loader to the engine's asset registry; the group is
+# `ValveFormatPlugins`. Not in `DefaultPlugins`: a game adds the group itself. No drawing, GUI, audio or window crates.
+
+[dependencies]
+glam = { workspace = true }
+torque-engine = { path = "../torque-engine" }
+torque-modelcore = { path = "../torque-modelcore" }
+# The pak lump of a map is a zip: the resource layer's hardened reader.
+torque-resource = { path = "../torque-resource" }
+# `FileHost`, the files the asset registry reads through (a mount of archives and folders is one).
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The collision set static props make (feature `collide`): the format-neutral map layer, std only.
+torque-mapcore = { path = "../torque-mapcore", optional = true }
+# MP3 sounds: a pure-Rust port of minimp3 (MIT OR Apache-2.0).
+nanomp3 = { version = "0.2", default-features = false, features = ["alloc"] }
+
+[features]
+# Static props' hulls as a `torque_mapcore` convex set a map's collision reads ([`props`]). Off by default.
+collide = ["dep:torque-mapcore"]
+
+[dev-dependencies]
+# The collision a prop set is made for, to check the hulls collide as they should.
+torque-collide = { path = "../torque-collide" }
+
+[lints]
+workspace = true

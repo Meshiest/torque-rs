@@ -23,7 +23,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use super::codecs::NetCodecs;
+use super::peer::PeerKind;
 use torque_ghosts::NetStr;
+use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::PLUGIN_CODE_BASE;
+use torque_ghosts::tge::TgeClass;
 use torque_net::bits::BitWriter;
 use torque_net::events::{ConnectionMessage, PackCtx as EventPackCtx};
 use torque_net::ghost::{
@@ -69,6 +73,82 @@ pub struct Entry {
     pub class_id: u32,
     /// `mNetFlags`: Ghostable, and ScopeAlways for the classes whose constructor sets it.
     pub flags: u32,
+    /// The class is the engine's own or a plugin's, which a connection knows only when its peer is the engine's.
+    pub engine_only: bool,
+}
+
+/// The registry's entries by object. Every change of what a connection's scope walk would meet (an object added or removed, an
+/// entry's flags edited) moves [`Entries::generation`], and the ids in order are kept for each generation, so a walk that
+/// visits every object does not sort them again for every connection and packet.
+#[derive(Debug, Default)]
+pub struct Entries {
+    map: torque_ts_vm::idhash::IdMap<ObjId, Entry>,
+    generation: u64,
+    sorted: RefCell<Option<(u64, Rc<[ObjId]>)>>,
+}
+
+impl Entries {
+    pub fn get(&self, obj: &ObjId) -> Option<&Entry> {
+        self.map.get(obj)
+    }
+
+    pub fn contains_key(&self, obj: &ObjId) -> bool {
+        self.map.contains_key(obj)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&ObjId, &Entry)> {
+        self.map.iter()
+    }
+
+    pub fn insert(&mut self, obj: ObjId, entry: Entry) -> Option<Entry> {
+        self.generation += 1;
+        self.map.insert(obj, entry)
+    }
+
+    pub fn remove(&mut self, obj: &ObjId) -> Option<Entry> {
+        let gone = self.map.remove(obj);
+        if gone.is_some() {
+            self.generation += 1;
+        }
+        gone
+    }
+
+    /// An entry to edit; what the edit changes counts as a change of the registry.
+    pub fn get_mut(&mut self, obj: &ObjId) -> Option<&mut Entry> {
+        let entry = self.map.get_mut(obj);
+        if entry.is_some() {
+            self.generation += 1;
+        }
+        entry
+    }
+
+    /// A number that is the same for two moments only if no object was added or removed and no entry edited between them.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// The objects in id order.
+    pub fn sorted_ids(&self) -> Rc<[ObjId]> {
+        let mut held = self.sorted.borrow_mut();
+        if let Some((generation, ids)) = held.as_ref()
+            && *generation == self.generation
+        {
+            return Rc::clone(ids);
+        }
+        let mut ids: Vec<ObjId> = self.map.keys().copied().collect();
+        ids.sort_unstable();
+        let ids: Rc<[ObjId]> = ids.into();
+        *held = Some((self.generation, Rc::clone(&ids)));
+        ids
+    }
 }
 
 /// How many records with unsent bits [`Registry::unsent_log`] keeps.
@@ -78,14 +158,14 @@ pub const UNSENT_LOG_CAP: usize = 4_096;
 /// one connection.
 #[derive(Debug, Default)]
 pub struct Registry {
-    pub entries: torque_ts_vm::idhash::IdMap<ObjId, Entry>,
+    pub entries: Entries,
     /// The Sky, if there is one (the engine's one sky).
     pub sky: Option<ObjId>,
     /// A diagnostic log: each record whose `packUpdate` left bits unsent (object, the mask it was asked for, the bits it kept),
     /// the first [`UNSENT_LOG_CAP`] of them. Tests read it; nothing depends on it.
     pub unsent_log: std::cell::RefCell<Vec<(ObjId, u32, u32)>>,
     /// object -> (the sequence it was first marked at, its accumulated bits).
-    dirty: HashMap<ObjId, (u64, u32)>,
+    dirty: torque_ts_vm::idhash::IdMap<ObjId, (u64, u32)>,
     dirty_seq: u64,
     /// The feed of the connections whose peer is the engine's own client (`GhostManager::set_fresh`): the ghostable objects
     /// added while one of them exists, in order, the first numbered `fresh_base`. At most [`FRESH_CAP`]; the oldest go first (a
@@ -214,6 +294,35 @@ pub struct Totals {
     pub record_units: u64,
     /// Wall time spent writing the sections, in nanoseconds.
     pub nanos: u64,
+    /// Updates passed over because their share of the packet was spent, and the most bits one share group took in a section
+    /// ([`torque_net::ghost::ObjectSource::packet_share`]).
+    pub share_deferred: u64,
+    pub share_bits_max: u64,
+}
+
+/// The connection each control object belongs to ([`HubState::control_index`]).
+#[derive(Debug, Default)]
+struct ControlIndex(HashMap<ObjId, ConnId>);
+
+impl ControlIndex {
+    fn holder(&self, obj: ObjId) -> Option<ConnId> {
+        self.0.get(&obj).copied()
+    }
+
+    fn hold(&mut self, obj: ObjId, conn: ConnId) {
+        self.0.insert(obj, conn);
+    }
+
+    /// `conn` no longer controls `obj` (an entry another connection took over since stays).
+    fn release(&mut self, obj: ObjId, conn: ConnId) {
+        if self.0.get(&obj) == Some(&conn) {
+            self.0.remove(&obj);
+        }
+    }
+
+    fn forget(&mut self, obj: ObjId) {
+        self.0.remove(&obj);
+    }
 }
 
 /// One connection's ghost state.
@@ -238,7 +347,7 @@ pub struct ConnGhost<P: GhostPolicy, C = ()> {
     /// The game's part of the connection ([`GhostGame::Conn`]).
     pub game: C,
     /// The control object (`setControlObject`); the scope object is the same object.
-    pub control: Option<ObjId>,
+    pub(crate) control: Option<ObjId>,
     /// The scope object's eye transform as the send pass last took it (`ShapeBase::onCameraScopeQuery` asks
     /// `getEyeTransform`; a Player's animates its nodes first on a server, as Torque3D's `Player::getEyeBaseTransform` does),
     /// with the object it is of.
@@ -256,6 +365,10 @@ pub type Conns<G> = ConnGhost<<G as GhostGame>::Policy, <G as GhostGame>::Conn>;
 pub struct HubState<G: GhostGame> {
     pub reg: Registry,
     pub conns: HashMap<ConnId, ConnGhost<G::Policy, G::Conn>>,
+    /// The connection each control object belongs to ([`ConnGhost::control`] the other way round), so that the connection
+    /// controlling an object is one probe and not a walk of the connections. Every write of a connection's control object goes
+    /// through [`ControlIndex`].
+    control_index: ControlIndex,
     /// The game's part: its ghosting policy's state and what its ghost source reads besides the registry and the container.
     pub game: G,
     /// The server container: its bins are the scope walk's second half.
@@ -459,6 +572,7 @@ impl<G: GhostGame> GhostHub<G> {
         GhostHub(Rc::new(RefCell::new(HubState {
             reg: Registry::default(),
             conns: HashMap::new(),
+            control_index: ControlIndex::default(),
             game,
             container,
             values,
@@ -535,6 +649,9 @@ impl<G: GhostGame> GhostHub<G> {
                     code: info.code,
                     class_id: info.class_id,
                     flags,
+                    engine_only: info.code >= PLUGIN_CODE_BASE
+                        || TgeClass::of_code(info.code)
+                            .is_some_and(|c| ENGINE_OBJECT_CLASSES.contains(&c.name())),
                 },
             );
             if info.sky {
@@ -564,6 +681,7 @@ impl<G: GhostGame> GhostHub<G> {
                 c.mgr.set_scope_object(None);
             }
         }
+        hub.control_index.forget(id);
         hub.container.bins_mut().remove(id);
         let reg = &mut hub.reg;
         if reg.entries.remove(&id).is_some() {
@@ -665,6 +783,17 @@ impl<G: GhostGame> GhostHub<G> {
         }
     }
 
+    /// What the peer of `conn` is ([`PeerKind::of`]) on the server of `vm`.
+    pub fn peer_kind(&self, vm: &Vm, conn: ConnId) -> PeerKind {
+        let marked = self
+            .0
+            .borrow()
+            .conns
+            .get(&conn)
+            .is_some_and(|c| c.engine_peer);
+        PeerKind::of(vm, marked)
+    }
+
     /// Whether `conn` reads the feed of new objects.
     pub fn is_fresh(&self, conn: ConnId) -> bool {
         self.0
@@ -699,7 +828,8 @@ impl<G: GhostGame> GhostHub<G> {
     pub fn add_conn(&self, conn: ConnId, obj: ObjId, cfg: GhostConfig) -> Result<(), GhostError> {
         let policy = self.0.borrow().game.new_policy();
         let mgr = GhostManager::with_policy(cfg, policy)?;
-        self.0.borrow_mut().conns.insert(
+        let mut hub = self.0.borrow_mut();
+        let old = hub.conns.insert(
             conn,
             ConnGhost {
                 mgr,
@@ -717,6 +847,9 @@ impl<G: GhostGame> GhostHub<G> {
                 engine_peer: false,
             },
         );
+        if let Some(control) = old.and_then(|c| c.control) {
+            hub.control_index.release(control, conn);
+        }
         Ok(())
     }
 
@@ -781,6 +914,7 @@ impl<G: GhostGame> GhostHub<G> {
         if let Some(c) = hub.conns.remove(&conn)
             && let Some(control) = c.control
         {
+            hub.control_index.release(control, conn);
             let mask = hub.codecs.controlling_client_mask();
             hub.reg.set_mask(control, mask);
         }
@@ -894,6 +1028,8 @@ impl<G: GhostGame> GhostHub<G> {
             t.refused += stats.refused as u64;
             t.full_queries += u64::from(stats.full_query);
             t.out_of_budget += u64::from(stats.out_of_budget);
+            t.share_deferred += stats.share_deferred as u64;
+            t.share_bits_max = t.share_bits_max.max(stats.share_bits as u64);
             Some(stats)
         })
     }
@@ -1084,17 +1220,21 @@ impl<G: GhostGame> GhostHub<G> {
         let mask = hub.codecs.controlling_client_mask();
         if let Some(old) = old {
             hub.reg.set_mask(old, mask);
+            hub.control_index.release(old, conn);
         }
-        for (k, c) in hub.conns.iter_mut() {
-            if *k != conn && c.control == Some(new) {
-                c.control = None;
-                c.mgr.set_scope_object(None);
-            }
+        if let Some(other) = hub.control_index.holder(new)
+            && other != conn
+            && let Some(c) = hub.conns.get_mut(&other)
+        {
+            c.control = None;
+            c.mgr.set_scope_object(None);
+            hub.control_index.release(new, other);
         }
         hub.reg.set_mask(new, mask);
         if let Some(c) = hub.conns.get_mut(&conn) {
             c.control = Some(new);
             c.mgr.set_scope_object(Some(new));
+            hub.control_index.hold(new, conn);
         }
         true
     }
@@ -1109,15 +1249,37 @@ impl<G: GhostGame> GhostHub<G> {
         };
         if let Some(old) = c.control.take() {
             hub.reg.set_mask(old, hub.codecs.controlling_client_mask());
+            hub.control_index.release(old, conn);
         }
         c.mgr.set_scope_object(None);
     }
 
     /// Hands the control object over without the side effects (tests that set the scene up).
     pub fn set_control(&self, conn: ConnId, obj: Option<ObjId>) {
-        if let Some(c) = self.0.borrow_mut().conns.get_mut(&conn) {
+        let mut hub = self.0.borrow_mut();
+        let hub = &mut *hub;
+        if !hub.conns.contains_key(&conn) {
+            return;
+        }
+        // Another connection that holds `obj` loses it, as it does in `adopt_control`: one control object, one connection.
+        if let Some(obj) = obj
+            && let Some(other) = hub.control_index.holder(obj)
+            && other != conn
+            && let Some(c) = hub.conns.get_mut(&other)
+        {
+            c.control = None;
+            c.mgr.set_scope_object(None);
+            hub.control_index.release(obj, other);
+        }
+        if let Some(c) = hub.conns.get_mut(&conn) {
+            if let Some(old) = c.control {
+                hub.control_index.release(old, conn);
+            }
             c.control = obj;
             c.mgr.set_scope_object(obj);
+            if let Some(obj) = obj {
+                hub.control_index.hold(obj, conn);
+            }
         }
     }
 
@@ -1138,28 +1300,35 @@ impl<G: GhostGame> GhostHub<G> {
 
 /// The links between the hub's connections and the objects they control.
 impl<G: GhostGame> GhostHub<G> {
-    /// `ShapeBase::getControllingClient`: the `GameConnection` whose control chain `obj` is in
-    /// (`torque_game::scene::camera::chain`: TGE's control object hands its client to the object it controls in turn).
-    pub fn controlling_client_of(&self, vm: &Vm, obj: ObjId) -> Option<ObjId> {
-        let hub = self;
-        let direct = |o: torque_ts_vm::sim::ObjId| {
-            hub.with(|h| {
-                h.conns
-                    .values()
-                    .find(|c| {
-                        c.control.is_some_and(|ctl| {
-                            torque_game::scene::camera::chain(vm, ctl).contains(&o)
-                        })
-                    })
-                    .map(|c| c.obj)
-            })
-        };
-        // An object a Player controls has the Player's client (`Player::setControlObject` calls `setControllingClient` with its
-        // own client): the controller links are followed up, `NET_CONTROL_CHAIN` of them at most.
+    /// The connection whose control chain holds `obj` itself (`torque_game::scene::camera::chain`: TGE's control object hands
+    /// its client to the object it controls in turn). Found by walking up from `obj` through what controls it
+    /// ([`ControlChain::controller`](torque_game::scene::camera::ControlChain::controller)) to a connection's control object, then checking that object's chain: no walk of the
+    /// connections, and nothing for an object that nothing controls.
+    fn direct_conn(&self, vm: &Vm, obj: ObjId) -> Option<ConnId> {
+        let rules = torque_game::scene::camera::control_chain(vm);
+        self.with(|h| {
+            let mut at = obj;
+            for _ in 0..=torque_game::scene::camera::CONTROL_CHAIN {
+                if let Some(conn) = h.control_index.holder(at)
+                    && (at == obj || torque_game::scene::camera::chain(vm, at).contains(&obj))
+                {
+                    return Some(conn);
+                }
+                at = rules.controller(vm, at)?;
+            }
+            None
+        })
+    }
+
+    /// The connection `obj` belongs to, for `ShapeBase::getControllingClient`: the one whose control chain holds it, else
+    /// the one of a Player that controls it in turn. An object a Player controls has the Player's client
+    /// (`Player::setControlObject` calls `setControllingClient` with its own client): the controller links are followed up,
+    /// `NET_CONTROL_CHAIN` of them at most.
+    pub fn controlling_conn_of(&self, vm: &Vm, obj: ObjId) -> Option<ConnId> {
         let mut at = obj;
-        for _ in 0..hub.with(|h| h.codecs.control_chain()) {
-            if let Some(c) = direct(at) {
-                return Some(c);
+        for _ in 0..self.with(|h| h.codecs.control_chain()) {
+            if let Some(conn) = self.direct_conn(vm, at) {
+                return Some(conn);
             }
             match torque_game::sim::mount::controlling_object(vm, at) {
                 Some(holder)
@@ -1172,16 +1341,17 @@ impl<G: GhostGame> GhostHub<G> {
         }
         None
     }
-    /// The camera position (`mCameraPos`) of `obj`'s controlling client ([`Self::controlling_client_of`]), `None` without one.
+
+    /// `ShapeBase::getControllingClient`: the `GameConnection` object of [`Self::controlling_conn_of`].
+    pub fn controlling_client_of(&self, vm: &Vm, obj: ObjId) -> Option<ObjId> {
+        let conn = self.controlling_conn_of(vm, obj)?;
+        self.with(|h| h.conns.get(&conn).map(|c| c.obj))
+    }
+
+    /// The camera position (`mCameraPos`) of `obj`'s controlling client ([`Self::controlling_conn_of`]), `None` without one.
     pub fn controlling_camera_pos(&self, vm: &Vm, obj: ObjId) -> Option<f32> {
-        let client = self.controlling_client_of(vm, obj)?;
-        let hub = self;
-        hub.with(|h| {
-            h.conns
-                .values()
-                .find(|c| c.obj == client)
-                .map(|c| c.camera_pos)
-        })
+        let conn = self.controlling_conn_of(vm, obj)?;
+        self.with(|h| h.conns.get(&conn).map(|c| c.camera_pos))
     }
     /// The game's part of the connection whose object is `client`, when the game's part is a `T`.
     pub fn client_game<T: Clone + 'static>(&self, client: ObjId) -> Option<T> {
@@ -1193,19 +1363,8 @@ impl<G: GhostGame> GhostHub<G> {
 
     /// The connection whose control chain holds `obj` loses its control object (`GameConnection::setControlObject(0)`).
     pub fn release_controlling_connection(&self, vm: &Vm, obj: ObjId) {
-        let hub = self;
-        let conn = hub.with(|h| {
-            h.conns
-                .iter()
-                .find(|(_, c)| {
-                    c.control.is_some_and(|ctl| {
-                        torque_game::scene::camera::chain(vm, ctl).contains(&obj)
-                    })
-                })
-                .map(|(k, _)| *k)
-        });
-        if let Some(conn) = conn {
-            hub.release_control(conn);
+        if let Some(conn) = self.direct_conn(vm, obj) {
+            self.release_control(conn);
         }
     }
 }
@@ -1235,6 +1394,16 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
 
     fn ghosted(&self, obj: torque_ts_vm::sim::ObjId) -> bool {
         self.with(|h| h.reg.entries.contains_key(&obj))
+    }
+
+    fn ghosted_everywhere(&self, obj: torque_ts_vm::sim::ObjId) -> bool {
+        self.with(|h| {
+            h.reg.entries.contains_key(&obj)
+                && h.conns
+                    .values()
+                    .filter(|c| c.mgr.is_ghosting())
+                    .all(|c| c.mgr.holds(obj))
+        })
     }
 
     fn transform_mask(&self, obj: torque_ts_vm::sim::ObjId) -> u32 {
@@ -1268,7 +1437,7 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
     }
 
     fn is_control_object(&self, obj: torque_ts_vm::sim::ObjId) -> bool {
-        self.with(|h| h.conns.values().any(|c| c.control == Some(obj)))
+        self.with(|h| h.control_index.holder(obj).is_some())
     }
 
     fn release_controlling_connection(
@@ -1281,5 +1450,70 @@ impl<G: GhostGame> torque_game::ghost::GhostLink for GhostHub<G> {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    fn pending_mask(&self, obj: torque_ts_vm::sim::ObjId) -> u32 {
+        self.with(|h| h.reg.pending(obj))
+    }
+
+    fn drop_pending(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        self.0.borrow_mut().reg.clear_pending(obj, bits);
+    }
+
+    fn scopes(
+        &self,
+        vm: &torque_ts_vm::vm::Vm,
+        connection: torque_ts_vm::sim::ObjId,
+        objs: &[torque_ts_vm::sim::ObjId],
+    ) -> Vec<bool> {
+        let Some(conn) = self.conn_of_object(connection) else {
+            return vec![false; objs.len()];
+        };
+        let env = SourceEnv {
+            vm,
+            table: None,
+            ghost_bits: self.conn_ghost_bits(conn),
+        };
+        G::with_source(self, env, Some(conn), |src, conns| {
+            let Some(c) = conns.get_mut(&conn) else {
+                return vec![false; objs.len()];
+            };
+            objs.iter()
+                .map(|&obj| c.mgr.scope_would_take(&*src, obj))
+                .collect()
+        })
+    }
+
+    fn scope_varies(
+        &self,
+        vm: &torque_ts_vm::vm::Vm,
+        connection: torque_ts_vm::sim::ObjId,
+    ) -> bool {
+        // A connection the hub has not met yet has no scope in place either.
+        let Some(conn) = self.conn_of_object(connection) else {
+            return true;
+        };
+        let env = SourceEnv {
+            vm,
+            table: None,
+            ghost_bits: self.conn_ghost_bits(conn),
+        };
+        G::with_source(self, env, Some(conn), |src, conns| {
+            // A connection whose scope is not in place yet (no ghosting, no scope object) takes more once it is.
+            conns.get(&conn).is_none_or(|c| !c.mgr.scope_ready())
+                || torque_net::ghost::ObjectSource::scope_stamp(src).is_none()
+        })
+    }
+
+    fn ghost_index_on(
+        &self,
+        connection: torque_ts_vm::sim::ObjId,
+        obj: torque_ts_vm::sim::ObjId,
+    ) -> Option<u32> {
+        self.ghost_index(self.conn_of_object(connection)?, obj)
+    }
+
+    fn set_record_mask(&self, obj: torque_ts_vm::sim::ObjId, bits: u32) {
+        GhostHub::set_mask(self, obj, bits);
     }
 }

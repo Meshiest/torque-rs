@@ -9,8 +9,8 @@
 //!
 //! This table stores only `used` (positions `[0, free)`); the free region is a stack of freed ids (`returned`, top = `array[free]`)
 //! in front of two lazy id ranges (the layout `activateGhosting` builds: the ghost-always ids `Max - n .. Max`, then `0 .. Max - n`),
-//! so memory and time are O(ghosts in use). `nonzero` (the ids in `[0, zero)`) and `dead` (those with `KillGhost && NotYetGhosted`)
-//! are kept incrementally for the per-packet max index and the dead-entry pass.
+//! so memory and time are O(ghosts in use). `dead` (the ids in `[0, zero)` with `KillGhost && NotYetGhosted`) is kept
+//! incrementally for the dead-entry pass, and is empty but for a ghost whose object went before its first record was sent.
 //!
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `sim/netGhost.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
@@ -45,9 +45,15 @@ pub(super) struct Table {
     by_obj: crate::idhash::IdMap<ObjId, u32>,
     returned: Vec<u32>,
     lazy: [(u32, u32); 2],
-    nonzero: BTreeSet<u32>,
     dead: BTreeSet<u32>,
+    /// The largest id in `[0, zero)` while `max_known`; it is the one thing about that region a packet asks, and it only changes
+    /// when a ghost enters it above the largest (then it is that ghost's) or the largest leaves it (then it is found again when asked).
+    max_nonzero: Option<u32>,
+    max_known: bool,
     next_generation: u64,
+    /// Counts the times an object was let go of by a ghost (or every ghost was): what a scope query that found every object a
+    /// ghost has can rely on staying so while it is unchanged.
+    links_let_go: u64,
 }
 
 impl Table {
@@ -67,8 +73,16 @@ impl Table {
         self.by_obj.clear();
         self.returned.clear();
         self.lazy = [(0, 0), (0, 0)];
-        self.nonzero.clear();
         self.dead.clear();
+        self.max_nonzero = None;
+        self.max_known = true;
+        self.links_let_go += 1;
+    }
+
+    /// How many times an object lost its ghost's link ([`Table::unlink_object`], a freed linked ghost, a clear): a scope query
+    /// that left every ghosted object linked and ghosted every object it could stays complete until this changes.
+    pub fn links_let_go(&self) -> u64 {
+        self.links_let_go
     }
 
     pub fn len(&self) -> usize {
@@ -96,6 +110,15 @@ impl Table {
                     g.flags &= !flags::IN_SCOPE;
                 }
             }
+        }
+    }
+
+    /// The ghost of `obj` seen by a scope query (what [`Table::start_query`] cleared): its in-scope flag set again.
+    pub fn mark_in_scope(&mut self, obj: ObjId) {
+        if let Some(id) = self.by_obj.get(&obj)
+            && let Some(g) = self.ghosts.get_mut(id)
+        {
+            g.flags |= flags::IN_SCOPE;
         }
     }
 
@@ -130,12 +153,19 @@ impl Table {
     }
 
     /// The largest id among the ghosts in `[0, zero)` (the loop reads it before it frees any dead entry).
-    pub fn max_nonzero_id(&self) -> Option<u32> {
-        self.nonzero.last().copied()
+    pub fn max_nonzero_id(&mut self) -> Option<u32> {
+        if !self.max_known {
+            self.max_nonzero = self.nonzero_ids_by_position().iter().copied().max();
+            self.max_known = true;
+        }
+        self.max_nonzero
     }
 
     /// Ghosts in `[0, zero)` that are `KillGhost && NotYetGhosted`, in descending array position (the order the loop frees them).
     pub fn dead_by_position_desc(&self) -> Vec<u32> {
+        if self.dead.is_empty() {
+            return Vec::new();
+        }
         let mut v: Vec<(usize, u32)> = self
             .dead
             .iter()
@@ -153,24 +183,17 @@ impl Table {
         self.used.get(..self.zero).unwrap_or(&[])
     }
 
+    /// Whether the ghost `id` is dead (see [`Table::dead_by_position_desc`]) and so belongs in the dead set. Only the ghost that
+    /// crosses `zero` (or changes its flags) can change: the ghost a swap displaces stays on its side of it.
     fn refresh(&mut self, id: u32) {
-        let Some(g) = self.ghosts.get(&id) else {
-            self.nonzero.remove(&id);
-            self.dead.remove(&id);
-            return;
-        };
-        let in_nonzero = g.pos < self.zero;
-        let dead = in_nonzero
-            && g.flags & (flags::KILL_GHOST | flags::NOT_YET_GHOSTED)
-                == (flags::KILL_GHOST | flags::NOT_YET_GHOSTED);
-        if in_nonzero {
-            self.nonzero.insert(id);
-        } else {
-            self.nonzero.remove(&id);
-        }
+        let dead = self.ghosts.get(&id).is_some_and(|g| {
+            g.pos < self.zero
+                && g.flags & (flags::KILL_GHOST | flags::NOT_YET_GHOSTED)
+                    == (flags::KILL_GHOST | flags::NOT_YET_GHOSTED)
+        });
         if dead {
             self.dead.insert(id);
-        } else {
+        } else if !self.dead.is_empty() {
             self.dead.remove(&id);
         }
     }
@@ -223,14 +246,12 @@ impl Table {
         if pos < self.zero {
             return;
         }
-        let z = self.zero;
-        let displaced = self.used.get(z).copied();
-        self.swap_positions(pos, z);
+        self.swap_positions(pos, self.zero);
         self.zero += 1;
-        self.refresh(id);
-        if let Some(d) = displaced {
-            self.refresh(d);
+        if self.max_known {
+            self.max_nonzero = self.max_nonzero.max(Some(id));
         }
+        self.refresh(id);
     }
 
     /// `pushToZero`: `zero--`, swap with `array[zero]`. The ghost must be in `[0, zero)`.
@@ -242,13 +263,11 @@ impl Table {
             return;
         }
         self.zero -= 1;
-        let z = self.zero;
-        let displaced = self.used.get(z).copied();
-        self.swap_positions(pos, z);
-        self.refresh(id);
-        if let Some(d) = displaced {
-            self.refresh(d);
+        self.swap_positions(pos, self.zero);
+        if self.max_nonzero == Some(id) {
+            self.max_known = false;
         }
+        self.refresh(id);
     }
 
     fn take_free_id(&mut self) -> Option<u32> {
@@ -302,10 +321,11 @@ impl Table {
     /// Unlinks the object from the lookup (the ghost stays; `detachObject`).
     pub fn unlink_object(&mut self, id: u32) {
         let obj = self.ghosts.get_mut(&id).and_then(|g| g.obj.take());
-        if let Some(o) = obj
-            && self.by_obj.get(&o) == Some(&id)
-        {
-            self.by_obj.remove(&o);
+        if let Some(o) = obj {
+            self.links_let_go += 1;
+            if self.by_obj.get(&o) == Some(&id) {
+                self.by_obj.remove(&o);
+            }
         }
     }
 
@@ -327,12 +347,12 @@ impl Table {
         let last = self.used.len() - 1;
         self.swap_positions(pos, last);
         self.used.pop();
-        if let Some(o) = self.ghosts.remove(&id).and_then(|g| g.obj)
-            && self.by_obj.get(&o) == Some(&id)
-        {
-            self.by_obj.remove(&o);
+        if let Some(o) = self.ghosts.remove(&id).and_then(|g| g.obj) {
+            self.links_let_go += 1;
+            if self.by_obj.get(&o) == Some(&id) {
+                self.by_obj.remove(&o);
+            }
         }
-        self.nonzero.remove(&id);
         self.dead.remove(&id);
         self.returned.push(id);
     }
@@ -350,6 +370,10 @@ impl Table {
             return;
         }
         for (pos, &id) in ids.iter().enumerate() {
+            // A ghost already in its place is left as it is (an order that did not change costs no look-up).
+            if self.used[pos] == id {
+                continue;
+            }
             self.used[pos] = id;
             if let Some(g) = self.ghosts.get_mut(&id) {
                 g.pos = pos;
@@ -381,9 +405,6 @@ impl Table {
                 return Err(format!("ghost {id} pos {} != {pos}", g.pos));
             }
             let nz = pos < self.zero;
-            if nz != self.nonzero.contains(&id) {
-                return Err(format!("nonzero set wrong for {id}"));
-            }
             let d = nz && g.flags & 0x28 == 0x28;
             if d != self.dead.contains(&id) {
                 return Err(format!("dead set wrong for {id}"));
@@ -400,6 +421,9 @@ impl Table {
             {
                 return Err(format!("lookup of {o} wrong"));
             }
+        }
+        if self.max_known && self.max_nonzero != self.used[..self.zero].iter().copied().max() {
+            return Err("the cached largest id is wrong".into());
         }
         if self.ghosts.len() != self.used.len() {
             return Err("ghost map and array differ".into());

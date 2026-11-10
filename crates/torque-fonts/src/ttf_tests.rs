@@ -115,11 +115,21 @@ fn the_hostile_shapes_are_refused_or_bounded() {
     }
 }
 
+/// The hostile sweep. `TORQUE_FUZZ_TTF` sets the case count (600 by default); under Miri (the scheduled sanitizer job, which
+/// checks the rasterizer's unchecked writes) the real face seeds are left out and the count is small.
 #[test]
 fn a_short_hostile_sweep_has_no_panics() {
-    let seeds: Vec<Vec<u8>> = bundled("JetBrainsMono-Regular.ttf").into_iter().collect();
-    let s = ttf_fuzz::sweep(600, 7, &seeds, 10);
+    let cases: u64 = std::env::var("TORQUE_FUZZ_TTF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if cfg!(miri) { 60 } else { 600 });
+    let seeds: Vec<Vec<u8>> = if cfg!(miri) {
+        Vec::new()
+    } else {
+        bundled("JetBrainsMono-Regular.ttf").into_iter().collect()
+    };
+    let s = ttf_fuzz::sweep(cases, 7, &seeds, 10);
     eprintln!("{s:?}");
-    assert_eq!(s.cases, 600);
+    assert_eq!(s.cases, cases);
     assert_eq!(s.panics, 0, "{s:?}");
 }

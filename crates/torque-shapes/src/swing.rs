@@ -7,8 +7,8 @@
 //! almost half round, and the shorter way round takes it in across the head and through the chest.
 //!
 //! A swung blend ([`crate::instance::ShapeInstance::transition_to_sequence_swung`]) instead follows each limb that sits to a
-//! side of its parent (an arm on the chest, a leg on the pelvis; [`side_of`]): the direction it runs along swings from where
-//! it pointed to where it points in the shape's space, leaned out to its own side halfway by [`LEAN`] (more the further it
+//! side of its parent (an arm on the chest, a leg on the pelvis; `side_of`): the direction it runs along swings from where
+//! it pointed to where it points in the shape's space, leaned out to its own side halfway by `LEAN` (more the further it
 //! swings), and it turns about its own length the shorter way meanwhile. The other nodes (the elbows, the knees, the
 //! chest) blend under their parents as Torque blends them.
 

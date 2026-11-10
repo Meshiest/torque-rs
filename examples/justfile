@@ -15,15 +15,27 @@ headless:
     cargo run -p torque --example shape
     cargo run -p torque --example collide
     cargo run -p torque --example net
-    cargo run -p torque-example --bin min-server -- --port 0 --ticks 64
+    cargo run -p torque-example-minimal --bin min-server -- --port 0 --ticks 64
 
 # The minimal dedicated server: the bundled game on 127.0.0.1:28000 (`--ticks N` stops it after N ticks)
 min-server *args:
-    cargo run -p torque-example --bin min-server -- {{args}}
+    cargo run -p torque-example-minimal --bin min-server -- {{args}}
 
 # The minimal client: connects to the minimal server and prints the ghosts it is sent
 min-client *args:
-    cargo run -p torque-example --bin min-client -- {{args}}
+    cargo run -p torque-example-minimal --bin min-client -- {{args}}
+
+# The minimal server on the engine (`Engine` of `DefaultPlugins` and a game plugin): the same game as min-server
+min-engine-server *args:
+    cargo run -p torque-example-minimal-engine --bin min-engine-server -- {{args}}
+
+# The minimal client on the engine: connects to the server and prints the ghosts it is sent
+min-engine-client *args:
+    cargo run -p torque-example-minimal-engine --bin min-engine-client -- {{args}}
+
+# The minimal client on the engine in a window (`--local` runs the server too)
+min-engine-window *args:
+    cargo run -p torque-example-minimal-engine --features window --bin example-window-engine -- {{args}}
 
 # The example games' asset kit (shapes and textures made from code), written into `dir`
 assets dir="../target/example-assets":
@@ -71,6 +83,13 @@ web-guard:
 web-guard-test: web-guard
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../web/guard.test.mjs
+
+# The size of each web example's module (`game_bg.wasm` of the level demo, the arena and the vehicle demo, built with their files
+# fetched): `just web-size --out /somewhere/outside/the/repo/sizes.json` writes the sizes (the recipe runs in `examples/`, so
+# give an absolute path), `just web-size --compare /somewhere/outside/the/repo/sizes.json` gives each one's change in percent
+# against that file, and `--limit 1` also fails on more than 1% or on a module the file lacks
+web-size *args:
+    node ../web/size.mjs {{args}}
 
 # The web level demo's check (build it first with `web-level-demo`): headless Chrome with WebGPU loads the office, waits for the
 # figure, walks it and takes pictures, loads it again and counts the requests for the listed files (none: they come from the
@@ -212,6 +231,23 @@ web-vehicle-demo-invite-check: web-guard-test
 level-demo-shots dir="../target/level-demo-shots":
     cargo run -p torque-example-level-demo --release -- --shots {{dir}}
 
+# The level demo with the rope plugin (the `rope` feature): the plaza's clothesline hung between its front pillars, from behind the figure,
+# from the front, thrown up and swinging, drawn offscreen into `dir`
+level-demo-rope-shots dir="../target/level-demo-rope-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-shots {{dir}}
+
+# The level demo's rope styles (the `rope` feature): a ribbon cable and glowing laser lines beside the clothesline, the figure with
+# a laser through and behind it and a ribbon across in front, the camera looking almost along a ribbon, and a thin laser from far
+# away, drawn offscreen into `dir`
+level-demo-rope-style-shots dir="../target/level-demo-rope-style-shots":
+    cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
+
+# A correction the server forces on the plaza's figure (moved 1.2 units sideways), frame by frame, with TGE's predictor and with
+# the smoothed one (the `smooth-prediction` feature), from beside the figure and from the game's camera, drawn offscreen into
+# `dir` (`correction-strip.png` has the four sequences in rows)
+level-demo-correction-shots dir="../target/level-demo-correction-shots":
+    cargo run -p torque-example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
+
 # The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
 # into `dir`
 level-demo-valley-shots dir="../target/level-demo-valley-shots":
@@ -231,7 +267,7 @@ level-demo-switch-shots dir="../target/level-demo-switch-shots":
 # the office), and the 2 x 2 grid of them (`hero.png`, `hero@2x.png`), drawn offscreen into `dir`. `--size WxH` sets the
 # pictures' size, `--only <name>` draws one, `--grid` sets the grid again from the pictures in `dir`
 showcase dir="../target/showcase" *args:
-    cargo run -p torque-example-showcase --release -- {{dir}} {{args}}
+    cargo run -p torque-example-showcase --release --bin showcase -- {{dir}} {{args}}
 
 # Pictures of every shape of the asset kit for review, drawn offscreen into `dir`
 kit-shots dir="../target/kit-shots":
@@ -330,22 +366,22 @@ fps-hitbox-shots dir="../target/fps-hitbox-shots":
 # move, Space jump, mouse look, click the buggy to take a seat; driving W throttle, S reverse, A D steer, Space brake, mouse
 # turns the camera, E get out). `--host`, `--join <address>`, `--name <name>`, `--bind <LAN address>`
 vehicle-demo *args:
-    cargo run -p torque-example-vehicle-demo --release -- {{args}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- {{args}}
 
 # The other player's name over his head in the vehicle demo, on foot and in the passenger's seat, at 1280x720 and at 640x360
 # (a browser's half-scale canvas), drawn offscreen into `dir`
 vehicle-demo-name-shots dir="../target/vehicle-demo-name-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --name-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --name-shots {{dir}}
 
 # The figure on foot in the vehicle demo from behind and from its eyes, looking down, level and up (`Tab` keeps where the view
 # looks), drawn offscreen into `dir`
 vehicle-demo-switch-shots dir="../target/vehicle-demo-switch-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --switch-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --switch-shots {{dir}}
 
 # The vehicle demo's pictures over the loopback address (the menu, the start, the buggy, its cockpit, two players seated, the
 # passenger's view, the climb up the hill), drawn offscreen into `dir`
 vehicle-demo-shots dir="../target/vehicle-demo-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --shots {{dir}}
 
 # The HUD of the level demo, the arena and the vehicle demo for review (the view in play with the corner readout, the pause
 # menu and its Controls panel) at 1280x720, 800x600 and 640x480, drawn offscreen into `dir`
@@ -357,7 +393,7 @@ hud-shots dir="../target/hud-shots":
 # The vehicle demo's clouds at noon, golden hour and sunset, looking up and their shadows on the hills, with the engine's clouds
 # (`engine/`) and the demo's (`demo/`), and each picture's GPU time, drawn offscreen into `dir`
 vehicle-demo-cloud-shots dir="../target/vehicle-demo-cloud-shots":
-    cargo run -p torque-example-vehicle-demo --release -- --cloud-shots {{dir}}
+    cargo run -p torque-example-vehicle-demo --release --bin vehicle-demo -- --cloud-shots {{dir}}
 
 # The vehicle demo's steering and tire tracks as frame sequences (A held and let go at the wheel, then full throttle; on the
 # driver's client and another's) and the pause menu over the view, drawn offscreen into `dir`
@@ -373,3 +409,43 @@ vehicle-demo-track-shots dir="../target/vehicle-demo-track-shots":
 
 vehicle-demo-track-bench:
     cargo run -p torque-example-vehicle-demo --release --example track-shots -- --bench
+
+# The mods demo, headless: a server whose game mode is a Lua mod it requires, and two clients that download the mod's content when
+# they join (`--shots <dir>` also draws pictures of the round from the first client). Builds the Lua extension first (`just lua`,
+# a C++ compiler is needed); `--lua <library>` or TORQUE_LUA_LIBRARY names a built one instead
+mods-demo *args:
+    just --justfile ../justfile --working-directory .. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo -- {{args}}
+
+# The mods demo's pictures of a round in progress, drawn offscreen into `dir`
+mods-demo-shots dir="../target/mods-demo-shots":
+    just --justfile ../justfile --working-directory .. lua
+    cargo run -p torque-example-mods-demo --release --bin mods-demo -- --shots {{dir}}
+
+# The mods demo's end-to-end tests: download, cache, Lua rounds, ropes and the mods' load rules. They build the Lua extension
+# (Luau's C++), so `cargo test` leaves them out
+mods-demo-test:
+    cargo test -p torque-example-mods-demo --test demo -- --include-ignored
+
+# The level demo's prop catalog, headless: the office's server requires the catalog mod of its clients, two clients download it, allow its
+# menu and spawn props from it. Builds the realm guest first (`just lua-client-web`: the WASI SDK, named by WASI_SDK_PATH);
+# TORQUE_CLIENT_GUEST names a built one instead
+level-catalog:
+    just --justfile ../justfile --working-directory .. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog
+
+# The catalog's pictures (the consent prompt, the catalog, a label typed and the recent list, a chair in the office, a refusal), drawn
+# offscreen into `dir`
+level-catalog-shots dir="../target/level-catalog-shots":
+    just --justfile ../justfile --working-directory .. lua-client-web
+    cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
+
+# The catalog's end-to-end tests (level-demo's tests/catalog.rs), with the guest `lua-client-web` builds
+level-catalog-test:
+    just --justfile ../justfile --working-directory .. lua-client-web
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog -- --include-ignored
+
+# The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
+# offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)
+level-catalog-icons dir="level-demo/catalog/icons":
+    cargo run -p torque-example-level-demo --release --example catalog-icons -- {{dir}}

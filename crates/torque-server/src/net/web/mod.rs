@@ -58,6 +58,7 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, TcpListener};
 
 use torque_net::cap::{NET_LIMITER_ENTRIES, NET_MAX_DATAGRAM, NET_PACKETS_PER_CONN_PER_S};
+use torque_net::engine::LinkKind;
 use web_time::{Duration, Instant};
 
 use super::transport::{BindError, BindPolicy, PolicyRefusal, Recv, Transport, UdpTransport};
@@ -539,6 +540,20 @@ impl Transport for WebTransport {
         self.listener.as_ref().and_then(|l| l.local_addr().ok())
     }
 
+    /// The TCP peer behind a game socket's stand-in (a data channel goes by its game socket's stand-in too).
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        self.peer_of(peer).map_or(peer.ip(), |tcp| tcp.ip())
+    }
+
+    /// Every peer of this transport is a game socket or a data channel: TCP or ICE proved its address. Datagrams are kept to
+    /// the data channels' size on both.
+    fn link_kind(&self, _peer: SocketAddr) -> LinkKind {
+        LinkKind {
+            max_datagram: LinkKind::WEB_RTC.max_datagram,
+            ..LinkKind::web_socket(self.setup.tls.is_some())
+        }
+    }
+
     fn is_real(&self) -> bool {
         true
     }
@@ -669,6 +684,22 @@ impl Transport for MultiTransport {
             self.web.send_to(to, data)
         } else {
             self.udp.send_to(to, data)
+        }
+    }
+
+    fn link_kind(&self, peer: SocketAddr) -> LinkKind {
+        if is_stand_in(peer) {
+            self.web.link_kind(peer)
+        } else {
+            self.udp.link_kind(peer)
+        }
+    }
+
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        if is_stand_in(peer) {
+            self.web.peer_ip(peer)
+        } else {
+            peer.ip()
         }
     }
 

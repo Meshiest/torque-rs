@@ -1,0 +1,23 @@
+error: a message sends every field as it is: it takes no `skip`, `mask` or `name`
+ --> tests/ui/net_message_bad_attribute.rs:5:11
+  |
+5 |     #[net(skip)]
+  |           ^^^^
+
+error: a message sends every field as it is: it takes no `skip`, `mask` or `name`
+  --> tests/ui/net_message_bad_attribute.rs:11:11
+   |
+11 |     #[net(mask = 1)]
+   |           ^^^^
+
+error: expected `bits = N`, `max_len = N` or `finite`
+  --> tests/ui/net_message_bad_attribute.rs:17:11
+   |
+17 |     #[net(colour = 1)]
+   |           ^^^^^^
+
+error: a message is a struct with named fields
+  --> tests/ui/net_message_bad_attribute.rs:22:8
+   |
+22 | struct Tuple(u32);
+   |        ^^^^^

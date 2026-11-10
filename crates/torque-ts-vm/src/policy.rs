@@ -7,7 +7,9 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::classes::file_object::MAX_OPEN_READ_BYTES;
 pub use crate::fields::FieldRules;
+use crate::memory::{DEFAULT_SCRIPT_BYTES, MAX_SCRIPT_BYTES};
 use crate::sim::{FIRST_DATABLOCK_ID, ObjId};
 pub use crate::tags::TagRules;
 use crate::vm::{Level, Vm};
@@ -88,6 +90,38 @@ pub trait FileRules {
     fn looked_up(&self, _path: &[u8]) {}
     /// A file was copied onto `path`, which existed with that length before (None: it did not).
     fn copied_onto(&self, _path: &[u8], _existed: Option<u64>) {}
+    /// How much scripts may write ([`WriteQuota`]).
+    fn write_quota(&self) -> WriteQuota {
+        WriteQuota::default()
+    }
+}
+
+/// The window of simulation time a [`WriteQuota`] counts in: an hour. The counts start again in each, so a server that
+/// runs for weeks still saves its prefs.
+pub const WRITE_WINDOW_MS: u32 = 3_600_000;
+
+/// What scripts may write through a `Vm` in each [`WRITE_WINDOW_MS`] of simulation time: a write (`writeLine`, `export`,
+/// `fileCopy`, and the engine's own prefs export, which goes through `export`) that would make a file larger than
+/// `per_file`, or pass `per_hour` bytes or `files_per_hour` files opened for writing in the window, is refused with the
+/// [`Messages::write_quota_used`] line, and writes nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WriteQuota {
+    /// 256 MiB by default, what a `FileObject` reads at most.
+    pub per_file: u64,
+    /// 1 GiB by default.
+    pub per_hour: u64,
+    /// 4096 by default.
+    pub files_per_hour: u32,
+}
+
+impl Default for WriteQuota {
+    fn default() -> WriteQuota {
+        WriteQuota {
+            per_file: MAX_OPEN_READ_BYTES as u64,
+            per_hour: 1 << 30,
+            files_per_hour: 4096,
+        }
+    }
 }
 
 /// What a game checks of a file `exec` was asked to run, after the name is expanded and has an extension and before
@@ -97,6 +131,17 @@ pub trait ExecPolicy {
     fn check(&self, _vm: &mut Vm, _path: &[u8]) -> Result<bool, crate::vm::VmError> {
         Ok(true)
     }
+}
+
+/// A language other than TorqueScript that `exec` runs: a file whose extension the language was installed for
+/// ([`Vm::set_script_language`]) is read through the file host, after the [`ExecPolicy`] has checked it, and handed to
+/// [`run`](Self::run) instead of the compiler. `exec` prints `Executing <name>.` first, as for a script, and a missing file
+/// warns `Missing file: <name>!`.
+pub trait ScriptLanguage {
+    /// Runs `source`, the file `path` (as `exec` expanded it), inside a run of `vm`: the run's step budget and call depth
+    /// apply to what the language does through the `Vm` ([`Vm::charge_work`], calls into script), as they do to a script.
+    /// `Err` ends the `exec` with that error, as a script's would (`StepLimit`, `CallDepth`).
+    fn run(&self, vm: &mut Vm, path: &[u8], source: &[u8]) -> Result<(), crate::vm::VmError>;
 }
 
 /// The runtime's numeric limits a game may set differently.
@@ -112,6 +157,11 @@ pub struct Limits {
     /// fires between two looks at its clock (every event it takes counts, the first look comes after the first
     /// batch). 1 by default.
     pub pass_batch: usize,
+    /// The bytes scripts may hold in variables, objects and dynamic fields ([`crate::memory`]), lowered by the pref
+    /// [`MEMORY_LIMIT_PREF`](crate::memory::MEMORY_LIMIT_PREF) when that is smaller; at most
+    /// [`MAX_SCRIPT_BYTES`]. [`DEFAULT_SCRIPT_BYTES`]
+    /// by default.
+    pub max_script_bytes: u64,
 }
 
 impl Limits {
@@ -132,6 +182,7 @@ impl Default for Limits {
             max_active_packages: crate::ns::MAX_ACTIVE_PACKAGES,
             datablock_ids: DATABLOCK_IDS,
             pass_batch: 1,
+            max_script_bytes: DEFAULT_SCRIPT_BYTES,
         }
     }
 }
@@ -199,6 +250,10 @@ pub trait Messages {
     /// A write the host or another writer refused (error level).
     fn write_open_failed(&self, path: &str) -> String {
         format!("cannot open \"{path}\" for writing")
+    }
+    /// A write the [`WriteQuota`] refused (error level).
+    fn write_quota_used(&self, path: &str) -> String {
+        format!("cannot write \"{path}\": scripts have written all they may")
     }
     /// `cancel` of an event the runtime posted, not a script (error level).
     fn cancel_not_scheduled(&self, seq: i32) -> String {
@@ -272,6 +327,17 @@ struct RealLengths;
 
 impl FileRules for RealLengths {}
 
+/// The file extensions TorqueScript's own files have (sources, compiled scripts, GUIs, missions and editor files), which
+/// no other language may take ([`Vm::set_script_language`]).
+pub const RESERVED_EXTENSIONS: &[&str] = &["cs", "dso", "gui", "mis", "ed"];
+
+/// Whether `extension` (without the dot) is one of [`RESERVED_EXTENSIONS`], without case.
+pub fn is_reserved_extension(extension: &[u8]) -> bool {
+    RESERVED_EXTENSIONS
+        .iter()
+        .any(|r| r.as_bytes().eq_ignore_ascii_case(extension))
+}
+
 /// The installed rules (boxed in the `Vm`).
 pub(crate) struct Policies {
     pub(crate) declare: Rc<dyn DeclarePolicy>,
@@ -283,6 +349,10 @@ pub(crate) struct Policies {
     pub(crate) messages: Rc<dyn Messages>,
     pub(crate) build: BuildInfo,
     pub(crate) extensions: Extensions,
+    /// The other languages `exec` runs, by their extension (folded, without the dot).
+    pub(crate) languages: Vec<(Vec<u8>, Rc<dyn ScriptLanguage>)>,
+    /// What the natives declared they do ([`crate::effects`]).
+    pub(crate) effects: crate::effects::EffectTable,
 }
 
 impl Default for Policies {
@@ -297,6 +367,8 @@ impl Default for Policies {
             messages: Rc::new(OwnWords),
             build: BuildInfo::default(),
             extensions: Extensions::default(),
+            languages: Vec::new(),
+            effects: Default::default(),
         }
     }
 }
@@ -310,6 +382,11 @@ impl Vm {
     /// Installs the allocation policy.
     pub fn set_alloc_policy(&mut self, policy: Rc<dyn AllocPolicy>) {
         self.policies_mut().alloc = Some(policy);
+    }
+
+    /// The checks `exec` makes before it looks a file up, if a host installed some.
+    pub fn exec_policy(&self) -> Option<Rc<dyn ExecPolicy>> {
+        self.policies().exec.clone()
     }
 
     /// Installs the checks `exec` makes before it looks a file up.
@@ -329,6 +406,9 @@ impl Vm {
             .set_max_active(limits.max_active_packages);
         self.objects_mut()
             .set_datablock_id_limit(limits.datablock_id_limit());
+        self.objects()
+            .memory()
+            .set_limit(limits.max_script_bytes.min(MAX_SCRIPT_BYTES));
     }
 
     /// Sets how the runtime reports the failures [`ConsoleRules`] names.
@@ -374,6 +454,52 @@ impl Vm {
     /// What the version natives answer.
     pub fn build_info(&self) -> &BuildInfo {
         &self.policies().build
+    }
+
+    /// Installs `language` for the files whose extension is `extension` (without the dot, any case): `exec` runs them
+    /// with it instead of compiling them as TorqueScript ([`ScriptLanguage`]). False, and nothing changes, for TorqueScript's
+    /// own extensions ([`RESERVED_EXTENSIONS`]) and for an extension another language already has: the first keeps its
+    /// files, so a second extension declaring them cannot take them over.
+    pub fn set_script_language(
+        &mut self,
+        extension: &str,
+        language: Rc<dyn ScriptLanguage>,
+    ) -> bool {
+        let key = crate::text::fold(extension.trim_start_matches('.').as_bytes());
+        if key.is_empty() || is_reserved_extension(&key) {
+            return false;
+        }
+        let languages = &mut self.policies_mut().languages;
+        if languages.iter().any(|(k, _)| *k == key) {
+            return false;
+        }
+        languages.push((key, language));
+        true
+    }
+
+    /// The language installed for files with `extension` (without the dot, any case).
+    pub fn script_language(&self, extension: &str) -> Option<Rc<dyn ScriptLanguage>> {
+        let key = crate::text::fold(extension.trim_start_matches('.').as_bytes());
+        self.language_by_key(&key)
+    }
+
+    /// The language installed for the file `path` (by the extension after its last dot).
+    pub fn script_language_of(&self, path: &[u8]) -> Option<Rc<dyn ScriptLanguage>> {
+        let languages = &self.policies().languages;
+        if languages.is_empty() {
+            return None;
+        }
+        let name = path.rsplit(|&b| b == b'/').next().unwrap_or(path);
+        let dot = name.iter().rposition(|&b| b == b'.')?;
+        self.language_by_key(&crate::text::fold(&name[dot + 1..]))
+    }
+
+    fn language_by_key(&self, key: &[u8]) -> Option<Rc<dyn ScriptLanguage>> {
+        self.policies()
+            .languages
+            .iter()
+            .find(|(k, _)| k.as_slice() == key)
+            .map(|(_, language)| Rc::clone(language))
     }
 
     /// The extension of type `T` a game attached (see [`set_extension`](Self::set_extension)).

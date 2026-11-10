@@ -16,6 +16,11 @@
 //! `getPosition` is the hit point. A Projectile that reaches its lifetime is deleted after its tick; one that exploded is
 //! deleted [`::sim::projectile::DELETE_WAIT_MS`] later (a scheduled `delete`, as the engine's `ObjectDeleteEvent`).
 //!
+//! **Plugin shapes.** A Projectile's ray meets the shapes of the plugins' collision sources too ([`crate::plugin_collision`]), one
+//! with a static shape's bit as a static object: the nearer of the container's hit and theirs is taken. A hit on one tells its source ([`collide::source::CollisionSource::hit`],
+//! with the Projectile's velocity) before `onCollision`, whose `%col` is the object the shape stands for (0 for none). With no
+//! source installed nothing changes. A plugin may watch the explosions ([`watch_explosions`]), told of each before `onExplode`.
+//!
 //! **Lag compensation** (engine-only, off by default): a Projectile whose source a client controls takes the source's rewind
 //! at `onAdd` ([`crate::scene::lag::rewind_for`]) and casts every tick of its flight with the Players rewound by it.
 //!
@@ -200,6 +205,7 @@ pub fn tick(vm: &mut Vm, env: &SimEnv, id: ObjId) {
         id,
         ending: None,
         error: None,
+        ray: None,
     };
     p.process_tick(&d, &mut host);
     let HostImpl { vm, ending, .. } = host;
@@ -234,6 +240,8 @@ pub struct HostImpl<'a> {
     ending: Option<Ending>,
     /// The first error a callback's script or the container returned.
     pub error: Option<VmError>,
+    /// The last ray cast: its segment (the step's velocity times its length).
+    ray: Option<(F3, F3)>,
 }
 
 impl HostImpl<'_> {
@@ -293,8 +301,9 @@ impl ProjectileHost for HostImpl<'_> {
         } else {
             rewound_container_ray(self.vm, self.env, start, end, mask, rewind)
         };
+        self.ray = Some((start, end));
         match hit {
-            Ok(h) => h,
+            Ok(h) => nearer_plugin_hit(self.vm, start, end, mask, h),
             Err(e) => {
                 self.note(Err(e));
                 None
@@ -310,6 +319,28 @@ impl ProjectileHost for HostImpl<'_> {
 
     fn on_collision(&mut self, s: &mut ProjectileState, col: ObjectId, point: F3, normal: F3) {
         let fade = s.fade;
+        let col = match crate::plugin_collision::sources_of(self.vm)
+            .filter(|_| collide::source::is_plugin_id(col))
+        {
+            Some(sources) => {
+                let velocity = self.ray.map_or([0.0; 3], |(a, b)| {
+                    std::array::from_fn(|k| (b[k] - a[k]) / ::sim::DT)
+                });
+                let datablock = object_field(self.vm, self.id, b"dataBlock").unwrap_or(0);
+                sources.hit(
+                    col,
+                    &collide::source::SourceHit {
+                        by: self.id,
+                        point,
+                        normal,
+                        velocity,
+                        datablock,
+                    },
+                );
+                ObjectId(sources.object_of(col).unwrap_or(0))
+            }
+            None => col,
+        };
         self.script(s, |vm, id| {
             call_db(
                 vm,
@@ -326,6 +357,12 @@ impl ProjectileHost for HostImpl<'_> {
     }
 
     fn on_explode(&mut self, s: &mut ProjectileState, pos: F3, fade: f32) {
+        if let Some(watchers) = self.vm.extension::<ExplosionWatchers>() {
+            let datablock = object_field(self.vm, self.id, b"dataBlock").unwrap_or(0);
+            for w in &watchers.0 {
+                w.exploded(self.id, datablock, pos);
+            }
+        }
         self.script(s, |vm, id| {
             call_db(
                 vm,
@@ -345,6 +382,59 @@ impl ProjectileHost for HostImpl<'_> {
     fn delete_object(&mut self, _id: ObjectId) {
         self.ending = Some(Ending::Now);
     }
+}
+
+/// What a plugin is told of each Projectile's explosion on the server ([`watch_explosions`]), before its `onExplode`.
+pub trait ExplosionWatch {
+    /// Projectile `projectile` of datablock `datablock` (0 for none) exploded at `at`.
+    fn exploded(&self, projectile: ObjId, datablock: ObjId, at: F3);
+}
+
+struct ExplosionWatchers(Vec<Rc<dyn ExplosionWatch>>);
+
+/// Tells `watch` of every Projectile explosion of `vm` from now on (none watched: nothing is told).
+pub fn watch_explosions(vm: &mut Vm, watch: Rc<dyn ExplosionWatch>) {
+    let mut all = vm
+        .extension::<ExplosionWatchers>()
+        .map_or_else(Vec::new, |w| w.0.clone());
+    all.push(watch);
+    vm.set_extension(Rc::new(ExplosionWatchers(all)));
+}
+
+/// `hit`, or the plugins' shape the segment meets first when it is nearer (none installed: `hit` as it is).
+fn nearer_plugin_hit(
+    vm: &Vm,
+    start: F3,
+    end: F3,
+    mask: u32,
+    hit: Option<::sim::RayHit>,
+) -> Option<::sim::RayHit> {
+    let Some(set) = crate::plugin_collision::snapshot_of(vm) else {
+        return hit;
+    };
+    // A plugin shape that asks for a static shape's bit is hit as Torque's static shapes are (they carry the static bit too).
+    let mask = if mask & collide::types::STATIC != 0 {
+        mask | collide::types::STATIC_SHAPE
+    } else {
+        mask
+    };
+    let Some((id, t, normal)) = set.cast_ray(start, end, mask, None) else {
+        return hit;
+    };
+    let d: F3 = std::array::from_fn(|k| end[k] - start[k]);
+    let along = collide::math::dot(d, d);
+    if let Some(h) = &hit {
+        let to: F3 = std::array::from_fn(|k| h.point[k] - start[k]);
+        if along > 0.0 && collide::math::dot(to, d) / along <= t {
+            return hit;
+        }
+    }
+    Some(::sim::RayHit {
+        object: id,
+        point: std::array::from_fn(|k| start[k] + d[k] * t),
+        normal,
+        type_mask: set.object(id).map_or(0, |v| v.type_mask),
+    })
 }
 
 // ------------------------------------------------------------------------------------------------------------------- the class

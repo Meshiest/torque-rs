@@ -107,6 +107,11 @@ pub trait VehicleHost {
     fn wheeled_class(&self) -> Option<std::rc::Rc<dyn crate::wheeled::WheeledClass>> {
         None
     }
+    /// The solver this vehicle's datablock picks for the body (made at the start of a tick, dropped at its end); `None` is TGE's,
+    /// the vehicle's own [`crate::state::Body`].
+    fn body_solver(&mut self) -> Option<Box<dyn crate::solver::BodySolver>> {
+        None
+    }
     /// `setPosition` moved the object: the host re-bins it (`Container::checkBins`) and sets its render
     /// transform.
     fn moved(&mut self, _s: &mut VehicleState) {}

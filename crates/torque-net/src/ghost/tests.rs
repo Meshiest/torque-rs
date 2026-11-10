@@ -12,7 +12,8 @@ use crate::events::{
 
 use super::client::{ClassForm, ClientEvent, GhostClient, GhostEventReader, SectionReport};
 use super::manager::{
-    GhostConfig, GhostError, GhostEvent, GhostManager, MessageOutcome, SectionBudget,
+    GhostConfig, GhostError, GhostEvent, GhostManager, KILL_PRIORITY, MessageOutcome,
+    SHARE_FIRST_PRIORITY, SHARE_PRIORITY_MAX, SectionBudget, share_cap, share_priority,
 };
 use super::policy::{
     GhostPolicy, ObjectPolicy, PendingOrder, ScopeRadius, TableCounts, TorqueGhosts,
@@ -114,6 +115,49 @@ impl ObjectPolicy<World> for Spaced {
     fn between_queries<'a>(&mut self, src: &'a World) -> Option<&'a [ObjId]> {
         Some(&src.recent)
     }
+}
+
+/// Torque's ghosting but for a Ready that runs the script once a sequence.
+#[derive(Default)]
+struct ReadyOnce;
+
+impl GhostPolicy for ReadyOnce {
+    fn ready_once(&self) -> bool {
+        true
+    }
+}
+
+impl ObjectPolicy<World> for ReadyOnce {}
+
+#[test]
+fn a_repeated_ready_runs_the_script_once_when_the_policy_says_so() {
+    let mut rig = Rig::with_policy(crate::profile::DEFAULT_GHOST_LIMIT, ReadyOnce);
+    rig.add(1);
+    rig.go();
+    let seq = rig.mgr.sequence();
+    let ready = ConnectionMessage {
+        seq,
+        message: 1,
+        count: 0,
+    };
+    assert_eq!(
+        rig.mgr.on_connection_message(&ready, &mut rig.scripts),
+        Ok(MessageOutcome::Ignored)
+    );
+    assert_eq!(rig.scripts.ready, 1);
+    // A new sequence takes its own Ready.
+    let _ = rig.mgr.reset();
+    let _ = rig.mgr.activate(&rig.world).unwrap();
+    let next = ConnectionMessage {
+        seq: rig.mgr.sequence(),
+        message: 1,
+        count: 0,
+    };
+    assert_eq!(
+        rig.mgr.on_connection_message(&next, &mut rig.scripts),
+        Ok(MessageOutcome::Ready)
+    );
+    assert_eq!(rig.scripts.ready, 2);
 }
 
 impl Rig<Spaced> {
@@ -856,6 +900,35 @@ fn a_record_that_cannot_fit_the_stream_is_rolled_back_and_skipped() {
 }
 
 #[test]
+fn a_share_group_takes_at_most_its_part_of_a_packet_and_the_rest_wait() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 12);
+    // Ten objects of one group, each a little over 100 bits, at a fifth of a 4,000-bit packet; two with no share.
+    for o in 1..=12 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = (o <= 10).then_some((3, 0.2));
+    }
+    let mut sent = 0;
+    for round in 0..8 {
+        let s = rig.send_with(4_000);
+        assert!(s.stats.share_bits <= 800, "round {round}: {:?}", s.stats);
+        if round == 0 {
+            assert!(s.stats.share_deferred > 0, "{:?}", s.stats);
+        }
+        sent += s.stats.records;
+        rig.ack(&s);
+        rig.mgr.check_invariants().unwrap();
+    }
+    // Every object got its first record in the end.
+    assert_eq!(sent, 12);
+    assert_eq!(share_cap(4_000, 0.2), 800);
+    assert_eq!(share_cap(4_000, f32::NAN), 0);
+    assert_eq!(share_cap(4_000, 7.0), 4_000);
+}
+
+#[test]
 fn the_work_budget_ends_a_section_cleanly() {
     let mut rig = Rig::new();
     rig.go();
@@ -1261,6 +1334,46 @@ fn past_the_sort_limit_the_scope_objects_ghost_goes_first_only_in_a_full_query_p
 }
 
 #[test]
+fn a_first_record_bonus_counts_for_the_first_record_alone() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 3);
+    // Object 1 (ghost 0) ranks lowest by its priority but its first record counts for more.
+    for o in 1..=3 {
+        rig.world.objs.get_mut(&o).unwrap().prio = o as f32;
+    }
+    rig.world.objs.get_mut(&1).unwrap().first_bonus = 10.0;
+    let s = rig.send_with(6);
+    assert_eq!(s.stats.records, 1);
+    let rep = rig
+        .client
+        .read_section(&mut BitReader::new(&s.bytes))
+        .unwrap();
+    assert_eq!(
+        rep.first_index,
+        Some(0),
+        "the bonus puts the first record first"
+    );
+    rig.mgr.on_notify(s.seq, true);
+    let rest = rig.send();
+    rig.ack(&rest);
+    // Later updates rank by their priority alone.
+    for o in 1..=3 {
+        rig.mgr.set_mask(o, 1);
+    }
+    let s = rig.send_with(6);
+    let rep = rig
+        .client
+        .read_section(&mut BitReader::new(&s.bytes))
+        .unwrap();
+    assert_eq!(
+        rep.first_index,
+        Some(2),
+        "object 3 has the highest priority"
+    );
+}
+
+#[test]
 fn kill_records_have_the_highest_priority() {
     let mut rig = Rig::new();
     rig.go();
@@ -1281,6 +1394,116 @@ fn kill_records_have_the_highest_priority() {
         rep.first_index,
         Some(0),
         "the kill (10000) before the updates"
+    );
+}
+
+#[test]
+fn a_pending_kill_goes_before_a_share_update_of_any_priority() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 4);
+    let a = rig.send();
+    rig.ack(&a);
+    for o in 1..=4 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.fields[0] = 1;
+        obj.prio = 1.0e6;
+        obj.share = Some((0, 1.0));
+        rig.mgr.set_mask(o, 1);
+    }
+    rig.mgr.detach_object(1);
+    rig.world.remove(1);
+    let s = rig.send();
+    let mut r = BitReader::new(&s.bytes);
+    let rep = rig.client.read_section(&mut r).unwrap();
+    assert_eq!(rep.first_index, Some(0), "the kill before the 1e6 updates");
+    assert_eq!(share_priority(1.0e6), SHARE_PRIORITY_MAX);
+    const {
+        assert!(
+            SHARE_PRIORITY_MAX < SHARE_FIRST_PRIORITY && SHARE_FIRST_PRIORITY < KILL_PRIORITY / 2.0
+        )
+    };
+    assert_eq!(share_priority(f32::NAN), 0.0);
+}
+
+#[test]
+fn a_share_is_of_the_room_the_section_starts_with() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 12);
+    for o in 1..=12 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = (o <= 10).then_some((3, 0.5));
+    }
+    // A writer already 70% full of a 4,000-bit packet: 1,200 bits are left, so the group may take 600.
+    rig.seq += 1;
+    let mut w = BitWriter::with_limit(12_000);
+    for _ in 0..2_800 {
+        w.write_flag(false);
+    }
+    let stats = rig
+        .mgr
+        .write_section(&mut w, 4_000, rig.seq, rig.now, &mut rig.world, free!());
+    assert!(stats.share_bits > 0 && stats.share_bits <= 600, "{stats:?}");
+    assert!(stats.share_deferred > 0, "{stats:?}");
+    // The two with no share still went, after the group's room was spent.
+    let sent: Vec<ObjId> = (1..=12)
+        .filter(|&o| rig.mgr.view_of(o).is_some_and(|v| v.mask != 0xFFFF_FFFF))
+        .collect();
+    assert!(
+        sent.contains(&11) && sent.contains(&12),
+        "{sent:?} {stats:?}"
+    );
+}
+
+#[test]
+fn a_share_groups_first_records_go_before_its_updates() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 4);
+    for o in 1..=4 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.share = Some((1, 1.0));
+        obj.prio = 1.0e6;
+    }
+    let a = rig.send();
+    rig.ack(&a);
+    // Four ghosted objects with updates of the highest priority, and a fifth never sent with none: it goes first.
+    for o in 1..=4 {
+        rig.world.objs.get_mut(&o).unwrap().fields[0] = 1;
+        rig.mgr.set_mask(o, 1);
+    }
+    rig.scope_many(5, 1);
+    let five = rig.world.objs.get_mut(&5).unwrap();
+    five.share = Some((1, 1.0));
+    five.prio = 0.0;
+    let s = rig.send();
+    let mut r = BitReader::new(&s.bytes);
+    let rep = rig.client.read_section(&mut r).unwrap();
+    assert_eq!(rep.first_index, rig.mgr.view_of(5).map(|v| v.index));
+}
+
+#[test]
+fn a_share_group_is_closed_after_its_first_rewind() {
+    let mut rig = Rig::new();
+    rig.go();
+    rig.scope_many(1, 10);
+    for o in 1..=10 {
+        let obj = rig.world.objs.get_mut(&o).unwrap();
+        obj.bulk = 12;
+        obj.share = Some((5, 0.05));
+    }
+    let before = rig.world.packs;
+    let s = rig.send_with(4_000);
+    // 200 bits of room: a record or two fit, then one is packed and rolled back, and the rest are not packed at all.
+    let packed = rig.world.packs - before;
+    assert_eq!(packed, s.stats.records + 1, "{:?}", s.stats);
+    assert_eq!(
+        s.stats.records + s.stats.share_deferred,
+        10,
+        "{:?}",
+        s.stats
     );
 }
 
@@ -2733,4 +2956,451 @@ fn the_default_pending_sort_keeps_equal_priorities_in_array_order() {
     ];
     world.sort_pending(&mut odd);
     assert_eq!(odd.len(), 4);
+}
+
+/// One manager over a world that does, or does not, give its scope query a stamp.
+struct Twin {
+    mgr: GhostManager,
+    world: World,
+    seq: u32,
+}
+
+impl Twin {
+    fn new(stamped: bool, max: u32) -> Twin {
+        let cfg = GhostConfig {
+            max_ghosts: max,
+            local: false,
+            class_bits: 6,
+        };
+        let world = World {
+            stamp: stamped.then_some(0),
+            ..World::default()
+        };
+        Twin {
+            mgr: GhostManager::new(cfg).unwrap(),
+            world,
+            seq: 0,
+        }
+    }
+
+    fn go(&mut self) {
+        self.mgr.activate(&self.world).unwrap();
+        let seq = self.mgr.sequence();
+        self.mgr
+            .on_connection_message(
+                &ConnectionMessage {
+                    seq,
+                    message: 1,
+                    count: 0,
+                },
+                &mut Rec::default(),
+            )
+            .unwrap();
+    }
+
+    /// Every ghost as the table has it, but for its in-scope flag: a query cut by the budget leaves it cleared on the ghosts it has
+    /// not met yet where a query that only counts leaves it set, and the next complete query makes them the same (nothing reads it
+    /// before: the packets are compared as well).
+    fn state(&self) -> Vec<(u32, Option<ObjId>, u32, u16, usize, u8)> {
+        self.mgr
+            .array_ids()
+            .into_iter()
+            .filter_map(|id| self.mgr.view(id))
+            .map(|v| {
+                (
+                    v.index,
+                    v.obj,
+                    v.mask,
+                    v.flags & !flags::IN_SCOPE,
+                    v.pos,
+                    v.skip,
+                )
+            })
+            .collect()
+    }
+}
+
+#[test]
+fn a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one_that_scopes_them_again()
+ {
+    use crate::testrng::TestRng;
+    let mut quiet_walks = 0;
+    for seed in 1..=8u64 {
+        let mut rng = TestRng::new(seed * 0x9e37_79b9);
+        // A table that can run out of ghosts, and one that cannot.
+        let max = if seed % 2 == 0 { 40 } else { 4_096 };
+        let mut plain = Twin::new(false, max);
+        let mut fast = Twin::new(true, max);
+        let scope = 1;
+        for t in [&mut plain, &mut fast] {
+            t.world.add(scope, Obj::new(1));
+            t.mgr.set_scope_object(Some(scope));
+            t.go();
+        }
+        let mut next = 2;
+        for step in 0..400 {
+            for _ in 0..rng.below(4) {
+                match rng.below(10) {
+                    0..=3 => {
+                        // A third of the new objects bring another into scope with them: an older one, or a satellite no
+                        // query walk visits (so it is in scope only with its object).
+                        let with = (next > 2 && rng.below(3) == 0).then(|| {
+                            if rng.below(2) == 0 {
+                                2 + rng.below(u64::from(next) - 2) as u32
+                            } else {
+                                next
+                            }
+                        });
+                        if with == Some(next) {
+                            for t in [&mut plain, &mut fast] {
+                                let satellite = Obj {
+                                    nflags: 0,
+                                    ..Obj::new(1)
+                                };
+                                t.world.add(next, satellite);
+                            }
+                            next += 1;
+                        }
+                        for t in [&mut plain, &mut fast] {
+                            let mut obj = Obj::new(1);
+                            obj.deps.extend(with);
+                            t.world.add(next, obj);
+                        }
+                        next += 1;
+                    }
+                    4 if next > 3 => {
+                        let id = 2 + rng.below(u64::from(next) - 2) as u32;
+                        for t in [&mut plain, &mut fast] {
+                            t.world.remove(id);
+                            t.mgr.detach_object(id);
+                        }
+                    }
+                    5 if step % 97 == 96 => {
+                        for t in [&mut plain, &mut fast] {
+                            t.mgr.reset();
+                            t.go();
+                        }
+                    }
+                    _ => {
+                        let id = 2 + rng.below(u64::from(next).saturating_sub(2).max(1)) as u32;
+                        for t in [&mut plain, &mut fast] {
+                            t.mgr.set_mask(id, 0x0f);
+                        }
+                    }
+                }
+            }
+            // A spent scan budget now and then cuts the query, which then resumes with the next packet.
+            let scan_units = (rng.below(5) == 0).then(|| 20 + rng.below(300));
+            let mut packets = Vec::new();
+            for t in [&mut plain, &mut fast] {
+                t.seq += 1;
+                let mut left = scan_units.map_or(i64::MAX, |u| u as i64);
+                let mut scan = |n: u64| {
+                    left = left.saturating_sub(n as i64);
+                    left >= 0
+                };
+                let mut w = BitWriter::with_limit(12_000);
+                let stats = t.mgr.write_section(
+                    &mut w,
+                    8 * 400,
+                    t.seq,
+                    step * 32,
+                    &mut t.world,
+                    SectionBudget {
+                        scan: &mut scan,
+                        records: &mut |_| true,
+                    },
+                );
+                packets.push((w.bytes().to_vec(), stats));
+            }
+            assert_eq!(packets[0], packets[1], "seed {seed} step {step}");
+            assert_eq!(plain.state(), fast.state(), "seed {seed} step {step}");
+            let delivered = rng.below(100) < 85;
+            for t in [&mut plain, &mut fast] {
+                t.mgr.on_notify(t.seq, delivered);
+                t.mgr.check_invariants().unwrap();
+            }
+        }
+        quiet_walks += plain.world.existence_asked.get() - fast.world.existence_asked.get();
+    }
+    assert!(
+        quiet_walks > 1_000,
+        "the stamped world scoped as many objects: {quiet_walks} fewer asks"
+    );
+}
+
+// ---- the host's veto
+
+/// A world of objects 2 (ordinary), 3 (always in scope) and 4 (ghost-always), the scope object 1, ghosting started.
+fn veto_rig() -> Rig {
+    let mut rig = Rig::new();
+    rig.add(1);
+    rig.add(2);
+    rig.world.add(3, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o
+    });
+    rig.add(4);
+    rig.world.always.push(4);
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    rig
+}
+
+fn holds(rig: &Rig, obj: ObjId) -> bool {
+    rig.mgr.view_of(obj).is_some()
+}
+
+#[test]
+fn a_hidden_object_gets_no_ghost_whatever_scopes_it() {
+    let mut rig = veto_rig();
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, true);
+    }
+    rig.mgr.scope_to_client(&rig.world, 2);
+    rig.mgr.object_in_scope_now(&rig.world, 3);
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(holds(&rig, 1));
+    assert!(![2, 3, 4].into_iter().any(|o| holds(&rig, o)));
+    assert_eq!(rig.client.len(), 1);
+    // Let back in, every one is ghosted by the next full query.
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, false);
+    }
+    let s = rig.send();
+    rig.ack(&s);
+    assert!([2, 3, 4].into_iter().all(|o| holds(&rig, o)));
+    assert_eq!(rig.client.len(), 4);
+    rig.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn hiding_an_object_kills_its_ghost_even_when_it_is_always_in_scope() {
+    let mut rig = veto_rig();
+    rig.mgr.object_in_scope_now(&rig.world, 2);
+    rig.mgr.object_in_scope_now(&rig.world, 3);
+    let s = rig.send();
+    rig.ack(&s);
+    assert_eq!(rig.client.len(), 4);
+    for obj in [2, 3, 4] {
+        rig.world.set_hidden(obj, true);
+    }
+    // No update is pending for any of them: the kill comes from the veto alone.
+    let s = rig.send();
+    assert_eq!(s.stats.kills, 3);
+    rig.ack(&s);
+    assert_eq!(rig.client.len(), 1);
+    assert!(![2, 3, 4].into_iter().any(|o| holds(&rig, o)));
+    rig.mgr.check_invariants().unwrap();
+    // A script that scopes one again is refused; the veto lifted brings it back as a new ghost.
+    rig.mgr.scope_to_client(&rig.world, 2);
+    assert!(!holds(&rig, 2));
+    rig.world.set_hidden(2, false);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 2));
+    assert_eq!(rig.client.len(), 2);
+}
+
+#[test]
+fn a_veto_changed_after_a_settled_query_is_still_seen() {
+    let mut rig = veto_rig();
+    rig.world.stamp = Some(0);
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(holds(&rig, 2));
+    // The objects are the same ones; only the veto moved.
+    rig.world.set_hidden(2, true);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(!holds(&rig, 2));
+    for _ in 0..2 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert!(!holds(&rig, 2));
+    rig.world.set_hidden(2, false);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 2));
+    rig.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn the_veto_never_blinds_a_connection_of_its_own_scope_object_or_what_it_rides() {
+    let mut rig = veto_rig();
+    // The scope object (1) rides object 5.
+    rig.add(5);
+    rig.world.objs.get_mut(&1).unwrap().mount = Some(5);
+    rig.mgr.object_in_scope_now(&rig.world, 2);
+    let s = rig.send();
+    rig.ack(&s);
+    assert!(holds(&rig, 1) && holds(&rig, 2) && holds(&rig, 5));
+    for obj in [1, 2, 5] {
+        rig.world.set_hidden(obj, true);
+    }
+    for _ in 0..3 {
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    // Object 2 is vetoed; the scope object and its mount keep their ghosts.
+    assert!(
+        holds(&rig, 1) && holds(&rig, 5),
+        "the connection can still see"
+    );
+    assert!(!holds(&rig, 2));
+    // Hidden before it ever had one, the scope object is ghosted all the same.
+    let mut fresh = veto_rig();
+    fresh.world.set_hidden(1, true);
+    let s = fresh.send();
+    fresh.ack(&s);
+    assert!(holds(&fresh, 1));
+    // Once it is no longer the scope object the veto holds for it.
+    fresh.mgr.set_scope_object(Some(2));
+    fresh.world.set_hidden(2, true);
+    fresh.world.set_hidden(3, true);
+    for _ in 0..3 {
+        let s = fresh.send();
+        fresh.ack(&s);
+    }
+    assert!(!holds(&fresh, 1) && !holds(&fresh, 3) && holds(&fresh, 2));
+    fresh.mgr.check_invariants().unwrap();
+}
+
+#[test]
+fn a_connections_scope_says_which_objects_it_would_take_without_a_walk() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.add(1);
+    for (obj, x) in [(2, 50.0), (3, 5_000.0)] {
+        rig.world.add(obj, {
+            let mut o = Obj::new(1);
+            o.pos = [x, 0.0, 0.0];
+            o
+        });
+    }
+    // Kept for a loopback connection alone, and always in scope however far.
+    rig.world.add(4, {
+        let mut o = Obj::new(1);
+        o.nflags |= net_flags::SCOPE_LOCAL;
+        o
+    });
+    rig.world.add(5, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o.pos = [9_000.0, 0.0, 0.0];
+        o
+    });
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    let takes = |rig: &mut Rig<Spaced>, obj| rig.mgr.scope_would_take(&rig.world, obj);
+    assert!(takes(&mut rig, 2), "within the radius");
+    assert!(!takes(&mut rig, 3), "past the radius");
+    assert!(!takes(&mut rig, 4), "for a loopback connection alone");
+    assert!(takes(&mut rig, 5), "always in scope");
+    assert!(!takes(&mut rig, 99), "no such object");
+    // The object moves out and in: the answer follows, with no walk and no ghost made.
+    rig.world.objs.get_mut(&2).unwrap().pos = [3_000.0, 0.0, 0.0];
+    assert!(!takes(&mut rig, 2));
+    rig.world.objs.get_mut(&3).unwrap().pos = [10.0, 0.0, 0.0];
+    assert!(takes(&mut rig, 3));
+    assert_eq!(rig.mgr.ghost_count(), 0, "no ghost was made by asking");
+}
+
+#[test]
+fn a_scope_that_would_scope_nothing_takes_nothing_but_what_is_always_in_scope() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.add(1);
+    rig.world.add(2, {
+        let mut o = Obj::new(1);
+        o.pos = [50.0, 0.0, 0.0];
+        o
+    });
+    rig.world.add(5, {
+        let mut o = Obj::new(1);
+        o.nflags = net_flags::GHOSTABLE | net_flags::SCOPE_ALWAYS;
+        o.pos = [9_000.0, 0.0, 0.0];
+        o
+    });
+    let takes = |rig: &mut Rig<Spaced>, obj| rig.mgr.scope_would_take(&rig.world, obj);
+    // Before ghosting is on, the full query scopes nothing: neither does the answer.
+    rig.mgr.set_scope_object(Some(1));
+    assert!(
+        !takes(&mut rig, 2) && !takes(&mut rig, 5),
+        "ghosting is off"
+    );
+    rig.go();
+    // Ghosting is on but the connection has no scope object yet: the full query has nothing to walk from.
+    rig.mgr.set_scope_object(None);
+    assert!(!takes(&mut rig, 2), "no scope object");
+    assert!(
+        takes(&mut rig, 5),
+        "an object always in scope is taken without one"
+    );
+    rig.mgr.set_scope_object(Some(1));
+    assert!(takes(&mut rig, 2));
+}
+
+#[test]
+fn a_scope_object_with_no_camera_is_queried_as_the_full_query_does() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.world.no_camera = true;
+    rig.add(1);
+    for (obj, x) in [(2, 50.0), (3, 5_000.0)] {
+        rig.world.add(obj, {
+            let mut o = Obj::new(1);
+            o.pos = [x, 0.0, 0.0];
+            o
+        });
+    }
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    let (near, far) = (
+        rig.mgr.scope_would_take(&rig.world, 2),
+        rig.mgr.scope_would_take(&rig.world, 3),
+    );
+    // Not "yes to everything": the near object is within the radius and the far one is not, as the query's default view says.
+    assert!(near, "within the radius");
+    assert!(!far, "past the radius");
+    // The full query, run, ghosts what the answer said it would take and no more.
+    for now in [3_000, 3_001, 6_000] {
+        rig.now = now;
+        let s = rig.send();
+        rig.ack(&s);
+    }
+    assert_eq!(
+        (rig.mgr.holds(2), rig.mgr.holds(3)),
+        (near, far),
+        "the walk agrees with the answer"
+    );
+}
+
+#[test]
+fn an_object_with_no_distance_is_not_taken_unless_the_source_says_so() {
+    let mut rig = Rig::spaced();
+    rig.world.sky = Some(1000.0);
+    rig.world.no_distance = true;
+    rig.add(1);
+    for obj in [2, 3] {
+        rig.world.add(obj, Obj::new(1));
+    }
+    rig.go();
+    rig.mgr.set_scope_object(Some(1));
+    rig.world.reach.push(3);
+    assert!(
+        !rig.mgr.scope_would_take(&rig.world, 2),
+        "no distance, no reach"
+    );
+    assert!(
+        rig.mgr.scope_would_take(&rig.world, 3),
+        "reached by the source's own rule"
+    );
 }

@@ -1,0 +1,43 @@
+# The C header of the native extension ABI, made from ../src/lib.rs.
+language = "C"
+header = """#ifndef TORQUE_PLUGIN_H
+#define TORQUE_PLUGIN_H"""
+usize_is_size_t = true
+autogen_warning = "/* Generated from crates/torque-plugin-abi/src/lib.rs by `just c-header`: do not edit. */"
+include_version = false
+sys_includes = ["stdint.h", "stddef.h", "stdbool.h"]
+no_includes = true
+cpp_compat = true
+documentation = true
+documentation_style = "c99"
+style = "both"
+line_length = 120
+tab_width = 4
+after_includes = """
+
+/* How an extension exports its two symbols. */
+#if defined(_WIN32)
+#define TORQUE_EXPORT __declspec(dllexport)
+#else
+#define TORQUE_EXPORT __attribute__((visibility("default")))
+#endif"""
+trailer = """
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* The two symbols an extension exports: the ABI version it was built against, and its entry point. */
+TORQUE_EXPORT extern const uint32_t torque_plugin_abi_version;
+TORQUE_EXPORT TorqueStatus torque_plugin_init(const TorqueApi *api, TorquePluginInfo *out);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* TORQUE_PLUGIN_H */"""
+
+[export]
+include = ["TorqueApi", "TorquePluginInfo", "TorquePluginInitFn", "TorqueNativeDecl", "TorquePassDecl", "TorqueArg", "TorquePassFrame", "TorqueVertex"]
+
+[fn]
+args = "horizontal"

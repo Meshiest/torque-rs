@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lua tests</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; background: #fff; color: #111; }
+  .failed { color: #b00020; }
+  @media (prefers-color-scheme: dark) { body { background: #111; color: #eee; } .failed { color: #ff8a80; } }
+</style>
+</head>
+<body>
+<p id="status">Running the Lua tests...</p>
+<script type="module">
+  // The Lua extension's tests in this browser (web/lua-check.mjs loads this page): the results go into `window.luaResults`.
+  import { runCases } from './lua-cases.js';
+
+  const status = document.getElementById('status');
+  try {
+    const [lua, check] = await Promise.all(
+      ['torque_lua.wasm', 'check_bg.wasm'].map((file) => WebAssembly.compileStreaming(fetch(file))),
+    );
+    const results = await runCases({ base: new URL('./', location.href), lua, check });
+    const failed = results.filter((r) => !r.ok);
+    status.textContent = `${results.length - failed.length} of ${results.length} passed`;
+    for (const r of failed) {
+      const line = document.createElement('pre');
+      line.className = 'failed';
+      line.textContent = `${r.name}\n${r.error}`;
+      document.body.append(line);
+    }
+    window.luaResults = results;
+  } catch (error) {
+    status.textContent = `The tests did not run: ${error}`;
+    window.luaResults = [{ name: 'load', ok: false, error: String(error) }];
+  }
+</script>
+</body>
+</html>

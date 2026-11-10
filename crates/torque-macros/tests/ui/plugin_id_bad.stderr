@@ -1,0 +1,11 @@
+error: a plugin id is ASCII letters, digits, '_', '-', '.' and ':', and not empty
+ --> tests/ui/plugin_id_bad.rs:4:15
+  |
+4 | #[plugin(id = "torque gamepad")]
+  |               ^^^^^^^^^^^^^^^^
+
+error: a plugin id is one per type: implement `PluginType` by hand for a generic plugin
+  --> tests/ui/plugin_id_bad.rs:12:15
+   |
+12 | struct Wrapper<T>(T);
+   |               ^^^

@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use collide::math::Matrix;
 use ghosts::{NetStr, Xf};
 use net::control::{ClientBlock, ControlData, ControlSection, ServerHead};
 use net::ghost::GhostChange;
@@ -100,6 +101,18 @@ pub enum Pose {
         position: [f32; 3],
         rotation: Option<(bool, f32)>,
     },
+}
+
+impl Pose {
+    /// The angle about +z of an Item's rotation block (`Item::unpackUpdate`: the axis is (0, 0, -1) when the flag is set, (0, 0, 1)
+    /// otherwise), 0 for no block.
+    #[must_use]
+    pub fn item_angle(rotation: Option<(bool, f32)>) -> f32 {
+        rotation.map_or(
+            0.0,
+            |(negative, angle)| if negative { -angle } else { angle },
+        )
+    }
 }
 
 /// The most wheels a vehicle look holds (`WheeledVehicleData::MaxWheels`).
@@ -256,6 +269,38 @@ impl GhostLog {
     }
 }
 
+/// The most indices [`TouchedGhosts`] keeps between takes.
+pub const MAX_TOUCHED_GHOSTS: usize = 8_192;
+
+/// The ghosts the sections applied since the last [`ClientWorld::take_touched`] created, updated or deleted, for a reader that
+/// looks only at what changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TouchedGhosts {
+    /// Exactly these changed (an index may be there more than once).
+    Listed(Vec<u32>),
+    /// Any may have: a reset, or more than [`MAX_TOUCHED_GHOSTS`] changes.
+    All,
+}
+
+impl Default for TouchedGhosts {
+    fn default() -> TouchedGhosts {
+        TouchedGhosts::Listed(Vec::new())
+    }
+}
+
+impl TouchedGhosts {
+    pub fn push(&mut self, index: u32) {
+        let TouchedGhosts::Listed(indices) = self else {
+            return;
+        };
+        if indices.len() >= MAX_TOUCHED_GHOSTS {
+            *self = TouchedGhosts::All;
+            return;
+        }
+        indices.push(index);
+    }
+}
+
 /// The most sequence fields of one `TSShapeConstructor` read (the client's import of its sequences).
 pub const MAX_CONSTRUCTOR_SEQUENCES: usize = 128;
 
@@ -388,6 +433,10 @@ impl<S: ClientSet> GhostIndex<S> {
     }
 }
 
+/// The most ghosts a client's world follows, whatever ghost table the connection's accept allows (an engine server's 24-bit
+/// table names 16.7 million): a ghost created past it is left out (counted in [`ClientWorld::over_cap`]) until room is made.
+pub const MAX_WORLD_GHOSTS: usize = 1 << 18;
+
 /// The engine's half of the client's world: the ghosts and their records, the datablocks, the net strings, the
 /// control object and the eye, the images, threads and effects the records drive. A game's view wraps it.
 #[derive(Debug, Clone, PartialEq)]
@@ -412,6 +461,8 @@ pub struct ClientWorld<S: ClientSet> {
     /// Ghosts the table named that the world could not follow: a change for an index the table no longer held (created and deleted
     /// in one packet), and updates of an index the world did not have.
     pub skipped_changes: usize,
+    /// New ghosts not followed because the world held [`MAX_WORLD_GHOSTS`] already.
+    pub over_cap: usize,
 
     /// Client-to-server net strings, for naming the client's remote commands (the game's client command markers).
     pub client_strings: BTreeMap<u8, Vec<u8>>,
@@ -429,6 +480,9 @@ pub struct ClientWorld<S: ClientSet> {
     /// The ghosts made and deleted since the last [`ClientWorld::take_ghost_log`], in order (the client host's script objects follow it
     /// without walking the table), and the updates that changed a ghost's datablock; any other update logs nothing.
     pub ghost_log: GhostLog,
+
+    /// The ghosts the applied sections changed since the last [`ClientWorld::take_touched`].
+    pub touched: TouchedGhosts,
 
     /// The last server-to-client remote command of each name the world keeps ([`ClientSet::KEPT_COMMANDS`], lower case): its
     /// arguments as the client's script receives them (a tag through the string table), each at most [`MAX_KEPT_ARG_BYTES`], at most
@@ -563,6 +617,59 @@ pub struct ClientWorld<S: ClientSet> {
     /// The view distance's cap: the scene's visible distance is the Sky's or this, whichever is less, the fog distance scaled with
     /// it. The client host sets it each frame by its game's rule. None: no cap.
     pub max_view_distance: Option<f32>,
+
+    /// The plugin ghost classes the client draws as shapes, each with the function that turns a record into one (the client host
+    /// sets it from its engine's plugins; empty for a world fed only by records).
+    pub plugin_shapes: ghosts::plugin::DrawnShapes,
+
+    /// The shapes plugins keep still without a ghost of them ([`ghosts::plugin::Still`]): the client host hands the world its
+    /// engine's set when a connection starts, and the plugins that own the shapes replace it as their state changes.
+    pub stills: ghosts::plugin::PluginStills,
+
+    /// Where the plugin ghosts that are shown between their updates were drawn last ([`ClientWorld::warped_pose`]).
+    pub warps: super::warp::PoseWarps,
+
+    /// The scene hierarchy the server's per-ghost blocks carried ([`super::links`]): which ghost hangs on which, and its local
+    /// pose. [`ClientWorld::world_pose`] draws a child through it.
+    pub links: super::links::ClientLinks,
+}
+
+/// A ghost's pose for a prediction tick ([`ClientWorld::tick_pose_in`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TickPose {
+    pub world: Matrix,
+    pub scale: [f32; 3],
+    /// The ghost the chain rests on: the one whose own or record pose it starts from (the ghost itself when nothing
+    /// carries it).
+    pub base: u32,
+}
+
+/// The tick poses one prediction tick's collision world worked out ([`ClientWorld::tick_pose_in`]): each ghost once,
+/// whatever chains reach it.
+#[derive(Debug, Clone, Default)]
+pub struct TickPoses {
+    known: BTreeMap<u32, Option<TickPose>>,
+    stopped: bool,
+}
+
+impl TickPoses {
+    /// Whether a charge was refused: nothing more is worked out.
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// Lets later calls work again after a refused charge, for a caller whose allowance is new: the ghosts already worked
+    /// out stay known, so none of them is charged again; one whose chain the refusal cut is charged when asked for again.
+    pub fn resume(&mut self) {
+        self.stopped = false;
+    }
+
+    /// How many ghosts were worked out.
+    #[must_use]
+    pub fn worked(&self) -> usize {
+        self.known.len()
+    }
 }
 
 // The derive would ask the set's classes and records for defaults they need not have.
@@ -576,11 +683,13 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             resets: Default::default(),
             last_record: Default::default(),
             skipped_changes: Default::default(),
+            over_cap: Default::default(),
             client_strings: Default::default(),
             birth_order: Default::default(),
             births: Default::default(),
             ghost_index: Default::default(),
             ghost_log: Default::default(),
+            touched: Default::default(),
             commands: Default::default(),
             view: Default::default(),
             control_eye: Default::default(),
@@ -615,6 +724,10 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             exploded: Default::default(),
             hide_own_items: Default::default(),
             max_view_distance: Default::default(),
+            plugin_shapes: Default::default(),
+            stills: Default::default(),
+            warps: Default::default(),
+            links: Default::default(),
         }
     }
 }
@@ -651,6 +764,11 @@ pub struct VehicleUpdate<S: ClientSet> {
 }
 
 impl<S: ClientSet> ClientWorld<S> {
+    /// The ghosts changed since the last take ([`TouchedGhosts`]), emptied.
+    pub fn take_touched(&mut self) -> TouchedGhosts {
+        std::mem::take(&mut self.touched)
+    }
+
     /// The ghost log since the last take (see [`ClientWorld::ghost_log`]), emptied.
     pub fn take_ghost_log(&mut self) -> GhostLog {
         std::mem::take(&mut self.ghost_log)
@@ -668,6 +786,25 @@ impl<S: ClientSet> ClientWorld<S> {
     /// A datablock's string field (its first value).
     pub fn datablock_text(&self, id: u32, field: &str) -> Option<&[u8]> {
         self.datablocks.get(&id)?.text(field)
+    }
+
+    /// Where ghost `index` is drawn when its record puts it at `pose` and the client shows it between the server's updates
+    /// ([`super::warp`]): the pose it is warping through at the client's clock ([`ClientWorld::anim_ms`]), `pose` itself once the warp
+    /// is over, and always `pose` while the world does not animate (a world fed only by records draws every ghost where its record
+    /// puts it).
+    pub fn warped_pose(&self, index: u32, pose: Pose) -> Pose {
+        if !self.animate {
+            return pose;
+        }
+        let Some(ghost) = self.ghosts.get(&index) else {
+            return pose;
+        };
+        if self.warps.len() > self.ghosts.len() {
+            self.warps.retain(|i| self.ghosts.contains_key(&i));
+        }
+        let birth = self.birth_order.get(&index).copied().unwrap_or(0);
+        self.warps
+            .pose(index, birth, ghost.updates, pose, self.anim_ms)
     }
 
     /// The ghosts of one class.
@@ -929,6 +1066,7 @@ impl<S: ClientSet> ClientWorld<S> {
         for change in changes {
             match *change {
                 GhostChange::Cleared => {
+                    self.touched = TouchedGhosts::All;
                     let gone: Vec<u32> = self.ghosts.keys().copied().collect();
                     for ghost in gone {
                         self.push_effect(Effect::GhostGone { ghost });
@@ -943,10 +1081,13 @@ impl<S: ClientSet> ClientWorld<S> {
                     self.image_fire_counts.clear();
                     self.threads.clear();
                     self.exploded.clear();
+                    self.links.clear();
                     self.resets += 1;
                     hooks.cleared(self);
                 }
                 GhostChange::Deleted(index) => {
+                    self.touched.push(index);
+                    self.unlink_gone(index);
                     let gone = self.ghosts.remove(&index);
                     if let Some(gone) = &gone {
                         self.ghost_index.remove(index, gone);
@@ -962,10 +1103,15 @@ impl<S: ClientSet> ClientWorld<S> {
                     hooks.deleted(self, index, gone.as_ref());
                 }
                 GhostChange::Created(index) => {
+                    self.touched.push(index);
                     let Some(o) = table.ghost(index) else {
                         self.skipped_changes += 1;
                         continue;
                     };
+                    if self.ghosts.len() >= MAX_WORLD_GHOSTS && !self.ghosts.contains_key(&index) {
+                        self.over_cap += 1;
+                        continue;
+                    }
                     let sent = o.record();
                     let position = sent.and_then(|r| r.point(cp));
                     self.images.remove(&index);
@@ -993,6 +1139,9 @@ impl<S: ClientSet> ClientWorld<S> {
                         index,
                         birth: self.births,
                     });
+                    if self.ghosts.contains_key(&index) {
+                        self.unlink_gone(index);
+                    }
                     let made = Ghost {
                         class: o.class(),
                         serial: o.serial(),
@@ -1009,9 +1158,14 @@ impl<S: ClientSet> ClientWorld<S> {
                     if let Some(g) = self.ghosts.get(&index) {
                         self.ghost_index.insert(index, g);
                     }
+                    self.links.created(index);
+                    if let Some(block) = o.block() {
+                        self.apply_block(index, block);
+                    }
                     hooks.created(self, index, o, old.as_ref());
                 }
                 GhostChange::Updated(index) => {
+                    self.touched.push(index);
                     let sent = table.ghost(index).and_then(SentGhost::record);
                     let held = self.ghosts.contains_key(&index);
                     if held && let Some(images) = sent.and_then(ClientRecord::images) {
@@ -1124,9 +1278,216 @@ impl<S: ClientSet> ClientWorld<S> {
                             datablock,
                         });
                     }
+                    if let Some(block) = o.block() {
+                        self.apply_block(index, block);
+                    }
                     hooks.updated(self, index, o);
                 }
             }
+        }
+        let ghosts = &self.ghosts;
+        self.links
+            .settle(&|i| ghosts.contains_key(&i), self.clock_ms.unwrap_or(0));
+    }
+
+    /// Ghost `index`'s per-ghost block.
+    fn apply_block(&mut self, index: u32, block: &ghosts::block::GhostBlock) {
+        let ghosts = &self.ghosts;
+        self.links.apply(
+            index,
+            block,
+            &|i| ghosts.contains_key(&i),
+            self.clock_ms.unwrap_or(0),
+            self.anim_ms,
+        );
+    }
+
+    /// Ghost `index` is going: its children stay where they are drawn now, taken off it.
+    fn unlink_gone(&mut self, index: u32) {
+        let children: Vec<u32> = self.links.children(index).collect();
+        if children.is_empty()
+            && self.links.parent(index).is_none()
+            && !self.links.is_waiting(index)
+            && !self.links.is_awaited(index)
+        {
+            return;
+        }
+        let worlds: Vec<(u32, (Matrix, [f32; 3]))> = children
+            .into_iter()
+            .filter_map(|c| Some((c, self.world_pose(c, &|_, _| None)?)))
+            .collect();
+        let ghosts = &self.ghosts;
+        self.links
+            .deleted(index, worlds, &|i| i != index && ghosts.contains_key(&i));
+    }
+
+    /// Where ghost `index` is in the world, and its scale: the control object the client predicts where the prediction draws
+    /// it (`control_render`: a controlled child on its parent's drawn pose); a child at its parent's place times the parent's
+    /// node (`nodes` answers a ghost's node in its own space, as its shape is posed; a node it cannot answer counts as the
+    /// parent's origin) times its local pose; any other ghost where the client draws it (its run or held pose) or its record
+    /// puts it.
+    /// `None` for a ghost the client does not hold or whose record has no pose.
+    pub fn world_pose(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+    ) -> Option<(Matrix, [f32; 3])> {
+        self.world_pose_at(index, nodes, 0)
+    }
+
+    fn world_pose_at(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        depth: usize,
+    ) -> Option<(Matrix, [f32; 3])> {
+        if let Some(held) = self.links.held(index) {
+            return Some(held);
+        }
+        let g = self.ghosts.get(&index)?;
+        let scale = g.scale().unwrap_or([1.0; 3]);
+        // The control object the client predicts is where its prediction draws it (a child of a parent on the parent's drawn
+        // pose), not where the server's last local pose puts it.
+        if self.control.object == Some(index)
+            && let Some(p) = &self.control_render
+        {
+            return Some((super::links::record_matrix(p), scale));
+        }
+        // The tree holds every chain to its hard depth; the bound only stops a walk that would not end.
+        if depth <= hierarchy::HARD_DEPTH
+            && let Some(parent) = self.links.parent(index)
+            && let Some(local) = self.links.local(index, self.anim_ms, self.animate)
+            && let Some((world, parent_scale)) =
+                self.world_pose_at(parent.object.0, nodes, depth + 1)
+        {
+            let node = match parent.node {
+                hierarchy::NodeRef::Origin => None,
+                hierarchy::NodeRef::Node(n) => nodes(parent.object.0, n),
+            };
+            let at = hierarchy::Pose {
+                world,
+                scale: parent_scale,
+            };
+            return Some((hierarchy::compose(&at, node.as_ref(), &local), scale));
+        }
+        Some((super::links::record_matrix(&self.own_pose(index)?), scale))
+    }
+
+    /// Where ghost `index` is for a prediction tick, and its scale: what the client's collision world places it at
+    /// ([`ClientWorld::tick_pose_in`] with nothing kept and nothing charged).
+    pub fn tick_pose(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+    ) -> Option<(Matrix, [f32; 3])> {
+        let pose = self.tick_pose_in(index, nodes, own, &mut TickPoses::default(), &mut || true)?;
+        Some((pose.world, pose.scale))
+    }
+
+    /// Where ghost `index` is for a prediction tick: a ghost the client runs itself where `own` holds it; a child at its
+    /// parent's tick pose times the parent's node (`nodes`, as for [`ClientWorld::world_pose`]) times the local pose the
+    /// server last sent (exactly the server's, never blended); any other ghost where its record puts it (the server's latest
+    /// pose of it, not where a frame draws it). Each ghost a chain reaches is worked out once into `poses` and charged one
+    /// `charge` call; once `charge` refuses, this and every later call on `poses` answer `None` ([`TickPoses::stopped`]).
+    /// `None` also for a ghost the client does not hold or whose record has no pose.
+    pub fn tick_pose_in(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+    ) -> Option<TickPose> {
+        self.tick_through(index, nodes, own, poses, charge, 0)
+    }
+
+    fn tick_through(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+        depth: usize,
+    ) -> Option<TickPose> {
+        if poses.stopped {
+            return None;
+        }
+        if let Some(known) = poses.known.get(&index) {
+            return *known;
+        }
+        if !charge() {
+            poses.stopped = true;
+            return None;
+        }
+        let placed = self.tick_placed(index, nodes, own, poses, charge, depth);
+        // A chain cut by the charge is not kept: its ghosts were not worked out.
+        if poses.stopped {
+            return None;
+        }
+        poses.known.insert(index, placed);
+        placed
+    }
+
+    fn tick_placed(
+        &self,
+        index: u32,
+        nodes: &dyn Fn(u32, u16) -> Option<Matrix>,
+        own: &dyn Fn(u32) -> Option<Matrix>,
+        poses: &mut TickPoses,
+        charge: &mut dyn FnMut() -> bool,
+        depth: usize,
+    ) -> Option<TickPose> {
+        let placed = |world: Matrix, scale: [f32; 3]| TickPose {
+            world,
+            scale,
+            base: index,
+        };
+        if let Some((world, scale)) = self.links.held(index) {
+            return Some(placed(world, scale));
+        }
+        let g = self.ghosts.get(&index)?;
+        let scale = g.scale().unwrap_or([1.0; 3]);
+        if let Some(world) = own(index) {
+            return Some(placed(world, scale));
+        }
+        // The tree holds every chain to its hard depth; the bound only stops a walk that would not end.
+        if depth <= hierarchy::HARD_DEPTH
+            && let Some(parent) = self.links.parent(index)
+            && let Some(local) = self.links.local(index, self.anim_ms, false)
+            && let Some(on) =
+                self.tick_through(parent.object.0, nodes, own, poses, charge, depth + 1)
+        {
+            let node = match parent.node {
+                hierarchy::NodeRef::Origin => None,
+                hierarchy::NodeRef::Node(n) => nodes(parent.object.0, n),
+            };
+            let at = hierarchy::Pose {
+                world: on.world,
+                scale: on.scale,
+            };
+            return Some(TickPose {
+                world: hierarchy::compose(&at, node.as_ref(), &local),
+                scale,
+                base: on.base,
+            });
+        }
+        Some(placed(super::links::record_matrix(&g.pose()?), scale))
+    }
+
+    /// Where ghost `index` is drawn when nothing carries it: the client's own pose for what it runs (the control object, a
+    /// vehicle, a watched ghost), else its record's.
+    pub fn own_pose(&self, index: u32) -> Option<Pose> {
+        if let Some(p) = self.vehicle_render.get(&index) {
+            return Some(*p);
+        }
+        if let Some(p) = self.ghost_render.get(&index) {
+            return Some(*p);
+        }
+        match &self.control_render {
+            Some(p) if self.control.object == Some(index) => Some(*p),
+            _ => self.ghosts.get(&index)?.pose(),
         }
     }
 
@@ -1274,5 +1635,29 @@ impl<S: ClientSet> ClientWorld<S> {
         for (ghost, slot, event) in taken {
             self.push_effect(Effect::Image { ghost, slot, event });
         }
+    }
+}
+
+#[cfg(test)]
+mod touched_tests {
+    use super::*;
+
+    #[test]
+    fn the_touched_list_keeps_what_changed_until_taken_and_overflows_past_its_cap() {
+        let mut touched = TouchedGhosts::default();
+        touched.push(7);
+        touched.push(7);
+        touched.push(2);
+        assert_eq!(touched, TouchedGhosts::Listed(vec![7, 7, 2]));
+        for i in 0..MAX_TOUCHED_GHOSTS as u32 + 1 {
+            touched.push(i);
+        }
+        assert_eq!(touched, TouchedGhosts::All);
+        touched.push(1);
+        assert_eq!(
+            touched,
+            TouchedGhosts::All,
+            "an overflowed list keeps nothing"
+        );
     }
 }

@@ -281,6 +281,11 @@ impl WorldScene {
         self.ghosts.own()
     }
 
+    /// The plugin ghosts (the sleeping props) the last frame drew as still copies of their shapes' static batches.
+    pub fn resting_count(&self) -> usize {
+        self.ghosts.resting_count()
+    }
+
     /// The frame's motion by `dt` seconds, with nothing drawn: the figures posed where the client runs them.
     pub fn update(
         &mut self,
@@ -307,7 +312,7 @@ impl WorldScene {
         world: &TgeWorld,
         eye: &Eye,
     ) -> Vec<DynamicObject> {
-        let mut out = self.ghosts.objects(view, assets, world);
+        let mut out = self.ghosts.objects(view, assets, world, Some(eye));
         for object in &mut out {
             for draw in &mut object.draws {
                 if let Some((_, sampler)) = draw.texture.as_mut() {

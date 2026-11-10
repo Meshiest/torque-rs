@@ -33,8 +33,14 @@ impl<G: App> Seat<G> {
     /// `game` drawn at `size` on `gpu`.
     pub fn new(mut game: G, gpu: &Gpu, size: (u32, u32)) -> Result<Seat<G>, String> {
         game.host().surface_size(size);
+        let mut view = game.view(gpu);
+        view.attach_to(game.host());
+        // The emitter kinds run by the frame's step, not by how long the machine took to draw it.
+        view.set_effect_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
+        // Nor does what the renderer draws wait on the clock: its uploads and the clouds' noise are not held to a time.
+        view.renderer().set_unbudgeted();
         Ok(Seat {
-            view: game.view(gpu),
+            view,
             target: gpu.offscreen(size.0, size.1).map_err(|e| e.to_string())?,
             eye: None,
             clock: web_time::Instant::now(),
@@ -50,9 +56,14 @@ impl<G: App> Seat<G> {
         }
         let (gui, eye) = self.game.frame(&mut self.view);
         let eye = self.eye.unwrap_or(eye);
+        // A frame ages the debug gizmos by its step, not by how long the machine took to draw it.
+        #[cfg(feature = "gizmos")]
+        self.view
+            .set_gizmo_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
         self.view.draw(gpu, &self.target.color, &gui, eye)?;
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
+        self.view.report_warnings(self.game.host());
         Ok(())
     }
 
@@ -78,6 +89,9 @@ impl<G: App> Seat<G> {
         for _ in 0..SETTLE_FRAMES {
             let (_, eye) = self.game.frame(&mut self.view);
             let eye = self.eye.unwrap_or(eye);
+            #[cfg(feature = "gizmos")]
+            self.view
+                .set_gizmo_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
             self.view.draw_world(&self.target.color, rect, eye)?;
         }
         gpu.read_back(&self.target).map_err(|e| e.to_string())

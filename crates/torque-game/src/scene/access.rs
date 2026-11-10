@@ -86,6 +86,25 @@ pub fn set_field(vm: &mut Vm, id: ObjId, name: &'static [u8], value: Value) {
     }
 }
 
+/// [`set_field`] for several fields of one object, the object looked up once (a writeback of a whole record each tick).
+pub fn set_fields<const N: usize>(vm: &mut Vm, id: ObjId, fields: [(&'static [u8], Value); N]) {
+    let objects = vm.objects_mut();
+    let Some(class) = objects.get(id).map(|o| o.class()) else {
+        return;
+    };
+    let slots = fields
+        .each_ref()
+        .map(|(name, _)| objects.classes.static_slot(class, name));
+    let Some(object) = objects.get_mut(id) else {
+        return;
+    };
+    for (slot, (_, value)) in slots.into_iter().zip(fields) {
+        if let Some(stored) = slot.and_then(|s| object.slot_mut(s)) {
+            *stored = value;
+        }
+    }
+}
+
 /// The object's transform, the matrix its `position` and `rotation` fields share, as sixteen floats.
 pub fn matrix_of(vm: &Vm, id: ObjId) -> Option<Matrix> {
     with_value(vm, id, b"position", |v| match v {
@@ -95,7 +114,8 @@ pub fn matrix_of(vm: &Vm, id: ObjId) -> Option<Matrix> {
     .flatten()
 }
 
-/// Makes `matrix` the object's transform (false for an object with no such field).
+/// Makes `matrix` the object's transform (false for an object with no such field), and tells the scene hierarchy, if the
+/// server has one ([`super::links::written`]).
 pub fn set_matrix(vm: &mut Vm, id: ObjId, matrix: &Matrix) -> bool {
     let Some(slot) = slot_of(vm, id, b"position") else {
         return false;
@@ -108,6 +128,7 @@ pub fn set_matrix(vm: &mut Vm, id: ObjId, matrix: &Matrix) -> bool {
         return false;
     };
     **rows = rows_of(matrix);
+    super::links::written(vm, id);
     true
 }
 

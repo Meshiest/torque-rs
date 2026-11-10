@@ -153,3 +153,22 @@ fn a_nearest_shape_material_samples_nearest_and_a_tge_one_as_before() {
         "a TGE material: linear, as before"
     );
 }
+
+#[test]
+fn a_table_of_mesh_places_past_the_largest_buffer_leaves_the_loose_draws_out() {
+    let gpu = match torque_render_core::Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    let mut world: HdWorld<crate::ext::NoExtension> = HdWorld::new(&gpu);
+    assert!(world.nodes_fit(0) && world.nodes_fit(1000));
+    world.set_buffer_cap(Some((NODE_BYTES * 200) as u64));
+    // The table and its room to grow (a quarter and 64 more) within the cap, or not: the upload then leaves out every loose
+    // draw before the table is touched, so no draw reads places of another frame.
+    assert!(world.nodes_fit(100));
+    assert!(!world.nodes_fit(120));
+    assert!(world.nodes_fit(0));
+}

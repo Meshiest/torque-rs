@@ -26,6 +26,16 @@ impl<'a> Source<'a> {
         self.data.is_empty()
     }
 
+    /// Whether every byte of the file has been consumed (what follows is the fake EOI).
+    pub(super) fn exhausted(&self) -> bool {
+        self.pos >= self.data.len()
+    }
+
+    /// The file's length in bytes (the fake EOIs after it do not count).
+    pub(super) fn len(&self) -> usize {
+        self.data.len()
+    }
+
     pub(super) fn byte(&mut self) -> u8 {
         let b = match self.data.get(self.pos) {
             Some(&b) => b,

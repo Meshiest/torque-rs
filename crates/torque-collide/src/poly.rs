@@ -1105,7 +1105,9 @@ impl PolyList for ExtrudedPolyList {
         if facing > 0.0 || self.collisions.count >= MAX_COLLISIONS || self.base.overflowed {
             return;
         }
-        let mut hits: Vec<usize> = Vec::new();
+        // A fixed array: this runs for every polygon a Player's or an item's extruded list meets.
+        let mut hit = [0usize; MAX_EXTRUDED_FACES];
+        let mut hits = 0;
         for fi in 0..self.faces.len() {
             if !self.faces[fi].active {
                 continue;
@@ -1113,27 +1115,29 @@ impl PolyList for ExtrudedPolyList {
             let f = self.faces[fi].plane;
             let face_dot = -dot(f.normal(), pp.normal());
             self.faces[fi].face_dot = face_dot;
-            if !(0.0 >= face_dot) && self.test_poly(fi) && hits.len() < MAX_EXTRUDED_FACES {
-                hits.push(fi);
+            if !(0.0 >= face_dot) && self.test_poly(fi) && hits < MAX_EXTRUDED_FACES {
+                hit[hits] = fi;
+                hits += 1;
             }
         }
-        if hits.is_empty() {
+        if hits == 0 {
             for fi in 0..self.faces.len() {
                 let f = self.faces[fi];
                 if f.active
                     && !(f.face_dot > 0.0)
                     && self.test_poly(fi)
-                    && hits.len() < MAX_EXTRUDED_FACES
+                    && hits < MAX_EXTRUDED_FACES
                 {
-                    hits.push(fi);
+                    hit[hits] = fi;
+                    hits += 1;
                 }
             }
-            if hits.is_empty() {
+            if hits == 0 {
                 return;
             }
         }
-        let mut best = hits[0];
-        for &h in &hits[1..] {
+        let mut best = hit[0];
+        for &h in &hit[1..hits] {
             let (b, o) = (self.faces[best].face_dot, self.faces[h].face_dot);
             if !(b >= o) {
                 best = h;

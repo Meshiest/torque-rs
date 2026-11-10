@@ -6,12 +6,17 @@
 //! frame size stays cheap; `TORQUE_FUZZ_IMAGES` sets the count.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::time::{Duration, Instant};
 
 use crate::jpeg::{self, Limits};
 use crate::testenc::{Enc, Rng, coarse_script, full_script};
 
 /// The default number of cases.
 const CASES: usize = 50_000;
+
+/// The longest any one case may take, in a debug build: a decode tied to its input's size takes milliseconds, so a case near this
+/// is a path whose work grows faster than the input.
+const SLOWEST_CASE: Duration = Duration::from_secs(2);
 
 fn png_seeds() -> Vec<Vec<u8>> {
     use ::png::{BitDepth as D, ColorType as C};
@@ -216,11 +221,10 @@ fn hostile_images_never_panic() {
         .unwrap_or(CASES);
     let pngs = png_seeds();
     let jpegs = jpeg_seeds();
-    let limits = Limits {
-        max_dimension: 4096,
-        max_pixels: 4096,
-        max_scans: 64,
-    };
+    // The default caps: a mutated frame header reaches the pixel, scan and work caps that real files meet. The ties to the file's
+    // size keep each case small, and the slowest case is reported.
+    let limits = Limits::default();
+    let mut slowest = (Duration::ZERO, 0usize);
     let mut rng = Rng(0x00c0_ffee_1234_5678);
     let (mut ok, mut refused) = (0usize, 0usize);
     let mut panics = Vec::new();
@@ -235,6 +239,7 @@ fn hostile_images_never_panic() {
                 mutate_jpeg(&mut rng, &mut f);
             }
         }
+        let started = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| {
             if is_png {
                 crate::png::decode(&f).is_ok()
@@ -242,6 +247,7 @@ fn hostile_images_never_panic() {
                 jpeg::decode_with(&f, &limits).is_ok()
             }
         }));
+        slowest = slowest.max((started.elapsed(), case));
         match result {
             Ok(true) => ok += 1,
             Ok(false) => refused += 1,
@@ -249,8 +255,16 @@ fn hostile_images_never_panic() {
         }
     }
     eprintln!(
-        "IMAGES-FUZZ {cases} cases: {ok} decoded, {refused} refused, {} panics",
-        panics.len()
+        "IMAGES-FUZZ {cases} cases: {ok} decoded, {refused} refused, {} panics; slowest case {} took {:?}",
+        panics.len(),
+        slowest.1,
+        slowest.0
+    );
+    assert!(
+        slowest.0 < SLOWEST_CASE,
+        "case {} took {:?}",
+        slowest.1,
+        slowest.0
     );
     assert!(
         panics.is_empty(),

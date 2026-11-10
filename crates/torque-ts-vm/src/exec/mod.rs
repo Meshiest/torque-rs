@@ -26,6 +26,18 @@ use crate::ns::{Callable, EntryRef, Holder};
 use crate::sim::ObjId;
 use crate::vm::{NativeCall, Vm, VmError};
 
+/// What an executor keeps of the state of a run started from Rust ([`Executor::save`]), which it reads back in
+/// [`Executor::restore`]: a plain value, so that saving one costs no allocation. Each executor has its own variant;
+/// one that has nothing to put back uses `Nothing`.
+#[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub enum RunMark {
+    #[default]
+    Nothing,
+    Classic(classic::ClassicMark),
+    Torque3d(torque3d::Torque3dMark),
+}
+
 /// The opcode loop of one script dialect (see the module documentation).
 pub trait Executor: Any {
     /// Runs `block` from code index `start`: a script function's body when `call` is given (its arguments and
@@ -46,12 +58,13 @@ pub trait Executor: Any {
     /// warned and ran nothing leaves "", an object's `onRemove` callback is handed the object's id).
     fn set_result(&self, text: &[u8]);
 
-    /// What a run started from Rust must be able to put back (see [`restore`](Self::restore)).
-    fn save(&self) -> Box<dyn Any>;
+    /// What a run started from Rust must be able to put back (see [`restore`](Self::restore)). It must not allocate
+    /// per call: every call from the host into script takes one.
+    fn save(&self) -> RunMark;
 
     /// The run started at `saved` has ended: `unwind` after an error (the evaluation state goes back to what the
     /// run found, so a native that swallows the error leaves the surrounding expression intact).
-    fn restore(&self, saved: Box<dyn Any>, unwind: bool);
+    fn restore(&self, saved: RunMark, unwind: bool);
 
     /// Work units the executor did since the last call (bytes its evaluation state wrote), for the step budget.
     fn take_work(&self) -> u64;
@@ -278,11 +291,11 @@ impl Executor for NoExecutor {
 
     fn set_result(&self, _text: &[u8]) {}
 
-    fn save(&self) -> Box<dyn Any> {
-        Box::new(())
+    fn save(&self) -> RunMark {
+        RunMark::Nothing
     }
 
-    fn restore(&self, _saved: Box<dyn Any>, _unwind: bool) {}
+    fn restore(&self, _saved: RunMark, _unwind: bool) {}
 
     fn take_work(&self) -> u64 {
         0

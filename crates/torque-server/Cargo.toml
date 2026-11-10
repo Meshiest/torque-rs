@@ -19,6 +19,8 @@ web-time = "1.1"
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The packet layer: datagram caps, the server query's request types, the bit streams.
 torque-net = { path = "../torque-net" }
+# The plugin registry the channels are added to.
+torque-engine = { path = "../torque-engine" }
 # The datablocks' computed values a game's record writer reads beside the host's view.
 torque-game = { path = "../torque-game" }
 # TGE's networked class lists, the default class table of a server's codecs; the net strings a ghost record packs.
@@ -37,6 +39,8 @@ torque-vehicle = { path = "../torque-vehicle" }
 # HTTP request heads, the handshake's hash, and TLS through rustls with the ring provider.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tungstenite = { version = "0.30", default-features = false, optional = true }
+# The files the HTTP side serves are read without following a link, within a cap.
+torque-resource = { path = "../torque-resource", optional = true }
 httparse = { version = "1.10", optional = true }
 sha1 = { version = "0.11", optional = true }
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"], optional = true }
@@ -48,7 +52,7 @@ ring = { version = "0.17", default-features = false, optional = true }
 
 [features]
 # The web transport: HTTP and WebSocket on one port, and UDP beside it (`net::web`).
-web = ["dep:tungstenite", "dep:httparse", "dep:sha1", "dep:rustls"]
+web = ["dep:torque-resource", "dep:tungstenite", "dep:httparse", "dep:sha1", "dep:rustls"]
 # WebRTC data channels for the web transport's browsers, signaled over their game sockets (`net::web::rtc`).
 webrtc = ["web", "dep:str0m", "dep:ring"]
 # The room protocol (`net::room`): how a player who hosts a game and the players who join it find each other through a room
@@ -58,6 +62,8 @@ rooms = []
 p2p = ["webrtc", "rooms"]
 
 [dev-dependencies]
+# The benches.
+criterion = { workspace = true }
 # The web transport's TLS tests: a certificate made for the test.
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
 # The web transport's tests: the client's side of TLS and of the WebSocket.
@@ -71,6 +77,16 @@ torque-shapes = { path = "../torque-shapes" }
 torque-shape-builder = { path = "../torque-shape-builder" }
 # The interior tests' wall, built from brushes.
 torque-interior-builder = { path = "../torque-interior-builder" }
+# The plugin class tests: an engine whose plugin adds a ghost class, and the client's ghost codec that reads it.
+torque-engine = { path = "../torque-engine" }
+torque-ghost-world = { path = "../torque-ghost-world" }
+# The script command tests: a real client and a real server in both network protocols.
+torque-app = { path = "../torque-app" }
+torque-client = { path = "../torque-client" }
+
+[[bench]]
+name = "ghost_tick"
+harness = false
 
 [[test]]
 name = "web"

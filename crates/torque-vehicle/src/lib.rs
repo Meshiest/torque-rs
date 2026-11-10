@@ -7,6 +7,8 @@
 //! - [`wheeled`]: `WheeledVehicle` (wheels, tires, springs, `updateForces`, `extendWheels`), and the
 //!   subclass seam ([`wheeled::WheeledClass`]); [`ext`]: the per-object fields a subclass adds.
 //! - [`flying`]: `FlyingVehicle` (`updateForces`, `updateMove`, `useCreateHeight`).
+//! - [`solver`]: the seam under the sub-step ([`solver::BodySolver`]): what resolves the body against the world and integrates
+//!   it. TGE's solver is the default; a host picks another per datablock ([`host::VehicleHost::body_solver`]).
 //! - [`words`]: `writePacketData` (both classes) as plain words.
 //! - [`host`]: what the host provides; [`run`]: running a vehicle over a sequence of moves.
 //! - [`library`]: the table of routines whose arithmetic a host may replace ([`library::VehicleLibrary`]); this crate's own is
@@ -37,6 +39,7 @@ pub mod library;
 pub mod math;
 pub mod rigid;
 pub mod run;
+pub mod solver;
 pub mod state;
 pub mod tick;
 pub mod wheeled;
@@ -45,6 +48,7 @@ pub mod words;
 pub use data::{FlyingVehicleData, VehicleData, WheeledVehicleData};
 pub use host::VehicleHost;
 pub use rigid::Rigid;
+pub use solver::BodySolver;
 pub use state::VehicleState;
 pub use tick::{MAX_SUBSTEPS, Vehicle, process_tick};
 

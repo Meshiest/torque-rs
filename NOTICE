@@ -12,6 +12,11 @@ and the copyright notices of the files it follows are reproduced here:
     Copyright (C) 2015 Faust Logic, Inc.
     Copyright (c) 2021 TGEMIT Authors & Contributors
 
+The optional torque-physics-rapier crate builds on Rapier, parry, nalgebra, simba and approx, which are licensed under
+the Apache License, Version 2.0. Their notice is crates/torque-physics-rapier/NOTICE and the license's text is
+crates/torque-physics-rapier/LICENSE-APACHE; a binary that links that crate carries both
+(`torque_physics_rapier::NOTICE` and `torque_physics_rapier::APACHE_LICENSE`).
+
 Torque3D's licence (LICENSE.md in the Torque3D repository) is reproduced below.
 
 --------------------------------------------------------------------------------

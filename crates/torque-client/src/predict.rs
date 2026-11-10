@@ -23,9 +23,14 @@
 //!   at the camera speed a second ([`crate::conn::ConnGame::camera_speed`]; TGE: 10) (`getControlCameraTransform`: towards 0
 //!   in first person, 1 otherwise).
 //!
-//! **Engine limits**: the client's collision world holds the game's static objects, the other Players' boxes and the shapes the
-//! container builds; the Player has no skeleton on the client (the animation does not change the words a walk or a jump sends); a
-//! control object the game does not predict sends checksum 0 (the server then resends every packet).
+//! **The predictor** ([`slot`]): [`Predictor::on_head`], [`Predictor::process`] and [`Predictor::update_view`] run through the
+//! predictor the client's slot gives (a game's plugin may register one); the default, [`TgePrediction`], runs the steps above
+//! ([`Predictor::tge_on_head`], [`Predictor::tge_process`], [`Predictor::tge_update_view`]) and nothing else.
+//!
+//! **Engine limits**: the client's collision world holds the game's static objects (without a game's index, the StaticShapes),
+//! the other Players' boxes and the shapes the container builds (a static shape answers rays from its line-of-sight details at
+//! rest, a vehicle's none); the Player has no skeleton on the client (the animation does not change the words a walk or a jump
+//! sends); a control object the game does not predict sends checksum 0 (the server then resends every packet).
 //!
 //! **The game's part** ([`game::PredictGame`], from [`crate::game::ClientGame::prediction`]; Torque's answers without one):
 //! the Player class and its packet word, the moves' triggers, the type masks and working order, the static collision world
@@ -39,12 +44,14 @@
 //! `T3D/camera.cpp`, `T3D/vehicles/vehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC).
 
 use std::any::Any;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+pub use collide::convex::view_of;
 use collide::convex::{ConvexSource, ObjectView};
-use collide::math::{Box3, F3, Matrix, affine_inverse, mul_box, quat_matrix};
+use collide::math::{Box3, F3, Matrix, quat_matrix};
 use collide::mesh::Hull;
 use collide::{Exhausted, ObjectId};
 use ghost_world::Ghost;
@@ -64,7 +71,7 @@ use vehicle::words::VehicleWords;
 
 use crate::records::{
     ClassKind, EngineDatablock, EngineRecord, EngineSet, EngineTail, FreeMotion, PlayerWords,
-    VehicleUpdate,
+    TailFrame, VehicleUpdate,
 };
 use game::PredictWorld;
 
@@ -74,8 +81,12 @@ pub const SELF_ID: ObjectId = ObjectId(u32::MAX - 1);
 pub const MAX_JUMP_SOUNDS: usize = 8;
 
 /// The work one tick's prediction may do in all (the world's construction and every move it runs, new and replayed): past it the
-/// replay stops, the last whole step's state kept ([`PredictStats::budget_stops`]).
-pub const TICK_WORK: u64 = 50_000_000;
+/// replay stops, the last whole step's state kept ([`PredictStats::budget_stops`]). Sized to about 8 ms on the reference machine
+/// (a unit took about 22 ns in the trace-hash scenarios' predictions and about 30 ns for a Player of the largest predicted box
+/// among hundreds of solids, `torque-sim`'s `work_units_cost`), so a server that has every tick replay all its moves takes a
+/// quarter of each tick at most. The trace-hash scenarios' busiest tick spends about 100,000, a vehicle's shape load included
+/// (its read and parse have their own budget: `drive::SHAPE_LOAD_WORK`).
+pub const TICK_WORK: u64 = 400_000;
 /// The most moves one tick runs: the list never holds more than `getNextMove`'s limit plus the move it then makes (45 + 1), so a
 /// correction replays at most that many.
 pub const MAX_REPLAY: usize = crate::net::moves::MAX_PENDING_MOVES + 1;
@@ -108,6 +119,12 @@ pub struct PredictStats {
     pub predicted_packets: u64,
     /// Ticks whose prediction ran out of [`TICK_WORK`] (the replay stopped there).
     pub budget_stops: u64,
+    /// Ticks whose collision world was made without the ghosts past the walk's cap (half of [`TICK_WORK`]): too many ghosts to
+    /// look at in one tick ([`ClientCollision::walk_stopped`]).
+    pub walk_stops: u64,
+    /// Ticks a Player hung on a parent ran no move: the client could not place the parent (it holds no ghost of it, or the
+    /// tick's budget ran out first).
+    pub unplaced: u64,
     /// The resends once the server had matched a checksum (the ones before answer packets sent before the client had a state to
     /// report), by what they answer ([`ResendClass`]): the server's events, their tails, and the corrections (the rest: the client
     /// predicted the server's state wrong).
@@ -157,6 +174,18 @@ impl ControlKind {
     }
 }
 
+/// One tick's run of the predicted Player's moves ([`Predictor::run_player_moves`]): the moves from the list's `from`th, in
+/// `collision`, with `at` the attachment of its parent frame when it is predicted in one.
+struct MoveRun<'a, W: PredictWorld> {
+    moves: &'a MoveQueue,
+    from: usize,
+    collision: ClientCollision,
+    at: Option<framed::Attach>,
+    controls_player: bool,
+    game: &'a Rc<dyn game::PredictGame<W>>,
+    vm_globals: &'a ClientGlobals,
+}
+
 /// The predicted Player.
 #[derive(Clone)]
 pub struct Predicted {
@@ -169,6 +198,10 @@ pub struct Predicted {
     pub player: Player,
     /// The vehicle the Player drives (its control object), when it drives one.
     pub vehicle: Option<drive::DrivenVehicle>,
+    /// The server's packet data ends with its frame (the engine's own protocol with the scene hierarchy).
+    pub frames: bool,
+    /// The parent frame the Player is predicted in, when the server sends its local pose ([`framed`]).
+    pub frame: Option<framed::ChildFrame>,
 }
 
 /// The client's control object as it predicts it, over the game's world `W`.
@@ -248,6 +281,18 @@ pub struct Predictor<W: PredictWorld> {
     pub sim_ms: u32,
     /// Whether the game's answers were given (else the first `Vm` seen gives its game's).
     game_given: bool,
+    /// The predictor the steps run through ([`slot`]): TGE's unless the client's slot or a caller gives another.
+    prediction: Box<dyn slot::Prediction>,
+    /// The generation of the client's [`slot::PredictionSlot`] the predictor was made at (0: never made from one).
+    prediction_generation: u64,
+    /// The plugins' parts, run after the predictor at each step ([`slot::PredictionPart`]): made from the slot once.
+    parts: Vec<Box<dyn slot::PredictionPart>>,
+    /// The work the parts did this tick ([`slot::TickStep::charge`]).
+    pub(crate) part_work: u64,
+    /// The shapes the parts said they moved at the last move (kept to be filled again).
+    moved_shapes: Vec<(&'static str, u32)>,
+    /// The plugins' tethers on Players ([`torque_game::player_tether`]), as the client's script engine has them.
+    tethers: Option<Rc<torque_game::player_tether::TetherSources>>,
 }
 
 /// How the client reads a file of the install (a static object's own file, a shape, a map's files; `None`: not found or not to be
@@ -315,7 +360,113 @@ impl<W: PredictWorld> Predictor<W> {
             ghost_players: ghost_players::GhostPlayers::default(),
             sim_ms: 0,
             game_given: false,
+            prediction: Box::new(slot::TgePrediction),
+            prediction_generation: 0,
+            parts: Vec::new(),
+            part_work: 0,
+            moved_shapes: Vec::new(),
+            tethers: None,
         }
+    }
+
+    /// The predictor the prediction runs through ([`slot`]).
+    pub fn prediction(&self) -> &dyn slot::Prediction {
+        &*self.prediction
+    }
+
+    /// Runs the prediction through `prediction` from now on (a client with a [`slot::PredictionSlot`] takes the slot's again when
+    /// it swaps).
+    pub fn set_prediction(&mut self, prediction: Box<dyn slot::Prediction>) {
+        self.prediction = prediction;
+    }
+
+    /// Runs `f` with the predictor taken out of the prediction (TGE's stands in meanwhile), then puts it back.
+    fn with_prediction(&mut self, f: impl FnOnce(&mut dyn slot::Prediction, &mut Self)) {
+        let mut prediction: Box<dyn slot::Prediction> =
+            std::mem::replace(&mut self.prediction, Box::new(slot::TgePrediction));
+        f(&mut *prediction, self);
+        self.prediction = prediction;
+    }
+
+    /// Runs `f` for each part in order, with the parts taken out of the prediction meanwhile.
+    fn with_parts(&mut self, mut f: impl FnMut(&mut dyn slot::PredictionPart, &mut Self)) {
+        if self.parts.is_empty() {
+            return;
+        }
+        let mut parts = std::mem::take(&mut self.parts);
+        for part in &mut parts {
+            f(&mut **part, self);
+        }
+        self.parts = parts;
+    }
+
+    /// The parts the prediction runs after its predictor, in order.
+    pub fn parts(&self) -> impl Iterator<Item = &dyn slot::PredictionPart> + '_ {
+        self.parts.iter().map(|p| &**p)
+    }
+
+    /// Runs `part` after the predictor from now on (after the parts already there).
+    pub fn add_part(&mut self, part: Box<dyn slot::PredictionPart>) {
+        self.parts.push(part);
+    }
+
+    /// The client's collision world around the box `min..max`, with the predicted Player left out, made on `budget`.
+    fn collision_near(&mut self, world: &W, min: F3, max: F3, budget: u64) -> ClientCollision {
+        let near = [0, 1, 2].map(|k| (min[k] + max[k]) * 0.5);
+        let me = self.predicted.as_ref().map_or(u32::MAX, |p| p.index);
+        ClientCollision::new(
+            world,
+            me,
+            budget,
+            Some(Ctx {
+                near,
+                static_world: &mut self.static_world,
+                shapes: &mut self.shapes,
+                driven: None,
+                ghosts: Some(&self.ghost_vehicles),
+                disabled: None,
+                player_at: None,
+            }),
+        )
+    }
+
+    /// The map pieces whose boxes meet `min..max` in the client's collision world ([`slot::TickStep::statics_near`]).
+    pub fn statics_near(&mut self, world: &W, min: F3, max: F3) -> Vec<slot::StaticView> {
+        self.around(world, Some((min, max)), None).statics
+    }
+
+    /// One construction of the client's collision world for what [`slot::TickStep::around`] gives. It is made on what is left of
+    /// the tick's budget for parts ([`slot::PART_TICK_WORK`], at most [`TICK_WORK`]) and its work is charged to it, so a world of
+    /// any size costs a tick no more than that budget: with none left nothing is looked at ([`slot::Around::built`] false).
+    pub fn around(
+        &mut self,
+        world: &W,
+        statics: Option<(F3, F3)>,
+        bodies: Option<(F3, F3)>,
+    ) -> slot::Around {
+        let boxes = [statics, bodies].into_iter().flatten();
+        let lo = boxes.clone().fold([f32::INFINITY; 3], |m, (a, _)| {
+            [0, 1, 2].map(|k| m[k].min(a[k]))
+        });
+        let hi = boxes.fold([f32::NEG_INFINITY; 3], |m, (_, b)| {
+            [0, 1, 2].map(|k| m[k].max(b[k]))
+        });
+        if lo[0] > hi[0] {
+            // Nothing was asked for.
+            return slot::Around {
+                built: true,
+                ..slot::Around::default()
+            };
+        }
+        let budget = TICK_WORK.min(slot::PART_TICK_WORK.saturating_sub(self.part_work));
+        if budget == 0 {
+            return slot::Around::default();
+        }
+        let mut collision = self.collision_near(world, lo, hi, budget);
+        let around = look(&mut collision, statics, bodies);
+        // The queries' work counts too.
+        self.part_work = self.part_work.saturating_add(collision.work());
+        around
     }
 
     /// A prediction with `game`'s answers.
@@ -360,11 +511,42 @@ impl<W: PredictWorld> Predictor<W> {
         class
     }
 
-    /// A server head: its ack (the move list already took it: `moves.first_index()`) and control section.
+    /// A server head: its ack (the move list already took it: `moves.first_index()`) and control section, through the
+    /// predictor ([`slot::Prediction::head`]; TGE's: [`Predictor::tge_on_head`]).
+    pub fn on_head(
+        &mut self,
+        ack: u32,
+        control: &ControlSection<Box<dyn ControlData>>,
+        world: &W,
+        moves: &MoveQueue,
+    ) {
+        self.with_prediction(|p, sim| {
+            p.head(&mut slot::HeadCx {
+                sim,
+                ack,
+                control,
+                world,
+                moves,
+                ran: false,
+            });
+        });
+        self.with_parts(|p, sim| {
+            p.head(&mut slot::HeadCx {
+                sim,
+                ack,
+                control,
+                world,
+                moves,
+                ran: true,
+            });
+        });
+    }
+
+    /// TGE's handling of a server head.
     ///
     /// A resend that leaves the predicted Player driving no vehicle (or another one) hands the vehicle it drove to the vehicles
     /// the client runs on its own (`Predictor::release_vehicle`).
-    pub fn on_head(
+    pub fn tge_on_head(
         &mut self,
         ack: u32,
         control: &ControlSection<Box<dyn ControlData>>,
@@ -552,6 +734,8 @@ impl<W: PredictWorld> Predictor<W> {
                 kind,
                 player: Player::new(s),
                 vehicle: None,
+                frames: false,
+                frame: None,
             });
         }
         let game = Rc::clone(self.game());
@@ -602,6 +786,11 @@ impl<W: PredictWorld> Predictor<W> {
         s.place(pos, rot, None);
         s.delta_head = s.head;
         s.delta_rot = rot;
+        // A Player hung on a parent sent its local pose and its yaw there: the next tick places it on the parent.
+        let frame = framed::ChildFrame::read(p, s.scale);
+        s.frame_yaw = frame.map(|_| p.rot_z);
+        pr.frames = p.frame != TailFrame::Absent;
+        pr.frame = frame;
     }
 
     /// The control object's `readPacketData` for a WheeledVehicle the predicted Player drives: the vehicle the client already holds
@@ -806,8 +995,32 @@ impl<W: PredictWorld> Predictor<W> {
         }
     }
 
-    /// The client's tick: every move from `mLastClientMove` to the end of the list run by the control object.
+    /// The client's tick, through the predictor ([`slot::Prediction::tick`]; TGE's: [`Predictor::tge_process`]).
     pub fn process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
+        self.shapes.start_tick();
+        self.part_work = 0;
+        self.with_prediction(|p, sim| {
+            p.tick(&mut slot::TickCx {
+                sim,
+                moves,
+                world,
+                globals: vm_globals,
+                ran: false,
+            });
+        });
+        self.with_parts(|p, sim| {
+            p.tick(&mut slot::TickCx {
+                sim,
+                moves,
+                world,
+                globals: vm_globals,
+                ran: true,
+            });
+        });
+    }
+
+    /// TGE's tick: every move from `mLastClientMove` to the end of the list run by the control object.
+    pub fn tge_process(&mut self, moves: &MoveQueue, world: &W, vm_globals: &ClientGlobals) {
         let first = moves.first_index();
         let list = moves.moves();
         let end = first.wrapping_add(list.len() as u32);
@@ -880,39 +1093,8 @@ impl<W: PredictWorld> Predictor<W> {
         let first = moves.first_index();
         let list = moves.moves();
         let end = first.wrapping_add(list.len() as u32);
-        if let Some(cam) = self.camera.as_mut() {
-            let start = self.last_client_move.wrapping_sub(first);
-            let start = if (start as i32) < 0 {
-                0
-            } else {
-                (start as usize).min(list.len())
-            };
-            let skip = list.len().saturating_sub(start).saturating_sub(MAX_REPLAY);
-            cam.begin(world);
-            let near = cam.position();
-            let mut collision = ClientCollision::new(
-                world,
-                cam.index(),
-                TICK_WORK,
-                Some(Ctx {
-                    near,
-                    static_world: &mut self.static_world,
-                    shapes: &mut self.shapes,
-                    driven: None,
-                    ghosts: Some(&self.ghost_vehicles),
-                    disabled: None,
-                    player_at: None,
-                }),
-            );
-            for m in list.iter().skip(start + skip) {
-                if collision.exhausted() {
-                    self.stats.budget_stops += 1;
-                    break;
-                }
-                cam.step(m, world, &mut collision);
-                self.stats.steps += 1;
-            }
-            self.last_client_move = end;
+        if self.camera.is_some() {
+            self.process_camera(moves, world);
             return;
         }
         let game = Rc::clone(self.game());
@@ -921,13 +1103,7 @@ impl<W: PredictWorld> Predictor<W> {
             return;
         };
         let controls_player = controls_player(world, pr.player.s.control_object);
-        let start = self.last_client_move.wrapping_sub(first);
-        let start = if (start as i32) < 0 {
-            0
-        } else {
-            (start as usize).min(list.len())
-        };
-        let skip = list.len().saturating_sub(start).saturating_sub(MAX_REPLAY);
+        let from = slot::replay_from(self.last_client_move, first, list.len(), MAX_REPLAY);
         // `ShapeBase::unpackUpdate` sets the control object's damage state as its ghost's record carries it (the same object on
         // TGE's client; a disabled Player runs no move of its own).
         if let Some(state) = damage_state(world, pr.index) {
@@ -964,13 +1140,131 @@ impl<W: PredictWorld> Predictor<W> {
                 player_at: None,
             }),
         );
+        self.stats.walk_stops += u64::from(collision.walk_stopped());
+        // A Player hung on a parent moves in the parent's frame: the parent's pose for this tick, charged to its budget.
+        let at = pr.frame.as_ref().and_then(|frame| {
+            let mut linked = Linked {
+                shapes: Some(&mut self.shapes),
+                reader: self.static_world.reader.as_ref(),
+                driven: pr.vehicle.as_ref(),
+                ghosts: Some(&self.ghost_vehicles),
+                player_at: None,
+                me: pr.index,
+            };
+            collision.attach_frame(world, &mut linked, frame)
+        });
+        if pr.frame.is_some() && at.is_none() {
+            // Nowhere to place it (the parent not held, or the budget spent): the moves wait unrun, and a later tick that
+            // places the parent replays them from `last_client_move`, as a correction replays.
+            self.stats.unplaced += 1;
+            return;
+        }
+        let fresh = self.run_player_moves(MoveRun {
+            moves,
+            from,
+            collision,
+            at,
+            controls_player,
+            game: &game,
+            vm_globals,
+        });
+        self.last_client_move = end;
+        self.mount_pred = self.step_mount_pred(world, &fresh);
+    }
+
+    /// The Camera control object's moves from `mLastClientMove` (no part steps with a Camera).
+    fn process_camera(&mut self, moves: &MoveQueue, world: &W) {
+        let first = moves.first_index();
+        let list = moves.moves();
+        let end = first.wrapping_add(list.len() as u32);
+        if let Some(cam) = self.camera.as_mut() {
+            let from = slot::replay_from(self.last_client_move, first, list.len(), MAX_REPLAY);
+            cam.begin(world);
+            let near = cam.position();
+            let mut collision = ClientCollision::new(
+                world,
+                cam.index(),
+                TICK_WORK,
+                Some(Ctx {
+                    near,
+                    static_world: &mut self.static_world,
+                    shapes: &mut self.shapes,
+                    driven: None,
+                    ghosts: Some(&self.ghost_vehicles),
+                    disabled: None,
+                    player_at: None,
+                }),
+            );
+            for m in list.iter().skip(from) {
+                if collision.exhausted() {
+                    self.stats.budget_stops += 1;
+                    break;
+                }
+                cam.step(m, world, &mut collision);
+                self.stats.steps += 1;
+            }
+        }
+        self.last_client_move = end;
+    }
+
+    /// The predicted Player's moves from the list's `from`th, in `collision`, with the parts stepping their objects with each
+    /// ([`slot::PredictionPart::moved`]); the turns of the moves run for the first time. A step the budget cuts short ends the
+    /// loop: the Player and the parts both stop at the last whole move.
+    fn run_player_moves(&mut self, run: MoveRun<'_, W>) -> Vec<[f32; 2]> {
+        let MoveRun {
+            moves,
+            from,
+            mut collision,
+            at,
+            controls_player,
+            game,
+            vm_globals,
+        } = run;
+        let first = moves.first_index();
+        let list = moves.moves();
+        let end = first.wrapping_add(list.len() as u32);
         let mut fresh = Vec::new();
-        for (k, m) in list.iter().enumerate().skip(start + skip) {
+        let Some(pr) = self.predicted.as_mut() else {
+            return fresh;
+        };
+        let mut parts = std::mem::take(&mut self.parts);
+        // The shapes a part moved are read again for the next move, while the tick's budget for parts lasts.
+        let plugin_sources = self
+            .static_world
+            .plugin
+            .clone()
+            .filter(|s| !parts.is_empty() && !s.is_empty());
+        let mut moved = std::mem::take(&mut self.moved_shapes);
+        moved.clear();
+        slot::parts_begin(
+            &mut parts,
+            slot::motion_of_predicted(pr),
+            slot::player_of_predicted(pr),
+            &mut self.part_work,
+            &mut moved,
+            (first.wrapping_add(from as u32), end),
+        );
+        for (k, m) in list.iter().enumerate().skip(from) {
+            if let Some(sources) = &plugin_sources {
+                refresh_moved(sources, &mut collision, &mut moved, &mut self.part_work);
+            }
+            moved.clear();
+            // The tether on the predicted Player: asked again at each move, since a part may move its far end with the moves.
+            let tether = self
+                .tethers
+                .as_ref()
+                .and_then(|t| Some((Rc::clone(t), t.tether(pr.index)?)));
             if collision.exhausted() {
                 self.stats.budget_stops += 1;
                 break;
             }
-            let before = (pr.player.clone(), pr.vehicle.clone());
+            let before = (pr.player.clone(), pr.vehicle.clone(), pr.frame);
+            // The server resolves a child before its turn, after its parent's: the Player where its parent's tick pose and its
+            // local pose put it.
+            if let (Some(frame), Some(at)) = (pr.frame.as_mut(), at) {
+                frame.settle(&mut pr.player.s, at, false);
+            }
+            collision.carry_children(&pr.player.s.obj_to_world);
             let mut host = ClientPlayerHost {
                 world: &mut collision,
                 skeleton: NoSkeleton,
@@ -979,17 +1273,32 @@ impl<W: PredictWorld> Predictor<W> {
                 vehicle: pr.vehicle.as_mut(),
                 controls_player,
                 class: pr.kind.class(),
-                game: Rc::clone(&game),
+                game: Rc::clone(game),
+                tether: tether.as_ref().map(|(_, (_, t))| *t),
+                pull: tether.as_ref().map(|(sources, (i, _))| Pull {
+                    sources: Rc::clone(sources),
+                    source: *i,
+                    key: pr.index,
+                    move_index: first.wrapping_add(k as u32),
+                }),
             };
             pr.player.s.mask_bits = 0;
             let stepped = pr
                 .player
-                .process_tick(&pr.data, Some(&sim_move(m, &*game)), &mut host);
+                .process_tick(&pr.data, Some(&sim_move(m, &**game)), &mut host);
             if stepped.is_err() || collision.exhausted() {
                 // A step the budget cut short is not kept: the state of the last whole step stays.
-                (pr.player, pr.vehicle) = before;
+                (pr.player, pr.vehicle, pr.frame) = before;
                 self.stats.budget_stops += 1;
                 break;
+            }
+            // The move's pose becomes the local pose the server's tree keeps, and the end of the step resolves it again. A
+            // move the tree would refuse takes the Player off its parent there: the next head says how.
+            if let (Some(frame), Some(at)) = (pr.frame.as_mut(), at) {
+                match frame.moved(&pr.player.s) {
+                    Some(moved) => frame.settle(&mut pr.player.s, at, moved),
+                    None => pr.frame = None,
+                }
             }
             self.stats.steps += 1;
             let id = first.wrapping_add(k as u32);
@@ -1001,7 +1310,7 @@ impl<W: PredictWorld> Predictor<W> {
                 .is_none_or(|n| (id.wrapping_sub(n) as i32) > 0);
             if new {
                 self.newest_move = Some(id);
-                fresh.push(game.control_turn(&sim_move(m, &*game), self.camera_pos));
+                fresh.push(game.control_turn(&sim_move(m, &**game), self.camera_pos));
                 if pr.player.s.mask_bits & sim::player::net_mask::JUMP != 0
                     && self.jumps.len() < MAX_JUMP_SOUNDS
                 {
@@ -1015,9 +1324,18 @@ impl<W: PredictWorld> Predictor<W> {
             if let Some(d) = full_packet_data::<W::Set>(pr) {
                 self.history.push_back((id, d));
             }
+            slot::parts_moved(
+                &mut parts,
+                slot::motion_of_predicted(pr),
+                slot::player_of_predicted(pr),
+                &mut self.part_work,
+                &mut moved,
+                id,
+            );
         }
-        self.last_client_move = end;
-        self.mount_pred = self.step_mount_pred(world, &fresh);
+        self.parts = parts;
+        self.moved_shapes = moved;
+        fresh
     }
 
     /// The control object's checksum for the next packet (0: nothing predicted).
@@ -1045,11 +1363,24 @@ impl<W: PredictWorld> Predictor<W> {
         {
             self.set_game(game::prediction_for(g.prediction()));
         }
+        self.static_world
+            .set_plugin_sources(torque_game::plugin_collision::sources_of(vm));
+        self.tethers = torque_game::player_tether::of(vm);
         self.free_look = vm
             .global("$mvFreeLook")
             .is_some_and(|v| ts_vm::fields::atob(&v));
         self.smooth_aim = self.game().smooth_aim(vm);
         self.prefs = ClientGlobals::of(vm).prefs;
+        // The client's predictor slot: a fresh predictor when it swapped (or at the first tick).
+        if let Some(slot) = slot::PredictionSlot::of(vm)
+            && slot.generation() != self.prediction_generation
+        {
+            self.prediction = slot.make();
+            if self.prediction_generation == 0 {
+                self.parts = slot.make_parts();
+            }
+            self.prediction_generation = slot.generation();
+        }
     }
 
     /// A window's frame: the move globals the next move will be made of, for smooth aim to draw ahead by ([`aim`]); `None` with
@@ -1298,9 +1629,51 @@ impl<W: PredictWorld> Predictor<W> {
         ))
     }
 
-    /// The client's view from its control object: the predicted Player's eye when there is one, else the last state the server
-    /// sent (the world's `view`; a Camera's view is the world's own).
+    /// The turn that takes the predicted Player hung in `frame` from the attachment its last tick ran in to where the
+    /// parent is drawn now (its [`ghost_world::ClientWorld::world_pose`] times the node). `None` before a tick placed it, or
+    /// for a parent the client does not draw.
+    fn drawn_frame(&self, world: &W, frame: &framed::ChildFrame) -> Option<Matrix> {
+        let at = frame.at?;
+        let nodes = |ghost: u32, node: u16| {
+            let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+            self.shapes.loaded(path)?.rest_node(node).copied()
+        };
+        let (drawn, scale) = world.world_pose(frame.parent, &nodes)?;
+        let drawn = framed::Attach {
+            parent: hierarchy::Pose {
+                world: drawn,
+                scale,
+            },
+            node: at.node,
+        };
+        Some(collide::math::matrix_product(
+            &drawn.matrix(),
+            &collide::math::affine_inverse(&at.matrix()),
+        ))
+    }
+
+    /// The client's view from its control object, through the predictor ([`slot::Prediction::view`]; TGE's:
+    /// [`Predictor::tge_update_view`]).
     pub fn update_view(&mut self, world: &mut W) {
+        self.with_prediction(|p, sim| {
+            p.view(&mut slot::ViewCx {
+                sim,
+                world: &mut *world,
+                ran: false,
+            });
+        });
+        self.with_parts(|p, sim| {
+            p.view(&mut slot::ViewCx {
+                sim,
+                world: &mut *world,
+                ran: true,
+            });
+        });
+    }
+
+    /// TGE's view from its control object: the predicted Player's eye when there is one, else the last state the server
+    /// sent (the world's `view`; a Camera's view is the world's own).
+    pub fn tge_update_view(&mut self, world: &mut W) {
         // the jumps the new moves made, sounded once each.
         let jumps = std::mem::take(&mut self.jumps);
         if let Some(profile) = world
@@ -1324,45 +1697,11 @@ impl<W: PredictWorld> Predictor<W> {
         if let Some(p) = self.projectiles.as_mut() {
             p.frame(world, back);
         }
-        // `Player::interpolateTick`: the render position, yaw and head between the last tick's (`dt` 0) and the one
-        // before (`dt` 1: the position before the tick's move, the yaw and head less their last change). A mounted Player's
-        // position comes from its mount (`setRenderPosition`'s mounted branch); its yaw and head are interpolated as
-        // any Player's (the driver's free look moved once a tick).
         // Smooth aim: the yaw and head drawn ahead of the latest tick by what the next move makes of the frame's move
         // globals, in every mode (on foot, free look, a seat, a driver's), so the view never steps back when that move lands.
         let angles = self.predicted.as_ref().map_or((0.0, [0.0; 3]), |pr| {
             self.view_angles(pr, back, controls_player(world, pr.player.s.control_object))
         });
-        let lerp = |s: &sim::player::PlayerState| -> ([f32; 3], f32, f32) {
-            let p = s.position();
-            let (yaw, head) = (angles.0, angles.1[0]);
-            if back <= 0.0 || s.mount.is_some() {
-                return (p, yaw, head);
-            }
-            let b = back.min(1.0);
-            (
-                [0, 1, 2].map(|k| p[k] + (s.delta_pos[k] - p[k]) * b),
-                yaw,
-                head,
-            )
-        };
-        world.hide_control =
-            self.camera.is_none() && self.predicted.is_some() && self.camera_pos == 0.0;
-        world.control_eye = None;
-        // The control Player is drawn where it is predicted; a mounted one (a driver) is drawn at its mount's node, which the
-        // renderer takes from the mount (`setRenderPosition`'s mounted branch), turned by this pose's yaw.
-        world.control_render = self
-            .predicted
-            .as_ref()
-            .filter(|_| self.camera.is_none())
-            .map(|pr| {
-                let (position, yaw, pitch) = lerp(&pr.player.s);
-                Pose::Euler {
-                    position,
-                    pitch,
-                    yaw,
-                }
-            });
         // The vehicle the Player drives, where the client predicts it, between its last two ticks
         // (`WheeledVehicle::interpolateTick`: the rotation `interpolate(rot[1], rot[0], dt)`, the position
         // `delta.pos + delta.posVec * dt`); the server's updates of it carry no position for its controlling client.
@@ -1418,6 +1757,56 @@ impl<W: PredictWorld> Predictor<W> {
         for (i, pose) in flying {
             world.vehicle_render.entry(i).or_insert(pose);
         }
+        // A Player hung on a parent is drawn on the parent as this frame draws it: its pose moved from the attachment its last
+        // tick ran in to the parent's drawn pose times the node, so the view and the body ride the parent between ticks.
+        let frame_turn = self
+            .predicted
+            .as_ref()
+            .filter(|_| self.camera.is_none())
+            .and_then(|pr| self.drawn_frame(world, pr.frame.as_ref()?));
+        // `Player::interpolateTick`: the render position, yaw and head between the last tick's (`dt` 0) and the one
+        // before (`dt` 1: the position before the tick's move, the yaw and head less their last change). A mounted Player's
+        // position comes from its mount (`setRenderPosition`'s mounted branch); its yaw and head are interpolated as
+        // any Player's (the driver's free look moved once a tick).
+        let lerp = |s: &sim::player::PlayerState| -> ([f32; 3], f32, f32) {
+            let p = s.position();
+            let (yaw, head) = (angles.0, angles.1[0]);
+            let (p, yaw, head) = if back <= 0.0 || s.mount.is_some() {
+                (p, yaw, head)
+            } else {
+                let b = back.min(1.0);
+                (
+                    [0, 1, 2].map(|k| p[k] + (s.delta_pos[k] - p[k]) * b),
+                    yaw,
+                    head,
+                )
+            };
+            match &frame_turn {
+                Some(m) => (
+                    collide::math::mul_p(m, p),
+                    yaw + torque_game::sim::player::yaw_of(m),
+                    head,
+                ),
+                None => (p, yaw, head),
+            }
+        };
+        world.hide_control =
+            self.camera.is_none() && self.predicted.is_some() && self.camera_pos == 0.0;
+        world.control_eye = None;
+        // The control Player is drawn where it is predicted; a mounted one (a driver) is drawn at its mount's node, which the
+        // renderer takes from the mount (`setRenderPosition`'s mounted branch), turned by this pose's yaw.
+        world.control_render = self
+            .predicted
+            .as_ref()
+            .filter(|_| self.camera.is_none())
+            .map(|pr| {
+                let (position, yaw, pitch) = lerp(&pr.player.s);
+                Pose::Euler {
+                    position,
+                    pitch,
+                    yaw,
+                }
+            });
         // The control Player's own jetting and crouching (its ghost's updates carry neither for its own client).
         let control_state = self
             .predicted
@@ -1712,7 +2101,13 @@ pub fn vehicle_render_pose(s: &vehicle::state::VehicleState, back: f32) -> Pose 
 /// A predicted Player's `writePacketData` as set `S`'s packet data: its own words, then its control object's (a driven
 /// vehicle's) when it has one.
 fn full_packet_data<S: EngineSet>(pr: &Predicted) -> Option<Box<dyn ControlData>> {
-    let words = player_words(&pr.player.s, &*pr.kind);
+    let mut words = player_words(&pr.player.s, &*pr.kind);
+    if pr.frames {
+        words.frame = TailFrame::World;
+    }
+    if let Some(frame) = &pr.frame {
+        frame.words(&pr.player.s, &mut words);
+    }
     let controlled = match &pr.vehicle {
         Some(v) if pr.player.s.control_object.is_some() => {
             Some((v.index, v.packet_data::<S>(&mut ClientCollision::empty())))
@@ -1737,6 +2132,7 @@ pub fn player_words(s: &PlayerState, kind: &dyn PlayerKind) -> PlayerWords {
         head_z: s.head[2],
         rot_z: s.rot[2],
         translation: pos,
+        frame: TailFrame::Absent,
     }
 }
 
@@ -2108,8 +2504,22 @@ fn world_f32<W: PredictWorld>(world: &W, db: u32, name: &str) -> Option<f32> {
     }
 }
 
+/// The largest side of a Player's box prediction takes ([`player_data`]): a server's datablock of a huge `boundingBox` would have
+/// every replayed move collide with everything near (the server's own Player keeps its box).
+pub const MAX_PREDICTED_BOX: f32 = 16.0;
+
+/// A side of `boundingBox` as prediction takes it: within 0 to [`MAX_PREDICTED_BOX`], `default` for one that is not a number.
+fn predicted_side(side: f32, default: f32) -> f32 {
+    if side.is_finite() {
+        side.clamp(0.0, MAX_PREDICTED_BOX)
+    } else {
+        default
+    }
+}
+
 /// The client's PlayerData from the datablock the server sent (`PlayerData::unpackData`'s fields; the ones the server does not
-/// send keep the constructor's values), then `preload`'s products (the game's, `game`).
+/// send keep the constructor's values, `boundingBox` within [`MAX_PREDICTED_BOX`]), then `preload`'s products (the game's,
+/// `game`).
 pub fn player_data<W: PredictWorld>(
     world: &W,
     db: u32,
@@ -2175,7 +2585,10 @@ pub fn player_data<W: PredictWorld>(
     fl!(min_impact_speed, "minImpactSpeed");
     fl!(ground_impact_min_speed, "groundImpactMinSpeed");
     for k in 0..3 {
-        d.bounding_box[k] = f("boundingBox", k as u32, d.bounding_box[k]);
+        d.bounding_box[k] = predicted_side(
+            f("boundingBox", k as u32, d.bounding_box[k]),
+            d.bounding_box[k],
+        );
     }
     game.player_preload(&mut d);
     Some(d)
@@ -2309,6 +2722,8 @@ pub struct StaticWorld<W: PredictWorld> {
     pub game: game::GameRef<W>,
     pub reader: Option<FileReader>,
     pub index: Option<Box<dyn StaticIndex<W>>>,
+    /// The plugins' collision sources ([`StaticWorld::set_plugin_sources`]).
+    plugin: Option<Rc<collide::source::CollisionSources>>,
 }
 
 impl<W: PredictWorld> Clone for StaticWorld<W> {
@@ -2317,6 +2732,7 @@ impl<W: PredictWorld> Clone for StaticWorld<W> {
             game: self.game.clone(),
             reader: self.reader.clone(),
             index: self.index.clone(),
+            plugin: self.plugin.clone(),
         }
     }
 }
@@ -2327,6 +2743,7 @@ impl<W: PredictWorld> Default for StaticWorld<W> {
             game: game::GameRef::default(),
             reader: None,
             index: None,
+            plugin: None,
         }
     }
 }
@@ -2336,6 +2753,12 @@ impl<W: PredictWorld> StaticWorld<W> {
     fn set_game(&mut self, game: Rc<dyn game::PredictGame<W>>) {
         self.index = game.static_index();
         self.game = game::GameRef(game);
+    }
+
+    /// The plugins' collision sources every later [`ClientCollision::new`] with this world takes its shapes from, as they are
+    /// when it is made (none: no plugin shapes).
+    pub fn set_plugin_sources(&mut self, sources: Option<Rc<collide::source::CollisionSources>>) {
+        self.plugin = sources;
     }
 
     /// A client tick starts.
@@ -2395,16 +2818,302 @@ pub struct ClientCollision {
     /// The type bits the index answers for ([`StaticIndex::type_bits`]).
     index_bits: u32,
     objects: Vec<(ObjectId, Object)>,
+    /// The scene-hierarchy children of the predicted object, in its frame ([`ClientCollision::carry_children`]).
+    carried: Vec<CarriedChild>,
+    /// The tick poses the placement of children worked out, kept for the predicted object's own frame
+    /// ([`ClientCollision::attach_frame`]), so a ghost a chain reached is not charged again.
+    tick_poses: ghost_world::world::TickPoses,
+    /// What is left of the work the children may still take ([`ClientCollision::child_cap`]), for carrying them.
+    child_room: u64,
+    /// The ghost walk stopped at its cap ([`ClientCollision::new`]): the ghosts past it are not in this container.
+    walk_stopped: bool,
+    /// `objects`' ids with their places, sorted: a lookup is a binary search (every convex's transform asks).
+    by_id: Vec<(ObjectId, u32)>,
     /// The static index's water ([`StaticIndex::zones`]).
     zones: Vec<ZoneView>,
     work: u64,
     budget: u64,
     /// The game's working-list order (none: the container's).
     order: Option<Rc<dyn CandidateOrder>>,
+    /// The plugins' collision shapes as they were when the container was made, listed after every other object.
+    plugin: Rc<collide::source::ShapeSet>,
 }
 
 /// The mount of a Player the server says is mounted before its ghost's update said on what.
 pub const PENDING_MOUNT: ObjectId = ObjectId(u32::MAX);
+
+/// A StaticShape's type bits (`StaticShapeObjectType`, `ShapeBaseObjectType`, `GameBaseObjectType`, `StaticObjectType`), as the
+/// server's container has them.
+pub const STATIC_SHAPE_TYPE_MASK: u32 = collide::types::STATIC
+    | collide::types::GAME_BASE
+    | collide::types::SHAPE_BASE
+    | collide::types::STATIC_SHAPE;
+
+/// A StaticShape ghost as the client's container holds it when the game gives no static index (`ShapeBase::buildConvex`): its
+/// datablock's shape (read through `shapes` the first time, charged to `work` up to `budget`), its collision hulls at the ghost's
+/// pose and scale, a StaticShape's type bits. `None` for a ghost with no shape or no pose yet.
+pub fn static_shape<W: PredictWorld>(
+    world: &W,
+    g: &Ghost<W::Set>,
+    shapes: &mut drive::ShapeCache,
+    reader: Option<&FileReader>,
+    work: &mut u64,
+    budget: u64,
+) -> Option<Object> {
+    let Some(Pose::Affine { xf, scale }) = g.pose() else {
+        return None;
+    };
+    let path = drive::shape_path(world, g.datablock()?)?;
+    let shape = shapes.get(path, reader, work, budget)?;
+    // `readAffineTransform`: w from the unit length, its sign sent.
+    let [x, y, z]: [f32; 3] = xf.quat.map(|v| v.get());
+    let w = (1.0 - (x * x + y * y + z * z)).max(0.0).sqrt();
+    let mut m = quat_matrix([x, y, z, if xf.negative_w { -w } else { w }]);
+    let [px, py, pz]: [f32; 3] = xf.position.map(|v| v.get());
+    (m[3], m[7], m[11]) = (px, py, pz);
+    Some(Object {
+        view: view_of(
+            m,
+            shape.bounds(),
+            scale.unwrap_or([1.0; 3]),
+            STATIC_SHAPE_TYPE_MASK,
+        ),
+        source: Source::Torque(ConvexSource::Shape {
+            has_shape: true,
+            slots: shape.hull_slots(),
+        }),
+        shape: Some(shape),
+        map: None,
+    })
+}
+
+/// The work units each scene-hierarchy link takes when [`ClientCollision::new`] places the children it holds: a lookup and,
+/// once a container for each ghost a chain reaches, a compose.
+pub const LINK_WORK: u64 = 8;
+
+/// What [`place_linked`] reads beside the world: the shapes for the parents' nodes, and the bodies the client runs itself.
+struct Linked<'a> {
+    shapes: Option<&'a mut drive::ShapeCache>,
+    reader: Option<&'a FileReader>,
+    driven: Option<&'a drive::DrivenVehicle>,
+    ghosts: Option<&'a BTreeMap<u32, drive::GhostVehicle>>,
+    player_at: Option<(u32, F3)>,
+    /// The predicted object the container is made for: its children are carried from its predicted pose
+    /// ([`ClientCollision::carry_children`]).
+    me: u32,
+}
+
+impl Linked<'_> {
+    /// Where the client runs ghost `index` itself this tick (the vehicle it drives, a ghost vehicle it runs ahead, the
+    /// control Player of a ghost vehicle's tick), if it does.
+    fn own<W: PredictWorld>(&self, world: &W, index: u32) -> Option<Matrix> {
+        if let Some(d) = self.driven.filter(|d| d.index == index) {
+            return Some(d.v.s.obj_to_world);
+        }
+        if let Some(g) = self.ghosts.and_then(|m| m.get(&index)) {
+            return Some(g.body.v.s.obj_to_world);
+        }
+        let (_, at) = self.player_at.filter(|&(i, _)| i == index)?;
+        let pose = world.ghosts.get(&index)?.pose()?;
+        let mut m = ghost_world::links::record_matrix(&pose);
+        [m[3], m[7], m[11]] = at;
+        Some(m)
+    }
+
+    /// Where the predicted object's frame hangs this tick: the parent's tick pose ([`ghost_world::ClientWorld::tick_pose_in`],
+    /// where the client runs it or its record puts it, from the tick's `poses`, each ghost of its chain not worked out yet
+    /// charged [`LINK_WORK`] to `work` up to `budget`) and the node at rest, read from the parent's shape (the parent's
+    /// origin when it has no such node). `None` when the client holds no ghost of the parent or the budget ran out.
+    fn attach<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        frame: &framed::ChildFrame,
+        poses: &mut ghost_world::world::TickPoses,
+        work: &mut u64,
+        budget: u64,
+    ) -> Option<framed::Attach> {
+        let path = world
+            .ghosts
+            .get(&frame.parent)
+            .and_then(|g| g.datablock())
+            .and_then(|db| drive::shape_path(world, db));
+        if frame.node.is_some()
+            && let (Some(path), Some(cache)) = (path, self.shapes.as_deref_mut())
+            && cache.loaded(path).is_none()
+        {
+            cache.get(path, self.reader, work, budget);
+        }
+        let cache = self.shapes.as_deref();
+        let node = frame
+            .node
+            .zip(path)
+            .and_then(|(n, path)| cache?.loaded(path)?.rest_node(n).copied());
+        let nodes = |ghost: u32, node: u16| {
+            let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+            cache?.loaded(path)?.rest_node(node).copied()
+        };
+        let own = |ghost: u32| self.own(world, ghost);
+        let mut charge = || {
+            *work = work.saturating_add(LINK_WORK);
+            *work <= budget
+        };
+        let pose = world.tick_pose_in(frame.parent, &nodes, &own, poses, &mut charge)?;
+        Some(framed::Attach {
+            parent: hierarchy::Pose {
+                world: pose.world,
+                scale: pose.scale,
+            },
+            node,
+        })
+    }
+
+    /// Reads the shapes of the parents whose nodes the chains above `objects` hang on, walking each link once, each charged
+    /// [`LINK_WORK`] (and a read as the cache charges it). False once `budget` is spent.
+    fn read_node_shapes<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        objects: &[(ObjectId, Object)],
+        work: &mut u64,
+        budget: u64,
+    ) -> bool {
+        let mut walked = BTreeSet::new();
+        for (id, _) in objects {
+            let Some(mut at) = id.0.checked_sub(1) else {
+                continue;
+            };
+            for _ in 0..=hierarchy::HARD_DEPTH {
+                let Some(parent) = world.links.parent(at) else {
+                    break;
+                };
+                *work = work.saturating_add(LINK_WORK);
+                if *work > budget {
+                    return false;
+                }
+                at = parent.object.0;
+                if !walked.insert(at) {
+                    break;
+                }
+                if !matches!(parent.node, hierarchy::NodeRef::Node(_)) {
+                    continue;
+                }
+                let Some(cache) = self.shapes.as_deref_mut() else {
+                    continue;
+                };
+                let path = world
+                    .ghosts
+                    .get(&at)
+                    .and_then(|g| g.datablock())
+                    .and_then(|db| drive::shape_path(world, db));
+                if let Some(path) = path
+                    && cache.loaded(path).is_none()
+                {
+                    cache.get(path, self.reader, work, budget);
+                }
+            }
+        }
+        true
+    }
+}
+
+/// A child the predicted object carries: where it sits in that object's frame, and whether it keeps an upright box.
+#[derive(Debug, Clone, Copy)]
+struct CarriedChild {
+    id: ObjectId,
+    rel: Matrix,
+    upright: bool,
+}
+
+/// `view` at `m`, its collision switch as it was; a Player's box stays upright, at `m`'s translation.
+fn placed_view(view: &ObjectView, m: &Matrix, upright: bool) -> ObjectView {
+    let mut at = *m;
+    if upright {
+        at = collide::math::IDENTITY;
+        [at[3], at[7], at[11]] = [m[3], m[7], m[11]];
+    }
+    let mut placed = view_of(at, view.obj_box, view.scale, view.type_mask);
+    placed.collision_disabled = view.collision_disabled;
+    placed
+}
+
+/// Places the container's scene-hierarchy children for this tick: each object of a ghost with a link (and that the client does
+/// not run itself) moves to its [`ghost_world::ClientWorld::tick_pose_in`]: its parents' latest server poses (or where the
+/// client runs them) times their nodes at rest times the local pose the server last sent, not the record's own pose (which a
+/// parent's motion leaves behind) or where a frame draws it. A Player keeps its box upright, at the pose's translation.
+///
+/// Every ghost a chain reaches is worked out once, whatever children share it, and each link walked is charged
+/// [`LINK_WORK`]; past `budget` the rest stay where their records put them. The children
+/// whose chain rests on the predicted object (`linked.me`) are given back, at their poses in its frame, for
+/// [`ClientCollision::carry_children`]; they are placed here from its record.
+fn place_linked<W: PredictWorld>(
+    world: &W,
+    objects: &mut [(ObjectId, Object)],
+    mut linked: Linked<'_>,
+    poses: &mut ghost_world::world::TickPoses,
+    work: &mut u64,
+    budget: u64,
+) -> Vec<CarriedChild> {
+    let mut carried = Vec::new();
+    if world.links.linked_count() == 0 || !linked.read_node_shapes(world, objects, work, budget) {
+        return carried;
+    }
+    let me = linked.me;
+    let me_record = world
+        .ghosts
+        .get(&me)
+        .and_then(|g| g.pose())
+        .map(|p| ghost_world::links::record_matrix(&p));
+    let cache = linked.shapes.as_deref();
+    let nodes = |ghost: u32, node: u16| {
+        let path = drive::shape_path(world, world.ghosts.get(&ghost)?.datablock()?)?;
+        cache?.loaded(path)?.rest_node(node).copied()
+    };
+    // The predicted object at the origin: its children come out in its frame.
+    let own = |ghost: u32| {
+        if ghost == me {
+            return Some(collide::math::IDENTITY);
+        }
+        linked.own(world, ghost)
+    };
+    let mut charge = || {
+        *work = work.saturating_add(LINK_WORK);
+        *work <= budget
+    };
+    for (id, o) in objects.iter_mut() {
+        let Some(index) = id.0.checked_sub(1) else {
+            continue;
+        };
+        if world.links.parent(index).is_none() || linked.own(world, index).is_some() {
+            continue;
+        }
+        let pose = world.tick_pose_in(index, &nodes, &own, poses, &mut charge);
+        if poses.stopped() {
+            break;
+        }
+        let Some(pose) = pose else {
+            continue;
+        };
+        let upright = world
+            .ghosts
+            .get(&index)
+            .and_then(|g| g.class)
+            .is_some_and(|c| <W::Set as EngineSet>::class_kind(c).is_player());
+        let at = if pose.base == me {
+            carried.push(CarriedChild {
+                id: *id,
+                rel: pose.world,
+                upright,
+            });
+            let Some(base) = &me_record else {
+                continue;
+            };
+            collide::math::matrix_product(base, &pose.world)
+        } else {
+            pose.world
+        };
+        o.view = placed_view(&o.view, &at, upright);
+    }
+    carried
+}
 
 /// Whether the control object `ctrl` is a Player or AIPlayer ghost (a turret the Player rides): the server's driver split reads it
 /// (`Player::processTick`'s `info.player`: the rider's turn goes to the turret, not to the rider).
@@ -2417,6 +3126,26 @@ fn controls_player<W: PredictWorld>(world: &W, ctrl: Option<ObjectId>) -> bool {
         .get(&index)
         .and_then(|g| g.class)
         .is_some_and(|c| <W::Set as EngineSet>::class_kind(c).is_player())
+}
+
+/// Where `id` is in the objects `by_id` indexes ([`index_of`]): its first place, as a scan from the front finds it.
+fn place_in(by_id: &[(ObjectId, u32)], id: ObjectId) -> Option<usize> {
+    let at = by_id.partition_point(|&(k, _)| k < id);
+    by_id
+        .get(at)
+        .filter(|&&(k, _)| k == id)
+        .map(|&(_, i)| i as usize)
+}
+
+/// The ids of `objects` with their places, sorted by id and then place ([`ClientCollision::place`]).
+fn index_of(objects: &[(ObjectId, Object)]) -> Vec<(ObjectId, u32)> {
+    let mut by_id: Vec<(ObjectId, u32)> = objects
+        .iter()
+        .enumerate()
+        .map(|(at, (id, _))| (*id, at as u32))
+        .collect();
+    by_id.sort_unstable();
+    by_id
 }
 
 /// The mount of Player ghost `index` when it is a Player or AIPlayer whose ShapeBase part says a connection controls it (the turret
@@ -2443,39 +3172,91 @@ fn damage_state<W: PredictWorld>(world: &W, index: u32) -> Option<u32> {
     g.record.as_ref()?.player_state()?.damage
 }
 
-/// An object's view at `m` with object box `obj_box` and `scale` (`resetWorldBox`'s world box and radius).
-pub fn view_of(m: Matrix, obj_box: Box3, scale: F3, type_mask: u32) -> ObjectView {
-    let scaled = Box3::new(
-        [0, 1, 2].map(|i| (f64::from(obj_box.min[i]) * f64::from(scale[i])) as f32),
-        [0, 1, 2].map(|i| (f64::from(obj_box.max[i]) * f64::from(scale[i])) as f32),
-    );
-    let mut w = mul_box(&m, &scaled);
-    if !(w.max[0] >= w.min[0] && w.max[1] >= w.min[1] && w.max[2] >= w.min[2]) {
-        w = Box3::new([-1.0; 3], [1.0; 3]);
+/// What a part asked of `collision` ([`slot::TickStep::around`]). A query that ran out of the collision's budget is no look: what
+/// it found is dropped and the answer is not [`slot::Around::built`], so the part keeps what it had.
+fn look(
+    collision: &mut ClientCollision,
+    statics: Option<(F3, F3)>,
+    bodies: Option<(F3, F3)>,
+) -> slot::Around {
+    let statics = statics.map(|(a, b)| static_views(collision, a, b));
+    let bodies = bodies.map(|(a, b)| body_boxes(collision, a, b));
+    slot::Around {
+        built: statics.as_ref().is_none_or(Result::is_ok)
+            && bodies.as_ref().is_none_or(Result::is_ok),
+        statics: statics.and_then(Result::ok).unwrap_or_default(),
+        bodies: bodies.and_then(Result::ok).unwrap_or_default(),
     }
-    let c = |i: usize| ((f64::from(w.max[i]) + f64::from(w.min[i])) * 0.5) as f32;
-    let center = [c(0), c(1), c(2)];
-    let dd = |i: usize| (f64::from(w.max[i]) - f64::from(center[i])) as f32;
-    let (dx, dy, dz) = (dd(0), dd(1), dd(2));
-    let sq = ((f64::from(dx) * f64::from(dx) + f64::from(dy) * f64::from(dy))
-        + f64::from(dz) * f64::from(dz)) as f32;
-    ObjectView {
-        obj_to_world: m,
-        world_to_obj: affine_inverse(&m),
-        scale,
-        obj_box,
-        world_box: w,
-        world_radius: collide::math::sqrt_f32(sq),
-        type_mask,
-        collision_disabled: false,
-    }
+}
+
+/// The map pieces of `collision` whose boxes meet `min..max`.
+fn static_views(
+    collision: &mut ClientCollision,
+    min: F3,
+    max: F3,
+) -> Result<Vec<slot::StaticView>, Exhausted> {
+    use collide::World as _;
+    let mask = collide::types::TERRAIN
+        | collide::types::INTERIOR
+        | collide::types::STATIC_SHAPE
+        | collide::types::STATIC_TS;
+    let mut ids = Vec::new();
+    let limit = slot::MAX_STATIC_VIEWS * 4;
+    collision.find_objects(&Box3::new(min, max), mask, None, limit, &mut ids)?;
+    Ok(ids
+        .into_iter()
+        .filter(|id| !collide::source::is_plugin_id(*id))
+        .filter_map(|id| {
+            Some(slot::StaticView {
+                id: id.0,
+                view: collision.object(id)?,
+                map: collision.map_shape(id),
+            })
+        })
+        .take(slot::MAX_STATIC_VIEWS)
+        .collect())
+}
+
+/// The Players (living or dead) and vehicles of `collision` whose boxes meet `min..max`, in ghost order; `Exhausted` when the
+/// query ran out of the collision's budget (the boxes found are then not all there are).
+fn body_boxes(
+    collision: &mut ClientCollision,
+    min: F3,
+    max: F3,
+) -> Result<Vec<slot::BodyBox>, Exhausted> {
+    use collide::World as _;
+    let mask = collide::types::PLAYER | collide::types::CORPSE | collide::types::VEHICLE;
+    let mut ids = Vec::new();
+    collision.find_objects(
+        &Box3::new(min, max),
+        mask,
+        None,
+        slot::MAX_STATIC_VIEWS,
+        &mut ids,
+    )?;
+    let mut boxes: Vec<slot::BodyBox> = ids
+        .into_iter()
+        .filter(|id| !collide::source::is_plugin_id(*id))
+        .filter_map(|id| {
+            let view = collision.object(id)?;
+            Some(slot::BodyBox {
+                ghost: id.0.checked_sub(1)?,
+                min: view.world_box.min,
+                max: view.world_box.max,
+            })
+        })
+        .collect();
+    boxes.sort_unstable_by_key(|b| b.ghost);
+    Ok(boxes)
 }
 
 impl ClientCollision {
     /// The world of `world` for the predicted Player whose ghost is `me` (left out: the predicted Player is the mover, its ghost is
     /// the same object).
     ///
-    /// The construction is charged to `budget` (every ghost looked at, every datablock read): what is left is the tick's.
+    /// The construction is charged to `budget` (every ghost looked at, every datablock read), but stops with half of it left
+    /// whole: the ghost walk ends at [`ClientCollision::walk_stopped`] (the ghosts past it are not in the container this tick), so
+    /// a world of any size leaves the moves half of the budget (see [`ClientCollision::moves_reserve`]).
     /// With `ctx`, the game's static index's objects near the point are in it too (before every other object, as the server's
     /// container asks its indexes before its bins), and the ghosts it makes objects of.
     pub fn new<W: PredictWorld>(
@@ -2491,13 +3272,16 @@ impl ClientCollision {
         let mut objects = Vec::new();
         let mut work = 0u64;
         let mut set = None;
+        let walk_cap = Self::walk_cap(budget);
+        let mut walk_stopped = false;
+        let plugin_sources = ctx.as_ref().and_then(|c| c.static_world.plugin.clone());
         let (mut shapes, reader, driven, ghost_vehicles, disabled, player_at, mut statics) =
             match ctx {
                 Some(c) => {
                     let reader = c.static_world.reader.clone();
                     let mut index = c.static_world.index.as_deref_mut();
                     if let Some(i) = index.as_deref_mut() {
-                        set = i.set_near(world, reader.as_ref(), c.near, &mut work, budget);
+                        set = i.set_near(world, reader.as_ref(), c.near, &mut work, walk_cap);
                     }
                     (
                         Some(c.shapes),
@@ -2511,6 +3295,7 @@ impl ClientCollision {
                 }
                 None => (None, None, None, None, None, None, None),
             };
+        let plugin_sources = plugin_sources.filter(|s| !s.is_empty());
         let index_bits = statics.as_deref().map_or(0, |i| i.type_bits());
         let mut zones = Vec::new();
         if let Some(i) = statics.as_deref() {
@@ -2529,7 +3314,8 @@ impl ClientCollision {
         ghosts.sort_by_key(|(_, g)| std::cmp::Reverse(g.serial));
         for (index, g) in ghosts {
             work = work.saturating_add(GHOST_WORK);
-            if work > budget {
+            if work > walk_cap {
+                walk_stopped = true;
                 break;
             }
             if index == me {
@@ -2599,7 +3385,7 @@ impl ClientCollision {
                     else {
                         continue;
                     };
-                    let Some(shape) = shapes.get(path, reader.as_ref(), &mut work, budget) else {
+                    let Some(shape) = shapes.get(path, reader.as_ref(), &mut work, walk_cap) else {
                         continue;
                     };
                     let ghost = ghost_vehicles.and_then(|m| m.get(&index));
@@ -2634,24 +3420,120 @@ impl ClientCollision {
                     ));
                 }
                 _ => {
-                    if let Some(o) = statics
-                        .as_deref_mut()
-                        .and_then(|s| s.ghost_object(world, index, g, reader.as_ref()))
-                    {
+                    let o = match statics.as_deref_mut() {
+                        Some(s) => s.ghost_object(world, index, g, reader.as_ref()),
+                        // No game index: a StaticShape is in the container as TGE's client holds it.
+                        None if kind == Some(ClassKind::StaticShape) => {
+                            shapes.as_deref_mut().and_then(|c| {
+                                static_shape(world, g, c, reader.as_ref(), &mut work, walk_cap)
+                            })
+                        }
+                        None => None,
+                    };
+                    if let Some(o) = o {
                         objects.push((id, o));
                     }
                 }
             }
         }
-        ClientCollision {
+        // The plugins' shapes: charged to no budget, so the client and the server hold the same ones (see `collide::source`).
+        let plugin = plugin_sources.map_or_else(collide::source::ShapeSet::none, |s| s.snapshot());
+        let mut collision = ClientCollision {
             statics: set,
             index_bits,
+            by_id: index_of(&objects),
             objects,
+            carried: Vec::new(),
+            tick_poses: ghost_world::world::TickPoses::default(),
+            child_room: 0,
+            walk_stopped,
             zones,
             work,
             budget,
             order: game.candidate_order(),
+            plugin,
+        };
+        collision.place_children(
+            world,
+            Linked {
+                shapes,
+                reader: reader.as_ref(),
+                driven,
+                ghosts: ghost_vehicles,
+                player_at,
+                me,
+            },
+        );
+        collision
+    }
+
+    /// The work the moves always have: half of the budget. Everything else that draws on it (the ghost walk with its shape and
+    /// datablock reads, the placing and carrying of children, the predicted object's own frame) is held together to
+    /// `budget - moves_reserve()` at most, whatever the world or the tree is: the walk stops at its cap, the children's cap is
+    /// below the reserve and what the walk left of it is all the carrying may use, and the frame stops short of it.
+    pub fn moves_reserve(&self) -> u64 {
+        self.budget / 2
+    }
+
+    /// Where the ghost walk stops (counted from the tick's start): half of the budget less what one ghost's last step may
+    /// overshoot it by (its datablock read and the next ghost's charge).
+    fn walk_cap(budget: u64) -> u64 {
+        (budget / 2).saturating_sub(DATABLOCK_WORK + GHOST_WORK)
+    }
+
+    /// Whether the ghost walk stopped at its cap: the ghosts past it are not in this container.
+    pub fn walk_stopped(&self) -> bool {
+        self.walk_stopped
+    }
+
+    /// The most the tick's total work (the construction's too, counted from the tick's start) may stand at when the placement
+    /// and carrying of scene-hierarchy children are done: three eighths of the budget.
+    fn child_cap(&self) -> u64 {
+        self.budget / 8 * 3
+    }
+
+    /// The most the predicted object's own frame may take of the tick's work ([`Self::attach_frame`]).
+    fn frame_share(&self) -> u64 {
+        self.budget / 8
+    }
+
+    /// [`place_linked`] up to the children's cap; with none left of it (the construction took it) nothing is placed or charged.
+    fn place_children<W: PredictWorld>(&mut self, world: &W, linked: Linked<'_>) {
+        let cap = self.child_cap();
+        let before = self.work;
+        if before >= cap {
+            return;
         }
+        self.carried = place_linked(
+            world,
+            &mut self.objects,
+            linked,
+            &mut self.tick_poses,
+            &mut self.work,
+            cap,
+        );
+        self.child_room = cap.saturating_sub(self.work);
+    }
+
+    /// Where the predicted object's frame hangs ([`Linked::attach`]), on a slice of its own ([`Self::frame_share`]) beside the
+    /// children's: the poses the placement worked out are kept (so no ghost of them is charged again) and a stop of theirs is
+    /// lifted for the new slice.
+    fn attach_frame<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        linked: &mut Linked<'_>,
+        frame: &framed::ChildFrame,
+    ) -> Option<framed::Attach> {
+        let cap = self
+            .budget
+            .saturating_sub(self.moves_reserve() + LINK_WORK)
+            .min(self.work.saturating_add(self.frame_share()));
+        // A charge past the cap by one link is the most a refusal costs: with the work at it already, nothing is placed.
+        if self.work >= cap {
+            return None;
+        }
+        self.tick_poses.resume();
+        linked.attach(world, frame, &mut self.tick_poses, &mut self.work, cap)
     }
 
     /// Whether the budget is spent.
@@ -2671,11 +3553,19 @@ impl ClientCollision {
         {
             return Some(&set.get(i).1);
         }
-        self.objects.iter().find(|(i, _)| *i == id).map(|(_, o)| o)
+        self.objects.get(self.place(id)?).map(|(_, o)| o)
+    }
+
+    /// Where `id` is in `objects`: its first place, as a scan from the front finds it.
+    fn place(&self, id: ObjectId) -> Option<usize> {
+        place_in(&self.by_id, id)
     }
 
     /// An object's type mask (0 for one that is not there).
     pub fn type_mask(&self, id: ObjectId) -> u32 {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.object(id).map_or(0, |v| v.type_mask);
+        }
         self.get(id).map_or(0, |o| o.view.type_mask)
     }
 
@@ -2685,10 +3575,37 @@ impl ClientCollision {
             statics: None,
             index_bits: 0,
             objects: Vec::new(),
+            carried: Vec::new(),
+            tick_poses: ghost_world::world::TickPoses::default(),
+            child_room: TICK_WORK / 8 * 3,
+            walk_stopped: false,
+            by_id: Vec::new(),
             zones: Vec::new(),
             work: 0,
             budget: TICK_WORK,
             order: None,
+            plugin: collide::source::ShapeSet::none(),
+        }
+    }
+
+    /// Places the scene-hierarchy children of the predicted object at `at`, its pose before a move: the server resolves a
+    /// parent's children before each object's turn, so the object's next move meets them there. Each child is charged
+    /// [`GHOST_WORK`], within the children's share of the budget (the rest stay where they were); nothing is done without such
+    /// children.
+    pub fn carry_children(&mut self, at: &Matrix) {
+        for child in &self.carried {
+            if self.child_room < GHOST_WORK {
+                break;
+            }
+            self.child_room -= GHOST_WORK;
+            self.work = self.work.saturating_add(GHOST_WORK);
+            let Some((_, o)) =
+                place_in(&self.by_id, child.id).and_then(|at| self.objects.get_mut(at))
+            else {
+                continue;
+            };
+            let m = collide::math::matrix_product(at, &child.rel);
+            o.view = placed_view(&o.view, &m, child.upright);
         }
     }
 
@@ -2703,7 +3620,7 @@ impl ClientCollision {
             set.set_view(i, view);
             return;
         }
-        if let Some((_, o)) = self.objects.iter_mut().find(|(i, _)| *i == id) {
+        if let Some((_, o)) = self.place(id).and_then(|at| self.objects.get_mut(at)) {
             let disabled = o.view.collision_disabled;
             o.view = view;
             o.view.collision_disabled = disabled;
@@ -2780,6 +3697,41 @@ impl ClientCollision {
                     }
                     continue;
                 }
+                // A static shape (a StaticShape) answers as the bins ask it, `ShapeBase::castRay`: its line-of-sight details
+                // at rest, the segment by `object_point`. A vehicle's shape answers no ray on the client.
+                if let (Source::Torque(_), Some(shape)) = (&o.source, &o.shape)
+                    && o.view.type_mask & collide::types::STATIC != 0
+                {
+                    if pass == 0 {
+                        continue;
+                    }
+                    let w2o = transform::affine_inverse(&o.view.obj_to_world);
+                    let point = torque_scene::library::get().object_point;
+                    let a = point(&w2o, o.view.scale, start);
+                    let b = point(&w2o, o.view.scale, end);
+                    let budget = self.budget;
+                    let hit = shape.cast_los(a, b, &mut |u| {
+                        work = work.saturating_add(u);
+                        work <= budget
+                    });
+                    match hit {
+                        Ok(Some((t, n))) if t < best_t => {
+                            best_t = t;
+                            best = Some(RayHit {
+                                t,
+                                point: torque_scene::geometry::ray_point(start, end, t),
+                                normal: transform::rotate(&o.view.obj_to_world, n),
+                                object: *id,
+                            });
+                        }
+                        Ok(_) => {}
+                        Err(Exhausted) => {
+                            self.work = work;
+                            return best;
+                        }
+                    }
+                    continue;
+                }
                 let Source::Game(g) = &o.source else {
                     continue;
                 };
@@ -2818,6 +3770,9 @@ impl ClientCollision {
 
 impl collide::World for ClientCollision {
     fn object(&self, id: ObjectId) -> Option<ObjectView> {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.object(id);
+        }
         self.get(id).map(|o| o.view)
     }
 
@@ -2856,6 +3811,11 @@ impl collide::World for ClientCollision {
             }
             out.push(*id);
         }
+        if out.len() >= limit || self.plugin.is_empty() {
+            return Ok(());
+        }
+        // The plugins' shapes come after every other object, as the server's container lists them.
+        self.plugin.find(query, type_mask, exclude, limit, out);
         Ok(())
     }
 
@@ -2873,11 +3833,17 @@ impl collide::World for ClientCollision {
     }
 
     fn convex_source(&self, id: ObjectId) -> ConvexSource {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.convex_source(id);
+        }
         self.get(id)
             .map_or(ConvexSource::None, |o| o.source.convex())
     }
 
     fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
+        if collide::source::is_plugin_id(id) {
+            return self.plugin.hull(id, slot);
+        }
         self.get(id)?
             .shape
             .as_ref()?
@@ -2896,6 +3862,32 @@ impl collide::World for ClientCollision {
     }
 }
 
+/// The plugin shapes in `moved` read again into `collision` (each charged to `work` as [`slot::SHAPE_READ_WORK`]; none once
+/// the tick's budget for parts is spent).
+fn refresh_moved(
+    sources: &collide::source::CollisionSources,
+    collision: &mut ClientCollision,
+    moved: &mut [(&'static str, u32)],
+    work: &mut u64,
+) {
+    if moved.is_empty() {
+        return;
+    }
+    let cost = moved.len() as u64 * slot::SHAPE_READ_WORK;
+    if work.saturating_add(cost) > slot::PART_TICK_WORK {
+        return;
+    }
+    *work += cost;
+    moved.sort_unstable();
+    let set = Rc::make_mut(&mut collision.plugin);
+    let mut rest = &*moved;
+    while let Some(&(name, _)) = rest.first() {
+        let n = rest.iter().take_while(|(s, _)| *s == name).count();
+        sources.refresh(set, name, rest[..n].iter().map(|(_, k)| *k));
+        rest = &rest[n..];
+    }
+}
+
 /// The predicted Player's host: the client's world, no skeleton, no callbacks.
 struct ClientPlayerHost<'a, W: PredictWorld> {
     world: &'a mut ClientCollision,
@@ -2908,6 +3900,18 @@ struct ClientPlayerHost<'a, W: PredictWorld> {
     /// The Player's class (the game's).
     class: Rc<dyn PlayerClass>,
     game: Rc<dyn game::PredictGame<W>>,
+    /// The tether a plugin puts on the predicted Player ([`torque_game::player_tether`]), and whom to tell what it did.
+    tether: Option<sim::player::tether::Tether>,
+    pull: Option<Pull>,
+}
+
+/// The source of a predicted Player's tether and the move it steps, told what the tether did
+/// ([`torque_game::player_tether::TetherSource::predicted_pull`]).
+struct Pull {
+    sources: Rc<torque_game::player_tether::TetherSources>,
+    source: usize,
+    key: u32,
+    move_index: u32,
 }
 
 impl<W: PredictWorld> ClientPlayerHost<'_, W> {
@@ -2925,6 +3929,17 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
     fn player_class(&self) -> Option<Rc<dyn sim::player::PlayerClass>> {
         Some(Rc::clone(&self.class))
+    }
+
+    fn tether(&mut self, _s: &PlayerState) -> Option<sim::player::tether::Tether> {
+        self.tether
+    }
+
+    fn tethered(&mut self, s: &PlayerState, change: F3) {
+        if let Some(p) = &self.pull {
+            p.sources
+                .predicted_pull(p.source, p.key, p.move_index, change, s.mass);
+        }
     }
 
     fn skeleton(&mut self) -> &mut dyn Skeleton {
@@ -2995,6 +4010,111 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
 pub mod aim;
 pub mod drive;
+pub mod framed;
 pub mod game;
 pub mod ghost_players;
 pub mod look;
+pub mod slot;
+
+pub use slot::{NetPrediction, Prediction, PredictionSlot, TgePrediction};
+
+#[cfg(test)]
+#[path = "predict/linked_tests.rs"]
+mod linked_tests;
+
+#[cfg(test)]
+mod box_tests {
+    use super::*;
+
+    #[test]
+    fn a_predicted_players_box_is_held_to_the_largest_side_prediction_takes() {
+        assert_eq!(predicted_side(1.2, 1.0), 1.2);
+        assert_eq!(predicted_side(1.0e6, 1.0), MAX_PREDICTED_BOX);
+        assert_eq!(predicted_side(-3.0, 1.0), 0.0);
+        assert_eq!(predicted_side(f32::NAN, 2.3), 2.3);
+        assert_eq!(predicted_side(f32::INFINITY, 2.3), 2.3);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    /// An object of the container whose type mask tells it apart.
+    fn object(mask: u32) -> Object {
+        Object {
+            view: view_of(collide::math::IDENTITY, Box3::default(), [1.0; 3], mask),
+            source: Source::Torque(ConvexSource::None),
+            shape: None,
+            map: None,
+        }
+    }
+
+    /// A world of `objects` as `ClientCollision::new` lists them.
+    fn world(objects: Vec<(ObjectId, Object)>) -> ClientCollision {
+        let mut c = ClientCollision::empty();
+        c.by_id = index_of(&objects);
+        c.objects = objects;
+        c
+    }
+
+    /// What a scan from the front (the lookup the index stands in for) finds.
+    fn scanned(c: &ClientCollision, id: ObjectId) -> Option<u32> {
+        c.objects
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, o)| o.view.type_mask)
+    }
+
+    #[test]
+    fn the_index_finds_what_a_scan_finds_as_ghosts_come_go_and_come_back() {
+        let ids = |list: &[(u32, u32)]| -> Vec<(ObjectId, Object)> {
+            list.iter()
+                .map(|&(id, mask)| (ObjectId(id), object(mask)))
+                .collect()
+        };
+        // Newest first, as the bins answer; an id twice (a stale entry beside its new object) answers its first place.
+        let worlds = [
+            ids(&[(9, 1), (3, 2), (5, 4), (3, 8)]),
+            // Ghost 3 went and ghost 7 came.
+            ids(&[(7, 16), (9, 1), (5, 4)]),
+            // Index 3 came back as another object.
+            ids(&[(3, 32), (7, 16), (9, 1), (5, 4)]),
+            ids(&[]),
+        ];
+        for objects in worlds {
+            let c = world(objects);
+            for id in 0..12 {
+                let id = ObjectId(id);
+                assert_eq!(
+                    c.get(id).map(|o| o.view.type_mask),
+                    scanned(&c, id),
+                    "{id:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_moved_object_is_the_one_its_id_names() {
+        let mut c = world(vec![
+            (ObjectId(4), object(1)),
+            (ObjectId(2), object(2)),
+            (ObjectId(4), object(4)),
+        ]);
+        let mut moved = view_of(collide::math::IDENTITY, Box3::default(), [1.0; 3], 64);
+        moved.obj_to_world[3] = 5.0;
+        c.set_view(ObjectId(4), moved);
+        // The first of the two with id 4 moved, as a scan from the front would have found it; the others did not.
+        assert_eq!(c.objects[0].1.view.obj_to_world[3], 5.0);
+        assert_eq!(c.objects[2].1.view.obj_to_world[3], 0.0);
+        assert_eq!(c.get(ObjectId(2)).unwrap().view.type_mask, 2);
+        // An id the world does not hold moves nothing.
+        c.set_view(ObjectId(99), moved);
+        assert!(
+            c.objects
+                .iter()
+                .all(|(i, o)| *i == ObjectId(4) || o.view.obj_to_world[3] == 0.0)
+        );
+    }
+}

@@ -211,6 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut menu_dir = None;
     let mut name_dir = None;
     let mut polish_dir = None;
+    let mut beam_dir = None;
     let mut polish2_dir = None;
     let mut hitbox_dir = None;
     let mut lit_dir = None;
@@ -224,6 +225,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--menu-shots" => menu_dir = Some(args.dir(&arg)?),
             "--name-shots" => name_dir = Some(args.dir(&arg)?),
             "--polish-shots" => polish_dir = Some(args.dir(&arg)?),
+            "--beam-shots" => beam_dir = Some(args.dir(&arg)?),
             "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
             "--hitbox-shots" => hitbox_dir = Some(args.dir(&arg)?),
             "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
@@ -287,6 +289,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         return Ok(());
     }
+    #[cfg(feature = "rope")]
+    if let Some(dir) = beam_dir {
+        for path in shots::write_beam(&dir, SHOT_SIZE, GameFiles::bundled)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
+    #[cfg(not(feature = "rope"))]
+    if beam_dir.is_some() {
+        return Err("--beam-shots needs a build with the rope feature".into());
+    }
     if let Some(dir) = polish_dir {
         for path in shots::write_polish(&dir, SHOT_SIZE, GameFiles::bundled)? {
             println!("{}", path.display());
@@ -305,7 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => torque::app::window::run(ArenaGame::new(GameFiles::bundled()?, options)?)?,
+        None => ArenaGame::run(GameFiles::bundled()?, options)?,
     }
     Ok(())
 }

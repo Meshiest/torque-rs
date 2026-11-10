@@ -1,0 +1,40 @@
+[package]
+name = "torque-engine"
+description = "The engine builder: plugins, plugin groups, and the recipes they record for every server and client script engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "plugins", "game-engine", "gamedev"]
+categories = ["game-engines", "game-development"]
+
+[dependencies]
+# The script engine the recipes are replayed into. Nothing else: a dedicated server and every plugin crate take this crate
+# without the client, the GUI or the renderer.
+torque-ts-vm = { path = "../torque-ts-vm" }
+# The manifest and the auth trait a plugin's network version and tickets are given in. No dependency of its own.
+torque-net = { path = "../torque-net" }
+# `#[derive(PluginId)]`, re-exported.
+torque-macros = { path = "../torque-macros" }
+# The plugin net classes' records and their field types (`net().ghost`, `#[derive(GhostRecord)]`): no client, GUI or
+# renderer behind it.
+torque-ghosts = { path = "../torque-ghosts" }
+# The plugin collision sources the manifest lists (their names are the type bits both sides must agree on). Std only.
+torque-collide = { path = "../torque-collide" }
+# The permissions model a server checks (dotted names, wildcard grants, flat roles). Std only.
+torque-permissions = { path = "../torque-permissions" }
+# Client-to-server file transfers (`net().upload`): the server's and the client's state machines. Std and `sha2` only.
+torque-transfer = { path = "../torque-transfer" }
+
+[features]
+# `RpcLink::set_send_limits`: turns off the limits on what a link sends, for the tests of a receiving side. Never a host's.
+testing = []
+
+[dev-dependencies]
+# The resource layer's files, read by an asset loader in a test.
+torque-resource = { path = "../torque-resource" }
+
+[lints]
+workspace = true

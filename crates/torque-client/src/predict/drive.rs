@@ -24,18 +24,20 @@
 //! [`GHOST_SNAP`] it is drawn there at once). Values that are not finite are left out or undone ([`GhostVehicle::tick`]).
 //!
 //! Credit: follows TGE's vehicles and Player as Torque3D carries them (MIT: `T3D/vehicles/vehicle.cpp`,
-//! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp`, Copyright (c) 2012 GarageGames,
-//! LLC; Copyright (C) 2015 Faust Logic, Inc.).
+//! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp` and `T3D/shapeBase.cpp` (its
+//! line-of-sight `castRay`), each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use collide::ObjectId;
 use collide::convex::HullSlot;
 use collide::math::{Box3, F3, Matrix};
 use collide::mesh::{Hull, HullAccel};
+use collide::{Exhausted, ObjectId};
 use ghosts::Value;
 use net::control::ControlData;
+use shapes::collide::Collision;
 use shapes::preload::{Facts, SLOTS, SlotRule};
 use shapes::shape::Shape;
 use vehicle::data::{
@@ -54,8 +56,18 @@ use crate::records::{EngineDatablock, EngineRecord, EngineSet, VehicleUpdate};
 /// The most shapes a connection reads, and the largest file it reads (a vehicle's shape is far below both).
 pub const MAX_SHAPES: usize = 256;
 pub const MAX_SHAPE_BYTES: usize = 16 << 20;
+/// The longest shape path [`ShapeCache::loaded`] lowers on the stack.
+pub const KEY_ON_STACK: usize = 256;
 /// The work a shape's read is charged per byte (its parse, facts and hulls are charged by their own units).
 pub const SHAPE_WORK_PER_BYTE: u64 = 1;
+/// The work the loads of [`ShapeCache::get`] may take in one tick, all of them together (their reads, imports, parses, facts and
+/// hulls: room for the largest file there can be), counted apart from the tick's budget: a vehicle's or a static object's
+/// collision shape of megabytes loads, once, whatever the tick's moves cost, and the loads past it wait for the next tick
+/// ([`ShapeCache::start_tick`]).
+pub const SHAPE_LOAD_WORK: u64 = 64 << 20;
+/// What a load in [`ShapeCache::get`] takes of the tick's budget: a few begin in one tick, the rest wait for later ticks
+/// without being read.
+pub const SHAPE_LOAD_TICK_WORK: u64 = super::TICK_WORK / 8;
 
 /// A shape the client read from the install: the parsed model, what the preloads find, the node transforms at rest and the
 /// collision hull of each slot (made once, as TGE computes the accelerators at `ShapeBaseData::preload`).
@@ -64,25 +76,76 @@ pub struct ClientShape {
     pub shape: Shape,
     pub facts: Facts,
     pub hulls: [Option<Rc<Hull>>; SLOTS],
+    /// The line-of-sight queries ([`shapes::collide::Collision`]), made when the first ray reaches the shape and paid for by it;
+    /// `None` inside for a shape whose details do not build.
+    los: OnceCell<Option<Rc<Collision>>>,
+    /// [`ClientShape::hull_slots`], made at the first ask.
+    slots: OnceCell<Rc<[HullSlot]>>,
+    /// Each node's transform in the shape's space at rest.
+    rest: Vec<Matrix>,
 }
 
 impl ClientShape {
-    /// The eight collision slots as `collide` takes them.
-    pub fn hull_slots(&self) -> Vec<HullSlot> {
-        // A shape lists only the collision details it has: the slots past them are absent.
-        (0..SLOTS)
-            .map(|i| {
-                let b = self.facts.bounds.get(i).copied().unwrap_or_default();
-                HullSlot {
-                    slot: i as u32,
-                    present: self.facts.slots.collision.get(i).is_some_and(|&d| d >= 0),
-                    bounds: Box3 {
-                        min: [b[0], b[1], b[2]],
-                        max: [b[3], b[4], b[5]],
-                    },
+    /// The eight collision slots as `collide` takes them, made once (every container the shape is in shares them).
+    pub fn hull_slots(&self) -> Rc<[HullSlot]> {
+        let slots = self.slots.get_or_init(|| {
+            HullSlot::of_shape(SLOTS, &self.facts.slots.collision, &self.facts.bounds)
+        });
+        Rc::clone(slots)
+    }
+
+    /// `ShapeBase::castRay` in the object's space, at the rest pose (the client animates no shape): the segment `a` to `b` cast
+    /// against each line-of-sight detail, the nearest hit kept (the earlier detail on a tie): its fraction and its normal in the
+    /// object's space. `Err` when `charge` refuses a unit (a refused build of the queries is not kept).
+    pub fn cast_los(
+        &self,
+        a: F3,
+        b: F3,
+        charge: &mut dyn FnMut(u64) -> bool,
+    ) -> Result<Option<(f32, F3)>, Exhausted> {
+        let slots = &self.facts.slots;
+        if slots.los.iter().all(|&d| d < 0) {
+            return Ok(None);
+        }
+        let refused = std::cell::Cell::new(false);
+        let mut pay = |units: u64| {
+            let ok = charge(units);
+            refused.set(refused.get() || !ok);
+            ok
+        };
+        let los = match self.los.get() {
+            Some(los) => los.clone(),
+            None => {
+                let built = Collision::build(&self.shape, slots, &mut pay);
+                match built {
+                    Ok(c) => {
+                        let c = Some(Rc::new(c));
+                        let _ = self.los.set(c.clone());
+                        c
+                    }
+                    Err(_) if refused.get() => return Err(Exhausted),
+                    Err(_) => {
+                        let _ = self.los.set(None);
+                        None
+                    }
                 }
-            })
-            .collect()
+            }
+        };
+        let Some(los) = los else {
+            return Ok(None);
+        };
+        let hit = los.cast_ray(slots, a, b, &mut pay);
+        match hit {
+            Ok(hit) => Ok(hit.map(|h| (h.t, h.normal))),
+            Err(_) if refused.get() => Err(Exhausted),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Node `node`'s transform in the shape's space at rest (`None` past the shape's nodes): where a child hung on that node
+    /// sits on an unanimated parent.
+    pub fn rest_node(&self, node: u16) -> Option<&Matrix> {
+        self.rest.get(usize::from(node))
     }
 
     /// The shape's bounds (`ShapeBase::onNewDataBlock`'s object box).
@@ -104,6 +167,10 @@ pub struct ShapeCache {
     /// The rule the collision and line-of-sight details are picked by (the game's, [`PredictGame::shape_slots`]; TGE's when
     /// none).
     slots: Option<SlotRule>,
+    /// What this tick's loads spent of [`ShapeCache::load_budget`].
+    load_spent: u64,
+    /// The work this cache's loads may take in a tick ([`SHAPE_LOAD_WORK`]; 0 takes that, a test lowers it).
+    pub load_budget: u64,
 }
 
 /// What a staged read of a shape ([`ShapeCache::get_staged`]) has come to.
@@ -224,10 +291,13 @@ impl ShapeLoad {
             };
         }
         match (self.shape.take(), self.posed.take()) {
-            (Some(shape), Some((facts, _))) => Step::Done(Box::new(ClientShape {
+            (Some(shape), Some((facts, rest))) => Step::Done(Box::new(ClientShape {
                 shape,
                 facts,
                 hulls: std::mem::take(&mut self.hulls),
+                los: OnceCell::new(),
+                slots: OnceCell::new(),
+                rest,
             })),
             _ => Step::Bad,
         }
@@ -243,12 +313,43 @@ impl ShapeCache {
         }
     }
 
+    /// A tick starts: its loads have the whole [`load_budget`](Self::load_budget) again.
+    pub fn start_tick(&mut self) {
+        self.load_spent = 0;
+    }
+
+    fn load_room(&self) -> u64 {
+        let budget = if self.load_budget == 0 {
+            SHAPE_LOAD_WORK
+        } else {
+            self.load_budget
+        };
+        budget.saturating_sub(self.load_spent)
+    }
+
     fn slot_rule(&self) -> SlotRule {
         self.slots.unwrap_or(shapes::preload::collision_slots)
     }
 
-    /// The shape at `path` (read through `reader` the first time, everything charged to `work` up to `budget`; at most
-    /// [`MAX_SHAPES`] shapes).
+    /// The shape at `path` if it was read already (nothing is read, and a path of up to [`KEY_ON_STACK`] bytes is looked
+    /// up without an allocation).
+    pub fn loaded(&self, path: &[u8]) -> Option<&Rc<ClientShape>> {
+        let mut key = [0u8; KEY_ON_STACK];
+        let found = match key.get_mut(..path.len()) {
+            Some(key) => {
+                key.copy_from_slice(path);
+                key.make_ascii_lowercase();
+                self.shapes.get(&*key)
+            }
+            None => self.shapes.get(&path.to_ascii_lowercase()),
+        };
+        found?.as_ref()
+    }
+
+    /// The shape at `path`, read through `reader` the first time and kept, found or not (at most [`MAX_SHAPES`] shapes). The
+    /// load draws on what this tick's loads have left of [`SHAPE_LOAD_WORK`] and takes [`SHAPE_LOAD_TICK_WORK`] of the tick's
+    /// `work` up to `budget`; a tick without that room reads nothing and answers None, and a load the rest of the tick's load
+    /// budget cut short is not kept (a later tick loads it whole).
     pub fn get(
         &mut self,
         path: &[u8],
@@ -261,30 +362,40 @@ impl ShapeCache {
         if let Some(s) = self.shapes.get(&key) {
             return s.clone();
         }
-        if self.shapes.len() >= MAX_SHAPES || *work >= budget {
+        let start = work.saturating_add(SHAPE_LOAD_TICK_WORK);
+        let room = self.load_room();
+        if self.shapes.len() >= MAX_SHAPES || start > budget || room == 0 {
             return None;
         }
+        *work = start;
+        let mut spent = 0u64;
         let loaded = reader.and_then(|r| r(path)).and_then(|bytes| {
             if bytes.len() > MAX_SHAPE_BYTES {
                 return None;
             }
-            *work = work.saturating_add(SHAPE_WORK_PER_BYTE.saturating_mul(bytes.len() as u64));
-            if *work > budget {
-                return None;
-            }
+            spent = SHAPE_WORK_PER_BYTE.saturating_mul(bytes.len() as u64);
             let mut charge = |units: u64| {
-                *work = work.saturating_add(units);
-                *work <= budget
+                spent = spent.saturating_add(units);
+                spent <= room
             };
             let bytes = torque_import::native::shape_file(path, bytes, &mut charge).ok()?;
-            load(&bytes, slots, work, budget).map(Rc::new)
+            load(&bytes, slots, &mut spent, room).map(Rc::new)
         });
-        // A read the budget cut short is tried again on a later tick; any other answer is kept.
-        if loaded.is_none() && *work > budget {
+        let whole = self.load_spent == 0;
+        self.load_spent = self.load_spent.saturating_add(spent.min(room));
+        // Cut short by what earlier loads of the tick left: tried again whole on a later tick (cut short with the whole budget: for
+        // good).
+        if loaded.is_none() && spent > room && !whole {
             return None;
         }
         self.shapes.insert(key, loaded.clone());
         loaded
+    }
+
+    /// Whether `path` has an answer that stays: the shape was read, or its read failed for good (a failed read is kept). False
+    /// for a path never asked for and for one a tick without the room did not read.
+    pub fn settled(&self, path: &[u8]) -> bool {
+        self.shapes.contains_key(&path.to_ascii_lowercase())
     }
 
     /// The shape at `path` read in steps (`ShapeLoad`): as many as fit in `budget` (charged to `work`) run now, the rest on
@@ -364,6 +475,9 @@ fn load(bytes: &[u8], slots: SlotRule, work: &mut u64, budget: u64) -> Option<Cl
         shape,
         facts,
         hulls,
+        los: OnceCell::new(),
+        slots: OnceCell::new(),
+        rest: nodes,
     })
 }
 
@@ -390,7 +504,7 @@ fn slot_hull(
     Some(Hull {
         node: parts.first().map(|p| p.node),
         parts,
-        accel: Some(accel),
+        accel: Some(Rc::new(accel)),
     })
 }
 
@@ -590,6 +704,8 @@ pub struct DrivenVehicle {
     pub shape: Rc<ClientShape>,
     /// The ticks its ghost had left to run its last move when the drive began, for the ghost it becomes again.
     pub ghost_prediction: i32,
+    /// The body solver the game picks for its datablock ([`PredictGame::body_solver`]; none: TGE's), a copy made for each tick.
+    pub solver: Option<Box<dyn vehicle::BodySolver>>,
 }
 
 /// The object id the client's collision world gives ghost `index`.
@@ -647,6 +763,7 @@ impl DrivenVehicle {
             v,
             shape,
             ghost_prediction: 0,
+            solver: game.body_solver(world, db),
         })
     }
 
@@ -698,6 +815,7 @@ impl DrivenVehicle {
             sim_time: 0,
             class: self.class.clone(),
             masks: self.masks,
+            solver: None,
         };
         let s = &mut *self.v.s;
         s.set_energy_level(p.energy, &self.data.base.shape, &mut host);
@@ -741,6 +859,7 @@ impl DrivenVehicle {
             sim_time: 0,
             class: self.class.clone(),
             masks: self.masks,
+            solver: None,
         };
         let w = wheeled::packet_words(&self.v, &self.data, &mut host);
         S::vehicle_data(&w, self.v.s.position())
@@ -758,6 +877,7 @@ impl DrivenVehicle {
             sim_time,
             class: self.class.clone(),
             masks: self.masks,
+            solver: self.solver.as_deref(),
         };
         vehicle::process_tick(&mut self.v, &self.data, mv, &mut host).is_ok()
     }
@@ -770,9 +890,15 @@ pub struct ClientVehicleHost<'a> {
     /// The vehicle's subclass (the game's), for its step, and the type masks the step uses.
     pub class: Option<Rc<dyn WheeledClass>>,
     pub masks: &'static collide::TypeMasks,
+    /// The body solver for the vehicle's tick (none: TGE's).
+    pub solver: Option<&'a dyn vehicle::BodySolver>,
 }
 
 impl VehicleHost for ClientVehicleHost<'_> {
+    fn body_solver(&mut self) -> Option<Box<dyn vehicle::BodySolver>> {
+        self.solver.map(|s| s.clone_box())
+    }
+
     fn type_masks(&self) -> &collide::TypeMasks {
         self.masks
     }
@@ -1008,6 +1134,7 @@ impl GhostVehicle {
                 sim_time: 0,
                 class: self.body.class.clone(),
                 masks: self.body.masks,
+                solver: None,
             };
             if !pose.warp && added {
                 // Engine addition (module docs): the drawn pose goes on as it was until the next tick, which runs the update's
@@ -1107,6 +1234,7 @@ impl GhostVehicle {
             sim_time,
             class: self.body.class.clone(),
             masks: self.body.masks,
+            solver: None,
         };
         let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
         if finite_state(&[&p, &q]) {
@@ -1122,6 +1250,7 @@ impl GhostVehicle {
             sim_time,
             class: self.body.class.clone(),
             masks: self.body.masks,
+            solver: self.body.solver.as_deref(),
         };
         vehicle::state::shape_base_tick(&mut self.body.v.s, &db.base.shape, None, &mut host);
         // Engine addition (module docs). Through the warp no physics runs (TGE's), but the state coasts on at its velocities

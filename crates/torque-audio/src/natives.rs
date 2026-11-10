@@ -6,7 +6,7 @@
 //! **The device.** `OpenALInitDriver()` always succeeds: the driver is this crate's mixer. Without a sound card
 //! ([`AudioHost::device`] is None) the voices move on the simulation clock (the null sink), so `alxIsPlaying` and
 //! `alxGetWaveLen` answer as they would with sounds playing. A window client may open a `cpal` device
-//! ([`AudioHost::open_device`], feature `device`). `alGetString` answers [`AudioHost::strings`] (a host may set its own), or,
+//! (`AudioHost::open_device`, feature `device`). `alGetString` answers [`AudioHost::strings`] (a host may set its own), or,
 //! once the host has an [`AudioReport`] ([`AudioHost::report`]: set when it opens its sound card, or when it has none), what is
 //! really there ([`AudioReport::strings`]: the mixer, the system's audio layer, the output device, no extensions).
 //!

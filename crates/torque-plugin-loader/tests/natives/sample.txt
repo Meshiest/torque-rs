@@ -1,0 +1,3 @@
+Sample::add 3..4 Sample::add(a, b [, c]) - adds two or three whole numbers
+Sample::greetingTwice 1..1 Sample::greetingTwice() - the greeting global, said twice
+sampleGreet 2..2 sampleGreet(name) - greets someone by name

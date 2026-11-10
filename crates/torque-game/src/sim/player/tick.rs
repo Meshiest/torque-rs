@@ -193,6 +193,7 @@ pub fn tick(vm: &mut Vm, calls: &mut dyn TriggerCalls, env: &SimEnv, id: ObjId, 
         error: None,
         moved: false,
         damage_before,
+        tether: None,
     };
     let _ = player.process_tick(&info.data, mv, &mut host);
     // The class's end-of-step method, after the skeleton's advance (nothing after it in the step reads what the callback may
@@ -271,6 +272,8 @@ pub struct HostImpl<'a> {
     moved: bool,
     /// The damage before the step's damage update (`onDamage`'s difference).
     damage_before: f32,
+    /// The tether sources of the script engine and the one whose tether the step took ([`crate::player_tether`]).
+    tether: Option<(Rc<crate::player_tether::TetherSources>, usize)>,
 }
 
 impl<'a> HostImpl<'a> {
@@ -573,6 +576,20 @@ impl crate::sim_classes::VmAccess for HostImpl<'_> {
 impl<'a> PlayerHost for HostImpl<'a> {
     fn player_class(&self) -> Option<Rc<dyn ::sim::player::PlayerClass>> {
         Some(self.skel.info.class.class())
+    }
+
+    /// The first tether a plugin's source puts on this Player ([`crate::player_tether`]).
+    fn tether(&mut self, _s: &PlayerState) -> Option<::sim::player::tether::Tether> {
+        let sources = self.read(crate::player_tether::of)?;
+        let (index, tether) = sources.tether(self.id)?;
+        self.tether = Some((sources, index));
+        Some(tether)
+    }
+
+    fn tethered(&mut self, s: &PlayerState, change: F3) {
+        if let Some((sources, index)) = self.tether.take() {
+            sources.pulled(index, self.id, change, s.mass);
+        }
     }
 
     fn world(&mut self) -> &mut dyn World {

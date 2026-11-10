@@ -20,6 +20,7 @@
 //! 2012 GarageGames, LLC), `gui/controls/guiTextListCtrl.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this
 //! crate's own.
 
+use torque_fonts::FontUse;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -85,7 +86,9 @@ pub fn font(vm: &Vm, gui: &Gui, id: ObjId) -> Option<std::sync::Arc<torque_fonts
         torque_ts_vm::host::FileRead::Found(b) => Some(b),
         _ => None,
     };
-    fonts.borrow_mut().font(&face, size, &read)
+    fonts
+        .borrow_mut()
+        .font(&face, size, FontUse::Profile, &read)
 }
 
 /// `GuiTextListCtrl::onWake`'s own part (after `GuiControl::onWake`): the font, then `setSize(mSize)`.

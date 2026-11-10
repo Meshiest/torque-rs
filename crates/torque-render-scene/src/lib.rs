@@ -6,6 +6,47 @@
 //! their lines of sight ([`sight`]), the camera ([`camera`]) and TGE's matrix math ([`math`]). No GPU type appears here, and every type is `Send + Sync`.
 //!
 //! Files come through [`Assets`] (the caller's file reader).
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - A frame's moving shapes under [`moving::with_budget`] build at most [`moving::ShapeBudget::max_vertices`], the nearest first
+//!   (the control object always), the rest lowered or left out and counted
+//!   (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first`).
+//! - A build parses at most its budget of shape files; the rest wait for a later one
+//!   (`a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait`); the control object's shapes, the vehicle it drives
+//!   (given to [`moving::with_budget`]) and its mounts are not under it, and no other vehicle is
+//!   (`the_control_objects_shape_loads_whatever_the_parse_budget_has_left`,
+//!   `only_the_control_object_the_vehicle_it_drives_and_its_mounts_load_past_the_parse_budget`). What the budgets did
+//!   is counted in the frame's [`moving::ShapeDraws`] alone.
+//! - A scene-hierarchy child is drawn at its parent's render transform times the parent's posed node times its blended local
+//!   pose, by `torque_hierarchy::compose` as the server composes it ([`mounts::mounted_transform`]), a chain of links and
+//!   mounts held to [`mounts::MAX_CARRY_DEPTH`] (torque-plugin-hierarchy's
+//!   `the_renderer_draws_each_child_where_the_server_has_it`). A ghost follows one carrier (its link when it has one, else its
+//!   mount), and a frame places each carrier once through one [`mounts::Carried`]: a frame's placements cost each ghost once,
+//!   whatever its chain (`mounts::tests::a_chain_of_unplaceable_links_costs_one_placement_a_ghost`).
+//! - Ghosts of one shape posed the same share one kept build ([`shapecache`]'s content key)
+//!   (`ghosts_of_one_shape_posed_the_same_share_one_kept_build`).
+//! - A plugin ghost whose draw rests ([`moving::resting`]: a sleeping prop) while nothing draws it anywhere but where its
+//!   record puts it (no prediction's pose, no blend left, not mounted, uniform scale, no skin) may be drawn by its host with
+//!   its still geometry (torque-app's resting batches): the frame's shapes leave out exactly the ghosts the host says it drew
+//!   so ([`moving::Hooks::still`]), so a ghost the host could not keep is still drawn here
+//!   (`a_resting_plugin_ghost_is_left_out_only_where_its_host_draws_it_still`).
+//! - [`hd::view_cull::ViewCull`] leaves a moving shape out only when no view, no sun shadow's sweep within the shadows' reach,
+//!   no water reflection, no seen light's reach and (while the light capture is drawn) no visible distance can show it; never on
+//!   the view alone (`a_shape_out_of_view_whose_shadow_falls_in_view_is_kept`,
+//!   `a_shape_seen_in_the_water_or_the_capture_or_in_a_lights_reach_is_kept`). A shape left out keeps time: its live pose and
+//!   images' clocks advance ([`moving::Hooks::advance_unseen`]) with nothing posed or built
+//!   (`a_player_the_cull_leaves_out_keeps_time_but_is_not_posed_or_built`).
+//!
+//! Costs a frame must not grow back (the benches in `benches/scene.rs`, timed under the bench lock):
+//! - A ghost posed as it was costs its cache key: its object is the last frame's, its draws moved over, not converted
+//!   (`a_ghost_posed_as_it_was_takes_its_last_objects_draws_and_converts_nothing`; bench `ghost frame 128 kept and culled`).
+//!   [`hd::objects::carry_motion`] leaves an object with a stamp as [`hd::objects::objects_of`] made it.
+//! - [`hd::HdScene::set_particles_and_decals`] makes the frame's particles again in the last frame's draws (no new lists once
+//!   their room is there: [`hd::HdDraw::assign_fixed`]) and counts no new set when there was none and is none; the lit sprites
+//!   are shaped with no list a quad (bench `particles draw+upload 10k`).
+//! - [`hd::TextureTable::intern`] finds a texture it holds by its levels' address with no copy of its path.
 
 pub mod camera;
 pub mod decals;

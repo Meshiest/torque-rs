@@ -442,14 +442,21 @@ impl MountedImage {
         self.events.push(e);
     }
 
-    /// `setImageState(slot, new, force)` on a ghost.
-    fn set_state(&mut self, rules: &dyn ImageRules, states: &ImageStates, new: usize, force: bool) {
+    /// `setImageState(slot, new, force)` on a ghost. Returns the chain's steps (the states it went through), which the
+    /// caller charges to the clock step's budget past the first.
+    fn set_state(
+        &mut self,
+        rules: &dyn ImageRules,
+        states: &ImageStates,
+        new: usize,
+        force: bool,
+    ) -> u32 {
         let mut new = new;
         let mut force = force;
-        for _ in 0..MAX_STATE_CHAIN {
+        for step in 1..=MAX_STATE_CHAIN {
             // A client enters the fire state only when forced.
             if !force && new as i32 == states.fire_state && self.state != new {
-                return;
+                return step;
             }
             // The same state again: its timer restarts (and, by a game's rule, its emitter runs on).
             if !force && self.state == new {
@@ -458,7 +465,7 @@ impl MountedImage {
                 if rules.same_state_emitter() {
                     self.emitter(rules, &s);
                 }
-                return;
+                return step;
             }
             let last = (self.state != usize::MAX).then(|| states.state(self.state));
             let last_delay = self.delay;
@@ -523,12 +530,13 @@ impl MountedImage {
             }
             // `!delayTime` is false for any delay but zero: a NaN waits too.
             if self.delay != 0.0 || s.trans[10] == -1 {
-                return;
+                return step;
             }
             new = s.trans[10] as usize;
             force = false;
         }
         self.cap_hits += 1;
+        MAX_STATE_CHAIN
     }
 
     /// The state's emitter (`startImageEmitter`), when it names one or the game's rule asks for every state's.
@@ -542,10 +550,10 @@ impl MountedImage {
         }
     }
 
-    /// `updateImageState(slot, dt)` on a ghost.
-    fn update(&mut self, rules: &dyn ImageRules, states: &ImageStates, dt: f32) {
+    /// `updateImageState(slot, dt)` on a ghost. Returns the steps of the state chain it ran (0 when it ran none).
+    fn update(&mut self, rules: &dyn ImageRules, states: &ImageStates, dt: f32) -> u32 {
         if self.state == usize::MAX {
-            return;
+            return 0;
         }
         self.delay -= dt;
         let s = states.state(self.state);
@@ -563,8 +571,7 @@ impl MountedImage {
             .find(|t| *t != -1)
             .or_else(|| (delay <= 0.0 && s.trans[10] != -1).then_some(s.trans[10]));
             if let Some(t) = next {
-                self.set_state(rules, states, t as usize, false);
-                return;
+                return self.set_state(rules, states, t as usize, false);
             }
         }
         if states.spins {
@@ -574,6 +581,7 @@ impl MountedImage {
                 _ => {}
             }
         }
+        0
     }
 
     /// Runs the ticks up to the world clock `now` (and the threads with them).
@@ -619,10 +627,15 @@ impl MountedImage {
             at += skip * TICK_MS;
             left = MAX_CATCH_UP_TICKS;
         }
-        let run = left.min(*budget);
-        *budget -= run;
-        for _ in 0..run {
-            self.update(rules, states, TICK_SEC);
+        // A tick costs one unit, and a state chain it runs one more a state past the first, so a datablock of states that
+        // point at each other with no timeout cannot run past the budget.
+        let mut run = 0;
+        while run < left && *budget > 0 {
+            *budget -= 1;
+            run += 1;
+            let extra = self.update(rules, states, TICK_SEC).saturating_sub(1);
+            *budget = budget.saturating_sub(extra);
+            stats.chain += u64::from(extra);
             self.ambient_time += TICK_SEC;
             self.spin_time += TICK_SEC * self.spin_scale;
             if let Some(a) = self.anim.as_mut() {
@@ -663,6 +676,8 @@ pub struct TickStats {
     pub run: u64,
     pub skipped: u64,
     pub deferred: u64,
+    /// The state-chain steps past the first that the ticks run were charged for.
+    pub chain: u64,
 }
 
 /// Engine cap: the image ticks one step of the world's clock may run, across every slot of every ghost (a clock step is a datagram
@@ -767,18 +782,21 @@ pub fn apply(
             continue;
         };
         let fire = st.fire_state.max(0) as usize;
+        let mut steps = 0;
         if !added {
             m.fire_count = count;
             if sent.firing {
-                m.set_state(rules, &st, fire, true);
+                steps += m.set_state(rules, &st, fire, true).saturating_sub(1);
             }
         } else {
             if count != m.fire_count {
                 m.fire_count = count;
-                m.set_state(rules, &st, fire, true);
+                steps += m.set_state(rules, &st, fire, true).saturating_sub(1);
             }
-            m.update(rules, &st, 0.0);
+            steps += m.update(rules, &st, 0.0).saturating_sub(1);
         }
+        *budget = budget.saturating_sub(steps);
+        stats.chain += u64::from(steps);
         counts[i] = m.fire_count;
     }
 }

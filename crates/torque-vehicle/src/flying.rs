@@ -16,7 +16,7 @@ const THRUST_FORWARD: u32 = 0;
 const THRUST_BACKWARD: u32 = 1;
 use crate::data::FlyingVehicleData;
 use crate::host::VehicleHost;
-use crate::state::{self, Body};
+use crate::state;
 use crate::tick::{Kind, Vehicle};
 
 /// What a FlyingVehicle adds to the state.
@@ -79,8 +79,9 @@ impl Kind for Flying {
     }
 }
 
-/// `Vehicle::updatePos(dt)`, one sub-step: the forces, the body collision and the contacts with the rest test unless
-/// at rest, the integration unless (still) at rest, `notifyCollision`, then the scan, the impact and the liquid callbacks.
+/// `Vehicle::updatePos(dt)`, one sub-step: the forces, the solver's part ([`crate::solver::BodySolver::substep`]: the body
+/// collision and the contacts with the rest test unless at rest, the integration unless (still) at rest), `notifyCollision`,
+/// then the scan, the impact and the liquid callbacks.
 pub fn update_pos(
     v: &mut Vehicle<Flying>,
     db: &FlyingVehicleData,
@@ -92,21 +93,17 @@ pub fn update_pos(
     v.s.rigid.force = [0.0; 3];
     v.s.rigid.torque = [0.0; 3];
     update_forces(v, db, host);
-    let mut collided = false;
-    if !v.s.rigid.at_rest {
-        let body: &mut Body = &mut v.body;
-        body.collide(&v.s, base, host);
-        collided = state::resolve_collision(&mut v.s, &body.list, base, host);
-        state::resolve_contacts(&mut v.s, &body.list, base, dt);
-        body.hold_out(&mut v.s, base, host);
-        state::rest_test(&mut v.s, body.list.count == 0, dt);
-    }
-    if !v.s.rigid.at_rest {
-        v.s.rigid.integrate(dt);
-    }
+    let Vehicle {
+        s,
+        body,
+        scan,
+        solver,
+        ..
+    } = v;
+    let collided = crate::solver::substep(solver, body, s, base, dt, host, None)?;
     let now = host.sim_time();
-    state::notify_collision(&mut v.s, now, host);
-    state::end_of_step(&mut v.s, base, collided, v0, host, &mut v.scan);
+    state::notify_collision(s, now, host);
+    state::end_of_step(s, base, collided, v0, host, scan);
     Ok(())
 }
 

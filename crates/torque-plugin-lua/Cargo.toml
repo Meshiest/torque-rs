@@ -1,0 +1,121 @@
+[package]
+name = "torque-plugin-lua"
+description = "Lua scripting for torque-rs mods: Luau in sandboxed server and client realms, as a native extension"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/Meshiest/torque-rs"
+publish = false
+keywords = ["torque", "lua", "luau", "mods", "gamedev"]
+categories = ["game-engines"]
+
+# Its own workspace, like examples/native-extension: Luau is C++, built by `mlua`'s vendored sources, and the engine's own
+# workspace builds with no C++ compiler. Build the library a game loads from its `plugins/` folder with
+# `cargo build --release --manifest-path crates/torque-plugin-lua/Cargo.toml` (`just lua`), and put `torque_lua.toml` beside
+# it. The tests link the same code into the engine (`torque_plugin_lua::INIT`) and load the built library too.
+[workspace]
+
+[lib]
+name = "torque_lua"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The client-script realm (`client_script`): Lua a server sends, in its own sandbox with only the tiers it was granted, an
+# op stream out and an event stream in. Built for wasm32-wasip1 as `torque_lua_client.wasm` (`just lua-client-web`), the
+# guest the engine runs it in; natively for its tests. Off by default: no plugin set has it.
+client-script = ["dep:torque-client-script-format"]
+
+[dependencies]
+torque-plugin-sdk = { path = "../torque-plugin-sdk" }
+# The op and event format the client-script realm writes and reads (no dependencies of its own).
+torque-client-script-format = { path = "../torque-client-script-format", optional = true }
+# Luau (MIT), built from its sources: `send` because the engine may call an extension from any of its threads (one at a
+# time).
+# Pinned exactly, with the two crates under it: the realms read Luau's table header (`realm::table_slots`), whose layout
+# is that Luau's; a realm checks the reading when it is made, and an update is a deliberate change of these pins.
+mlua = { version = "=0.12.2", default-features = false, features = ["luau", "vendored", "send"] }
+
+# Never built (the crate has no build script): only the exact versions of the Luau sources and their bindings under mlua.
+[build-dependencies]
+mlua-sys = "=0.13.0"
+luau0-src = "=0.22.0"
+
+[dev-dependencies]
+torque-engine = { path = "../torque-engine" }
+# The layout containers a test drives from Lua, in a client script engine with the GUI.
+torque-gui = { path = "../torque-gui" }
+torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
+torque-mods = { path = "../torque-mods" }
+torque-plugin-loader = { path = "../torque-plugin-loader" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+torque-ts-compiler = { path = "../torque-ts-compiler" }
+
+[lints.rust]
+# `deny`, not `forbid`: `realm` reconstructs the call it runs in from its handle (`Call::from_handle`), once, in one place.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+# Set by a crate that builds the shared test cases against a Lua module (`tests/common`).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(torque_lua_module)"] }
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+exit = "warn"
+mem_forget = "warn"
+
+# Luau and its bindings optimized in test builds too: an unoptimized interpreter makes the fuel tests slow.
+[profile.dev.package.mlua-sys]
+opt-level = 2
+
+[profile.dev.package.mlua]
+opt-level = 2
+
+# The browser build's module (`just lua-web`, wasm32-wasip1): as small as it gets.
+[profile.web-lua]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# The client-script guest (`just lua-client-web`): the same, in its own output folder.
+[profile.web-lua-client]
+inherits = "web-lua"

@@ -18,6 +18,10 @@
 //! GameConnection()`, a connection not yet accepted) is silent. A command the full ordered queue cannot take drops that
 //! connection with [`NET_QUEUE_FULL_REASON`].
 //!
+//! **In the engine's protocol** a send does the same checks against the connection's own table of command tags and hands the
+//! command, as a body, to the connection's RPC link ([`command_rpc`](super::command_rpc)); a link whose send queue is full drops
+//! the connection with the same reason. A local connection and a connection in Torque's protocol keep the event queue.
+//!
 //! Credit: the natives follow Torque3D's MIT-licensed `app/net/net.cpp` (`commandToClient`, `commandToServer`,
 //! `buildTaggedString`; `Copyright (c) 2012 GarageGames, LLC`), `T3D/gameBase/gameConnection.cpp` (`Copyright (c) 2012
 //! GarageGames, LLC`, `Copyright (C) 2015 Faust Logic, Inc.`) and `sim/netStringTable.cpp` (`Copyright (c) 2012 GarageGames,
@@ -29,6 +33,7 @@ use std::rc::{Rc, Weak};
 
 use torque_net::handshake::ConnId;
 use torque_net::remote::SendError;
+use torque_net::remote::body::BodyError;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::text::{atoi, until_nul};
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
@@ -39,6 +44,8 @@ use super::NetShared;
 use super::conn::{DeleteMode, delete_connection};
 use super::events::EventLayer;
 use super::events::{NET_QUEUE_FULL_REASON, queue_full_line};
+use super::rpc::ServerRpc;
+use torque_engine::rpc::RpcError;
 
 type Shared<G> = Rc<RefCell<NetShared<G>>>;
 
@@ -110,7 +117,8 @@ pub const PLAIN: CommandKind = CommandKind {
     not_a_tag: "Remote Command Error - command must be a tag.",
 };
 
-/// `sendRemoteCommand` to one connection, with the error line of its kind.
+/// `sendRemoteCommand` to one connection, with the error line of its kind. In the engine's protocol the command goes out as an
+/// RPC ([`command_rpc`](super::command_rpc)); the checks, the silence and the full queue's drop are the same.
 pub fn send_one<G: NetGame>(
     vm: &mut Vm,
     shared: &Shared<G>,
@@ -121,22 +129,54 @@ pub fn send_one<G: NetGame>(
 ) -> Result<(), VmError> {
     let conn: Option<ConnId> = shared.borrow().conns.get(&obj).and_then(|r| r.conn);
     let Some(conn) = conn else { return Ok(()) };
+    let overflow = |vm: &mut Vm| {
+        vm.print(queue_full_line(obj).as_bytes());
+        delete_connection(
+            vm,
+            shared,
+            obj,
+            Some(NET_QUEUE_FULL_REASON),
+            DeleteMode::Scheduled,
+        )
+    };
+    // A connection of an engine-mode session carries its commands as RPCs; a local one (events) and Torque's protocol do not.
+    let session = shared
+        .borrow()
+        .hs
+        .connection(conn)
+        .is_some_and(|c| c.engine);
+    if session
+        && let Some(rpc) = vm
+            .extension::<ServerRpc>()
+            .filter(|rpc| rpc.carries_commands())
+    {
+        return match layer.encode_command(vm, conn, kind.secure, args) {
+            Ok(body) => match rpc.send_command(conn, body) {
+                Err(RpcError::Busy) => overflow(vm),
+                // A rate that is over, a link that is gone: silent, as a closed queue is.
+                Ok(()) | Err(_) => Ok(()),
+            },
+            Err(BodyError::Send(SendError::NotATag)) => {
+                vm.error(kind.not_a_tag.to_string());
+                Ok(())
+            }
+            Err(error @ (BodyError::TooLarge | BodyError::UnknownTag)) => {
+                vm.print(
+                    format!("engine: a command to client {obj} was not sent: {error}").as_bytes(),
+                );
+                Ok(())
+            }
+            // A tag that is not a command name, too many arguments, a closed connection: silent.
+            Err(BodyError::Send(_)) => Ok(()),
+        };
+    }
     match layer.post_command(vm, conn, kind.secure, args) {
         Ok(_) => Ok(()),
         Err(SendError::NotATag) => {
             vm.error(kind.not_a_tag.to_string());
             Ok(())
         }
-        Err(SendError::Backpressure) => {
-            vm.print(queue_full_line(obj).as_bytes());
-            delete_connection(
-                vm,
-                shared,
-                obj,
-                Some(NET_QUEUE_FULL_REASON),
-                DeleteMode::Scheduled,
-            )
-        }
+        Err(SendError::Backpressure) => overflow(vm),
         // A tag that is not a command name, too many arguments, a closed queue: silent.
         Err(_) => Ok(()),
     }

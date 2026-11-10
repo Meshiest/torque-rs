@@ -1,0 +1,22 @@
+# How `torque-bundle` packages this game (`just bundle examples/mods-demo`). Paths are relative to this file, which never
+# ships. Every key is in crates/torque-bundle/src/spec.rs.
+
+[bundle]
+name = "mods-demo"
+game = "game"
+package = "torque-example-mods-demo"
+bins = ["mods-demo"]
+# The game folder and the Lua extension are read from beside the executable. Gizmos stay out: game.toml does not enable them.
+features = ["bundled"]
+
+[[extension]]
+# The Lua extension, built from its own workspace (its Luau C++ with it). On Windows every bundle build links the C runtime in,
+# so the library alone is what `plugins/` needs.
+manifest = "../../crates/torque-plugin-lua/Cargo.toml"
+config = "../../crates/torque-plugin-lua/torque_lua.toml"
+
+[check]
+# A round played headless from the bundle folder: the server loads the Lua game mode from game/mods, the clients download it.
+bin = "mods-demo"
+args = ["--rounds", "1", "--work", "{work}"]
+expect = ["server mod orbs: ", "round 1"]

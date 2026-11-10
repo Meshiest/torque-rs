@@ -1,0 +1,52 @@
+[package]
+name = "torque-plugin-rope"
+description = "A rope plugin for torque-rs: a RopeData datablock, ropes a script makes (or a server sends to every client), simulated and drawn as lit tubes with shadows"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "rope", "physics", "plugin", "gamedev"]
+categories = ["game-development"]
+
+# A rope shown on the client and, with a server, sent to every client: the `RopeData` datablock class and the `rope*` console functions (torque-engine's script registry), a
+# position-based simulation run once per client tick, and render passes (torque-app's `render()` registry): the tubes into
+# the opaque frame and into the sun's shadow cascades, and the ribbons and lines over the translucent surfaces; and its network surface (the
+# `Rope` ghost class, the datablock record, the `ropeNet*` functions and the clients' handler).
+
+[dependencies]
+glam = { workspace = true }
+torque-app = { path = "../torque-app", default-features = false }
+torque-engine = { path = "../torque-engine" }
+# The ghost record's field types, the codec they are written against, and marking a server object's groups dirty.
+torque-game = { path = "../torque-game" }
+torque-ghosts = { path = "../torque-ghosts" }
+torque-net = { path = "../torque-net" }
+torque-render-core = { path = "../torque-render-core" }
+torque-render-hd = { path = "../torque-render-hd" }
+torque-images = { path = "../torque-images" }
+torque-render-scene = { path = "../torque-render-scene" }
+torque-ts-text = { path = "../torque-ts-text" }
+torque-ts-vm = { path = "../torque-ts-vm" }
+
+[dev-dependencies]
+# The engine's renderer, to draw the ropes in the pictures' tests.
+torque-app = { path = "../torque-app", features = ["renderer"] }
+# The tick the simulation steps by is the server's.
+torque-server = { path = "../torque-server" }
+# The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
+torque-client = { path = "../torque-client" }
+torque-ghost-world = { path = "../torque-ghost-world" }
+# The matrix the client resolves a ghost to.
+torque-collide = { path = "../torque-collide" }
+# The hash a run is folded into.
+torque-trace-hash = { path = "../torque-trace-hash" }
+criterion = { workspace = true }
+
+[[bench]]
+name = "sim"
+harness = false
+
+[lints]
+workspace = true

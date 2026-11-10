@@ -13,8 +13,13 @@
 //!   Vehicle part, WheeledVehicle, FlyingVehicle, HoverVehicle), [`projectile`], [`props`] (TSStatic, VehicleBlocker), [`fx`]
 //!   (ParticleEmitterNode, fxLight), [`zone`] (PhysicalZone), [`weather`] (Lightning, Precipitation), [`sky`] (Sky, Sun),
 //!   [`audio`] (AudioEmitter); and the engine's own, after Torque3D's: [`light`] (SpotLight, TimeOfDay, ScatterSky).
+//! - [`block`]: the per-ghost block the engine's own peers send beside a class record ([`block::GhostBlock`]: the scene
+//!   hierarchy's link and local pose), and the mask bits it owns.
 //! - [`tails`]: the control objects' packet data and their class-directed reader.
 //! - [`tge`]: [`TgeGhosts`], the engine's default [`GhostCodecSet`], and TGE's networked class list.
+//! - [`plugin`]: the classes a plugin adds ([`PluginClass`], [`PluginClasses`]), their records ([`GhostRecord`],
+//!   [`DatablockCodec`], carried as a [`Record`]) and the field types the derives build them of; the closed sets carry them
+//!   in their `Plugin` arms.
 //! - [`datablocks`]: [`DatablockCodecSet`], a game's registry of datablock classes, and [`TgeDatablocks`], TGE's datablock
 //!   records (each class's `packData`).
 //!
@@ -23,6 +28,7 @@
 //! named cap through `torque_net::cap`.
 
 pub mod audio;
+pub mod block;
 pub mod codec;
 pub mod datablocks;
 pub mod fx;
@@ -32,6 +38,7 @@ pub mod markers;
 pub mod motion;
 pub mod parts;
 pub mod player;
+pub mod plugin;
 pub mod projectile;
 pub mod props;
 pub mod set;
@@ -52,9 +59,13 @@ pub use codec::{
     ClientFacts, F32, Layout, NetStr, NetWidths, ObjCtx, ReadCtx, WIRE_WHEELS, Xf, decode, encode,
 };
 pub use datablocks::{DatablockCodecSet, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks};
+pub use plugin::{
+    DatablockCodec, DatablockRef, GhostRecord, GhostRef, NetMessage, NetRecord, PluginClass,
+    PluginClasses, Record, Replicate,
+};
 pub use set::GhostCodecSet;
 pub use shapebase::TgeShapeBase;
-pub use tails::{TailClass, TgePacketData, TgeTails};
+pub use tails::{TailClass, TailFrame, TgePacketData, TgeTails};
 pub use tge::{TgeClass, TgeGhosts, TgeRecord, tge_reps};
 pub use value::Value;
 pub use view::{Link, ObjectView, PackCtx, boolean, fld, id, int, raw, raws, text, word, xform};
@@ -76,6 +87,40 @@ pub fn pay(charge: &mut ChargeFn, units: u64) -> Result<(), NetError> {
 /// A charge callback that pays for everything: for tests and for callers with no budget.
 pub fn free_charge() -> impl FnMut(u64) -> bool {
     |_| true
+}
+
+/// The work units a received datagram of `len` bytes may spend in a client's decoders: 8 a byte and a floor. An honest
+/// record costs about a unit a byte; a string the shared-prefix form expands costs a unit per 8 bytes it expands to, so a
+/// datagram of strings at their greatest expansion stops at this bound.
+#[must_use]
+pub fn datagram_budget(len: usize) -> u64 {
+    u64::try_from(len)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(8)
+        .saturating_add(256)
+}
+
+/// A charge callback that pays out of `units` and refuses once they are spent.
+pub fn budget_charge(units: u64) -> impl FnMut(u64) -> bool {
+    let budget = std::cell::Cell::new(Some(units));
+    move |cost| spend(&budget, cost)
+}
+
+/// A charge callback that pays out of `budget` (`None`: no bound) and refuses once it is spent. What is left stays in the
+/// cell, so the decoders of one datagram (its head, its events, its ghost records) can draw on one budget.
+pub fn cell_charge(budget: &std::cell::Cell<Option<u64>>) -> impl FnMut(u64) -> bool + '_ {
+    move |cost| spend(budget, cost)
+}
+
+/// Takes `cost` out of `budget`, or refuses (taking nothing) when it has less.
+fn spend(budget: &std::cell::Cell<Option<u64>>, cost: u64) -> bool {
+    match budget.get() {
+        None => true,
+        Some(left) => left.checked_sub(cost).is_some_and(|left| {
+            budget.set(Some(left));
+            true
+        }),
+    }
 }
 
 #[cfg(test)]

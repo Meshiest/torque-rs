@@ -410,6 +410,11 @@ mod native {
         fn port(&self) -> u16 {
             self.ws.port()
         }
+
+        /// A data channel.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind::WEB_RTC
+        }
     }
 }
 
@@ -661,6 +666,11 @@ mod web {
 
         fn port(&self) -> u16 {
             self.ws.port()
+        }
+
+        /// A data channel.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind::WEB_RTC
         }
     }
 }

@@ -11,6 +11,7 @@ use crate::Move;
 use crate::data::VehicleData;
 use crate::host::{ScanHit, VehicleHost};
 use crate::math::quat_rotated;
+use crate::solver::BodySolver;
 use crate::state::{Body, VehicleState, net_mask, shape_base_tick};
 
 /// The cap on the sub-steps one tick runs. `integration` is otherwise unclamped (only 0 skips): a negative count
@@ -52,6 +53,9 @@ pub struct Vehicle<K> {
     pub body: Box<Body>,
     /// Scratch for the end-of-step scan (`findObjects`' hits, reused tick to tick).
     pub scan: Vec<ScanHit>,
+    /// The solver the host picked for the tick being run ([`VehicleHost::body_solver`]); `None` runs `body`, TGE's.
+    /// Set at the start of a tick and taken at its end.
+    pub solver: Option<Box<dyn BodySolver>>,
 }
 
 impl<K> Vehicle<K> {
@@ -61,6 +65,7 @@ impl<K> Vehicle<K> {
             k,
             body: Box::default(),
             scan: Vec::new(),
+            solver: None,
         }
     }
 
@@ -105,7 +110,11 @@ pub fn process_tick_rest<K: Kind>(
     v.s.delta_pos_vec = v.s.rigid.lin_pos;
     v.s.delta_rot[0] = v.s.rigid.ang_pos;
     let n = K::base(db).integration;
-    let mut result = v.body.update_working_set(&v.s, host);
+    v.solver = host.body_solver();
+    let mut result = match v.solver.as_mut() {
+        Some(solver) => solver.begin_tick(&v.s, host),
+        None => v.body.update_working_set(&v.s, host),
+    };
     if result.is_ok()
         && let Some((count, dt)) = substeps(n)
     {
@@ -119,6 +128,11 @@ pub fn process_tick_rest<K: Kind>(
                 break;
             }
         }
+    }
+    if let Some(mut solver) = v.solver.take()
+        && let Err(e) = solver.end_tick(&mut v.s, host)
+    {
+        result = Err(e);
     }
     let s = &mut v.s;
     let p = s.rigid.lin_pos;

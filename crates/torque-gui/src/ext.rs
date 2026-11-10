@@ -1,13 +1,13 @@
-//! The GUI's seams for a host: where its fonts come from ([`FontSource`]) and an extension ([`GuiExtension`]) that adds
-//! control classes of its own (their state, their drawing) and extra looks to the engine's controls (profile fields read by
-//! the draw, a pass before each control draws, a displacement of the children drawn, key and focus rules). Without one the
-//! GUI is TGE's: [`NoExtension`] and the `torque-fonts` cache.
+//! The GUI's seams for a host: where its fonts come from ([`FontSource`]) and an extension ([`GuiExtension`]) that adds extra
+//! looks to the engine's controls (profile fields read by the draw, a pass before each control draws, a displacement of the
+//! children drawn, key and focus rules). Without one the GUI is TGE's: [`NoExtension`] and the `torque-fonts` cache. Control
+//! classes of a plugin's own are not an extension's: any number of plugins add them ([`crate::custom`]).
 
 use std::any::Any;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use torque_fonts::Font;
+use torque_fonts::{Font, FontUse};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Vm, VmError};
 
@@ -19,13 +19,18 @@ pub const DEFAULT_FONT_DIR: &str = "common/ui/cache";
 
 /// Where the GUI's fonts come from: a face at a size, loaded on first use.
 pub trait FontSource {
-    /// The font for `face` at `size`, read on first use with `read` (a path relative to the root folder).
+    /// The font for `face` at `size`, read on first use with `read` (a path relative to the root folder), kept under the quota
+    /// of `user` ([`FontUse`]: the fonts a server's text names must never take the game's own).
     fn font(
         &mut self,
         face: &str,
         size: i32,
+        user: FontUse,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Arc<Font>>;
+
+    /// A frame starts ([`torque_fonts::FontCache::next_frame`]): the markup fonts used from now on stay until the next one.
+    fn next_frame(&mut self);
 
     /// The cache under it (its counts, the faces it could not find).
     fn cache(&self) -> &torque_fonts::FontCache;
@@ -40,9 +45,14 @@ impl FontSource for torque_fonts::FontCache {
         &mut self,
         face: &str,
         size: i32,
+        user: FontUse,
         read: &dyn Fn(&str) -> Option<Vec<u8>>,
     ) -> Option<Arc<Font>> {
-        self.get(face, size, read).map(|(f, _)| f)
+        self.get_for(face, size, user, read).map(|(f, _)| f)
+    }
+
+    fn next_frame(&mut self) {
+        torque_fonts::FontCache::next_frame(self);
     }
 
     fn cache(&self) -> &torque_fonts::FontCache {
@@ -149,15 +159,19 @@ pub trait GuiExtension: Any {
     /// Before a draw cache draws a frame: what the extension keeps for its fonts is given to them.
     fn begin_draw(&self, _gui: &Gui, _fonts: &mut dyn FontSource) {}
 
-    /// Whether a new control of one of the extension's classes starts active (the engine's own classes are decided before).
+    /// Whether a new control of a class the engine does not know starts active (the engine's own classes and the plugins'
+    /// ([`crate::custom::GuiControlClass::ACTIVE`]) are decided before).
     fn starts_active(&self, _vm: &Vm, _id: ObjId) -> bool {
         false
     }
 
-    /// The control `id` was removed: anything the extension kept for it goes.
-    fn removed(&self, _id: ObjId) {}
-
     /// Draws the control `id` of a class the engine does not draw (`class`, its own class name); true when it did.
+    ///
+    /// Deprecated: a class the extension draws becomes a control class a plugin adds
+    /// ([`GuiControlClass`](crate::custom::GuiControlClass), `add_gui_control`): its fields are the class's fields, its `draw`
+    /// replaces this method, and its state, layout and input are the class's own. This is still called, for a class no plugin
+    /// control handles, so an extension written before keeps drawing.
+    #[deprecated(note = "add a GuiControlClass through add_gui_control")]
     fn draw_control(
         &self,
         _d: &mut DrawCtx<'_, '_>,
@@ -169,6 +183,9 @@ pub trait GuiExtension: Any {
     ) -> bool {
         false
     }
+
+    /// The control `id` was removed: anything the extension kept for it goes.
+    fn removed(&self, _id: ObjId) {}
 
     /// Before any control draws: the extension's pass under it (offset: its place on the canvas; update: its clip).
     fn before_control(
@@ -253,6 +270,15 @@ pub trait GuiExtension: Any {
         false
     }
 
+    /// A value that changes whenever the hooks that shape how a control draws ([`before_control`](Self::before_control),
+    /// [`replaces_fill`](Self::replaces_fill), [`opacity`](Self::opacity), [`shift`](Self::shift),
+    /// [`clip_to_parent`](Self::clip_to_parent) and [`text_outline`](Self::text_outline)) would answer differently for a control
+    /// of a client-script realm, `now`, or `None` when the extension cannot say. The server layer's draw is kept from one frame to
+    /// the next while this value and everything the layer draws from stay the same; with `None` it is drawn again every frame.
+    fn layer_stamp(&self, _gui: &Gui, _now: u32) -> Option<u64> {
+        None
+    }
+
     /// The displacement the children of `id` are drawn at, `now` (screen pixels).
     fn shift(&self, _gui: &Gui, _id: ObjId, _now: u32) -> (i32, i32) {
         (0, 0)
@@ -319,5 +345,9 @@ pub struct NoExtension;
 impl GuiExtension for NoExtension {
     fn into_any(self: Rc<Self>) -> Rc<dyn Any> {
         self
+    }
+
+    fn layer_stamp(&self, _gui: &Gui, _now: u32) -> Option<u64> {
+        Some(0)
     }
 }

@@ -5,11 +5,12 @@ use std::process::ExitCode;
 
 use torque_import::modelcore::Model;
 use torque_import::{Options, bbmodel, caps, dts, gltf, obj};
+use torque_resource::plain::read_plain;
 
 fn usage() -> ExitCode {
     eprintln!(
         "usage: torque-convert <in.glb|in.gltf|in.obj|in.bbmodel|in.dts> <out.dts|out.glb> [--up y|z] [--scale N] [--rate N] \
-         [--no-hull]"
+         [--no-hull] [--force]"
     );
     ExitCode::FAILURE
 }
@@ -21,18 +22,10 @@ pub fn ext(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// A file of at most `cap` bytes.
-fn read_capped(path: &Path, cap: usize) -> Result<Vec<u8>, String> {
-    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
-    if len > cap as u64 {
-        return Err(format!("over {cap} bytes"));
-    }
-    std::fs::read(path).map_err(|e| e.to_string())
-}
-
 /// The model in the file `input`, its side files read from its folder.
 pub fn read(input: &str, options: &Options) -> Result<Model, String> {
-    let bytes = read_capped(Path::new(input), caps::MAX_FILE_BYTES)?;
+    let bytes = read_plain(Path::new(input), caps::MAX_FILE_BYTES as u64, None)
+        .map_err(|e| e.to_string())?;
     let mut free = |_: u64| true;
     match ext(input).as_str() {
         "dts" => {
@@ -62,10 +55,11 @@ pub fn read(input: &str, options: &Options) -> Result<Model, String> {
     }
 }
 
-/// The images the model carries, written beside `output` under their names.
-pub fn write_images(model: &Model, output: &Path) -> Result<usize, String> {
+/// The images the model carries, written beside `output` under their names. A name that two images share, or that a file in the
+/// folder has already, is an error unless `force` (and nothing is written then): the user's other files are not overwritten.
+pub fn write_images(model: &Model, output: &Path, force: bool) -> Result<usize, String> {
     let dir = output.parent().unwrap_or(Path::new(""));
-    let mut written = 0;
+    let mut planned: Vec<(PathBuf, &[u8])> = Vec::new();
     for img in &model.images {
         let Some(data) = &img.data else {
             continue;
@@ -83,16 +77,48 @@ pub fn write_images(model: &Model, output: &Path) -> Result<usize, String> {
             ));
         }
         let path = dir.join(format!("{}.{ext}", img.name));
-        std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
-        written += 1;
+        // Windows and macOS keep one file for names that differ only in case.
+        let folded = path.to_string_lossy().to_lowercase();
+        if !force
+            && planned
+                .iter()
+                .any(|(p, _)| p.to_string_lossy().to_lowercase() == folded)
+        {
+            return Err(format!(
+                "two images are named {} (--force writes the last one)",
+                path.display()
+            ));
+        }
+        planned.push((path, data));
     }
-    Ok(written)
+    for (path, _) in &planned {
+        if !force && std::fs::symlink_metadata(path).is_ok() {
+            return Err(format!("{} exists (--force overwrites it)", path.display()));
+        }
+    }
+    for (path, data) in &planned {
+        // `create_new` closes the gap between the check and the write.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true);
+        if force {
+            options.create(true).truncate(true);
+        } else {
+            options.create_new(true);
+        }
+        options
+            .open(path)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, data))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(planned.len())
 }
 
-/// Whether `name` is safe as a file name on every platform: no folders, no drive or stream colon, no control or
-/// wildcard characters, no leading dot, no trailing dot or space, and not a Windows device name (`CON`, `CONIN$`, `COM1`, ...).
+/// Whether `name` is safe as a file name on every platform: no folders, no drive or stream colon, no control or wildcard
+/// characters, no leading dot, no trailing dot or space, and not a Windows device name (`CON`, `CONIN$`, `COM1`-`COM9` and
+/// `LPT1`-`LPT9`, also with the superscript digits U+00B9, U+00B2 and U+00B3), with or without an extension. The same rules as
+/// the script host's file names (a test holds the two together).
 fn is_plain_file_name(name: &str) -> bool {
-    const DEVICES: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
+    const DEVICES: [&str; 6] = ["con", "prn", "aux", "nul", "conin$", "conout$"];
     if name.is_empty()
         || name.starts_with('.')
         || name.ends_with(['.', ' '])
@@ -102,23 +128,25 @@ fn is_plain_file_name(name: &str) -> bool {
     {
         return false;
     }
-    let stem = name
-        .split('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end()
-        .to_ascii_uppercase();
+    let stem = name.split('.').next().unwrap_or(name).trim_end();
+    let stem = stem.to_lowercase();
     let numbered = |prefix: &str| {
-        stem.strip_prefix(prefix)
-            .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit())
+        stem.strip_prefix(prefix).is_some_and(|n| {
+            let mut chars = n.chars();
+            matches!(
+                (chars.next(), chars.next()),
+                (Some('0'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+            )
+        })
     };
-    !(DEVICES.contains(&stem.as_str()) || numbered("COM") || numbered("LPT"))
+    !(DEVICES.contains(&stem.as_str()) || numbered("com") || numbered("lpt"))
 }
 
 /// The command for a model input (module docs).
 pub fn run(args: &[String]) -> ExitCode {
     let mut plain = Vec::new();
     let mut options = Options::default();
+    let mut force = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned();
@@ -139,6 +167,10 @@ pub fn run(args: &[String]) -> ExitCode {
                 .is_some(),
             "--no-hull" => {
                 options.box_hull = false;
+                true
+            }
+            "--force" => {
+                force = true;
                 true
             }
             s if s.starts_with("--") => false,
@@ -170,7 +202,7 @@ pub fn run(args: &[String]) -> ExitCode {
             .map(|s| torque_shapes::write::write_dts(&s))
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
-                let images = write_images(&model, Path::new(output))?;
+                let images = write_images(&model, Path::new(output), force)?;
                 Ok((bytes, images))
             }),
         "glb" => gltf::write_glb(&model)
@@ -207,7 +239,132 @@ pub fn run(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::is_plain_file_name;
+    use super::*;
+    use torque_import::modelcore::Image;
+
+    /// A fresh folder in the build's own folder (a unit test has no `CARGO_TARGET_TMPDIR`).
+    fn folder(name: &str) -> PathBuf {
+        let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"),
+            PathBuf::from,
+        );
+        let dir = target.join("convert-tests").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn image(name: &str, data: &[u8]) -> Image {
+        Image {
+            name: name.into(),
+            data: Some(data.to_vec()),
+            mime: "image/png".into(),
+            ..Image::default()
+        }
+    }
+
+    fn model(images: Vec<Image>) -> Model {
+        Model {
+            images,
+            ..Model::default()
+        }
+    }
+
+    #[test]
+    fn a_model_file_that_is_a_link_is_refused() {
+        let dir = folder("link");
+        let real = dir.join("real.obj");
+        std::fs::write(&real, b"o a\n").unwrap();
+        let at = real.to_string_lossy().into_owned();
+        // The file itself is read (what the parser makes of it is not the point).
+        let refused = |r: Result<Model, String>| r.is_err_and(|e| e.contains("not a plain file"));
+        assert!(!refused(read(&at, &Options::default())));
+        let link = dir.join("link.obj");
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&real, &link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&real, &link);
+        #[cfg(not(any(unix, windows)))]
+        let made: std::io::Result<()> = Err(std::io::ErrorKind::Unsupported.into());
+        if made.is_ok() {
+            assert!(refused(read(&link.to_string_lossy(), &Options::default())));
+        } else {
+            eprintln!("no symbolic links here: the link case is skipped");
+        }
+    }
+
+    #[test]
+    fn an_image_never_replaces_a_file_already_beside_the_output_unless_forced() {
+        let dir = folder("exists");
+        std::fs::write(dir.join("a.png"), b"mine").unwrap();
+        let output = dir.join("out.dts");
+        let m = model(vec![image("a", b"new"), image("fresh", b"new")]);
+        let error = write_images(&m, &output, false).unwrap_err();
+        assert!(
+            error.contains("a.png") && error.contains("--force"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"mine");
+        assert!(
+            !dir.join("fresh.png").exists(),
+            "nothing is written when one is refused"
+        );
+        assert_eq!(write_images(&m, &output, true).unwrap(), 2);
+        assert_eq!(std::fs::read(dir.join("a.png")).unwrap(), b"new");
+        // A second run finds what the first wrote.
+        let free = model(vec![image("fresh2", b"x")]);
+        assert_eq!(write_images(&free, &output, false).unwrap(), 1);
+        assert!(write_images(&free, &output, false).is_err());
+    }
+
+    #[test]
+    fn the_name_rules_agree_with_the_script_hosts() {
+        for name in [
+            "bark",
+            "leaf_2",
+            "Wood.Floor",
+            "console",
+            "com10",
+            "lpt",
+            "a b",
+            "CON",
+            "con.x",
+            "Nul.png",
+            "aux .txt",
+            "COM1",
+            "com9",
+            "lpt9",
+            "LPT0",
+            "COM\u{b9}",
+            "lpt\u{b2}.txt",
+            "Com\u{b3}",
+            "CONIN$",
+            "conout$.png",
+            "tail.",
+            "tail ",
+            "a/b",
+            "x:y",
+            "q?",
+            "",
+            "t\u{1}",
+        ] {
+            // The script host also allows a leading dot, which an image name never has.
+            let host = torque_ts_vm::host::sanitize_component(name.as_bytes());
+            assert_eq!(is_plain_file_name(name), host, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn two_images_of_one_name_are_refused_and_so_is_a_superscript_device_name() {
+        let dir = folder("twice");
+        let m = model(vec![image("a", b"1"), image("A", b"2")]);
+        let error = write_images(&m, &dir.join("out.dts"), false).unwrap_err();
+        assert!(error.contains("two images"), "{error}");
+        assert!(!dir.join("a.png").exists());
+        assert_eq!(write_images(&m, &dir.join("out.dts"), true).unwrap(), 2);
+        let com = model(vec![image("COM\u{b9}", b"1")]);
+        assert!(write_images(&com, &dir.join("out.dts"), true).is_err());
+    }
 
     #[test]
     fn image_names_are_refused_when_a_platform_would_not_take_them_as_a_plain_file() {
@@ -234,6 +391,9 @@ mod tests {
             "prn",
             "CONIN$",
             "conout$.png",
+            "COM\u{b9}",
+            "lpt\u{b2}.txt",
+            "Com\u{b3}",
         ] {
             assert!(!is_plain_file_name(bad), "{bad:?}");
         }

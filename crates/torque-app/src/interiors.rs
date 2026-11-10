@@ -33,6 +33,7 @@ use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::map::{find_texture, folder_of};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::pose_matrix;
+use torque_render_scene::shapecache::next_stamp;
 use torque_render_scene::textures::TextureSet;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
 
@@ -155,7 +156,8 @@ pub fn panes(vertices: &[Vertex]) -> Vec<Vec<Vertex>> {
 /// An interior whose mesh is in the view, kept with the file and the pose it was made of, its pane objects (its see-through
 /// materials, drawn each frame) and its faces in the world (counter-clockwise seen from the front, as the decals take them).
 struct Kept {
-    path: String,
+    /// The file's name as the ghost gave it.
+    file: Vec<u8>,
     pose: Pose,
     panes: Vec<DynamicObject>,
     faces: Arc<Vec<Triangle>>,
@@ -193,7 +195,7 @@ impl Interiors {
         world: &ClientWorld<TgeClientSet>,
         look: &mut dyn FnMut(&str, &mut Draw),
     ) -> Vec<DynamicObject> {
-        let mut seen = Vec::new();
+        let mut seen = BTreeSet::new();
         let mut reads = 0;
         for (&index, ghost) in &world.ghosts {
             let (Some(TgeRecord::InteriorInstance(r)), Some(pose)) = (&ghost.record, ghost.pose())
@@ -201,12 +203,14 @@ impl Interiors {
                 continue;
             };
             let Some(init) = &r.init else { continue };
-            seen.push(index);
-            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
+            seen.insert(index);
             // A ghost index a new map's interior took (the server reset its ghosting) is made again from its own file.
-            if still_kept(&mut self.kept, index, |k| k.pose == pose && k.path == path) {
+            if still_kept(&mut self.kept, index, |k| {
+                k.pose == pose && k.file == init.file
+            }) {
                 continue;
             }
+            let path = String::from_utf8_lossy(&init.file).replace('\\', "/");
             let surfaces = match self.files.get(&path) {
                 Some(kept) => kept.clone(),
                 None => {
@@ -225,7 +229,8 @@ impl Interiors {
                 }
             };
             let Some(surfaces) = surfaces else { continue };
-            if let Some(k) = build(view, assets, &surfaces, &path, pose, index, look, self) {
+            let named = (init.file.as_slice(), path.as_str());
+            if let Some(k) = build(view, assets, &surfaces, named, pose, index, look, self) {
                 self.kept.insert(index, k);
                 self.placed.insert(index);
             }
@@ -250,10 +255,31 @@ impl Interiors {
         for index in gone {
             self.forget_panes(index);
         }
-        self.kept
-            .values()
-            .flat_map(|k| k.panes.iter().cloned())
-            .collect()
+        // Each pane the last frame drew of the same build gives its draws back (moved, not copied).
+        let objects = view.objects_mut();
+        let last: HashMap<u32, usize> = objects
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.stamp.is_some())
+            .map(|(i, o)| (o.ghost, i))
+            .collect();
+        let mut out = Vec::with_capacity(self.panes_used);
+        for p in self.kept.values().flat_map(|k| &k.panes) {
+            let drawn = last
+                .get(&p.ghost)
+                .map(|&i| &mut objects[i])
+                .filter(|o| o.stamp == p.stamp && !o.draws.is_empty());
+            out.push(match drawn {
+                Some(o) => DynamicObject {
+                    draws: std::mem::take(&mut o.draws),
+                    previous: None,
+                    nodes: Vec::new(),
+                    ..*p
+                },
+                None => p.clone(),
+            });
+        }
+        out
     }
 
     /// Interior ghost `index`'s translucent draws as pane objects with their ids, within what the other interiors kept left of
@@ -315,7 +341,7 @@ fn build(
     view: &mut WorldView,
     assets: &dyn Assets,
     surfaces: &Surfaces,
-    path: &str,
+    (file, path): (&[u8], &str),
     pose: Pose,
     index: u32,
     look: &mut dyn FnMut(&str, &mut Draw),
@@ -382,9 +408,15 @@ fn build(
         }
     }
     let groups = interiors.pane_groups(index, see_through);
-    let panes = view.set_static_mesh_with_objects(mesh_key(index), set, &draws, &groups);
+    let mut panes = view.set_static_mesh_with_objects(mesh_key(index), set, &draws, &groups);
+    // Each pane its own stamp: the renderer keeps its vertices where it wrote them, and its motion is its own (it does not move).
+    for p in &mut panes {
+        p.stamp = Some(next_stamp());
+        p.prev_transform = p.transform;
+        p.previous = None;
+    }
     Some(Kept {
-        path: path.to_string(),
+        file: file.to_vec(),
         pose,
         panes,
         faces: Arc::new(faces),

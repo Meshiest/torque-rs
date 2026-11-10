@@ -300,7 +300,7 @@ fn a_joiner_reaches_a_players_host_through_a_room() {
     let rooms = service();
     let mut h = host(&rooms.url());
     let code = h.code().expect("the room's code");
-    assert_eq!(code.len(), 9, "{code}");
+    assert_eq!(code.len(), 19, "{code}: four groups of four");
     let (mut j, at) = connected(&mut h, &rooms.url(), &code.to_lowercase());
     // The host's datagram goes on the channel.
     assert!(h.send_to(at, b"welcome"));

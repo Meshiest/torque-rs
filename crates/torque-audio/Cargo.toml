@@ -25,10 +25,14 @@ cpal = { version = "0.15", optional = true }
 ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm", optional = true }
 ts-text = { package = "torque-ts-text", path = "../torque-ts-text", optional = true }
 torque-game = { path = "../torque-game", optional = true }
+# `AudioPlugin` (feature `engine`).
+torque-engine = { path = "../torque-engine", optional = true }
 
 [features]
 device = ["dep:cpal"]
 script = ["dep:ts-vm", "dep:ts-text", "dep:torque-game"]
+# `AudioPlugin`: the `alx` natives and the mixer as a plugin of the engine builder.
+engine = ["script", "dep:torque-engine"]
 
 [lints]
 workspace = true

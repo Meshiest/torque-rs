@@ -8,6 +8,7 @@
 //! here is this crate's own.
 
 use super::{LogLine, Native, Vm, VmError};
+use crate::memory::{MAX_SCRIPT_BYTES, MEMORY_LIMIT_PREF, pref_limit};
 use crate::sim::{FIRST_DATABLOCK_ID, ObjId};
 
 /// The usage string of `quit` (TGE's console function; a host that replaces the native passes this one on).
@@ -18,6 +19,8 @@ pub const DELETE_DATABLOCKS_USAGE: &str =
     "deleteDataBlocks() - deletes every datablock, as before loading another set of them";
 
 pub(super) fn register(vm: &mut Vm) {
+    vm.add_native_effects("", "quit", crate::effects::Effects::ENGINE);
+    vm.add_native_effects("", "deleteDataBlocks", crate::effects::Effects::ENGINE);
     // TGE's `ConsoleFunction(quit, void, 1, 1, ...)`: asks the main loop to stop; returns at once and the script goes
     // on (an event scheduled after it never fires because the host's loop ends; `onExit` runs). The host's loop asks
     // `quit_requested`. A host may replace this native to print its shutdown lines first (and call `request_quit`).
@@ -228,6 +231,32 @@ impl Vm {
                 .min(runs);
         }
         self.step_limit = own;
+    }
+
+    /// `enter_run`'s part for an outermost run: a refusal from outside any run is forgotten, and the memory limit is
+    /// the host's ([`Limits::max_script_bytes`](crate::policy::Limits::max_script_bytes), capped at
+    /// [`MAX_SCRIPT_BYTES`](crate::memory::MAX_SCRIPT_BYTES)), lowered to
+    /// [`MEMORY_LIMIT_PREF`](crate::memory::MEMORY_LIMIT_PREF) when that is a smaller number: a script can only tighten
+    /// the host's limit.
+    pub(super) fn begin_memory_run(&mut self) {
+        let memory = self.objects.memory();
+        memory.take_refused();
+        let pref = self
+            .globals
+            .get(MEMORY_LIMIT_PREF.as_bytes())
+            .and_then(|e| e.with_string(pref_limit));
+        let host = self.limits().max_script_bytes.min(MAX_SCRIPT_BYTES);
+        memory.set_limit(pref.map_or(host, |pref| pref.min(host)));
+    }
+
+    /// The bytes scripts hold now ([`crate::memory`]).
+    pub fn memory_held(&self) -> u64 {
+        self.objects.memory().held()
+    }
+
+    /// The memory limit of the last outermost run (or the host's, before any).
+    pub fn memory_limit(&self) -> u64 {
+        self.objects.memory().limit()
     }
 
     /// `ensure_budget` inside a run; outside one `steps` is the last run's and nothing is billed (as

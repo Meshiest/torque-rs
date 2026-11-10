@@ -22,6 +22,8 @@ torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+# Gamepads (the `gamepad` feature).
+torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad", optional = true }
 
 [dev-dependencies]
 # The ghost-shots example's second renderer (the reference it measures the frames against).
@@ -30,6 +32,11 @@ torque-render-hd = { path = "../../crates/torque-render-hd" }
 # Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+
+[features]
+# Gamepads: `DemoPlugins` adds the gamepad plugin and the game's script binds the pad's sticks and buttons (pads plugged in play the
+# demo; with the feature off, or no pad, the demo is as it was).
+gamepad = ["dep:torque-plugin-gamepad"]
 
 [[bin]]
 name = "vehicle-demo"

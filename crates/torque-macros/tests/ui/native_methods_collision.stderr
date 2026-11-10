@@ -1,0 +1,5 @@
+error: two methods of this block are called `IsArmed` (`isArmed` came first; names compare without case): rename one with `#[torque(name = "...")]` or leave one out with `#[torque(skip)]`
+  --> tests/ui/native_methods_collision.rs:13:12
+   |
+13 |     pub fn armed_too() -> bool {
+   |            ^^^^^^^^^

@@ -1,0 +1,139 @@
+[package]
+name = "torque-client-script-host"
+description = "The host of server-sent client scripts: Luau as a WebAssembly guest, run natively under Wasmtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "lua", "wasm", "sandbox", "gamedev"]
+categories = ["game-engines", "wasm"]
+
+# Wasmtime (and Cranelift with it) comes in only with the `wasmtime` feature, off by default and native only; the
+# session, its checks and its rules are plain Rust on every target. Nothing in the engine's default plugin sets depends on
+# this crate.
+
+[features]
+# `ui` and `net` have passed their review, so a build has their host modules unless it turns the defaults off.
+default = ["ui", "net"]
+# The Wasmtime runners: `NativeRealm` for the realm's guest, and `WasmtimeLuaModule`, the Lua extension's WebAssembly module
+# (`just lua-web`) as the engine's `web_lua::LuaModule`.
+wasmtime = [
+    "dep:wasmtime",
+    "dep:torque-engine",
+    "dep:torque-plugin-abi",
+    "dep:torque-plugin-loader",
+    "dep:torque-ts-vm",
+]
+# The web runner, `WebRunner`: the guest in a Worker of the page's (web/client-script.js), for wasm32 builds.
+web = ["dep:wasm-bindgen", "dep:js-sys"]
+# The host modules of the tiers: without its feature a tier cannot be granted, and its ops stop the realm. A tier is on by
+# default only once its review has passed.
+ui = []
+net = []
+# `GrantSet::unreviewed` and `RealmGuest::unlisted`: tiers granted before their review and a guest no release lists, for
+# tests and for working on a tier. Builds with debug assertions only.
+unreviewed-tiers = []
+# The cases every runner passes (`cases`), run natively by `tests/cases.rs` and on the web by
+# tests/web/client-script-check.
+cases = ["unreviewed-tiers", "ui", "net", "dep:wat"]
+
+[dependencies]
+torque-client-script-format = { path = "../torque-client-script-format" }
+web-time = "1.1"
+# The hash of a guest, checked against the build's list.
+sha2 = "0.10"
+torque-engine = { path = "../torque-engine", optional = true }
+torque-plugin-abi = { path = "../torque-plugin-abi", optional = true }
+torque-plugin-loader = { path = "../torque-plugin-loader", optional = true }
+torque-ts-vm = { path = "../torque-ts-vm", optional = true }
+# The hand-written guests of the cases, written as text.
+wat = { version = "1", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Cranelift compiles the module; `gc` holds the guest's exception objects (`exnref`); nothing else: no cache, no async,
+# no component model, no WASI.
+wasmtime = { version = "50.0.1", optional = true, default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "gc",
+    "gc-drc",
+    "parallel-compilation",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+torque-mods = { path = "../torque-mods" }
+# The import-free looping module of the epoch check, written as text.
+wat = "1"
+
+# The gate (the `realm-gate` recipe): the Lua extension's shared cases under Wasmtime, the epoch check and the costs.
+[[example]]
+name = "realm-gate"
+required-features = ["wasmtime"]
+
+# Every case of `cases` under Wasmtime, with the guest `just lua-client-web` builds (the `client-script-host-test` recipe).
+[[test]]
+name = "cases"
+required-features = ["wasmtime", "cases"]
+
+# The hash of a guest and the line a release lists it by (the justfile's `client-script-guest-hash`).
+[[example]]
+name = "guest-hash"
+
+# What the Wasmtime runner adds to a release binary (`realm-gate` builds it with and without the feature).
+[[example]]
+name = "realm-size-probe"
+
+[lints.rust]
+# `deny`, not the workspace's `forbid`: the Wasmtime runner keeps two pointers for the time a guest call runs (the engine's
+# host and the store's caller), in one module.
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+exit = "warn"
+mem_forget = "warn"

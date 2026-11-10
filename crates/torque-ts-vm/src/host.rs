@@ -58,6 +58,18 @@ pub trait FileHost {
     /// `\x` replaces the base); the in-memory hosts here only ever look the path up in a table.
     fn read(&self, path: &[u8]) -> FileRead;
 
+    /// At most the first `max` bytes of the file at `path`, with the refusals of [`read`](Self::read): what sizes an image by
+    /// its header needs. The default reads the whole file and cuts it; a host over real files reads only the prefix.
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        match self.read(path) {
+            FileRead::Found(mut contents) => {
+                contents.truncate(max);
+                FileRead::Found(contents)
+            }
+            other => other,
+        }
+    }
+
     /// Whether the file exists and how long it is, with the refusals of [`read`](Self::read). The
     /// default reads the file. An implementation that looks at the file itself has the same duty as
     /// `read` to keep the answer inside its folders (`safe_path`, listing match, no `join`).
@@ -215,7 +227,7 @@ impl std::fmt::Debug for ResourceRules {
 /// Whether one component of a path is acceptable to a host that maps names onto a real folder: not empty,
 /// not `.` or `..`, no `/`, `\`, `:`, NUL or other control character, none of the characters Windows
 /// forbids in a name (`*?"<>|`), no trailing dot or space (Windows drops them, so `x.` and `x` are one
-/// file), and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9` and `LPT1`-`LPT9`, the
+/// file), and not a Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9` and `LPT0`-`LPT9`, the
 /// latter two also with the superscript digits U+00B9, U+00B2, U+00B3, `CONIN$` and `CONOUT$`; in any case,
 /// with or without an extension), which would open the device instead of a file.
 pub fn sanitize_component(part: &[u8]) -> bool {
@@ -236,13 +248,13 @@ pub fn sanitize_component(part: &[u8]) -> bool {
     let stem = fold(stem);
     let stem = stem.trim_ascii_end();
     const DEVICES: [&[u8]; 6] = [b"con", b"prn", b"aux", b"nul", b"conin$", b"conout$"];
-    // COM1-COM9 and LPT1-LPT9, and COM and LPT with the superscript digits U+00B9, U+00B2 and U+00B3 (UTF-8
-    // C2 B9, C2 B2, C2 B3), which Windows also treats as ports.
+    // COM0-COM9 and LPT0-LPT9 (Microsoft's naming rules list the zeros too), and COM and LPT with the superscript
+    // digits U+00B9, U+00B2 and U+00B3 (UTF-8 C2 B9, C2 B2, C2 B3), which Windows also treats as ports.
     let numbered = |prefix: &[u8]| {
         stem.starts_with(prefix)
             && matches!(
                 stem.get(3..),
-                Some([b'1'..=b'9'] | [0xc2, 0xb9 | 0xb2 | 0xb3])
+                Some([b'0'..=b'9'] | [0xc2, 0xb9 | 0xb2 | 0xb3])
             )
     };
     !(DEVICES.contains(&stem) || numbered(b"com") || numbered(b"lpt"))
@@ -791,6 +803,16 @@ fn identity_at(at: &Path) -> Option<FileId> {
     }
 }
 
+/// At most `max` bytes from the start of `file`.
+pub fn read_up_to(file: std::fs::File, max: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut out = Vec::new();
+    file.take(u64::try_from(max).unwrap_or(u64::MAX))
+        .read_to_end(&mut out)
+        .ok()?;
+    Some(out)
+}
+
 /// Opens the plain file `find` names (`find` looks at each component without following a link),
 /// then asks `find` again: what it names then, its last component not followed, must be the very
 /// file opened (the same identity). A folder on the way swapped for a link around the open is no
@@ -864,6 +886,16 @@ impl FileHost for DirHost {
         }
     }
 
+    fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
+        if let Some(refusal) = (self.rules.refusal)(path) {
+            return FileRead::Refused(refusal);
+        }
+        let Some((file, _)) = open_found(|| self.resolve(path)) else {
+            return FileRead::Missing;
+        };
+        read_up_to(file, max).map_or(FileRead::Missing, FileRead::Found)
+    }
+
     fn stat(&self, path: &[u8]) -> FileStat {
         if let Some(refusal) = (self.rules.refusal)(path) {
             return FileStat::Refused(refusal);
@@ -932,6 +964,7 @@ pub fn civil_time(seconds: i64) -> CivilTime {
 
 /// What compiling TorqueScript source gives.
 #[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Compiled {
     /// The compiler's messages, as the console prints them (its syntax error report, the code generator's
     /// warnings such as `<file> (<line>): string always evaluates to 0.`), in order.
@@ -948,6 +981,11 @@ pub struct Compiled {
     /// like any other work (`WORK_PER_STEP` units a step), on top of the bytes of the file or text it
     /// charged when it read them.
     pub work: u64,
+    /// A [`Purpose::Run`] compile of the same text would give exactly this result (the same messages and code),
+    /// though this one was made for [`Purpose::Check`]: `exec` then uses it for its second pass instead of compiling
+    /// again. A compiler leaves it false (the default) unless it knows: a syntax error or a message the purposes word
+    /// differently make the two differ.
+    pub same_as_run: bool,
 }
 
 /// Turns source text into bytecode. `name` is the file name the messages name (None for `eval`'d text);
@@ -979,6 +1017,7 @@ impl Compiler for NoCompiler {
             syntax_error: true,
             code: None,
             work: 0,
+            same_as_run: false,
         }
     }
 }

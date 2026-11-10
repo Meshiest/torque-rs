@@ -116,7 +116,7 @@ pub trait PredictGame<W: PredictWorld>: Debug {
     }
 
     /// The game's static collision world for a connection ([`StaticIndex`]: its own static objects and map objects); none in
-    /// Torque's (the container holds the ghosts' own objects only).
+    /// Torque's (the container holds the ghosts' own objects only, each StaticShape its shape's hulls: [`super::static_shape`]).
     fn static_index(&self) -> Option<Box<dyn StaticIndex<W>>> {
         None
     }
@@ -144,6 +144,14 @@ pub trait PredictGame<W: PredictWorld>: Debug {
     fn wheeled(&self, world: &W, db: u32) -> Wheeling {
         let _ = (world, db);
         Wheeling::default()
+    }
+
+    /// The solver that resolves the body of a vehicle of datablock `db` as the client runs it ([`vehicle::BodySolver`]), made for
+    /// each of its ticks; none runs TGE's (the vehicle's own). A game that picks another solver on the server
+    /// (`SimClasses::body_solver`) picks the same here, so the client predicts what the server steps.
+    fn body_solver(&self, world: &W, db: u32) -> Option<Box<dyn vehicle::BodySolver>> {
+        let _ = (world, db);
+        None
     }
 
     /// What the subclass sets on a WheeledVehicle the client makes (nothing by default).

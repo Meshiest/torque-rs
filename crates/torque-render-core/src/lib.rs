@@ -3,6 +3,16 @@
 //! window's surface ([`window`]) and the GUI pass ([`GuiPass`], with its backdrop blur [`blur::Blur`]). Every renderer draws on
 //! a [`Gpu`]; nothing here draws a scene. A [`Gpu`] on Vulkan keeps its pipelines in a cache saved between runs
 //! ([`pipeline_cache`]; the crate's one `unsafe` block, the only one in the workspace, is there).
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - Every device has an uncaptured-error handler that counts and prints ([`DeviceErrors`]), never wgpu's panic
+//!   (`a_buffer_past_the_device_limit_is_a_counted_error_not_a_panic`).
+//!
+//! Costs a frame must not grow back: the GUI pass writes four vertices a quad into its kept byte list
+//! ([`gui_pass::vertex_bytes`]) and its shared quad indices only when they grow (bench `gui pass vertices 3k quads`, timed
+//! under the bench lock).
 
 use std::fmt;
 use std::path::Path;
@@ -160,6 +170,70 @@ pub struct Gpu {
     sample_counts: Vec<u32>,
     downlevel: wgpu::DownlevelFlags,
     cache: Option<pipeline_cache::DeviceCache>,
+    errors: std::sync::Arc<DeviceErrors>,
+}
+
+/// The most device errors printed; the rest are counted.
+pub const MAX_PRINTED_DEVICE_ERRORS: u64 = 16;
+
+/// The errors a device reported that no error scope caught (wgpu's default handler panics on them): counted by kind and the
+/// first [`MAX_PRINTED_DEVICE_ERRORS`] printed to stderr. A host that sees [`DeviceErrorCounts::out_of_memory`] rise makes its
+/// renderer again.
+#[derive(Debug, Default)]
+pub struct DeviceErrors {
+    validation: std::sync::atomic::AtomicU64,
+    out_of_memory: std::sync::atomic::AtomicU64,
+    internal: std::sync::atomic::AtomicU64,
+    last: std::sync::Mutex<Option<String>>,
+}
+
+/// What [`DeviceErrors`] counted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceErrorCounts {
+    pub validation: u64,
+    pub out_of_memory: u64,
+    pub internal: u64,
+    /// The last error's text.
+    pub last: Option<String>,
+}
+
+impl DeviceErrors {
+    /// Counts `error` (and prints it while few have been).
+    pub fn report(&self, error: &wgpu::Error) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counter = match error {
+            wgpu::Error::Validation { .. } => &self.validation,
+            wgpu::Error::OutOfMemory { .. } => &self.out_of_memory,
+            wgpu::Error::Internal { .. } => &self.internal,
+        };
+        counter.fetch_add(1, Relaxed);
+        let text = error.to_string();
+        let seen = self.validation.load(Relaxed)
+            + self.out_of_memory.load(Relaxed)
+            + self.internal.load(Relaxed);
+        if seen <= MAX_PRINTED_DEVICE_ERRORS {
+            eprintln!("render device error: {text}");
+        }
+        *self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(text);
+    }
+
+    /// The counts so far.
+    pub fn counts(&self) -> DeviceErrorCounts {
+        use std::sync::atomic::Ordering::Relaxed;
+        DeviceErrorCounts {
+            validation: self.validation.load(Relaxed),
+            out_of_memory: self.out_of_memory.load(Relaxed),
+            internal: self.internal.load(Relaxed),
+            last: self
+                .last
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone(),
+        }
+    }
 }
 
 impl Gpu {
@@ -242,6 +316,9 @@ impl Gpu {
             })
             .await
             .map_err(|e| RenderError::NoDevice(e.to_string()))?;
+        let errors = std::sync::Arc::new(DeviceErrors::default());
+        let sink = std::sync::Arc::clone(&errors);
+        device.on_uncaptured_error(std::sync::Arc::new(move |e: wgpu::Error| sink.report(&e)));
         let sample_counts = supported_sample_counts(adapter, device.features());
         let downlevel = adapter.get_downlevel_capabilities().flags;
         let cache = pipeline_cache::open(&device, &info, cache_dir).await;
@@ -252,7 +329,13 @@ impl Gpu {
             sample_counts,
             downlevel,
             cache,
+            errors,
         })
+    }
+
+    /// The device's errors no error scope caught ([`DeviceErrors`]: counted and printed, never a panic).
+    pub fn device_errors(&self) -> DeviceErrorCounts {
+        self.errors.counts()
     }
 
     /// The device's pipeline cache, for every pipeline made on it (`cache: gpu.pipeline_cache()`); None on a backend without

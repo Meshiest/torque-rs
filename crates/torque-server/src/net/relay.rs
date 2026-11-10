@@ -283,6 +283,11 @@ impl Transport for RelayTransport {
             .then(|| SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
     }
 
+    /// Every link is a data channel (ICE, DTLS, SCTP).
+    fn link_kind(&self, _peer: SocketAddr) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
+    }
+
     fn is_real(&self) -> bool {
         false
     }

@@ -369,6 +369,7 @@ fn pay(vm: &Vm, units: u64) -> Result<(), VmError> {
 /// `initContainerRadiusSearch(pos, radius, mask)`: the objects whose box is strictly closer than the radius,
 /// sorted by the distance to their box's centre.
 fn init_radius_search(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
+    super::links::resolve(vm);
     let (pos, radius, mask) = (vec3_arg(c, 1), float_arg(c, 2), mask_arg(c, 3));
     state.borrow_mut().search.clear();
     let found = match collect(vm, container, radius_box(pos, radius), mask) {
@@ -390,6 +391,7 @@ fn init_radius_search(vm: &mut Vm, container: &Container, state: &State, c: &Nat
 
 /// `initContainerBoxSearch(pos, size, mask)`: the objects the box of `size` around `pos` reaches, sorted.
 fn init_box_search(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
+    super::links::resolve(vm);
     let (pos, size, mask) = (vec3_arg(c, 1), vec3_arg(c, 2), mask_arg(c, 3));
     state.borrow_mut().search.clear();
     match collect(vm, container, size_box(pos, size), mask) {
@@ -427,6 +429,7 @@ pub fn radii_args(c: &NativeCall) -> [f32; 3] {
 /// box's six planes (an `EarlyOutPolyList`), and says empty when none is left. Each index answers for its own objects first
 /// ([`SpatialIndex::box_blocked`]: an index for its own objects), then the bins' objects are asked for their polygon
 fn box_empty(vm: &mut Vm, container: &Container, shapes: &Shapes, c: &NativeCall) -> Native {
+    super::links::resolve(vm);
     let query = radii_box(vec3_arg(c, 2), radii_args(c));
     let found = match collect(vm, container, query, mask_arg(c, 1)) {
         Ok(found) => found,
@@ -477,6 +480,7 @@ fn box_list(query: [f32; 6]) -> collide::EarlyOutPolyList {
 /// `containerFindFirst(mask, pos, xRadius, yRadius, zRadius)` and `containerFindNext()`: the
 /// objects the box of the absolute radii around `pos` reaches, unsorted, one id per call and an empty string at the end.
 fn find_first(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
+    super::links::resolve(vm);
     let radii = [float_arg(c, 3), float_arg(c, 4), float_arg(c, 5)];
     let (query, mask) = (find_box(vec3_arg(c, 2), radii), mask_arg(c, 1));
     let found = match collect(vm, container, query, mask) {
@@ -576,6 +580,7 @@ pub fn container_ray(
     if !finite_segment(start, end) {
         return Ok(None);
     }
+    super::links::resolve(vm);
     let (indexed, candidates) = cast_candidates(vm, container, shapes, start, end, mask)?;
     let mut found = indexed.as_ref().map(|(h, _)| h.hit);
     let mut best = found.map_or(NO_HIT, |h| h.t);

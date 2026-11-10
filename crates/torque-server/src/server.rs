@@ -49,6 +49,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
+use torque_engine::TickInfo;
 use torque_game::sim::ProcessHandle;
 use torque_game::sim::pass::{self, NoControl, Outcome};
 use torque_ts_vm::events::EventLimits;
@@ -119,6 +120,18 @@ pub trait ServerHooks {
     fn pass_sliced(&self, sliced: bool) {
         let _ = sliced;
     }
+}
+
+/// Work a host runs around the process list's pass of every server tick, apart from [`ServerHooks`] (which a game replaces as a
+/// whole): the engine's plugins' `ServerTick` hooks. [`Server::set_tick_hooks`] sets them; a server with none runs its ticks
+/// as it always did. A pass that covers several ticks (the first pass, or one after a stall) calls `before` for each of
+/// them in tick order, then runs the process list over all of them, then calls `after` for each.
+pub trait TickHooks {
+    /// Before the process list ticks the objects of `tick`.
+    fn before(&self, vm: &mut Vm, tick: TickInfo);
+
+    /// After the process list ticked the objects of `tick`, before the send pass.
+    fn after(&self, vm: &mut Vm, tick: TickInfo);
 }
 
 /// The plain engine's main loop: no hook.
@@ -202,6 +215,11 @@ pub trait NetHost {
     /// The loop enters `phase`.
     fn phase(&self, phase: Phase) {
         let _ = phase;
+    }
+    /// The number of server ticks run so far, told before each pass's receive: what the declared server commands' token
+    /// buckets count in. A host with no such limits ignores it (the default).
+    fn set_tick(&self, tick: u64) {
+        let _ = tick;
     }
     /// Drains the socket at `now`; `new_tick`: the pass starts a tick (its network work budget is full again).
     fn receive(&self, vm: &mut Vm, now: u32, new_tick: bool);
@@ -389,6 +407,10 @@ pub struct Server<N: NetParts = NoNet> {
     pub perf: PassPerf,
     /// What the game adds to the main loop ([`ServerHooks`]).
     hooks: Rc<dyn ServerHooks>,
+    /// The plugins' work around each tick ([`TickHooks`]).
+    tick_hooks: Option<Rc<dyn TickHooks>>,
+    /// The ticks run so far ([`ticks`](Self::ticks)).
+    ticks: u64,
     /// How a named mission is loaded ([`MissionLoader`]).
     missions: Rc<dyn MissionLoader>,
 }
@@ -430,8 +452,21 @@ impl<N: NetParts> Server<N> {
             pass_ms: None,
             perf: PassPerf::default(),
             hooks: Rc::new(NoHooks),
+            tick_hooks: None,
+            ticks: 0,
             missions: Rc::new(ExecMission),
         }
+    }
+
+    /// Sets the work run around each tick's process list pass ([`TickHooks`]), or clears it. Apart from [`set_hooks`](Self::set_hooks):
+    /// a game that replaces its hooks keeps these.
+    pub fn set_tick_hooks(&mut self, hooks: Option<Rc<dyn TickHooks>>) {
+        self.tick_hooks = hooks;
+    }
+
+    /// The server ticks run so far (the first pass runs 32 of them at once).
+    pub fn ticks(&self) -> u64 {
+        self.ticks
     }
 
     /// Replaces the main loop's hooks.
@@ -749,6 +784,7 @@ impl<N: NetParts> Server<N> {
                 // the network's own limits, not this run's budget (what a script schedules for later is a Sim event and does
                 // draw on it, step 4).
                 now = net.clock_ms(this.vm.sim_time());
+                net.set_tick(this.ticks);
                 net.phase(Phase::Receive);
                 net.receive(&mut this.vm, now, true);
                 net.phase(Phase::Tick);
@@ -763,6 +799,14 @@ impl<N: NetParts> Server<N> {
                 this.perf.tick_passes += 1;
                 this.perf.ticks += u64::from(steps_in_batch);
                 let process = this.state.borrow().process.clone();
+                let first_tick = this.ticks;
+                this.ticks = this.ticks.saturating_add(u64::from(steps_in_batch));
+                let hooks = this.tick_hooks.clone();
+                if let Some(hooks) = &hooks {
+                    for n in 1..=u64::from(steps_in_batch) {
+                        hooks.before(&mut this.vm, TickInfo::new(first_tick.saturating_add(n)));
+                    }
+                }
                 // The pass pays from what is left of the run's budget, a step per visit before the object's turn and its tick's
                 // work (`sim::pass`); it stops before the next object once that is spent.
                 let left = this.run_step_limit.saturating_sub(steps);
@@ -779,6 +823,11 @@ impl<N: NetParts> Server<N> {
                 // Not part of `run_steps` (that is what the events used).
                 steps = steps.saturating_add(outcome.steps);
                 this.keep_errors(outcome.errors);
+                if let Some(hooks) = &hooks {
+                    for n in 1..=u64::from(steps_in_batch) {
+                        hooks.after(&mut this.vm, TickInfo::new(first_tick.saturating_add(n)));
+                    }
+                }
                 this.perf.tick += t_tick.elapsed();
                 let t_send = web_time::Instant::now();
                 if let Some(net) = &net {

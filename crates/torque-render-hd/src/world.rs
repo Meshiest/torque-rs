@@ -91,6 +91,9 @@ use torque_render_scene::hd::settings::ImageSettings;
 use crate::ext::{
     ExtCell, ExtSlots, ExtraDrawn, ExtraPrepare, HdExtension, NoExtension, ShadowExtras,
 };
+use crate::passes::{
+    HdPass, HdPasses, PassCx, PassScene, ShadowCascade, Stage as PassStage, SunShadows, frame_copy,
+};
 use crate::post::{
     AO_FORMAT, HISTORY_FORMAT, MOTION_FORMAT, MOTION_STRIDE, NORMAL_FORMAT, PostPipes,
     SHOWN_FORMAT, Temporal,
@@ -296,6 +299,74 @@ pub(crate) struct DrawRef {
     shadow_only: bool,
     /// Cast into no shadow map (`torque_render_scene::hd::material::VIEW_ONLY`: a first-person image drawn before the eye).
     view_only: bool,
+    /// Cut out by its texture's alpha (`torque_render_scene::hd::material::CUTOUT`): left out of the depth prepass and of the
+    /// shadow casters (neither reads the texture), drawn opaque in the main pass.
+    cutout: bool,
+}
+
+/// Bind groups made in the last frames by what they bind (wgpu's handles compare by the resource they name): a group is made
+/// again only when a resource it binds was replaced (the targets made anew, a buffer grown), not every frame.
+struct GroupCache<K> {
+    frame: u64,
+    groups: Vec<(K, wgpu::BindGroup, u64)>,
+}
+
+impl<K> Default for GroupCache<K> {
+    fn default() -> GroupCache<K> {
+        GroupCache {
+            frame: 0,
+            groups: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq> GroupCache<K> {
+    /// The frames a group not asked for is kept, and the most groups kept.
+    const KEEP_FRAMES: u64 = 2;
+    const MAX_GROUPS: usize = 32;
+
+    /// The group of `key` (made by `make` when it is not kept).
+    fn get(&mut self, key: K, make: impl FnOnce() -> wgpu::BindGroup) -> wgpu::BindGroup {
+        let now = self.frame;
+        if let Some(e) = self.groups.iter_mut().find(|e| e.0 == key) {
+            e.2 = now;
+            return e.1.clone();
+        }
+        let group = make();
+        if self.groups.len() >= Self::MAX_GROUPS {
+            self.groups.remove(0);
+        }
+        self.groups.push((key, group.clone(), now));
+        group
+    }
+
+    /// A frame starts: the groups no frame asked for lately are let go (with the resources they hold).
+    fn next_frame(&mut self) {
+        self.frame += 1;
+        let now = self.frame;
+        self.groups.retain(|e| now - e.2 <= Self::KEEP_FRAMES);
+    }
+}
+
+/// What a forward pass's frame group binds ([`HdWorld::frame_group_with`]).
+#[derive(PartialEq)]
+struct FrameKey {
+    buffers: [wgpu::Buffer; 7],
+    views: [wgpu::TextureView; 10],
+    samplers: [wgpu::Sampler; 3],
+}
+
+/// What the tonemap pass's group binds.
+#[derive(PartialEq)]
+struct TonemapKey {
+    views: [wgpu::TextureView; 3],
+    buffers: [wgpu::Buffer; 2],
+    sampler: wgpu::Sampler,
+}
+
+/// A mutex's value, even when a thread panicked holding it (the caches hold nothing a panic leaves half made).
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The frame's particles on the GPU (uploaded again whenever the scene's set changes: every frame they move).
@@ -307,6 +378,9 @@ struct Particles {
     draws: Vec<(f32, DrawRef)>,
     /// The multiplied decals ([`Blend::Modulate2x`]): their own pass over the opaque frame, in any order.
     decals: Vec<DrawRef>,
+    /// The last upload's vertex and index bytes (their room kept for the next).
+    vertex_bytes: Vec<u8>,
+    index_bytes: Vec<u8>,
 }
 
 /// A cell on the GPU: its slabs in the static arena ([`arena::Arena`]; its indices relative to its first vertex, `base_vertex`, from
@@ -1025,7 +1099,17 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     index_runs: slots::Runs,
     /// The previous positions' buffer while an upload needs none.
     spare_previous: Option<wgpu::Buffer>,
+    /// The uploads whose loose draws or particles did not fit one buffer of the device ([`HdWorld::oversize_uploads`]), and a cap below
+    /// the device's largest buffer ([`HdWorld::set_buffer_cap`]).
+    oversize_uploads: u64,
+    buffer_cap: Option<u64>,
     particles: Particles,
+    /// The last upload's table of mesh places in bytes (its room kept).
+    node_bytes: Vec<u8>,
+    /// The forward passes' frame groups made in the last frames, by what they bind ([`GroupCache`]).
+    frame_groups: std::sync::Mutex<GroupCache<FrameKey>>,
+    /// The tonemap pass's groups made in the last frames.
+    tonemap_groups: std::sync::Mutex<GroupCache<TonemapKey>>,
     targets: Option<Targets>,
     timer: Option<Timer>,
     times: Option<GpuTimes>,
@@ -1117,6 +1201,9 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     user_lut: Option<CubeLut>,
     user_lut_generation: u64,
     dummy_depth: wgpu::TextureView,
+    /// The scene's lightmap (a texel of light 1 until a scene brings one) and the generation it was made for.
+    lightmap: (wgpu::Texture, wgpu::TextureView),
+    lightmap_generation: Option<u64>,
     /// The extension's buffers in the renderer's groups.
     ext_slots: ExtSlots,
     /// The extension: what the world's static geometry brings beside the engine's frame.
@@ -1143,6 +1230,9 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     lights_generation: Option<u64>,
     uploaded_glow: bool,
     shadowed_lights: usize,
+    /// The passes from outside the renderer, by stage ([`crate::passes`]), and the copy of the frame [`PassStage::Post`] reads.
+    passes: HdPasses,
+    post_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 /// The shadow maps' lists' bytes at most (a batch of maps culled in one compute pass, each into its own lists), and the fewest and
@@ -1772,6 +1862,52 @@ fn texture_entry(
     }
 }
 
+/// A lightmap texture of `width` x `height` half-float RGBA texels (`texels` exactly that many), and its view.
+fn lightmap_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    texels: &[[u16; 4]],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let size = wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hd lightmap"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let bytes: Vec<u8> = texels
+        .iter()
+        .flat_map(|t| t.iter().flat_map(|c| c.to_le_bytes()))
+        .collect();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(width * 8),
+            rows_per_image: Some(height),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
 /// The number of clusters.
 fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
@@ -1854,6 +1990,12 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             18,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::CubeArray,
+        ),
+        // The scene's lightmap (HdScene::lightmap; sampled with binding 13's linear clamped sampler).
+        texture_entry(
+            19,
+            wgpu::TextureSampleType::Float { filterable: true },
+            wgpu::TextureViewDimension::D2,
         ),
     ]
 }
@@ -2317,6 +2459,7 @@ impl<E: HdExtension> HdWorld<E> {
                 view_formats: &[],
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let lightmap = lightmap_texture(&device, &queue, 1, 1, &[[0x3c00; 4]]);
         let arena = arena::Arena::new(&device);
         let cell_table = cull::CellTable::new(&device);
         let cull = cull::Cull::new(&device, cache);
@@ -2344,6 +2487,8 @@ impl<E: HdExtension> HdWorld<E> {
             user_lut: None,
             user_lut_generation: 0,
             dummy_depth,
+            lightmap,
+            lightmap_generation: None,
             ext_slots,
             ext: E::new(&device),
             profile_passes: false,
@@ -2357,6 +2502,8 @@ impl<E: HdExtension> HdWorld<E> {
             lights_generation: None,
             uploaded_glow: true,
             shadowed_lights: 0,
+            passes: HdPasses::default(),
+            post_copy: None,
             marks: device
                 .features()
                 .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS)
@@ -2451,7 +2598,12 @@ impl<E: HdExtension> HdWorld<E> {
             node_baked: HashMap::new(),
             index_runs: slots::Runs::default(),
             spare_previous: None,
+            oversize_uploads: 0,
+            buffer_cap: None,
             particles: Particles::default(),
+            node_bytes: Vec::new(),
+            frame_groups: std::sync::Mutex::new(GroupCache::default()),
+            tonemap_groups: std::sync::Mutex::new(GroupCache::default()),
             targets: None,
             timer,
             times: None,
@@ -2768,6 +2920,48 @@ impl<E: HdExtension> HdWorld<E> {
         ao: &wgpu::TextureView,
         front: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
+        let key = FrameKey {
+            buffers: [
+                frame.clone(),
+                self.lights.clone(),
+                self.masks.clone(),
+                self.shadows.uniform.clone(),
+                self.ext_slots.forward[0].clone(),
+                self.ext_slots.forward[1].clone(),
+                self.nodes.clone(),
+            ],
+            views: [
+                background.clone(),
+                self.shadows.csm_view().clone(),
+                self.shadows.point_view(0).clone(),
+                self.shadows.point_view(1).clone(),
+                self.shadows.point_view(2).clone(),
+                contact.clone(),
+                ao.clone(),
+                front.clone(),
+                self.shadows.trans_view().clone(),
+                self.lightmap.1.clone(),
+            ],
+            samplers: [
+                self.shadows.cmp_sampler.clone(),
+                self.shadows.gather_sampler.clone(),
+                self.shadows.trans_sampler.clone(),
+            ],
+        };
+        locked(&self.frame_groups).get(key, || {
+            self.make_frame_group(frame, background, contact, ao, front)
+        })
+    }
+
+    /// The frame group of [`HdWorld::frame_group_with`], made.
+    fn make_frame_group(
+        &self,
+        frame: &wgpu::Buffer,
+        background: &wgpu::TextureView,
+        contact: &wgpu::TextureView,
+        ao: &wgpu::TextureView,
+        front: &wgpu::TextureView,
+    ) -> wgpu::BindGroup {
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hd frame"),
             layout: &self.frame_layout,
@@ -2842,6 +3036,7 @@ impl<E: HdExtension> HdWorld<E> {
                     binding: 18,
                     resource: wgpu::BindingResource::TextureView(self.shadows.point_view(2)),
                 },
+                tv(19, &self.lightmap.1),
             ],
         })
     }
@@ -3001,6 +3196,16 @@ impl<E: HdExtension> HdWorld<E> {
     /// or in a browser the ones still queued.
     pub fn warming(&self) -> bool {
         self.warming.is_some() || !self.warm_queue.is_empty()
+    }
+
+    /// Takes the renderer's wall-clock budgets off: every changed cell is put in at once whatever the time ([`HdWorld::upload_budget`],
+    /// [`HdWorld::upload_time`]) and, in a browser, the clouds' noise is made whole by the first frame that wants it
+    /// ([`crate::clouds::WEB_NOISE_BUDGET`]). What a frame draws then depends on the scene alone, not on how busy the machine is:
+    /// for pictures taken offscreen.
+    pub fn set_unbudgeted(&mut self) {
+        self.upload_budget = None;
+        self.upload_time = std::time::Duration::MAX;
+        self.clouds.noise_budget = web_time::Duration::MAX;
     }
 
     /// In a browser: whether the last frame wanted clouds while their noise was still being made (a share of it each such frame:
@@ -3180,6 +3385,22 @@ impl<E: HdExtension> HdWorld<E> {
         while self.textures.len() < scene.textures.textures.len() {
             let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
             self.textures.push(view);
+        }
+        if self.lightmap_generation != Some(scene.lightmap_generation) {
+            self.lightmap_generation = Some(scene.lightmap_generation);
+            let max = self.device.limits().max_texture_dimension_2d;
+            self.lightmap = match &scene.lightmap {
+                Some(l)
+                    if l.width >= 1
+                        && l.height >= 1
+                        && l.width <= max
+                        && l.height <= max
+                        && l.texels.len() as u64 == u64::from(l.width) * u64::from(l.height) =>
+                {
+                    lightmap_texture(&self.device, &self.queue, l.width, l.height, &l.texels)
+                }
+                _ => lightmap_texture(&self.device, &self.queue, 1, 1, &[[0x3c00; 4]]),
+            };
         }
         // When every sync since the last upload was a control sync (a window's every frame: the control object and the
         // late objects moved, nothing else), the cells and lights are as they were: only the draws go up again.
@@ -4057,16 +4278,18 @@ impl<E: HdExtension> HdWorld<E> {
             let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
             self.textures.push(view);
         }
-        let mut vbytes = Vec::new();
-        let mut indices: Vec<u32> = Vec::new();
+        let old = std::mem::take(&mut self.particles);
+        let (mut vbytes, mut ib) = (old.vertex_bytes, old.index_bytes);
+        vbytes.clear();
+        ib.clear();
+        let mut icount: u32 = 0;
         let mut vcount: u32 = 0;
         let mut draws = Vec::with_capacity(scene.particles.len());
         for (dist, d) in &scene.particles {
-            let first = indices.len() as u32;
-            for v in &d.vertices {
-                v.write(&mut vbytes);
-            }
-            indices.extend_from_slice(&d.indices);
+            let first = icount;
+            HdVertex::extend_bytes(&d.vertices, &mut vbytes);
+            push_u32(&mut ib, &d.indices);
+            icount += d.indices.len() as u32;
             draws.push((
                 *dist,
                 DrawRef {
@@ -4090,6 +4313,7 @@ impl<E: HdExtension> HdWorld<E> {
                     }),
                     shadow_only: false,
                     view_only: false,
+                    cutout: false,
                 },
             ));
             vcount += d.vertices.len() as u32;
@@ -4101,29 +4325,40 @@ impl<E: HdExtension> HdWorld<E> {
             generation: Some(scene.particles_generation),
             draws,
             decals: decals.into_iter().map(|(_, r)| r).collect(),
+            vertices: old.vertices,
+            indices: old.indices,
             ..Particles::default()
         };
-        if !indices.is_empty() {
-            particles.vertices = Some(self.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("hd particle vertices"),
-                    contents: &vbytes,
-                    usage: wgpu::BufferUsages::VERTEX,
-                },
-            ));
-            let mut ib = Vec::with_capacity(indices.len() * 4);
-            push_u32(&mut ib, &indices);
-            particles.indices = Some(self.device.create_buffer_init(
-                &wgpu::util::BufferInitDescriptor {
-                    label: Some("hd particle indices"),
-                    contents: &ib,
-                    usage: wgpu::BufferUsages::INDEX,
-                },
-            ));
+        let limit = self.buffer_limit() as usize;
+        let fits = vbytes.len() <= limit && ib.len() <= limit;
+        if !ib.is_empty() && !fits {
+            // More than one buffer of the device holds: no particle this frame (counted).
+            self.oversize_uploads += 1;
+        }
+        if !ib.is_empty() && fits {
+            // The buffers are kept while they are big enough (grown with room when they are not) and written in place.
+            let (v, _) = self.buffer_of(
+                particles.vertices.take(),
+                vbytes.len(),
+                wgpu::BufferUsages::VERTEX,
+                "hd particle vertices",
+            );
+            let (i, _) = self.buffer_of(
+                particles.indices.take(),
+                ib.len(),
+                wgpu::BufferUsages::INDEX,
+                "hd particle indices",
+            );
+            self.queue.write_buffer(&v, 0, &vbytes);
+            self.queue.write_buffer(&i, 0, &ib);
+            particles.vertices = Some(v);
+            particles.indices = Some(i);
         } else {
             particles.draws.clear();
             particles.decals.clear();
         }
+        particles.vertex_bytes = vbytes;
+        particles.index_bytes = ib;
         self.particles = particles;
     }
 
@@ -4207,6 +4442,10 @@ impl<E: HdExtension> HdWorld<E> {
                     .vertices
                     .first()
                     .is_some_and(|v| torque_render_scene::hd::material::view_only(v.material)),
+                cutout: d
+                    .vertices
+                    .first()
+                    .is_some_and(|v| torque_render_scene::hd::material::cutout(v.material)),
             }
         };
         let draw_at = |d: &HdDraw, base: usize, indices: &mut Vec<u32>| -> DrawRef {
@@ -4387,6 +4626,20 @@ impl<E: HdExtension> HdWorld<E> {
         }
         // The meshes' places: each object's at its first, the rows of its placement now, its normals' turn and its placement at
         // the last frame.
+        let too_big = !self.nodes_fit(node_end)
+            || self.buffer_limit()
+                < (((rest_start + rest_count) * HD_VERTEX_BYTES)
+                    .max((index_rest + indices.len()) * 4) as u64);
+        if too_big {
+            // More than one buffer of the device holds (the vertices, the indices or the meshes' places): no loose draw this frame
+            // (counted), and nothing past the limit is asked of the device. The runs the old buffers held go with them.
+            self.oversize_uploads += 1;
+            self.runs.forget_vertices();
+            self.runs.forget_previous();
+            self.index_runs.forget_vertices();
+            self.loose = loose;
+            return;
+        }
         self.upload_nodes(scene, &loose.objects, node_end);
         if !indices.is_empty() || !index_writes.is_empty() {
             // A window syncs its control object every frame: the buffers are written in place while they are big enough (made
@@ -4604,16 +4857,27 @@ impl<E: HdExtension> HdWorld<E> {
         self.loose = loose;
     }
 
+    /// Whether the table of `end` meshes' places, with its room to grow, fits one storage buffer of the device.
+    fn nodes_fit(&self, end: usize) -> bool {
+        let max = self
+            .buffer_limit()
+            .min(self.device.limits().max_storage_buffer_binding_size);
+        end == 0 || (end + end / 4 + 64) as u64 * NODE_BYTES as u64 <= max
+    }
+
     /// The meshes' places of the frame's objects into the table (`end` places in all; made anew with room to grow when it is too
-    /// small): each object's at its first place.
+    /// small): each object's at its first place. The caller has checked [`HdWorld::nodes_fit`].
     fn upload_nodes(&mut self, scene: &E::Scene, objects: &[GpuObject], end: usize) {
         if end == 0 {
             return;
         }
+
         if (self.nodes.size() as usize) < end * NODE_BYTES {
             self.nodes = Self::nodes_buffer(&self.device, end + end / 4 + 64);
         }
-        let mut bytes = vec![0u8; end * NODE_BYTES];
+        let mut bytes = std::mem::take(&mut self.node_bytes);
+        bytes.clear();
+        bytes.resize(end * NODE_BYTES, 0);
         for (o, g) in scene.objects.iter().zip(objects) {
             let Some(base) = g.node_base else {
                 continue;
@@ -4632,9 +4896,27 @@ impl<E: HdExtension> HdWorld<E> {
             }
         }
         self.queue.write_buffer(&self.nodes, 0, &bytes);
+        self.node_bytes = bytes;
     }
 
-    /// `old` when it holds `size` bytes, else a new buffer with a quarter more room (and true); nothing written.
+    /// The largest buffer the loose draws are put in: the device's largest, or the cap below it.
+    fn buffer_limit(&self) -> u64 {
+        let max = self.device.limits().max_buffer_size;
+        self.buffer_cap.map_or(max, |cap| cap.min(max))
+    }
+
+    /// Caps the loose draws' buffers below the device's largest (None: the device's; a test lowers it).
+    pub fn set_buffer_cap(&mut self, cap: Option<u64>) {
+        self.buffer_cap = cap;
+    }
+
+    /// How many uploads left their loose draws or their particles out because they did not fit one buffer of the device.
+    pub fn oversize_uploads(&self) -> u64 {
+        self.oversize_uploads
+    }
+
+    /// `old` when it holds `size` bytes, else a new buffer with a quarter more room (and true), the room cut to the device's
+    /// largest buffer; nothing written. The caller keeps `size` within [`HdWorld::buffer_limit`].
     fn buffer_of(
         &self,
         old: Option<wgpu::Buffer>,
@@ -4648,11 +4930,10 @@ impl<E: HdExtension> HdWorld<E> {
         }) {
             return (b, false);
         }
+        let room = (size + size / 4).min(self.buffer_limit()).max(size);
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
-            size: (size + size / 4)
-                .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT)
-                .max(16),
+            size: room.next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT).max(16),
             // (Read back by `HdWorld::check_loose`.)
             usage: usage | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
@@ -5092,10 +5373,45 @@ impl<E: HdExtension> HdWorld<E> {
         self.clouds.reset();
     }
 
+    /// Adds `pass` at `stage` of every frame from the next, after the passes already there ([`crate::passes`]).
+    pub fn add_pass(&mut self, stage: PassStage, pass: impl HdPass) {
+        self.passes.add(stage, Box::new(pass));
+    }
+
+    /// The passes from outside the renderer ([`crate::passes`]): to add boxed ones or take them all out.
+    pub fn passes_mut(&mut self) -> &mut HdPasses {
+        &mut self.passes
+    }
+
+    /// The passes from outside the renderer.
+    pub fn passes(&self) -> &HdPasses {
+        &self.passes
+    }
+
+    /// The last frame's working depth, reversed (1 at the near plane, 0 far away), at the internal frame's size: what a pass
+    /// drawn over the tonemapped picture reads to hide what lies behind the scene. None before the first frame.
+    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.targets.as_ref().map(|t| &t.depth_view)
+    }
+
     /// Draws `scene` (uploaded with [`HdWorld::upload`]) from `camera` and tonemaps it into `target` (an `Rgba8Unorm` view, or
     /// `None` for the world's own image, [`HdWorld::read_ldr`]) at `origin` (the viewport's top left in the target). Submits the work.
     pub fn draw(
         &mut self,
+        scene: &E::Scene,
+        camera: &HdCamera,
+        target: Option<(&wgpu::TextureView, wgpu::TextureFormat, [u32; 2])>,
+    ) -> Result<(), HdError> {
+        let mut passes = std::mem::take(&mut self.passes);
+        let drawn = self.draw_with(&mut passes, scene, camera, target);
+        self.passes = passes;
+        drawn
+    }
+
+    /// [`HdWorld::draw`] with the passes from outside the renderer.
+    fn draw_with(
+        &mut self,
+        passes: &mut HdPasses,
         scene: &E::Scene,
         camera: &HdCamera,
         target: Option<(&wgpu::TextureView, wgpu::TextureFormat, [u32; 2])>,
@@ -5408,17 +5724,20 @@ impl<E: HdExtension> HdWorld<E> {
         let split = items.len();
         items.extend(self.loose.water.iter().map(|d| Item::Loose(*d)));
         // With the TAA, the late objects and the dying shapes are drawn after its resolve (`over`), back to front too.
-        let mut sorted: Vec<(f32, Vec<DrawRef>)> = self
+        // One list of every translucent draw by its object's distance: the sort is stable, so an object's draws stay together in
+        // their order.
+        let mut sorted: Vec<(f32, DrawRef)> = self
             .loose
             .objects
             .iter()
             .filter(|o| o.translucent && sees_sphere(o.centre, o.radius))
             .filter(|o| !(taa && o.late))
-            .map(|o| {
-                (
-                    dist(o.centre),
-                    o.draws.iter().filter(|d| !d.shadow_only).copied().collect(),
-                )
+            .flat_map(|o| {
+                let d = dist(o.centre);
+                o.draws
+                    .iter()
+                    .filter(|r| !r.shadow_only)
+                    .map(move |r| (d, *r))
             })
             .collect();
         cpu_mark!("begin: items");
@@ -5436,7 +5755,7 @@ impl<E: HdExtension> HdWorld<E> {
                         &mut corona_work,
                     )
                 })
-                .map(|(d, c, _)| (*d, vec![*c])),
+                .map(|(d, c, _)| (*d, *c)),
         );
         cpu_mark!("begin: coronas");
         sorted.extend(
@@ -5444,20 +5763,21 @@ impl<E: HdExtension> HdWorld<E> {
                 .draws
                 .iter()
                 .filter(|(_, c)| !(taa && c.late))
-                .map(|(d, c)| (*d, vec![*c])),
+                .map(|(d, c)| (*d, *c)),
         );
-        let mut over_sorted: Vec<(f32, Vec<DrawRef>)> = Vec::new();
+        let mut over_sorted: Vec<(f32, DrawRef)> = Vec::new();
         if taa {
             over_sorted.extend(
                 self.loose
                     .objects
                     .iter()
                     .filter(|o| o.late && sees_sphere(o.centre, o.radius))
-                    .map(|o| {
-                        (
-                            dist(o.centre),
-                            o.draws.iter().filter(|d| !d.shadow_only).copied().collect(),
-                        )
+                    .flat_map(|o| {
+                        let d = dist(o.centre);
+                        o.draws
+                            .iter()
+                            .filter(|r| !r.shadow_only)
+                            .map(move |r| (d, *r))
                     }),
             );
             over_sorted.extend(
@@ -5465,14 +5785,12 @@ impl<E: HdExtension> HdWorld<E> {
                     .draws
                     .iter()
                     .filter(|(_, c)| c.late)
-                    .map(|(d, c)| (*d, vec![*c])),
+                    .map(|(d, c)| (*d, *c)),
             );
             over_sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         }
         sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
-        for (_, ds) in sorted {
-            items.extend(ds.into_iter().map(Item::Loose));
-        }
+        items.extend(sorted.into_iter().map(|(_, d)| Item::Loose(d)));
         if wboit {
             for (g, _) in self.table.groups() {
                 if g.0 && self.main_lists.group_drawn(&self.table, *g) {
@@ -5493,9 +5811,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         // The over draws last (outside the translucent pass).
         let over_start = items.len();
-        for (_, ds) in over_sorted {
-            items.extend(ds.into_iter().map(Item::Loose));
-        }
+        items.extend(over_sorted.into_iter().map(|(_, d)| Item::Loose(d)));
         cpu_mark!("begin: sort");
         // Pipelines and bind groups first (they need the world mutably).
         let mut prepared = Vec::with_capacity(items.len());
@@ -5597,6 +5913,7 @@ impl<E: HdExtension> HdWorld<E> {
                         && d.depth_test
                         && d.depth_write
                         && !d.particle
+                        && !d.cutout
                         && n < over_start
                 }
                 Item::Cell(..) | Item::Group(_) => n < split,
@@ -5665,6 +5982,59 @@ impl<E: HdExtension> HdWorld<E> {
             };
         }
         mark!("begin");
+        // The passes from outside the renderer at `$stage`, drawing with `$camera` into targets of `$size` (the world in
+        // `$viewport` of the color target), the stage's targets set after the rest are None. Nothing without one.
+        let pass_scene = PassScene {
+            sun: &scene.sun,
+            fog: &scene.fog,
+            lights: &scene.lights,
+            time: E::time(scene),
+            visible_distance: scene.visible_distance,
+        };
+        // What a pass at the opaque or the translucent stage samples the sun's shadows through (none when the sun casts none).
+        macro_rules! sun_shadows {
+            () => {
+                if self.shadows.cascades().next().is_some() {
+                    Some(SunShadows {
+                        uniform: &self.shadows.uniform,
+                        map: self.shadows.csm_view(),
+                        compare: &self.shadows.cmp_sampler,
+                        gather: &self.shadows.gather_sampler,
+                    })
+                } else {
+                    None
+                }
+            };
+        }
+        macro_rules! run_passes {
+            ($stage:expr, $camera:expr, $size:expr, $viewport:expr $(, $field:ident = $value:expr)* $(,)?) => {
+                if passes.has($stage) {
+                    let mut cx = PassCx {
+                        stage: $stage,
+                        device: &self.device,
+                        queue: &self.queue,
+                        encoder: &mut encoder,
+                        size: $size,
+                        frame_size: [iw, ih],
+                        viewport: $viewport,
+                        depth: None,
+                        depth_attachable: false,
+                        normals: None,
+                        motion: None,
+                        hdr: None,
+                        source: None,
+                        ldr: None,
+                        cascades: &[],
+                        sun_shadows: None,
+                        camera: $camera,
+                        scene: pass_scene,
+                        ghosts: &scene.objects,
+                    };
+                    $(cx.$field = $value;)*
+                    passes.run(&mut cx);
+                }
+            };
+        }
         let _ = set_pass_kind(PassKind::Cull);
         // The main view's lists, culled on the GPU before anything draws from them.
         if let (Some(slot), Some(c)) = (main_slot, &mut self.cull) {
@@ -5754,6 +6124,7 @@ impl<E: HdExtension> HdWorld<E> {
             self.ground_key = key;
         }
         // The shadow maps: every shape's opaque draws cast (a Player is a translucent object for its draw order, its body opaque).
+        self.shadows.set_drawn_over(passes.has(PassStage::Shadows));
         let objects: Vec<ObjectCaster> = self
             .loose
             .objects
@@ -5766,7 +6137,9 @@ impl<E: HdExtension> HdWorld<E> {
                 draws: o
                     .draws
                     .iter()
-                    .filter(|d| d.blend == Blend::Opaque && d.depth_write && !d.view_only)
+                    .filter(|d| {
+                        d.blend == Blend::Opaque && d.depth_write && !d.view_only && !d.cutout
+                    })
                     .map(|d| (d.first, d.count, d.base_vertex))
                     .collect(),
             })
@@ -5833,6 +6206,24 @@ impl<E: HdExtension> HdWorld<E> {
         self.shadow_patched = self.shadow_dirty.len();
         self.shadow_dirty.clear();
         self.shadow_reset = false;
+        if passes.has(PassStage::Shadows) {
+            let cascades: Vec<ShadowCascade> = self
+                .shadows
+                .cascades()
+                .map(|(view_proj, target, size)| ShadowCascade {
+                    view_proj,
+                    target,
+                    size,
+                })
+                .collect();
+            run_passes!(
+                PassStage::Shadows,
+                &jcam,
+                [iw, ih],
+                [0, 0, iw, ih],
+                cascades = &cascades,
+            );
+        }
         mark!("shadows");
         let _ = set_pass_kind(PassKind::Post);
         // The sky: its uniform, and the physical sky's tables.
@@ -5913,6 +6304,8 @@ impl<E: HdExtension> HdWorld<E> {
         }
         mark!("clusters");
         let _ = set_pass_kind(PassKind::View);
+        locked(&self.frame_groups).next_frame();
+        locked(&self.tonemap_groups).next_frame();
         // The reflections' secondary views (the sky cube, the capture, the planar reflection).
         let views_timed = self.encode_views(
             &mut encoder,
@@ -6156,6 +6549,16 @@ impl<E: HdExtension> HdWorld<E> {
                 prepass_draws!(pass, &self.lists_second, true, true);
             }
         }
+        run_passes!(
+            PassStage::Prepass,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            motion = Some(&targets.motion_views[p]),
+        );
         // The prepass's depth kept for the next frame's TAA (the forward passes go on writing the working depth).
         if taa {
             encoder.copy_texture_to_texture(
@@ -6469,6 +6872,17 @@ impl<E: HdExtension> HdWorld<E> {
                 draw_calls += extras.calls;
             }
         }
+        run_passes!(
+            PassStage::Opaque,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            hdr = Some(&targets.hdr_view),
+            sun_shadows = sun_shadows!(),
+        );
         // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light.
         if decal_start < split {
             let mut pass = begin!("hd decals", false, &targets.depth_view, &frame_group);
@@ -6487,11 +6901,16 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         self.encode_water_depth(&mut encoder, &targets.depth);
-        encoder.copy_texture_to_texture(
-            targets.hdr.as_image_copy(),
-            targets.background.as_image_copy(),
-            full,
-        );
+        // The opaque frame's copy is read by the draws after it (the water, the translucent front layer, the weighted blend's
+        // composite) and maybe by a pass of the extension's: with none of them it is not taken.
+        let reads_background = split < items.len() || PassStage::ALL.iter().any(|&s| passes.has(s));
+        if reads_background {
+            encoder.copy_texture_to_texture(
+                targets.hdr.as_image_copy(),
+                targets.background.as_image_copy(),
+                full,
+            );
+        }
         mark!("volumetric/water depth/copy");
         let mut late_sprites: Vec<(usize, PipelineKey)> = Vec::new();
         if !wboit {
@@ -6685,6 +7104,17 @@ impl<E: HdExtension> HdWorld<E> {
                 draw_list(&mut pass, &late, &mut draw_calls);
             }
         }
+        run_passes!(
+            PassStage::Translucent,
+            &jcam,
+            [iw, ih],
+            [0, 0, iw, ih],
+            depth = Some(&targets.depth_view),
+            depth_attachable = true,
+            normals = Some(&targets.normal_view),
+            hdr = Some(&targets.hdr_view),
+            sun_shadows = sun_shadows!(),
+        );
         // A TAA frame's late frames (cleared whenever either has draws: the composite reads both): the sprites, and the late
         // objects and dying shapes over (unjittered: they are not in the TAA's history, so its jitter would only shake their edges).
         let over: Vec<(usize, PipelineKey)> = keyed(over_start..items.len());
@@ -6768,8 +7198,11 @@ impl<E: HdExtension> HdWorld<E> {
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
         }
-        // The late sprites added to a copy of the shown colour (the TAA reads the shown colour back next frame).
-        let present = taa && (!late_sprites.is_empty() || !over.is_empty());
+        // The late sprites added to a copy of the shown colour (the TAA reads the shown colour back next frame); the copy also
+        // what the passes after the anti-aliasing draw into.
+        let late_drawn = taa && (!late_sprites.is_empty() || !over.is_empty());
+        let present =
+            late_drawn || (taa && (passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post)));
         if present {
             encoder.copy_texture_to_texture(
                 targets.shown[p].as_image_copy(),
@@ -6780,6 +7213,8 @@ impl<E: HdExtension> HdWorld<E> {
                     depth_or_array_layers: 1,
                 },
             );
+        }
+        if late_drawn {
             crate::count_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hd late sprites composite"),
@@ -6835,6 +7270,44 @@ impl<E: HdExtension> HdWorld<E> {
         } else {
             0.0
         };
+        // The passes after the anti-aliasing into the tonemap's source (the output's size with the TAA, else the internal).
+        if passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post) {
+            let (size, frame_camera) = if taa {
+                ([camera.width, camera.height], camera)
+            } else {
+                ([iw, ih], &icam)
+            };
+            let viewport = [0, 0, size[0], size[1]];
+            let attachable = size == [iw, ih];
+            run_passes!(
+                PassStage::AfterTaa,
+                frame_camera,
+                size,
+                viewport,
+                depth = Some(&targets.depth_view),
+                depth_attachable = attachable,
+                hdr = Some(source),
+            );
+            if passes.has(PassStage::Post) {
+                let texture = match output {
+                    Output::Present(_) => &targets.present,
+                    Output::Shown(p) => &targets.shown[p],
+                    Output::Fxaa => &targets.fxaa,
+                    Output::Hdr => &targets.hdr,
+                };
+                let copy = frame_copy(&self.device, &mut self.post_copy, &mut encoder, texture);
+                run_passes!(
+                    PassStage::Post,
+                    frame_camera,
+                    size,
+                    viewport,
+                    depth = Some(&targets.depth_view),
+                    depth_attachable = attachable,
+                    hdr = Some(source),
+                    source = Some(copy),
+                );
+            }
+        }
         // The automatic exposure and the bloom chain, over the tonemap's source.
         let source_size = if taa {
             (camera.width, camera.height)
@@ -6940,29 +7413,37 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(&mut post, &waterline);
         debug_assert_eq!(post.len() as u64, POST_BYTES);
         self.queue.write_buffer(&self.post_uniform, 0, &post);
-        let tonemap_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hd tonemap"),
-            layout: &self.tonemap_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.post_uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.post.linear),
-                },
-                tv(3, self.bloom.result().unwrap_or(&self.white)),
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.exposure.state.as_entire_binding(),
-                },
-                tv(5, &self.lut_view),
-            ],
+        let bloom = self.bloom.result().unwrap_or(&self.white);
+        let key = TonemapKey {
+            views: [source.clone(), bloom.clone(), self.lut_view.clone()],
+            buffers: [self.post_uniform.clone(), self.exposure.state.clone()],
+            sampler: self.post.linear.clone(),
+        };
+        let tonemap_group = locked(&self.tonemap_groups).get(key, || {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hd tonemap"),
+                layout: &self.tonemap_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.post_uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.post.linear),
+                    },
+                    tv(3, bloom),
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: self.exposure.state.as_entire_binding(),
+                    },
+                    tv(5, &self.lut_view),
+                ],
+            })
         });
         {
             let view = target.map_or(&targets.ldr_view, |t| t.0);
@@ -7004,6 +7485,14 @@ impl<E: HdExtension> HdWorld<E> {
             crate::count_draws(1);
         }
         mark!("tonemap");
+        run_passes!(
+            PassStage::Overlay,
+            camera,
+            [camera.width, camera.height],
+            [origin[0], origin[1], camera.width, camera.height],
+            depth = Some(&targets.depth_view),
+            ldr = Some((target.map_or(&targets.ldr_view, |t| t.0), format)),
+        );
         if self.profile_passes
             && let Some(m) = &mut self.marks
         {

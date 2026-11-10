@@ -48,7 +48,8 @@ pub const EXTRAS_KEY: &str = "torque";
 pub type Resolver<'a> = &'a mut dyn FnMut(&str, usize) -> Option<Vec<u8>>;
 
 /// A resolver reading side files under the folder `dir`: at most the asked-for bytes of each (a file longer than that is read
-/// only that far), regular files only, and none that resolves (through a link) outside `dir`.
+/// only that far), regular files only (opened without following a link, and the handle checked), and none that resolves
+/// (through a link) outside `dir`.
 pub fn side_files(dir: &std::path::Path) -> impl FnMut(&str, usize) -> Option<Vec<u8>> + use<> {
     let dir = dir.to_path_buf();
     move |rel: &str, max: usize| {
@@ -62,12 +63,10 @@ pub fn side_files(dir: &std::path::Path) -> impl FnMut(&str, usize) -> Option<Ve
         if !path.starts_with(&root) {
             return None;
         }
-        let file = std::fs::File::open(&path).ok()?;
-        let meta = file.metadata().ok()?;
-        if !meta.is_file() {
-            return None;
-        }
-        let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
+        // Opened without following a link and judged by the handle that came back (a regular file, no link): a link swapped in
+        // after the check above is not followed, whatever the path now names.
+        let (file, len) = torque_resource::plain::open_plain(&path).ok()?;
+        let len = usize::try_from(len).unwrap_or(usize::MAX);
         let mut out = Vec::with_capacity(len.min(max));
         file.take(max as u64).read_to_end(&mut out).ok()?;
         Some(out)

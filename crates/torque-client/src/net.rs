@@ -264,6 +264,11 @@ pub trait Datagrams {
     fn lost(&self) -> u64 {
         0
     }
+    /// What the socket's link guarantees and the largest datagram it takes, as engine mode reads it: plain UDP unless the
+    /// socket says otherwise. The server's transport must say the same of this client.
+    fn link_kind(&self) -> net::engine::LinkKind {
+        net::engine::LinkKind::PLAIN_UDP
+    }
 }
 
 /// The real sockets: the main one and, in [`NetPolicy::Lan`] on every address, the loopback twin.
@@ -377,6 +382,11 @@ impl Datagrams for MemoryDatagrams {
     fn port(&self) -> u16 {
         self.local_port
     }
+
+    /// The in-process link, as the server's memory transport says.
+    fn link_kind(&self) -> net::engine::LinkKind {
+        net::engine::LinkKind::MEMORY
+    }
 }
 
 /// The client's socket and its counts.
@@ -418,6 +428,13 @@ impl ClientNet {
     pub fn may_receive(&self, from: SocketAddrV4) -> bool {
         source_ok(self.policy, from)
             || (self.policy == NetPolicy::Internet && self.internet.holds(from))
+    }
+
+    /// What the socket's link is ([`Datagrams::link_kind`]); plain UDP with no socket.
+    pub fn link_kind(&self) -> net::engine::LinkKind {
+        self.socket
+            .as_ref()
+            .map_or(net::engine::LinkKind::PLAIN_UDP, |s| s.link_kind())
     }
 
     /// Sends `bytes` to `to` under the LAN rule and the internet's doors (see the module docs).

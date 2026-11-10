@@ -251,7 +251,9 @@ impl<G: App> AppWindow<G> {
         let Some(surface) = self.surface.as_ref() else {
             return;
         };
-        self.view = Some(self.game.view(&surface.gpu));
+        let mut view = self.game.view(&surface.gpu);
+        view.attach_to(self.game.host());
+        self.view = Some(view);
     }
 
     /// In a browser: the loading stage `stage` on the page, when it is a new one.
@@ -392,6 +394,7 @@ impl<G: App> WindowGame for AppWindow<G> {
         surface.present(frame);
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
         self.game.host().frame_drawn(real_ms);
+        view.report_warnings(self.game.host());
         // The warm-up's pipelines kept now, should the process not reach its close.
         #[cfg(not(target_arch = "wasm32"))]
         if !self.cache_saved && !view.warming() {

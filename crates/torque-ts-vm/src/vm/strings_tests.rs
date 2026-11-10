@@ -60,3 +60,55 @@ fn a_failed_scan_reports_how_far_it_looked() {
     assert_eq!(markup_tag(b"<br>"), (Some(4), 0));
     assert_eq!(markup_tag(b"<nope"), (None, 0));
 }
+
+#[test]
+fn strip_chars_and_next_token_are_linear_in_their_arguments() {
+    // 4 MiB of text against a 4 MiB set none of whose bytes it holds: a scan of the set per byte would be 16e12 probes.
+    let text = vec![b'a'; 4 << 20];
+    let set = vec![b'b'; 4 << 20];
+    let mut vm = Vm::new();
+    vm.set_step_limit(Some(1_000_000));
+    let start = std::time::Instant::now();
+    let stripped = vm
+        .invoke(None, b"stripChars", &[text.clone(), set.clone()])
+        .unwrap();
+    assert_eq!(stripped, text);
+    let rest = vm
+        .invoke(None, b"nextToken", &[text.clone(), b"tok".to_vec(), set])
+        .unwrap();
+    assert!(rest.is_empty());
+    assert_eq!(vm.global("$tok").map(|t| t.len()), Some(text.len()));
+    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
+    // The set still works as a set.
+    let out = vm
+        .invoke(None, b"stripChars", &[b"a-b_c".to_vec(), b"_-".to_vec()])
+        .unwrap();
+    assert_eq!(out, b"abc");
+    let rest = vm
+        .invoke(
+            None,
+            b"nextToken",
+            &[b"  x y".to_vec(), b"t".to_vec(), b" ".to_vec()],
+        )
+        .unwrap();
+    assert_eq!(
+        (rest.as_slice(), vm.global("$t").as_deref()),
+        (&b"y"[..], Some(&b"x"[..]))
+    );
+}
+
+#[test]
+fn strip_ml_scans_stop_at_the_step_limit() {
+    // Each `<font:` with no `>` scans the rest of the text, 65,000 steps of 4 MiB: the first scan passes the 100,000-step
+    // limit, and the pass stops there instead of making 62 more.
+    let text = format!("{}{}", "<font:".repeat(63), "a".repeat(4 << 20));
+    let mut vm = Vm::new();
+    vm.set_step_limit(Some(100_000));
+    let before = vm.objects.peek_work();
+    assert_eq!(
+        vm.strip_ml_control_chars(text.as_bytes()),
+        Err(VmError::StepLimit)
+    );
+    let work = vm.objects.peek_work() - before;
+    assert!(work < 63 * (4 << 20), "the pass stopped early: {work}");
+}

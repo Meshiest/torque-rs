@@ -18,6 +18,9 @@ categories = ["network-programming", "game-development"]
 net = { path = "../torque-net", package = "torque-net" }
 # The engine's networked-object layer: net strings, transforms, field values and TGE's record codecs.
 ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
+# The scene hierarchy's links and caps, and the matrices its children are drawn with.
+hierarchy = { path = "../torque-hierarchy", package = "torque-hierarchy" }
+collide = { path = "../torque-collide", package = "torque-collide" }
 
 [lints]
 workspace = true

@@ -573,3 +573,57 @@ fn a_state_with_a_recoil_counts_one_on_the_slot() {
         Some(ImageRecoil { kind: 1, count: 1 })
     );
 }
+
+#[test]
+fn looping_state_chains_are_charged_to_the_tick_budget() {
+    // Two states with no timeout that point at each other, on 4,096 ghosts of four slots each.
+    let mut t0 = N;
+    t0[10] = 1;
+    let mut t1 = N;
+    t1[10] = 0;
+    let r = record(&[
+        ("a", t0, 0.0, false, false, 0),
+        ("b", t1, 0.0, false, false, 0),
+    ]);
+    let st = ImageStates::of(&r).unwrap();
+    let f = move |_: u32| Some(st.clone());
+    let mut images = std::collections::BTreeMap::new();
+    for g in 0..4_096u32 {
+        let mut slots: Slots = Default::default();
+        let four = [0, 1, 2, 3].map(|_| Some(sent(70, 0, false)));
+        apply(
+            &TgeImageRules,
+            &mut slots,
+            &mut [0; IMAGE_SLOTS],
+            &four,
+            true,
+            Some(0),
+            &f,
+            &mut u32::MAX.clone(),
+            &mut TickStats::default(),
+            &mut Vec::new(),
+        );
+        images.insert(g, slots);
+    }
+    let mut cursor = 0;
+    for now in [32u32, 64, 96] {
+        let mut budget = TICK_BUDGET;
+        let mut stats = TickStats::default();
+        advance_all(
+            &TgeImageRules,
+            &mut images,
+            &mut cursor,
+            &f,
+            Some(now),
+            &mut budget,
+            &mut stats,
+        );
+        let work = stats.run + stats.chain;
+        // A step's work stays within the budget and one chain past it.
+        assert!(
+            work <= u64::from(TICK_BUDGET + MAX_STATE_CHAIN),
+            "{stats:?}"
+        );
+        assert!(stats.chain > 0, "{stats:?}");
+    }
+}

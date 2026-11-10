@@ -10,8 +10,9 @@
 //! Follows Torque3D's MIT-licensed `console/simManager.cpp` (Copyright (c) 2012 GarageGames, LLC) and
 //! `console/simEvents.cpp` (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 
+use crate::idhash::{IdBuild, IdMap};
 use crate::sim::ObjId;
 
 /// The default for [`EventLimits::pending`]: about 300 bytes an event (plus the arguments, which
@@ -135,13 +136,57 @@ impl Default for EventLimits {
     }
 }
 
+/// The sequence numbers of an object's pending events: most objects keep one timer at a time, which takes no set.
+#[derive(Debug, Clone)]
+enum Seqs {
+    One(u32),
+    Many(HashSet<u32, IdBuild>),
+}
+
+impl Seqs {
+    /// Adds a number (not in it yet).
+    fn insert(&mut self, seq: u32) {
+        match self {
+            Seqs::One(first) => {
+                let mut set = HashSet::with_capacity_and_hasher(4, IdBuild::default());
+                set.insert(*first);
+                set.insert(seq);
+                *self = Seqs::Many(set);
+            }
+            Seqs::Many(set) => {
+                set.insert(seq);
+            }
+        }
+    }
+
+    /// Takes a number out; true when none is left.
+    fn remove(&mut self, seq: u32) -> bool {
+        match self {
+            Seqs::One(first) => *first == seq,
+            Seqs::Many(set) => {
+                set.remove(&seq);
+                set.is_empty()
+            }
+        }
+    }
+
+    fn into_vec(self) -> Vec<u32> {
+        match self {
+            Seqs::One(seq) => vec![seq],
+            Seqs::Many(set) => set.into_iter().collect(),
+        }
+    }
+}
+
 /// The queue and the simulation clock.
 #[derive(Debug, Clone)]
 pub struct EventQueue {
     /// (time, posting order) -> event.
     pending: BTreeMap<(u32, u64), Event>,
-    by_seq: HashMap<u32, (u32, u64)>,
-    by_dest: HashMap<ObjId, HashSet<u32>>,
+    /// Sequence numbers come from the queue's counter, so these maps use the cheap id hasher: a script can only look
+    /// numbers up, never choose the keys that go in.
+    by_seq: IdMap<u32, (u32, u64)>,
+    by_dest: IdMap<ObjId, Seqs>,
     next_seq: u32,
     next_order: u64,
     now: u32,
@@ -162,8 +207,8 @@ impl EventQueue {
     pub fn new() -> EventQueue {
         EventQueue {
             pending: BTreeMap::new(),
-            by_seq: HashMap::new(),
-            by_dest: HashMap::new(),
+            by_seq: IdMap::default(),
+            by_dest: IdMap::default(),
             next_seq: 1,
             next_order: 0,
             now: 0,
@@ -225,7 +270,10 @@ impl EventQueue {
             },
         );
         self.by_seq.insert(seq, key);
-        self.by_dest.entry(dest).or_default().insert(seq);
+        self.by_dest
+            .entry(dest)
+            .and_modify(|seqs| seqs.insert(seq))
+            .or_insert(Seqs::One(seq));
         self.bytes = self.bytes.saturating_add(size);
         Some(seq)
     }
@@ -250,11 +298,10 @@ impl EventQueue {
     }
 
     fn forget_dest(&mut self, dest: ObjId, seq: u32) {
-        if let Some(seqs) = self.by_dest.get_mut(&dest) {
-            seqs.remove(&seq);
-            if seqs.is_empty() {
-                self.by_dest.remove(&dest);
-            }
+        if let Some(seqs) = self.by_dest.get_mut(&dest)
+            && seqs.remove(seq)
+        {
+            self.by_dest.remove(&dest);
         }
     }
 
@@ -315,11 +362,14 @@ impl EventQueue {
         self.drop_dest_seqs(dest).len()
     }
 
-    /// [`drop_dest`](Self::drop_dest), returning the sequence numbers of the events it dropped.
+    /// [`drop_dest`](Self::drop_dest), returning the sequence numbers of the events it dropped, in ascending order
+    /// (so that what is told of them does not depend on how the queue indexes them).
     pub fn drop_dest_seqs(&mut self, dest: ObjId) -> Vec<u32> {
         let Some(seqs) = self.by_dest.remove(&dest) else {
             return Vec::new();
         };
+        let mut seqs = seqs.into_vec();
+        seqs.sort_unstable();
         let mut dropped = Vec::with_capacity(seqs.len());
         for seq in seqs {
             if let Some(event) = self

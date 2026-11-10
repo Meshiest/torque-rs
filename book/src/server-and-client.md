@@ -1,9 +1,9 @@
 # Server and client
 
 torque-rs keeps Torque's client/server split: the server runs the scripts and the simulation and ghosts objects to
-its clients; a client reads its ghosts into a world it draws. The `torque-example` crate puts the engine crates
-together into a small dedicated server and a client that connect over the loopback address. It is meant to be read: each
-piece below is a few dozen lines there.
+its clients; a client reads its ghosts into a world it draws. The `torque-example-minimal` crate
+(`examples/minimal`) puts the engine crates together into a small dedicated server and a client that connect over the
+loopback address. It is meant to be read: each piece below is a few dozen lines there.
 
 ```
 just examples/min-server           # the bundled game on 127.0.0.1:28000; --ticks N stops it after N ticks
@@ -27,7 +27,7 @@ GhostingStarted
   ghost 2 Item datablock 4 at (-3.70, 1.53, 1.50), 9 updates
 ```
 
-The test `crates/torque-example/tests/loopback.rs` runs both in one process for about a second and checks that the
+The test `examples/minimal/tests/loopback.rs` runs both in one process for about a second and checks that the
 mission's StaticShape and Item and the client's own Camera arrive, and that the Item's moves do.
 
 ## The server's parts
@@ -37,6 +37,12 @@ mission's StaticShape and Item and the client's own Camera arrive, and that the 
 classes declared by `torque_game::specs::install`, so `new StaticShape()`, `new Item()` and `datablock ItemData(...)`
 work with their typed fields. The server execs `example/main.cs`, then calls the script function
 `loadExampleMission`, which execs the mission file. The game folder holds only the example's own scripts.
+
+A game folder read into memory (`GameFiles::load`, `add_dir`) holds plain files only: a link anywhere inside it, to a file or
+to a folder, fails the load and the error names the path, so a folder cannot lead the reader outside itself. The folder you
+point it at may itself be a link. On Windows every reparse point counts as a link, not only junctions and symbolic links:
+a folder kept in OneDrive or another cloud-file service (files that are placeholders until downloaded) or on a deduplicated
+volume is refused until its files are local plain files. A file over `files::MAX_FILE_BYTES` fails the load too.
 
 **The socket.** `torque_server::net::transport::UdpTransport` under a `BindPolicy`: a server binds the one address its
 host names, and a public address is refused unless the host allows it. `MemoryTransport` is the in-memory one for tests.

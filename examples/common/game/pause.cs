@@ -205,8 +205,10 @@ PauseMap.bind(keyboard, escape, resumeKey);
 
 // ---- the host's map change
 
-// The maps the server sent (none for anyone but the host of a game with a rotation): $Client::MapChoice0 and on.
+// The maps the server sent (none for anyone but the host of a game with a rotation): $Client::MapChoice0 and on, at most
+// $Client::MaxMapChoices of them (a server's list past it is not kept, nor laid out again for each name).
 $Client::MapCount = 0;
+$Client::MaxMapChoices = 64;
 
 function clientCmdMapChoices(%count)
 {
@@ -215,6 +217,8 @@ function clientCmdMapChoices(%count)
 
 function clientCmdMapChoice(%name)
 {
+   if ($Client::MapCount >= $Client::MaxMapChoices)
+      return;
    $Client::MapChoice[$Client::MapCount] = %name;
    $Client::MapCount++;
    layoutPause();

@@ -476,3 +476,162 @@ fn the_header_size_is_the_decoded_size() {
         None
     );
 }
+
+// Work tied to the file's size
+
+/// A frame header and tables, then `scans` SOS segments with no entropy data, then EOI: the smallest files that ask for a whole image.
+fn dataless(width: u16, height: u16, comps: u8, progressive: bool, scans: usize) -> Vec<u8> {
+    let mut f = vec![0xff, 0xd8, 0xff, 0xdb, 0, 67, 0];
+    f.extend_from_slice(&[1; 64]);
+    f.extend_from_slice(&[0xff, if progressive { 0xc2 } else { 0xc0 }]);
+    f.extend_from_slice(&(8 + 3 * u16::from(comps)).to_be_bytes());
+    f.push(8);
+    f.extend_from_slice(&height.to_be_bytes());
+    f.extend_from_slice(&width.to_be_bytes());
+    f.push(comps);
+    for c in 0..comps {
+        f.extend_from_slice(&[c + 1, 0x11, 0]);
+    }
+    for class in [0x00, 0x10] {
+        f.extend_from_slice(&[0xff, 0xc4, 0, 20, class, 1]);
+        f.extend_from_slice(&[0; 15]);
+        f.push(0);
+    }
+    for i in 0..scans {
+        let (ss, se, ah, al) = match (progressive, i) {
+            (false, _) => (0, 63, 0, 0),
+            (true, 0) => (0, 0, 0, 0),
+            _ => (1, 5, 0, 0),
+        };
+        let in_scan = if progressive && i > 0 { 1 } else { comps };
+        f.extend_from_slice(&[0xff, 0xda]);
+        f.extend_from_slice(&(6 + 2 * u16::from(in_scan)).to_be_bytes());
+        f.push(in_scan);
+        for c in 0..in_scan {
+            f.extend_from_slice(&[c + 1, 0]);
+        }
+        f.extend_from_slice(&[ss, se, (ah << 4) | al]);
+    }
+    f.extend_from_slice(&[0xff, 0xd9]);
+    f
+}
+
+fn is_cap(r: &Result<(Bitmap, Info), JpegError>, what: &str) -> bool {
+    matches!(r, Err(JpegError::Cap { what: w, .. }) if w.starts_with(what))
+}
+
+#[test]
+fn a_frame_header_with_no_data_behind_it_is_refused() {
+    // 150 bytes for 48 MiB of output, 140 bytes for 16 MiB, and 2.7 KB of empty progressive scans for 48 MiB plus 96 MiB of
+    // coefficients: each took 60 to 730 ms and up to 150 MiB before the frame was tied to the file.
+    let baseline3 = dataless(4096, 4096, 3, false, 1);
+    let baseline1 = dataless(4096, 4096, 1, false, 1);
+    let progressive3 = dataless(4096, 4096, 3, true, 256);
+    for (name, f) in [
+        ("baseline 3", &baseline3),
+        ("baseline 1", &baseline1),
+        ("progressive 3", &progressive3),
+    ] {
+        let started = std::time::Instant::now();
+        let r = dec(f);
+        assert!(is_cap(&r, "jpeg samples"), "{name}: {r:?}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(50),
+            "{name} took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(header_size(f), None, "{name}: the header size agrees");
+    }
+    // The same headers over a frame the file's size can pay for still decode (the missing data is grey, as in libjpeg).
+    let ok = dataless(200, 200, 3, true, 12);
+    assert!(dec(&ok).is_ok());
+    assert_eq!(header_size(&ok), Some((200, 200)));
+}
+
+#[test]
+fn scans_with_no_data_stop_at_once() {
+    // A frame the floor pays for, 256 empty scans: each stops at once because the entropy decoder has no data.
+    let f = dataless(256, 256, 1, true, 256);
+    let started = std::time::Instant::now();
+    let (_, info) = dec(&f).unwrap();
+    assert_eq!(info.scans, 256);
+    assert!(started.elapsed() < std::time::Duration::from_millis(200));
+}
+
+/// `f` with a restart interval of `interval` MCUs before the first scan.
+fn with_restart_interval(f: &[u8], interval: u16) -> Vec<u8> {
+    let sos = f.windows(2).position(|w| w == [0xff, 0xda]).unwrap();
+    let mut out = f[..sos].to_vec();
+    out.extend_from_slice(&[0xff, 0xdd, 0, 4]);
+    out.extend_from_slice(&interval.to_be_bytes());
+    out.extend_from_slice(&f[sos..]);
+    out
+}
+
+#[test]
+fn restart_scans_with_no_input_left_stop_at_once() {
+    // 256 scans over a frame the floor pays for, with a restart interval: each scan ends at the next SOS, which no restart marker
+    // follows, so it is a no-op after its first row. Only the floor pays for the visits here, and 256 whole scans would be four
+    // times it.
+    let f = with_restart_interval(&dataless(256, 256, 1, true, 256), 1);
+    let limits = Limits {
+        block_visits_per_byte: 0,
+        ..Limits::default()
+    };
+    let (_, info) = decode_with(&f, &limits).unwrap();
+    assert_eq!(info.scans, 256);
+    assert!(info.restarts);
+}
+
+#[test]
+fn coefficient_memory_follows_the_rows_the_scans_reach() {
+    // No data behind the frame: at most the first block row of the one component.
+    let (_, info) = dec(&dataless(256, 256, 1, false, 1)).unwrap();
+    assert!(info.coefficient_blocks <= 32, "{}", info.coefficient_blocks);
+    let (_, info) = dec(&dataless(200, 200, 3, true, 12)).unwrap();
+    assert!(
+        info.coefficient_blocks <= 3 * 25,
+        "{}",
+        info.coefficient_blocks
+    );
+    // A file that carries its data allocates every block, and the image is whole.
+    let flat = flat(64, 64, &[(1, 1)]).baseline(&[vec![0]]);
+    let (_, info) = dec(&flat).unwrap();
+    assert_eq!(info.coefficient_blocks, 64);
+}
+
+/// A flat image (every coefficient 0): the smallest honest file for its size.
+fn flat(width: usize, height: usize, samp: &[(u8, u8)]) -> Enc {
+    let mut e = Enc::random(width, height, samp, 5);
+    for c in &mut e.comps {
+        c.blocks.fill([0; 64]);
+    }
+    e
+}
+
+#[test]
+fn an_honest_large_flat_progressive_file_decodes() {
+    let e = flat(4096, 4096, &[(2, 2), (1, 1), (1, 1)]);
+    let f = e.progressive(&full_script(3));
+    let (b, info) = dec(&f).unwrap();
+    assert_eq!((b.width, b.height), (4096, 4096));
+    assert_eq!(info.warnings, 0);
+    assert_eq!(header_size(&f), Some((4096, 4096)));
+}
+
+#[test]
+fn the_scans_together_may_visit_only_a_bounded_number_of_blocks() {
+    let e = flat(256, 256, &[(1, 1), (1, 1), (1, 1)]);
+    let once = e.progressive(&full_script(3));
+    let script: Vec<_> = (0..12).flat_map(|_| full_script(3)).collect();
+    let many = e.progressive(&script);
+    // No allowance per byte: only the per-block allowance and the floor pay.
+    let limits = Limits {
+        block_visits_per_byte: 0,
+        ..Limits::default()
+    };
+    assert!(decode_with(&once, &limits).is_ok());
+    assert!(is_cap(&decode_with(&many, &limits), "jpeg block visits"));
+    // With the default allowance per byte the repeated file's own bytes pay for its scans.
+    assert!(decode_with(&many, &Limits::default()).is_ok());
+}

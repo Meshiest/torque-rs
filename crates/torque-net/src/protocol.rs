@@ -70,6 +70,9 @@ impl PacketType {
     }
 }
 
+/// The bytes a burst fills a packet to (under the 1,500-byte datagram bound with room for the packet's header).
+pub const BURST_PACKET_BYTES: u32 = 1_200;
+
 /// Which end of the connection this is: it picks the rates and the send gate's delay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -266,6 +269,20 @@ pub struct Received {
 }
 
 impl Received {
+    /// A new data packet numbered `seq`, its payload read from a reader the caller holds, no acks of its own: what a layer
+    /// above sees of a packet whose framing is not TGE's (engine mode's lanes).
+    #[must_use]
+    pub fn payload(seq: u32) -> Received {
+        Received {
+            dropped: None,
+            ptype: Some(PacketType::Data),
+            seq,
+            notifies: Vec::new(),
+            payload: true,
+            answer_ping: false,
+        }
+    }
+
     fn dropped(why: Dropped) -> Received {
         Received {
             dropped: Some(why),
@@ -324,8 +341,12 @@ pub struct Protocol {
     local: bool,
     /// The size the sections fill a packet to, in place of the current rate's ([`Protocol::set_packet_bytes`]).
     packet_bytes: Option<u32>,
+    /// The connection is sending bulk data and nothing else matters to it ([`Protocol::set_burst`]).
+    burst: bool,
     /// The packets never leave memory ([`Protocol::set_in_memory`]).
     in_memory: bool,
+    /// The room an engine-mode session gives the payload of its next packet ([`Protocol::set_engine_packet`]).
+    engine_bytes: Option<u32>,
     /// When the last data packet was built; a new connection starts at 0, so its first packet waits one delay.
     last_send_time: u32,
     credit: i64,
@@ -371,7 +392,9 @@ impl Protocol {
             to_server_delay: 1024 / rates.to_server_rate.max(1),
             local: false,
             packet_bytes: None,
+            burst: false,
             in_memory: false,
+            engine_bytes: None,
             last_send_time: 0,
             credit: 0,
             pacing: None,
@@ -462,6 +485,12 @@ impl Protocol {
     /// `bufferSize * 8` for the current rate: what the event section's loops test against (`SectionParams::packet_bits`). The
     /// packet stream itself takes 12,000 bits whatever the rate, see [`Protocol::begin_data_packet`].
     pub fn packet_limit_bits(&self) -> usize {
+        if let Some(bytes) = self.engine_bytes {
+            return bytes as usize * 8;
+        }
+        if self.burst {
+            return self.packet_bytes_cap(BURST_PACKET_BYTES) as usize * 8;
+        }
         match self.packet_bytes {
             Some(bytes) => self.packet_bytes_cap(bytes) as usize * 8,
             None => self.cur.size.min(MAX_PACKET_BYTES) as usize * 8,
@@ -501,6 +530,33 @@ impl Protocol {
     /// ([`crate::profile::HandshakeExtension::packet_bytes`]); a standard receiver reads a packet of up to its 1,500-byte buffer.
     pub fn set_packet_bytes(&mut self, bytes: Option<u32>) {
         self.packet_bytes = bytes;
+    }
+
+    /// For a connection whose packets ride an engine-mode session: the payload about to be written is that of the session's
+    /// packet `seq` (widened to 32 bits and in send order, as the layers above key what they wrote by it) with `bytes` of room,
+    /// whatever the rates say. The session's own sequence numbers and acks replace this layer's header, so nothing else here is
+    /// used for such a connection.
+    pub fn set_engine_packet(&mut self, seq: u32, bytes: usize) {
+        self.last_send_seq = seq;
+        self.engine_bytes = Some(u32::try_from(bytes).unwrap_or(u32::MAX));
+    }
+
+    /// For a connection whose packets ride an engine-mode session: the session's round trip, which [`Protocol::round_trip`]
+    /// then answers.
+    pub fn set_round_trip(&mut self, ms: f32) {
+        self.round_trip = ms;
+    }
+
+    /// Whether the connection is in a burst ([`Protocol::set_burst`]).
+    pub fn is_burst(&self) -> bool {
+        self.burst
+    }
+
+    /// A server's connection in a burst sends packets as often as a server may (every tick) and fills them to
+    /// [`BURST_PACKET_BYTES`], whatever rate the client asked for: for the moments a connection has bulk data to move and no
+    /// events or ghosts yet. Off, it is as the rate says again. A client's connection ignores it.
+    pub fn set_burst(&mut self, on: bool) {
+        self.burst = on && self.role == Role::Server;
     }
 
     /// Sets the current rate from the peer's request, bounded by this side's own maximum.
@@ -617,6 +673,7 @@ impl Protocol {
     pub fn may_send(&mut self, now: u32, force: bool) -> bool {
         let mut delay = match self.role {
             Role::Client => self.to_server_delay,
+            Role::Server if self.burst => self.min_delay,
             Role::Server => self.cur.delay,
         };
         let mut force = force;

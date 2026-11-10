@@ -21,7 +21,7 @@
 //! The [`IMPORTER`] reads as TGE does; a [`Legacy`] with other settings reads the `.dif` layout with the border word
 //! ([`dif::parse_with_border_pad`]) or takes another set of special materials.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use torque_mapcore::collision::{
     ConvexSet, Heightfield, HeightfieldPlacement, HullRange, Layer, Plane, PlaneRef, Split,
@@ -128,13 +128,15 @@ impl Importer for Legacy {
             // Every interior's materials (detail levels and sub-objects), each once, but the special ones.
             FileKind::Model => {
                 let d = self.dif(bytes).map_err(error)?;
+                // A set of the folded names beside the list keeps the pass linear in the names a file can hold (millions).
+                let mut seen: HashSet<String> = HashSet::new();
                 let mut out: Vec<String> = Vec::new();
                 for interior in d.details.iter().chain(d.sub_objects.iter()) {
                     for m in &interior.materials {
                         if m.is_empty() || (self.special)(m) {
                             continue;
                         }
-                        if !out.iter().any(|o| o.eq_ignore_ascii_case(m)) {
+                        if seen.insert(m.to_ascii_lowercase()) {
                             out.push(m.clone());
                         }
                     }

@@ -8,8 +8,10 @@
 //! `game/player.h`, `game/item.h`, `game/camera.h` and `game/staticShape.h` (each Copyright (C) GarageGames.com, Inc.);
 //! Torque3D's enums differ. A Player control object's packet data ([`player_packet_data`]) follows TGE 1.4's
 //! `Player::writePacketData` in `game/player.cc` (Copyright (C) GarageGames.com, Inc.), whose MIT-licensed successor is
-//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is
-//! this crate's own.
+//! Torque3D's `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The StaticShape
+//! mark of [`TorqueCodecs::transform_mask`] follows `StaticShape::setTransform` in TGE 1.4's `game/staticShape.cc` (Copyright (C)
+//! GarageGames.com, Inc.) and Torque3D's `T3D/staticShape.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust
+//! Logic, Inc.). The code here is this crate's own.
 
 use std::any::Any;
 use std::fmt::Debug;
@@ -25,10 +27,13 @@ use torque_ghosts::datablocks::{
     DatablockCodecSet, ScriptField, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
 use torque_ghosts::light::ENGINE_OBJECT_CLASSES;
+use torque_ghosts::plugin::{PluginClass, PluginClasses, Record};
 use torque_ghosts::set::GhostCodecSet;
-use torque_ghosts::tails::{PlayerTail, PlayerTailMotion, ShapeTail, TailData, WheeledTail};
+use torque_ghosts::tails::{
+    PlayerTail, PlayerTailMotion, ShapeTail, TailData, TailFrame, WheeledTail,
+};
 use torque_ghosts::tge::{TGE_DATABLOCK_CLASSES, TgeClass, TgeGhosts, tge_reps};
-use torque_ghosts::{ObjectView, Value};
+use torque_ghosts::{ObjectView, PackCtx, Value};
 use torque_net::bits::BitWriter;
 use torque_net::classes::{Direction, Kind, NetClasses};
 use torque_net::control::{ControlData, ControlObject, ControlState, Damage};
@@ -44,7 +49,9 @@ use torque_sim::player::PlayerState;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
+use super::blocks::ControlFrame;
 use super::datablock::{DatablockRecord, DatablockView, DbPackError, DbValue};
+use super::peer::PeerKind;
 
 use super::transport::LanRules;
 
@@ -145,8 +152,14 @@ pub trait NetCodecs: Debug {
     /// The ghostable class of an object of class `name` (none: the object is not ghosted). By default TGE 1.4's classes that
     /// `torque_ghosts`' TGE set has a record codec for (and the engine's own, `torque_ghosts::light`'s, past the table's ids), each numbered by its place in [`TgeClass::ALL`] and with the net flags its
     /// constructor chain sets ([`TgeClass::net_flags`]: a `Camera` is registered but not Ghostable).
+    ///
+    /// A plugin's class ([`plugin_classes`](Self::plugin_classes)) takes its id past those, from
+    /// [`plugin_ghost_base`](Self::plugin_ghost_base) in its set's order, numbered [`PluginClasses::ghost_code`]; one whose id
+    /// does not fit the class id width is not ghosted.
     fn ghost_class(&self, name: &str) -> Option<GhostClassInfo> {
-        let class = TgeGhosts::class_by_name(name)?;
+        let Some(class) = TgeGhosts::class_by_name(name) else {
+            return self.plugin_ghost_class(name);
+        };
         let classes = self.object_classes();
         // The engine's own classes: the ids past the table's, in order (a connection's source shows them to engine peers only).
         let class_id = match ENGINE_OBJECT_CLASSES
@@ -165,6 +178,37 @@ pub trait NetCodecs: Debug {
             flags: class.net_flags(),
             sky: class == TgeClass::Sky,
         })
+    }
+
+    /// The ghostable class of an object of the plugin class `name` ([`ghost_class`](Self::ghost_class)'s plugin half).
+    fn plugin_ghost_class(&self, name: &str) -> Option<GhostClassInfo> {
+        let plugins = self.plugin_classes()?;
+        let class = plugins.ghost(name)?;
+        let class_id = plugins.id_of(Kind::Object, name, self.plugin_ghost_base())?;
+        (u64::from(class_id) < 1u64 << self.ghost_class_bits()).then_some(())?;
+        Some(GhostClassInfo {
+            code: plugins.ghost_code(name)?,
+            class_id,
+            flags: class.net_flags(),
+            sky: false,
+        })
+    }
+
+    /// The plugins' ghost and datablock classes the codecs send (none by default; the engine's own codecs have the engine's,
+    /// [`EngineCodecs`]). A game's own codecs that carry them answer the set its script engine was given
+    /// ([`plugin_classes`](fn@plugin_classes)).
+    fn plugin_classes(&self) -> Option<&PluginClasses> {
+        None
+    }
+
+    /// The first object class id of the plugins' ghost classes: past the class table's objects and the engine's own classes.
+    fn plugin_ghost_base(&self) -> u32 {
+        PluginClasses::ghost_base(self.object_classes().count(Kind::Object))
+    }
+
+    /// The first datablock class id of the plugins' datablock classes: past the class table's datablocks.
+    fn plugin_datablock_base(&self) -> u32 {
+        PluginClasses::datablock_base(self.datablock_classes().len())
     }
 
     /// The dirty bits a class's own `setTransform` marks (0: the base `SceneObject::setTransform`, which marks nothing).
@@ -224,14 +268,18 @@ pub trait NetCodecs: Debug {
     }
 
     /// The networked datablock class of an object of class `name` as the class table names it (none: the object is not sent).
-    /// By default TGE 1.4's classes with a record codec in `torque_ghosts`' [`TgeDatablocks`].
+    /// By default TGE 1.4's classes with a record codec in `torque_ghosts`' [`TgeDatablocks`], then the plugins' datablock
+    /// classes ([`plugin_classes`](Self::plugin_classes)).
     fn datablock_class(&self, name: &str) -> Option<&'static str> {
-        TgeDatablocks::class_by_name(name).map(TgeDatablockClass::name)
+        TgeDatablocks::class_by_name(name)
+            .map(TgeDatablockClass::name)
+            .or_else(|| Some(self.plugin_classes()?.datablock(name)?.name()))
     }
 
     /// The record of datablock `id` of `class` (its `packData`) written from the host's view of it; `values` are the
     /// datablocks' computed values. None: the class has no writer, and the event goes out as the one 0 bit. By default the
-    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]).
+    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]); a plugin's class's record
+    /// ([`PluginDbRecord`]) with its class id past the table's.
     fn datablock_record(
         &self,
         class: &str,
@@ -240,11 +288,22 @@ pub trait NetCodecs: Debug {
         values: &DbValues,
     ) -> Option<Rc<dyn DatablockRecord>> {
         let _ = (id, values);
-        let class = TgeDatablocks::class_by_name(class)?;
         let widths = NetWidths::new(
             self.ghost_id_bits(self.start_ghost_limit()),
             self.datablock_id_bits(),
         );
+        let Some(class) = TgeDatablocks::class_by_name(class) else {
+            let plugins = self.plugin_classes()?;
+            let plugin = plugins.datablock(class)?;
+            let class_id = plugins.id_of(Kind::DataBlock, class, self.plugin_datablock_base())?;
+            let (record, _) = plugin.pack(&PluginDbView(view), !0, &PackCtx::new(widths));
+            return Some(Rc::new(PluginDbRecord {
+                class: plugin,
+                class_id,
+                record,
+                widths,
+            }));
+        };
         let record = TgeDatablocks::pack(class, &TgeView { class, view }, widths);
         Some(Rc::new(TgeDbRecord { record, widths }))
     }
@@ -267,7 +326,9 @@ pub trait NetCodecs: Debug {
     }
 
     /// The prefix of the function a received command of `variant` calls (`on_server`: a client's command on a server
-    /// connection).
+    /// connection). On a server `variant` is whatever byte the client sent (in the engine's protocol it is a field of the command's
+    /// body, not a class id the event reader checked), so it is untrusted: an implementation answers for any value and never
+    /// indexes with it.
     fn command_prefix(&self, variant: u8, on_server: bool) -> &'static [u8] {
         let _ = variant;
         torque_net::remote::function_prefix(on_server)
@@ -383,6 +444,19 @@ pub trait NetCodecs: Debug {
         None
     }
 
+    /// [`NetCodecs::control_object`] for a connection whose peer is `peer`: the head of a peer that reads the engine's own
+    /// additions (a control object's frame) may carry them. The default ignores the peer.
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        let _ = peer;
+        self.control_object(vm, obj, ghost_index)
+    }
+
     /// How many objects the control object's chain (an object a control object controls in turn) may hold.
     fn control_chain(&self) -> usize {
         1
@@ -399,9 +473,53 @@ pub const DATABLOCKS_DONE: u8 = 6;
 /// Torque's `DataBlocksDownloadDone`.
 pub const DATABLOCKS_DOWNLOAD_DONE: u8 = 7;
 
+/// StaticShape's `PositionMask` as the simulation numbers it (the first bit past ShapeBase's, which [`NetCodecs::sim_mask`]
+/// moves up with the rest).
+const STATIC_POSITION: u32 = 0x0100_0000;
+
 /// Torque's codecs.
 #[derive(Debug, Default)]
 pub struct TorqueCodecs;
+
+/// Torque's codecs with the plugins' ghost and datablock classes ([`NetCodecs::plugin_classes`]): what [`net_codecs`] gives a
+/// script engine whose engine has plugin net classes (the set its extension) and no game's own codecs.
+#[derive(Debug, Default)]
+pub struct EngineCodecs {
+    pub plugins: Rc<PluginClasses>,
+}
+
+impl NetCodecs for EngineCodecs {
+    fn plugin_classes(&self) -> Option<&PluginClasses> {
+        Some(&self.plugins)
+    }
+
+    fn transform_mask(&self, code: u16) -> u32 {
+        TorqueCodecs.transform_mask(code)
+    }
+
+    fn sim_mask(&self, code: u16, bits: u32) -> u32 {
+        TorqueCodecs.sim_mask(code, bits)
+    }
+
+    fn control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        TorqueCodecs.control_object(vm, obj, ghost_index)
+    }
+
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
+        TorqueCodecs.peer_control_object(vm, obj, ghost_index, peer)
+    }
+}
 
 /// A record of [`TgeDatablocks`] as the host carries it, with the widths it was packed in. Its render is charged as one entry.
 #[derive(Debug)]
@@ -425,6 +543,58 @@ impl DatablockRecord for TgeDbRecord {
     }
 }
 
+/// A record of a plugin's datablock class as the host carries it: its class id past the table's, and the widths it was
+/// packed in. Its render is charged as one entry per script field.
+#[derive(Debug)]
+pub struct PluginDbRecord {
+    pub class: PluginClass,
+    pub class_id: u32,
+    pub record: Box<dyn Record>,
+    pub widths: NetWidths,
+}
+
+impl DatablockRecord for PluginDbRecord {
+    fn encode(&self, w: &mut BitWriter, table: &Table) -> Result<(), DbPackError> {
+        self.record
+            .encode(w, table, self.widths)
+            .map_err(|_| DbPackError::Malformed("a plugin's datablock record"))
+    }
+
+    fn entries(&self) -> usize {
+        self.record.record_fields().len().max(1)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn class_id(&self) -> Option<u32> {
+        Some(self.class_id)
+    }
+}
+
+/// The host's view of a plugin's datablock: each field by its own name.
+struct PluginDbView<'a>(&'a dyn DatablockView);
+
+impl ObjectView for PluginDbView<'_> {
+    fn get(&self, member: &str, index: usize) -> Value {
+        db_value(self.0.get(member, index))
+    }
+}
+
+/// A host's datablock value as a packer reads it.
+fn db_value(value: DbValue) -> Value {
+    match value {
+        DbValue::Null => Value::Null,
+        DbValue::Bool(b) => Value::Bool(b),
+        DbValue::Int(i) => Value::Int(i),
+        DbValue::F32(f) => Value::F32(f),
+        DbValue::Str(s) => Value::Str(s),
+        DbValue::Id(id) => Value::Id(id),
+        DbValue::Xform(a) => Value::xform(a.as_ref()),
+    }
+}
+
 /// The host's view of a datablock (by script field) as `torque_ghosts`' packers read it (by member,
 /// [`TgeDatablockClass::script_field`]).
 struct TgeView<'a> {
@@ -434,24 +604,23 @@ struct TgeView<'a> {
 
 impl ObjectView for TgeView<'_> {
     fn get(&self, member: &str, index: usize) -> Value {
-        let value = match self.class.script_field(member, index) {
+        db_value(match self.class.script_field(member, index) {
             ScriptField::Own => self.view.get(member, index),
             ScriptField::Field(field, index) => self.view.get(field, index),
             ScriptField::Absent => DbValue::Null,
-        };
-        match value {
-            DbValue::Null => Value::Null,
-            DbValue::Bool(b) => Value::Bool(b),
-            DbValue::Int(i) => Value::Int(i),
-            DbValue::F32(f) => Value::F32(f),
-            DbValue::Str(s) => Value::Str(s),
-            DbValue::Id(id) => Value::Id(id),
-            DbValue::Xform(a) => Value::xform(a.as_ref()),
-        }
+        })
     }
 }
 
 impl NetCodecs for TorqueCodecs {
+    /// `StaticShape::setTransform` marks `PositionMask`; the other classes' own `setTransform` is handled where it runs.
+    fn transform_mask(&self, code: u16) -> u32 {
+        match TgeClass::of_code(code) {
+            Some(TgeClass::StaticShape | TgeClass::ScopeAlwaysShape) => STATIC_POSITION,
+            _ => 0,
+        }
+    }
+
     /// The game classes number a ShapeBase's bits from bit 4 (`setShapeName` marks 0x10, the damage 0x20, a mount 0x80,
     /// the fade 0x100, the sounds, threads and images from 0x1000, 0x10000 and 0x10_0000; a Player's, an Item's and a
     /// Camera's own bits from 24). TGE 1.4's records put each one bit higher, past GameBase's `ControlMask` (bit 4):
@@ -497,18 +666,30 @@ impl NetCodecs for TorqueCodecs {
     }
 
     /// A simulated Player as TGE's head writes it: its ghost index, its damage flash and white-out, and `Player::writePacketData`
-    /// ([`player_packet_data`]); any other object writes no control section.
+    /// ([`player_packet_data`]); any other object writes no control section. No frame: Torque's peer's head.
     fn control_object<'a>(
         &self,
         vm: &'a Vm,
         obj: ObjId,
         ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
     ) -> Option<Box<dyn ControlObject + 'a>> {
+        self.peer_control_object(vm, obj, ghost_index, PeerKind::Tge)
+    }
+
+    /// [`TorqueCodecs::control_object`]; a peer that is sent the per-ghost block also gets the Player's frame.
+    fn peer_control_object<'a>(
+        &self,
+        vm: &'a Vm,
+        obj: ObjId,
+        ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+        peer: PeerKind,
+    ) -> Option<Box<dyn ControlObject + 'a>> {
         torque_game::sim::player::state(vm, obj)?;
         Some(Box::new(PlayerControl {
             vm,
             obj,
             ghost_index,
+            frames: peer.sees_engine_classes(),
         }))
     }
 }
@@ -518,6 +699,8 @@ struct PlayerControl<'a> {
     vm: &'a Vm,
     obj: ObjId,
     ghost_index: &'a dyn Fn(ObjId) -> Option<u32>,
+    /// The peer reads the per-ghost block, so its packet data ends with a frame when the server fills the block's links.
+    frames: bool,
 }
 
 impl ControlObject for PlayerControl<'_> {
@@ -550,6 +733,7 @@ impl ControlObject for PlayerControl<'_> {
                 },
                 controlled: true,
                 ghost_of: None,
+                connection: None,
             };
             Box::new(TgePacketData::new(TailData::Wheeled(WheeledTail::pack(
                 &view,
@@ -557,7 +741,42 @@ impl ControlObject for PlayerControl<'_> {
         });
         let mut data = TgePacketData::new(TailData::Player(tail));
         data.nested = nested;
+        // In the engine's own protocol with the scene hierarchy, the data ends with its frame: a Player hung on a parent the
+        // connection holds sends its local pose, so its client predicts it on the parent wherever the parent went.
+        if let Some(blocks) = self
+            .frames
+            .then(|| super::blocks::of(self.vm))
+            .flatten()
+            .filter(|b| b.sections().links)
+        {
+            data.frame = match blocks.control_frame(self.vm, self.obj, self.ghost_index) {
+                Some(frame) => in_frame(&mut data.data, &frame),
+                None => TailFrame::World,
+            };
+        }
         Box::new(data)
+    }
+}
+
+/// A Player's packet data in its parent's frame: its local translation, its velocity turned into the frame and its yaw
+/// there, and the frame that says so. The position the matching head sends stays the world's.
+///
+/// Only a Player that sends its position is sent in a frame (a mounted one sends none): any other data stays the world's.
+fn in_frame(data: &mut TailData, frame: &ControlFrame) -> TailFrame {
+    let TailData::Player(tail) = data else {
+        return TailFrame::World;
+    };
+    let Some(motion) = tail.motion.as_mut() else {
+        return TailFrame::World;
+    };
+    motion.position = frame.translation.map(F32::new);
+    let velocity = motion.velocity.map(F32::get);
+    motion.velocity =
+        torque_game::scene::links::into_frame(&frame.attachment, velocity).map(F32::new);
+    tail.rotation_z = F32::new(frame.yaw);
+    TailFrame::Parent {
+        ghost: frame.ghost,
+        node: frame.node,
     }
 }
 
@@ -590,12 +809,21 @@ pub fn set_net_codecs(vm: &mut Vm, codecs: Rc<dyn NetCodecs>) {
     vm.set_extension(Rc::new(Installed(codecs)));
 }
 
-/// The codecs `vm`'s game installed, else Torque's.
+/// The codecs `vm`'s game installed, else Torque's: with the plugins' net classes ([`EngineCodecs`]) when the script engine
+/// has a set of them ([`plugin_classes`]).
 pub fn net_codecs(vm: &Vm) -> Rc<dyn NetCodecs> {
-    vm.extension::<Installed>().map_or_else(
-        || Rc::new(TorqueCodecs) as Rc<dyn NetCodecs>,
-        |i| Rc::clone(&i.0),
-    )
+    if let Some(installed) = vm.extension::<Installed>() {
+        return Rc::clone(&installed.0);
+    }
+    match plugin_classes(vm).filter(|p| !p.is_empty()) {
+        Some(plugins) => Rc::new(EngineCodecs { plugins }),
+        None => Rc::new(TorqueCodecs),
+    }
+}
+
+/// The plugins' ghost and datablock classes of `vm` (its extension; an engine's plugins give every script engine theirs).
+pub fn plugin_classes(vm: &Vm) -> Option<Rc<PluginClasses>> {
+    vm.extension::<PluginClasses>()
 }
 
 impl LanRules {
@@ -654,5 +882,40 @@ mod tests {
         assert!(c.lan_rules().is_lan("192.168.1.2".parse().unwrap(), false));
         assert!(!c.lan_rules().is_lan("25.1.2.3".parse().unwrap(), false));
         assert!(c.lan_rules().is_lan("8.8.8.8".parse().unwrap(), true));
+    }
+
+    /// A mounted Player sends no position, so its data stays the world's and its client writes the same; a free one is sent
+    /// in its parent's frame.
+    #[test]
+    fn only_a_player_that_sends_its_position_is_sent_in_a_frame() {
+        let frame = ControlFrame {
+            ghost: 3,
+            node: Some(1),
+            attachment: torque_collide::math::IDENTITY,
+            translation: [1.0, 2.0, 3.0],
+            yaw: 0.5,
+        };
+        let mut mounted = TailData::Player(PlayerTail::default());
+        assert_eq!(in_frame(&mut mounted, &frame), TailFrame::World);
+        assert_eq!(mounted, TailData::Player(PlayerTail::default()));
+        let mut free = TailData::Player(PlayerTail {
+            motion: Some(PlayerTailMotion::default()),
+            ..PlayerTail::default()
+        });
+        assert_eq!(
+            in_frame(&mut free, &frame),
+            TailFrame::Parent {
+                ghost: 3,
+                node: Some(1)
+            }
+        );
+        let TailData::Player(tail) = free else {
+            panic!("built as a Player's")
+        };
+        assert_eq!(
+            tail.motion.map(|m| m.position.map(F32::get)),
+            Some([1.0, 2.0, 3.0])
+        );
+        assert_eq!(tail.rotation_z.get(), 0.5);
     }
 }

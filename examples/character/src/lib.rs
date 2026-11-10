@@ -6,7 +6,7 @@
 //! - [`game`]: the client host (the canvas, the action map, the clock), the figure and the camera, and a frame for the world view.
 //! - [`shots`]: the example without a window, drawn offscreen: pictures of its states for checking by eye.
 //!
-//! The window is the engine's ([`torque::app::window::run`]).
+//! [`game::CharacterPlugin`] is the example's part of the engine; the window is the engine's runner's.
 
 pub mod game;
 pub mod motion;

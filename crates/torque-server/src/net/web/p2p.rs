@@ -529,6 +529,11 @@ impl Transport for P2pHost {
         self.side.as_ref().and_then(RtcSide::local_addr)
     }
 
+    /// Every link is a data channel (ICE, DTLS, SCTP).
+    fn link_kind(&self, _peer: SocketAddr) -> torque_net::engine::LinkKind {
+        torque_net::engine::LinkKind::WEB_RTC
+    }
+
     fn is_real(&self) -> bool {
         true
     }

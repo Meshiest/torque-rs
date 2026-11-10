@@ -23,7 +23,7 @@ installs wasm-bindgen's command line into the target folder.
 </tr>
 </table>
 
-Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts.
+Also: [the minimal server and client](#the-minimal-server-and-client), a dedicated server and a console client that prints its ghosts; [the mods demo](#the-mods-demo), a Lua game mode shipped as a mod that the server requires.
 
 ## The level demo
 
@@ -33,11 +33,15 @@ Also: [the minimal server and client](#the-minimal-server-and-client), a dedicat
 A single-player game: pick a map from the menu, then walk and jump around it as the box figure. The server and the
 client run in one process and talk over an in-memory link, so the full network path runs without a socket. The maps are
 TorqueScript mission files (`level-demo/game/missions/`). The plaza, the maze, the ramps and the towers are built of cubes.
-The office is a Blockbench model (`game/levels/office.bbmodel`) built into interiors when the game starts, with glass and
-ceiling lights. The valley is a terrain with a lake (below).
+The office is a Blockbench model (`game/levels/office.bbmodel`) built when the game starts: the building into interiors,
+with glass and ceiling lights, and every chair, desk, table, sofa, cabinet, plant and desk item into a prop
+(`torque-plugin-props`) that the figure pushes when it walks into it, and a left click picks up a light one (a chair, a
+plant, a monitor) and carries it, arm held out; a second click drops it. The demo speaks the engine's own network protocol,
+which carries the props. The valley is a terrain with a lake (below).
 
 **Controls:** 1 to 9 pick a map on the menu; W A S D walk, Shift sprint, Ctrl hold to crouch, C crouch or stand, Z lie down or get up (Space or C gets up), Space
-jump, mouse look, Tab first or third person (the camera eases between them), R restart, Esc back to the menu.
+jump, mouse look, left click pick up or drop a prop (the office), Tab first or third person (the camera eases between them), R
+restart, Esc back to the menu.
 
 **Run it:**
 
@@ -48,10 +52,20 @@ jump, mouse look, Tab first or third person (the camera eases between them), R r
 | Web, files inside the module | `just examples/web-level-demo-embedded` | `node web/build.mjs level-demo --embed` |
 | Web, online | [the gallery](https://reheatedcake.io/torque-rs/): the plaza, the office and the valley | `just site` |
 | Pictures | `just examples/level-demo-shots`, `just examples/level-demo-valley-shots` | `cargo run -p torque-example-level-demo --release -- --shots <dir>` |
+| With a rope across the plaza (`torque-plugin-rope`) | `just examples/level-demo-rope-shots` (pictures) | `cargo run -p torque-example-level-demo --release --features rope` |
+| The office's prop catalog (a server-sent menu; native only) | `just examples/level-catalog` (plays it headless), `just examples/level-catalog-shots` (pictures), `just examples/level-catalog-test` | `cargo run -p torque-example-level-demo --release --example level-catalog` |
 
 **Shows:** a server and a client in one process; missions loaded from TorqueScript; the client's prediction against cubes,
-interiors and terrain; interiors built from a Blockbench model (nearest-sampled textures, see-through glass); spot lights
-with shadows; the camera blend; the web build with its files fetched by a list and kept in the browser's cache.
+interiors and terrain; interiors and props built from a Blockbench model (nearest-sampled textures, see-through glass,
+furniture the figure pushes, predicted on the client); spot lights with shadows; the camera blend; the web build with its
+files fetched by a list and kept in the browser's cache.
+
+**The prop catalog** (`level-demo/catalog/`, `src/catalog.rs`): the office's server requires a mod of its clients, a menu of the office's
+props with a picture and a Spawn button each, and a field for an optional label. A client downloads the mod (the Lua and the pictures)
+with the mods' download, asks its player before anything of it runs, and the menu sends what the player does back to the server, whose
+own script checks it (a known kind, a label, a cap, a rate limit, `propCheckPlacement`) and spawns the prop with `propSpawn`, owned by the
+player. The pictures are drawn from the props' own shapes (`just examples/level-catalog-icons`). It needs the realm guest (`just lua-client-web`; `WASI_SDK_PATH` names the WASI SDK) and is not in the window or the web build.
+The [server scripts chapter](../book/src/server-scripts.md) walks through it.
 
 ### The valley
 
@@ -116,6 +130,7 @@ camera, wheel zooms, F headlight, Tab the driver's eyes, E get out;
 |---|---|---|
 | Native (play alone, host or join from its menu) | `just examples/vehicle-demo` | `cargo run -p torque-example-vehicle-demo --release` |
 | At once | `just examples/vehicle-demo --solo` (or `--host`, `--join <address>`) | `... --release -- --solo` |
+| With a gamepad | | `cargo run -p torque-example-vehicle-demo --release --features gamepad -- --gamepad` |
 | Web (played alone) | `just examples/web-vehicle-demo` (serves it on http://127.0.0.1:8080/) | `node web/build.mjs vehicle-demo` |
 | Web, online (played alone, or with friends by invite link) | [the gallery](https://reheatedcake.io/torque-rs/) | `just site` |
 | Pictures | `just examples/vehicle-demo-shots`, `vehicle-demo-track-shots`, `vehicle-demo-cloud-shots` | `... --release -- --shots <dir>` |
@@ -157,8 +172,19 @@ the legacy terrain format.
 ## The minimal server and client
 
 A dedicated server of the bundled game and a client that connects to it and prints the ghosts it is sent, both in the
-console. `just examples/min-server` (`cargo run -p torque-example --bin min-server`) and `just examples/min-client`
-(`cargo run -p torque-example --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
+console. `just examples/min-server` (`cargo run -p torque-example-minimal --bin min-server`) and `just examples/min-client`
+(`cargo run -p torque-example-minimal --bin min-client`); `just examples/headless` runs the umbrella crate's headless examples.
+`just bundle examples/minimal --server --archive` packages the server alone (it links no drawing, window or audio crate) as a zip
+or a gzipped tar.
+
+## The mods demo
+
+A round of collect-the-orbs written in Lua and shipped as a mod the server requires, run headless: a server and two clients over
+the memory transport. A client that joins downloads the mod's content (shapes, pictures and a sound, made from code) through the
+pull transfer, mounts it and then enters; the mod's Lua runs only on the server and the rope plugin's networked ropes show who
+chases which orb. A second mod requires the first (load order); a third is switched off by the prefs and never mounts.
+`just examples/mods-demo` plays it, `just examples/mods-demo-shots` draws it, `just examples/mods-demo-test` checks it. The
+details are in [`mods-demo/README.md`](mods-demo/README.md).
 
 ## The pictures
 

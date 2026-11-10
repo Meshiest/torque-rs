@@ -20,7 +20,6 @@
 //! `call_native`, `add_object`) is multiplied by the call depth: a borrow of the state is a local of the frame
 //! that takes it, so those frames take none and leave every state access to out-of-line helpers.
 
-use std::any::Any;
 use std::cell::{RefCell, RefMut};
 use std::rc::Rc;
 
@@ -33,7 +32,8 @@ use torque_ts_bytecode::classic::{ClassicDialect, Op, OpcodeTable};
 
 use crate::code::{CodeBlock, DsoFormat};
 use crate::exec::{
-    Executor, RunMode as Mode, ScriptCall, argc_ok, fetch, native_call, script_name, script_target,
+    Executor, RunMark, RunMode as Mode, ScriptCall, argc_ok, fetch, native_call, script_name,
+    script_target,
 };
 use crate::ns::{Callable, EntryRef};
 use crate::sim::{MAX_FIELD_NAME, ObjId};
@@ -147,6 +147,10 @@ struct ClassicState {
     cur_var: Option<VarRef>,
     /// The folded name of the current variable (kept between selections, so a selection copies no name).
     cur_key: Vec<u8>,
+    /// The current variables of the runs started from Rust that are still open (`Executor::save`), each with where
+    /// its key starts in `saved_keys`.
+    saved_vars: Vec<(Option<VarRef>, usize)>,
+    saved_keys: Vec<u8>,
     /// The current variable's slot in its table, valid while the table's stamp is `cur_stamp` (0: never; then the
     /// variable is found again by its name, as a table that lost an entry since the selection needs).
     cur_slot: usize,
@@ -159,6 +163,8 @@ struct ClassicState {
     cur_object: FieldTarget,
     cur_field: Vec<u8>,
     cur_field_array: Vec<u8>,
+    /// A buffer for the value a field opcode reads or writes, kept between them.
+    field_value: Vec<u8>,
 }
 
 impl ClassicState {
@@ -431,6 +437,8 @@ impl ClassicExecutor {
                 floats: Vec::new(),
                 cur_var: None,
                 cur_key: Vec::new(),
+                saved_vars: Vec::new(),
+                saved_keys: Vec::new(),
                 cur_slot: 0,
                 cur_stamp: 0,
                 name_scratch: Vec::new(),
@@ -438,6 +446,7 @@ impl ClassicExecutor {
                 cur_object: FieldTarget::None,
                 cur_field: Vec::new(),
                 cur_field_array: Vec::new(),
+                field_value: Vec::new(),
             }),
         }
     }
@@ -463,12 +472,14 @@ impl ClassicExecutor {
     }
 }
 
-/// What a run started from Rust puts back (see [`Executor::save`]).
-struct Saved {
+/// What a run started from Rust puts back (see [`Executor::save`]): the stacks' sizes, the string stack's
+/// bookkeeping, and the depth of the saved current variable on `ClassicState::saved_vars`.
+#[derive(Clone, Copy, Debug)]
+pub struct ClassicMark {
     ints: usize,
     floats: usize,
     strs: Mark,
-    cur_var: Option<(VarRef, Vec<u8>)>,
+    depth: usize,
 }
 
 impl Executor for ClassicExecutor {
@@ -491,34 +502,50 @@ impl Executor for ClassicExecutor {
         self.st().strs.set_string(text);
     }
 
-    fn save(&self) -> Box<dyn Any> {
-        let st = self.st();
-        Box::new(Saved {
+    fn save(&self) -> RunMark {
+        let mut st = self.st();
+        let st = &mut *st;
+        // The current variable and its key go on a stack of the executor's own (the key's bytes on an arena), whose
+        // depth the mark holds: a save allocates nothing once those have grown.
+        let depth = st.saved_vars.len();
+        st.saved_vars.push((st.cur_var, st.saved_keys.len()));
+        if st.cur_var.is_some() {
+            st.saved_keys.extend_from_slice(&st.cur_key);
+        }
+        RunMark::Classic(ClassicMark {
             ints: st.ints.len(),
             floats: st.floats.len(),
             strs: st.strs.mark(),
-            cur_var: st.cur_var.map(|v| (v, st.cur_key.clone())),
+            depth,
         })
     }
 
-    fn restore(&self, saved: Box<dyn Any>, unwind: bool) {
-        let Ok(saved) = saved.downcast::<Saved>() else {
+    fn restore(&self, saved: RunMark, unwind: bool) {
+        let RunMark::Classic(mark) = saved else {
             return;
         };
         let mut st = self.st();
+        let st = &mut *st;
         if unwind {
-            st.ints.truncate(saved.ints);
-            st.floats.truncate(saved.floats);
-            st.strs.restore(saved.strs);
+            st.ints.truncate(mark.ints);
+            st.floats.truncate(mark.floats);
+            st.strs.restore(mark.strs);
         }
-        match saved.cur_var {
-            Some((var, key)) => {
+        let depth = mark.depth;
+        let Some(&(cur_var, key_at)) = st.saved_vars.get(depth) else {
+            return;
+        };
+        match cur_var {
+            Some(var) => {
                 st.cur_var = Some(var);
-                st.cur_key = key;
+                st.cur_key.clear();
+                st.cur_key.extend_from_slice(&st.saved_keys[key_at..]);
                 st.cur_stamp = 0;
             }
             None => st.cur_var = None,
         }
+        st.saved_vars.truncate(depth);
+        st.saved_keys.truncate(key_at);
     }
 
     fn take_work(&self) -> u64 {
@@ -576,7 +603,7 @@ impl<'a> Cx<'a> {
         };
         st.cur_var = table.and_then(|table| {
             let slot = if create {
-                Some(table.add_slot_folded(key, name))
+                table.add_slot_folded(key, name)
             } else {
                 table.slot_folded(key)
             }?;
@@ -1013,7 +1040,12 @@ impl<'a> Cx<'a> {
         };
         let name = ident(fetch(code, ip)?)?.unwrap_or_default();
         let namespace = ident(fetch(code, ip + 1)?)?.unwrap_or_default();
-        let package = ident(fetch(code, ip + 2)?)?;
+        let package = ident(fetch(code, ip + 2)?)?.or_else(|| {
+            self.vm
+                .namespaces()
+                .declare_package_for(block.name())
+                .map(<[u8]>::to_vec)
+        });
         let has_body = fetch(code, ip + 3)? != 0;
         let end = fetch(code, ip + 4)? as usize;
         // Under `nocalls` the whole declaration is skipped. Otherwise `Namespace::find(namespace, package)` comes
@@ -1645,13 +1677,19 @@ impl<'a> Cx<'a> {
     /// object).
     #[inline(never)]
     fn load_field(&mut self, op: Op) -> Result<(), VmError> {
-        let value = {
+        let mut value = std::mem::take(&mut self.st().field_value);
+        value.clear();
+        {
             let st = self.st();
-            self.vm
-                .read_field_of(st.cur_object, &st.cur_field, &st.cur_field_array)
-        };
+            self.vm.read_field_into(
+                st.cur_object,
+                &st.cur_field,
+                &st.cur_field_array,
+                &mut value,
+            );
+        }
         let mut st = self.st();
-        match op {
+        let pushed = match op {
             Op::LoadFieldUint => st.push_u(atoi(&value) as u32),
             // `dAtof`: rounded to a float, as `OP_STR_TO_FLT` and `OP_LOADVAR_FLT` are.
             Op::LoadFieldFlt => st.push_f(to_f64(to_f32(atof(&value)))),
@@ -1659,7 +1697,9 @@ impl<'a> Cx<'a> {
                 st.strs.set_string(&value);
                 Ok(())
             }
-        }
+        };
+        st.field_value = value;
+        pushed
     }
 
     /// OP_SAVEFIELD_UINT / _FLT / _STR. The typed forms first write their value (left on its stack) to the
@@ -1680,7 +1720,9 @@ impl<'a> Cx<'a> {
                 }
                 _ => {}
             }
-            let value = st.strs.string().to_vec();
+            let mut value = std::mem::take(&mut st.field_value);
+            value.clear();
+            value.extend_from_slice(st.strs.string());
             (
                 st.cur_object,
                 std::mem::take(&mut st.cur_field),
@@ -1692,6 +1734,7 @@ impl<'a> Cx<'a> {
         let mut st = self.st();
         st.cur_field = field;
         st.cur_field_array = array;
+        st.field_value = value;
         Ok(())
     }
 }

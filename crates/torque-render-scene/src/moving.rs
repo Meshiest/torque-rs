@@ -21,7 +21,8 @@
 //! MIT licence: `T3D/shapeBase.cpp`, `T3D/projectile.cpp` and `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C)
 //! 2015 Faust Logic, Inc.), `math/mathUtils.cpp` (Copyright (c) 2012 GarageGames, LLC). The code here is this crate's own.
 
-use std::collections::BTreeMap;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use ghost_world::images::MountedImage;
@@ -34,7 +35,9 @@ use shapes::shape::{Model, Shape};
 use crate::images::{HeldMotion, ImageClock, ImageDb, Owner, advance_clock};
 use crate::math::Mat;
 
-use crate::mounts::{MAX_MOUNT_DEPTH, mounted_transform, pose_matrix, render_pose};
+use crate::mounts::{
+    Carried, MAX_MOUNT_DEPTH, carried_transform, mounted_transform, pose_matrix, render_pose,
+};
 use crate::shapes::{
     DetailPolicy, Loaded, MIN_VISIBILITY, Models, ShapeParts, detail_for, highest_detail,
     mat3_scale, shape_draws_keyed, shape_key_bytes, take_inline_fill,
@@ -53,6 +56,14 @@ const REFERENCE_CANVAS_WIDTH: f32 = 800.0;
 pub trait Hooks<W: ShapeWorld + ?Sized>: Sync {
     /// A ghost's live pose as the host keeps it.
     type Live: Send;
+
+    /// Whether the host draws ghost `index` this frame with its still geometry (a resting ghost it keeps as a copy of a static
+    /// batch, [`resting`]): the frame's shapes leave it out. A ghost the host could not keep so (none by default) is drawn
+    /// here.
+    fn still(&self, index: u32) -> bool {
+        let _ = index;
+        false
+    }
 
     /// The GL point lights a shape whose world sphere is at `centre` with `radius` is lit by, best first (none by default).
     fn lights(&self, centre: [f32; 3], radius: f32) -> Vec<PointLight> {
@@ -83,6 +94,18 @@ pub trait Hooks<W: ShapeWorld + ?Sized>: Sync {
     ) -> (Option<Self::Live>, Option<ShapeInstance>) {
         let _ = (world, ask, notes);
         (kept, None)
+    }
+
+    /// Advances the live pose `kept` of a ghost the frame leaves out ([`Cull`]) by the frame's time, as [`Hooks::advance_live`]
+    /// would, without posing it: its animation keeps time while nothing shows it. By default the pose is made and dropped.
+    fn advance_unseen(
+        &self,
+        world: &W,
+        ask: LiveAsk<'_, W>,
+        kept: Option<Self::Live>,
+        notes: &mut Vec<String>,
+    ) -> Option<Self::Live> {
+        self.advance_live(world, ask, kept, notes).0
     }
 
     /// The host's own motion of the image in ghost `ghost`'s slot `slot` this frame ([`HeldMotion`]: none by default).
@@ -118,7 +141,7 @@ pub struct LiveAsk<'a, W: ShapeWorld + ?Sized> {
 }
 
 /// Which shapes a frame may leave out: whether a shape whose bounding sphere (images and tyres included) is at `centre` with
-/// `radius` may show in it.
+/// `radius` may show in it (the enhanced renderer's: [`crate::hd::view_cull::ViewCull`]).
 pub trait Cull {
     fn keeps(&self, centre: [f32; 3], radius: f32) -> bool;
 }
@@ -174,6 +197,14 @@ fn projectile_placement<W: ShapeWorld + ?Sized>(
     Some((m, scale, path))
 }
 
+/// A datablock's file name with its backslashes turned to slashes (borrowed when it has none).
+fn slashed(file: &[u8]) -> Cow<'_, str> {
+    match String::from_utf8_lossy(file) {
+        Cow::Borrowed(s) if !s.contains('\\') => Cow::Borrowed(s),
+        s => Cow::Owned(s.replace('\\', "/")),
+    }
+}
+
 /// `MathUtils::createOrientFromDir`: the columns `i = j x z` (`(0, -1, 0)` when zero, normalised), `j`, `k = i x j`.
 fn orient_from_dir(j: [f32; 3]) -> [f32; 16] {
     let mut i = [j[1], -j[0], 0.0];
@@ -225,6 +256,10 @@ pub struct ShapeDraws {
     pub transforms: BTreeMap<u32, Mat>,
     /// The ghosts left out because nothing in the frame could show them ([`draws_culled`]).
     pub culled: usize,
+    /// The ghosts the frame's [`ShapeBudget`] drew at a lower detail, the ones it left out, and the shape files it put off.
+    pub lowered: usize,
+    pub over_budget: usize,
+    pub put_off: u64,
     /// With [`ShapeSelect::OnlyControl`]: the nanoseconds the build spent placing, posing, building the bodies and the images,
     /// and filling vertices inline, in that order.
     pub laps: Option<[u64; 5]>,
@@ -232,6 +267,26 @@ pub struct ShapeDraws {
     /// `translucent`: [`crate::shapecache::with_draws`]).
     pub calls: BTreeMap<u32, Vec<crate::shapecache::Call>>,
 }
+impl ShapeDraws {
+    /// The ghosts the frame draws something of (their own draws, or kept builds' calls): not the ones left out by the cull or
+    /// the budget, nor the ones whose shapes did not load.
+    pub fn drawn_ghosts(&self) -> BTreeSet<u32> {
+        let mut out: BTreeSet<u32> = self
+            .opaque_owners
+            .iter()
+            .chain(&self.translucent_owners)
+            .copied()
+            .collect();
+        out.extend(
+            self.calls
+                .iter()
+                .filter(|(_, calls)| !calls.is_empty())
+                .map(|(&g, _)| g),
+        );
+        out
+    }
+}
+
 /// Which shapes a frame's build takes (a live window draws the client's control object every frame, the rest of the
 /// world's shapes with the scene it rebuilds now and then).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,6 +333,47 @@ pub fn is_moving<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
     dynamic_in(world, index, true)
 }
 
+/// Whether plugin ghost `index` rests where its record puts it, so a host may draw it with its still geometry instead of every
+/// frame (and says so through [`Hooks::still`]; a ghost the host keeps nowhere else is drawn with the moving shapes): its
+/// class's draw says it rests ([`ShapeDraw::rests`](crate::world::ShapeDraw::rests)), its scale is uniform and it has no
+/// skin (a still copy is its shape's own mesh, turned, scaled alike on every axis and moved), and nothing draws it anywhere
+/// else: no prediction's pose (`ClientWorld::ghost_render`), no blend from where it was drawn left to run, not the control
+/// object, not riding anything.
+pub fn resting<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
+    let Some(g) = world.records().ghosts.get(&index) else {
+        return false;
+    };
+    world.drawn_shape(g).is_some_and(|d| draw_rests(&d)) && drawn_where_sent(world, index)
+}
+
+/// Whether a plugin's draw of a ghost lets it rest ([`resting`]): it says it rests, has no skin and a uniform scale. The draw
+/// reads the ghost's record and the datablocks it names, either of which may change without the other: a host asks every
+/// frame it needs the answer.
+pub fn draw_rests(draw: &crate::world::ShapeDraw) -> bool {
+    let [x, y, z] = draw.scale;
+    draw.rests && draw.skin.is_none() && x == y && y == z
+}
+
+/// Whether ghost `index` is drawn where its record puts it this frame ([`resting`]'s part that changes between updates): not
+/// the control object, no prediction's or vehicle's pose, riding nothing, and no blend from where it was drawn left to run.
+pub fn drawn_where_sent<W: ShapeWorld + ?Sized>(world: &W, index: u32) -> bool {
+    let r = world.records();
+    let Some(g) = r.ghosts.get(&index) else {
+        return false;
+    };
+    if r.control.object == Some(index)
+        || r.vehicle_render.contains_key(&index)
+        || r.ghost_render.contains_key(&index)
+        || r.mount_of(index).is_some()
+    {
+        return false;
+    }
+    let Some(pose) = g.pose() else {
+        return false;
+    };
+    !g.class.is_some_and(|c| world.interpolated_class(c)) || r.warped_pose(index, pose) == pose
+}
+
 fn dynamic_in<W: ShapeWorld + ?Sized>(world: &W, index: u32, animate: bool) -> bool {
     let r = world.records();
     // The vehicle the client drives (and runs) moves with the control object; whatever rides a moving object moves with
@@ -304,16 +400,20 @@ fn dynamic_in<W: ShapeWorld + ?Sized>(world: &W, index: u32, animate: bool) -> b
                 | ShapeKind::Vehicle
                 | ShapeKind::Item
                 | ShapeKind::Projectile => true,
-                // A static shape playing a script thread (a clock's hands, a blinking sign).
-                ShapeKind::Static => r.threads.get(&index).is_some_and(|slots| {
-                    slots.iter().flatten().any(|t| t.state == ThreadState::Play)
-                }),
+                // A static shape playing a script thread (a clock's hands, a blinking sign), or one a plugin draws (it moves with
+                // its updates).
+                ShapeKind::Static => {
+                    r.threads.get(&index).is_some_and(|slots| {
+                        slots.iter().flatten().any(|t| t.state == ThreadState::Play)
+                    }) || g.class.is_some_and(|c| world.drawn_class(c))
+                }
                 ShapeKind::None => false,
             })
 }
 
 /// The draws of the shapes `select` takes at the detail levels `policy` picks, leaving out the shapes `cull` says nothing in the
-/// frame can show (never the control object): they are not posed or built.
+/// frame can show (never the control object): they are not posed or built, but their live poses and images' clocks keep time
+/// ([`Hooks::advance_unseen`]), so a shape that comes back into view is where its animation would have been.
 #[allow(clippy::too_many_arguments)]
 pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     world: &W,
@@ -337,6 +437,8 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     let fov = records.fov_deg().to_radians();
     let pixels_per_meter = REFERENCE_CANVAS_WIDTH / (2.0 * (fov / 2.0).tan());
     let mut models = Models::default();
+    // Where the frame's carried ghosts are, each carrier placed once for all that hang on it.
+    let mut carried = Carried::default();
     let mut out = ShapeDraws::default();
     let keeping = crate::shapecache::on();
     let nodes = keeping && NODES.with(std::cell::Cell::get);
@@ -344,22 +446,34 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     // Placed, in the ghosts' order.
     let mut entries: Vec<Entry> = Vec::new();
     let mut jobs: Vec<Job<'_, W::Set, H::Live>> = Vec::new();
+    let put_off = crate::shapes::put_off_count();
+    let driven = BUDGET.with(|b| b.get().1);
     for class in world.shape_classes() {
         for (index, ghost) in records.of_class(class) {
-            if !select.takes(world, index) {
+            if !select.takes(world, index) || hooks.still(index) {
                 continue;
             }
             let mut here = Vec::new();
-            let job = place(
-                world,
-                assets,
-                &mut models,
-                &mut here,
-                &mut out,
-                cull,
-                (class, index, ghost),
-                (eye, pixels_per_meter, policy),
-            );
+            let mut placing = || {
+                place(
+                    world,
+                    assets,
+                    (&mut models, &mut carried),
+                    &mut here,
+                    &mut out,
+                    cull,
+                    (class, index, ghost),
+                    (eye, pixels_per_meter, policy),
+                )
+            };
+            let mut job = if serves_control(world, index, driven) {
+                crate::shapes::with_parse_budget(None, placing)
+            } else {
+                placing()
+            };
+            if let Some(j) = job.as_mut() {
+                j.entry = entries.len();
+            }
             entries.push(Entry {
                 index,
                 notes: here,
@@ -367,6 +481,11 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
             });
             jobs.extend(job);
         }
+    }
+    let max_vertices = BUDGET.with(|b| b.get().0.max_vertices);
+    if max_vertices != usize::MAX {
+        let control = records.control.object;
+        fit_budget(&mut jobs, &mut entries, control, max_vertices, &mut out);
     }
     take_live(world, hooks, &mut jobs);
     laps.lap(Lap::Place);
@@ -417,6 +536,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     }
     laps.lap(Lap::Place);
     out.laps = laps.done();
+    out.put_off = crate::shapes::put_off_count() - put_off;
     out
 }
 
@@ -426,7 +546,7 @@ pub fn draws_culled<W: ShapeWorld + ?Sized, H: Hooks<W>>(
 fn place<'w, W: ShapeWorld + ?Sized, L>(
     world: &'w W,
     assets: &dyn Assets,
-    models: &mut Models,
+    (models, carried): (&mut Models, &mut Carried),
     notes: &mut Vec<String>,
     out: &mut ShapeDraws,
     cull: Option<&dyn Cull>,
@@ -437,22 +557,43 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
     // The control object where the client predicts it (`ClientWorld::control_render`), a vehicle the client runs where it runs
     // it, a mounted ghost at its mount; every other ghost where it was sent.
     let pose = render_pose(world, index);
-    let mounted = mounted_transform(world, assets, models, notes, index, 0);
+    let mounted = carried_transform(world, assets, models, notes, carried, index, 0);
     // The client's own object in its first-person view is not drawn (its ghost stays where the server last ghosted it); its
     // images are.
     let first_person = records.hide_control && records.control.object == Some(index);
-    let db = ghost.datablock()?;
-    let (path, placed) = if world.kind(class) == ShapeKind::Projectile {
+    // A plugin's ghost is drawn as its class says, with no datablock of the TGE kind: its record gives the shape, the scale and the
+    // skin, and the place its record puts it (shown between updates when its class is).
+    let drawn = world.drawn_shape(ghost);
+    if drawn.is_none() && world.drawn_class(class) {
+        return None;
+    }
+    let db = match (ghost.datablock(), &drawn) {
+        (Some(db), _) => db,
+        (None, Some(_)) => 0,
+        (None, None) => return None,
+    };
+    let (path, placed, skin) = if let Some(draw) = drawn {
+        // (The scale is the draw's: a transform record's own is TGE's, which a plugin's does not carry.)
+        // A plugin ghost the scene hierarchy hangs on another is drawn on it.
+        let placed = match mounted {
+            Some(m) => Some((m, draw.scale)),
+            None => pose
+                .as_ref()
+                .and_then(|p| pose_matrix(p, None))
+                .map(|(m, _)| (m, draw.scale)),
+        };
+        (Cow::Owned(draw.shape.replace('\\', "/")), placed, draw.skin)
+    } else if world.kind(class) == ShapeKind::Projectile {
         let (m, scale, path) = projectile_placement(world, index, ghost, eye)?;
-        (path, Some((m, scale)))
+        (Cow::Owned(path), Some((m, scale)), None)
     } else {
         let file = records.datablock_text(db, "shapeFile")?;
-        let path = String::from_utf8_lossy(file).replace('\\', "/");
+        let path = slashed(file);
         let placed = match mounted {
             Some(m) => Some((m, ghost.scale().unwrap_or([1.0; 3]))),
             None => pose.as_ref().and_then(|p| pose_matrix(p, ghost.scale())),
         };
-        (path, placed)
+        (path, placed, None)
     };
     let (xform, scale) = placed?;
     out.transforms.insert(index, xform);
@@ -462,17 +603,16 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         return None;
     };
     let model = &loaded.model;
-    if let Some(cull) = cull
-        && records.control.object != Some(index)
-        && !shape_may_show(
-            cull, world, assets, models, notes, index, model, &xform, scale,
-        )
-    {
+    let unseen = cull.is_some_and(|cull| {
+        records.control.object != Some(index)
+            && !shape_may_show(
+                cull, world, assets, models, notes, index, model, &xform, scale,
+            )
+    });
+    if unseen {
         out.culled += 1;
         CULLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        return None;
-    }
-    if cull.is_some() {
+    } else if cull.is_some() {
         BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     let centre = xform.mul_p(model.shape.center);
@@ -487,6 +627,7 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         ghost,
         db,
         path,
+        skin,
         loaded,
         xform,
         scale,
@@ -496,7 +637,9 @@ fn place<'w, W: ShapeWorld + ?Sized, L>(
         eye_distance,
         max_scale,
         dl,
+        unseen,
         live_out: false,
+        entry: 0,
         live: None,
         images,
     })
@@ -583,6 +726,149 @@ thread_local! {
     static NODES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Inside [`with_shadow_body`]`(true, ..)`: a first-person body is built to cast shadows only.
     static SHADOW_BODY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Inside [`with_budget`]: the moving shapes' limits.
+    static BUDGET: std::cell::Cell<(ShapeBudget, Option<u32>)> =
+        const { std::cell::Cell::new((ShapeBudget::UNLIMITED, None)) };
+}
+
+/// The vertices a frame's moving shapes build by default ([`ShapeBudget`]).
+pub const DEFAULT_MAX_VERTICES: usize = 4 << 20;
+/// The shape files a frame parses by default ([`ShapeBudget`]).
+pub const DEFAULT_MAX_PARSES: usize = 4;
+
+/// What one frame's moving shapes may cost (a renderer setting; [`with_budget`]). The shapes are given their vertices nearest
+/// first (the control object always): one past what is left drops to its lower detail levels until it fits, else is left out
+/// ([`ShapeDraws::lowered`], [`ShapeDraws::over_budget`]). The shape files past `max_parses` wait for a later frame
+/// ([`crate::shapes::with_parse_budget`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShapeBudget {
+    /// The most vertices the frame's moving shapes and their mounted images build.
+    pub max_vertices: usize,
+    /// The most shape files the frame parses (None: no limit).
+    pub max_parses: Option<usize>,
+}
+
+impl ShapeBudget {
+    /// No limit (a build outside [`with_budget`]: a scene drawn once, a test).
+    pub const UNLIMITED: ShapeBudget = ShapeBudget {
+        max_vertices: usize::MAX,
+        max_parses: None,
+    };
+}
+
+impl Default for ShapeBudget {
+    fn default() -> ShapeBudget {
+        ShapeBudget {
+            max_vertices: DEFAULT_MAX_VERTICES,
+            max_parses: Some(DEFAULT_MAX_PARSES),
+        }
+    }
+}
+
+/// Puts the budget back as it was, however the call it was set for ends.
+struct BudgetGuard((ShapeBudget, Option<u32>));
+
+impl Drop for BudgetGuard {
+    fn drop(&mut self) {
+        BUDGET.with(|b| b.set(self.0));
+    }
+}
+
+/// Runs `f` with its [`draws_culled`] builds under `budget`, `driven` the ghost index of the vehicle the client drives (if it
+/// drives one): the budget in place before comes back when `f` returns.
+pub fn with_budget<T>(budget: ShapeBudget, driven: Option<u32>, f: impl FnOnce() -> T) -> T {
+    let _restore = BudgetGuard(BUDGET.with(|b| b.replace((budget, driven))));
+    crate::shapes::with_parse_budget(budget.max_parses, f)
+}
+
+/// Whether ghost `index` is the control object, the vehicle the client drives (`driven`) or a mount the control object rides:
+/// its shapes and its images' load whatever the frame's parse budget says, so a world of hundreds of new shapes never starves
+/// them. The other vehicles the client runs are not.
+fn serves_control<W: ShapeWorld + ?Sized>(world: &W, index: u32, driven: Option<u32>) -> bool {
+    let r = world.records();
+    let Some(control) = r.control.object else {
+        return false;
+    };
+    if control == index || driven == Some(index) {
+        return true;
+    }
+    let mut at = control;
+    for _ in 0..MAX_MOUNT_DEPTH {
+        let Some((m, _)) = r.mount_of(at) else {
+            return false;
+        };
+        if m == index {
+            return true;
+        }
+        at = m;
+    }
+    false
+}
+
+/// The vertices a job builds at its detail, its mounted images at their most detailed.
+fn job_vertices<S: ClientSet, L>(job: &Job<'_, S, L>) -> usize {
+    let images: usize = job
+        .images
+        .iter()
+        .map(|i| match i {
+            ImageJob::Pose(p) => {
+                highest_detail(&p.loaded.model).map_or(0, |d| p.loaded.vertices_at(d))
+            }
+            ImageJob::NotLoaded(_) => 0,
+        })
+        .fold(0, usize::saturating_add);
+    job.loaded.vertices_at(job.dl).saturating_add(images)
+}
+
+/// Fits the placed jobs to `max` vertices, nearest first (the control object first of all): a job that does not fit drops to
+/// lower details, else is left out (its entry no longer placed).
+fn fit_budget<S: ClientSet, L>(
+    jobs: &mut Vec<Job<'_, S, L>>,
+    entries: &mut [Entry],
+    control: Option<u32>,
+    max: usize,
+    out: &mut ShapeDraws,
+) {
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by(|&a, &b| {
+        let key = |j: &Job<'_, S, L>| (control != Some(j.index), j.eye_distance);
+        let (ka, kb) = (key(&jobs[a]), key(&jobs[b]));
+        ka.0.cmp(&kb.0).then(ka.1.total_cmp(&kb.1))
+    });
+    let mut left = max;
+    let mut dropped = vec![false; jobs.len()];
+    for i in order {
+        let job = &mut jobs[i];
+        if job.unseen {
+            continue;
+        }
+        let first = job.dl;
+        loop {
+            let v = job_vertices(job);
+            if v <= left || control == Some(job.index) {
+                left = left.saturating_sub(v);
+                break;
+            }
+            match job.loaded.lower_detail(job.dl) {
+                Some(dl) => job.dl = dl,
+                None => {
+                    dropped[i] = true;
+                    break;
+                }
+            }
+        }
+        if dropped[i] {
+            out.over_budget += 1;
+            entries[job.entry].placed = false;
+        } else if job.dl != first {
+            out.lowered += 1;
+        }
+    }
+    let mut i = 0;
+    jobs.retain(|_| {
+        i += 1;
+        !dropped[i - 1]
+    });
 }
 
 /// A moving shapes' build timed by part: each lap's time since the last goes to its part, the vertices filled in it to the fill.
@@ -968,7 +1254,9 @@ struct Job<'w, S: ClientSet, L> {
     index: u32,
     ghost: &'w Ghost<S>,
     db: u32,
-    path: String,
+    path: Cow<'w, str>,
+    /// A texture shown in place of the first material's ([`ShapeDraw::skin`]).
+    skin: Option<String>,
     loaded: Arc<Loaded>,
     xform: Mat,
     scale: [f32; 3],
@@ -978,8 +1266,12 @@ struct Job<'w, S: ClientSet, L> {
     eye_distance: f32,
     max_scale: f32,
     dl: usize,
+    /// Left out by the frame's cull: its live pose and clocks advanced, nothing posed or built.
+    unseen: bool,
     /// Its live pose was taken out of the host's keeping ([`take_live`]), and the pose taken (none: its first live frame).
     live_out: bool,
+    /// Its place among the frame's entries (the ghosts placed, in order).
+    entry: usize,
     live: Option<L>,
     images: Vec<ImageJob>,
 }
@@ -1129,6 +1421,44 @@ fn take_live<W: ShapeWorld + ?Sized, H: Hooks<W>>(
     }
 }
 
+/// An unseen job's frame: its live pose advanced unposed and its images' clocks advanced (they go back with it), nothing posed.
+fn keep_time<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
+    f: &Frame<'_, W, H>,
+    mut job: Job<'w, W::Set, H::Live>,
+) -> Posed<'w, W::Set, H::Live> {
+    let mut notes = Vec::new();
+    let live = match job.pose {
+        Some(Pose::Euler { pitch, .. }) if job.live_out => {
+            let ask = LiveAsk {
+                index: job.index,
+                ghost: job.ghost,
+                shape: &job.loaded.model.shape,
+                db: job.db,
+                pitch,
+                dl: job.dl,
+            };
+            let kept = job.live.take();
+            f.hooks.advance_unseen(f.world, ask, kept, &mut notes)
+        }
+        _ => None,
+    };
+    let records = f.world.records();
+    for i in &mut job.images {
+        if let ImageJob::Pose(p) = i
+            && p.clock_out
+        {
+            p.clock = Some(advance_clock(records, &p.image, p.clock.as_ref()));
+        }
+    }
+    Posed {
+        job,
+        live,
+        notes,
+        body: None,
+        images: Vec::new(),
+    }
+}
+
 /// A job's share of the pool's work: its nodes and its images' nodes.
 fn weight<S: ClientSet, L>(job: &Job<'_, S, L>) -> usize {
     let images: usize = job
@@ -1147,6 +1477,9 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
     f: &Frame<'_, W, H>,
     mut job: Job<'w, W::Set, H::Live>,
 ) -> Posed<'w, W::Set, H::Live> {
+    if job.unseen {
+        return keep_time(f, job);
+    }
     let world = f.world;
     let mut notes = Vec::new();
     let model = &job.loaded.model;
@@ -1206,7 +1539,7 @@ fn pose<'w, W: ShapeWorld + ?Sized, H: Hooks<W>>(
                 colors: world.mesh_colors(job.ghost),
                 ifl_frames: &ifl,
                 hidden_objects: vis_hidden.as_deref(),
-                skin: None,
+                skin: job.skin.as_deref(),
                 color_all: None,
             },
             &mat3_scale(&job.xform, job.scale),
@@ -1529,7 +1862,7 @@ fn build_body<W: ShapeWorld + ?Sized, L>(
                 colors: b.world.mesh_colors(job.ghost),
                 ifl_frames: &body.ifl_frames,
                 hidden_objects: body.vis_hidden.as_deref(),
-                skin: None,
+                skin: job.skin.as_deref(),
                 color_all: None,
             },
             &mat3_scale(&job.xform, job.scale),

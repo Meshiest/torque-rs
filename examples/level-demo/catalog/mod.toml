@@ -1,0 +1,13 @@
+id = "catalog"
+version = "1.0.0"
+name = "Prop catalog"
+description = "A menu of the office's furniture and desk items, each with a picture and a Spawn button, that puts a prop down in front of the player."
+author = "torque-rs"
+# Players get the mod's content (the menu's Lua and the pictures); the menu runs only if they allow it.
+share = "download"
+
+[client_script]
+# The menu: Lua that runs on the player's machine, in a sandbox, if the player allows it. It asks to show menus (`ui`) and to send
+# what the player does in them back to the server (`net`).
+entry = "client/main.lua"
+tiers = ["ui", "net"]

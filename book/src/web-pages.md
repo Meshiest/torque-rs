@@ -100,7 +100,7 @@ candidates as type, address and port), deflated, in base64url, with a version by
 characters with three candidates. The page refuses a code longer than 1024 characters, one that inflates past 2 KiB, a
 line out of its form or order, and a STUN server key not in its own fixed list; a code never names a server by address.
 The host takes a joiner's candidates by the same rules as a room's joiners (canonical IPv4, no `.local` names, private
-addresses only on the same-network server or with `?lan=1`, never its own). On any server, a host candidate may also be a
+addresses only on the same-network server, or with `?lan=1` on a page whose code allows it, never its own). On any server, a host candidate may also be a
 browser's mDNS name, strictly a lowercase version 4 UUID and `.local`, handed to the browser's own ICE unresolved: only
 the browser resolves it, and only on its own network. So pressing Connect (or adding a reply) also makes the browser
 ask its local network, by multicast, for the other player's `.local` name; only a device that registered that random
@@ -110,3 +110,15 @@ it back, which most home routers do not. The host counts the joiner by the addre
 comes from (or by a stand-in of its invite's own when the browser hides that address, as it does for a peer-reflexive
 pair), and hands the open channel to the worker's relay with every cap. With no TURN server, some networks can't connect;
 the page says so when the channel does not open in time.
+
+### Room codes
+
+A player who hosts through a room service (`torque-rooms`) is given a code of 16 characters, shown in four groups of four
+(`ABCD-EFGH-JKMN-PQRS`). Each character is one of 32 letters and digits that do not read alike, so a code holds 80 bits.
+The code is the room's only secret, and it is long enough that guessing it is hopeless whatever the guesser does: with at
+most 1,024 rooms live, a guess hits about once in 2^70 tries. So the service needs no stop that refuses every player at
+once; its limits are kept per network (an IPv4 /24, an IPv6 /48). A network's join attempts a minute and its misses a
+second are counted, and past either of them every join from that network is refused as `busy` until the window passes,
+whether its code names a room or not, so the reply never tells a guesser which codes are live. A joiner refused `busy` tries
+again by itself, up to three times, waiting 1.5 s, then 3 s, then 6 s. Codes from before the codes were lengthened (eight
+characters) no longer read.

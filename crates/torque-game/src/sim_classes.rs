@@ -251,6 +251,13 @@ pub trait SimClasses {
         None
     }
 
+    /// The solver that resolves the body of a vehicle of datablock `db` ([`vehicle::BodySolver`]), made for each tick; none runs
+    /// TGE's (the vehicle's own).
+    fn body_solver(&self, vm: &Vm, db: ObjId) -> Option<Box<dyn vehicle::BodySolver>> {
+        let _ = (vm, db);
+        None
+    }
+
     /// Before a vehicle's step: what its class reads from outside the vehicle, `client` being its controlling client's
     /// connection object (none without one). Nothing by default.
     fn before_vehicle_step(&self, vm: &Vm, me: ObjId, client: Option<ObjId>, s: &mut VehicleState) {

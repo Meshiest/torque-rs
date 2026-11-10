@@ -26,6 +26,7 @@ use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
 
 pub use ghosts::Value;
+pub use ghosts::plugin::{DatablockFields, ShapeDraw};
 
 /// How a ghost class is drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +95,28 @@ pub trait ShapeWorld: Sync {
 
     /// A WheeledVehicle ghost's wheels, when its record set them up.
     fn wheels(&self, ghost: &Ghost<Self::Set>) -> Option<Wheels>;
+
+    /// The shape a ghost is drawn as when its class says (a plugin's: the record and the datablock it names give the shape file, the
+    /// scale and the skin; it stands where its record puts it, and needs no datablock of the TGE kind): none by default, and for
+    /// every ghost of TGE's own classes.
+    fn drawn_shape(&self, ghost: &Ghost<Self::Set>) -> Option<ShapeDraw> {
+        let _ = ghost;
+        None
+    }
+
+    /// Whether the ghosts of `class` are drawn as shapes of their own ([`ShapeWorld::drawn_shape`]): they move with their updates, so
+    /// a live window draws them every frame. False by default.
+    fn drawn_class(&self, class: ClassOf<Self>) -> bool {
+        let _ = class;
+        false
+    }
+
+    /// Whether the ghosts of `class` are shown between the server's updates (blended from where they were drawn to where the last
+    /// update put them, [`ClientWorld::warped_pose`]). False by default.
+    fn interpolated_class(&self, class: ClassOf<Self>) -> bool {
+        let _ = class;
+        false
+    }
 
     /// How ghost `ghost` is drawn (`None` for a ghost of no class).
     fn kind_of(&self, ghost: &Ghost<Self::Set>) -> ShapeKind {
@@ -250,6 +273,15 @@ pub fn rest_pose<W: ShapeWorld + ?Sized>(
 /// `PlayerData::maxLookAngle`'s default.
 const MAX_LOOK_ANGLE: f32 = 1.4;
 
+/// The world's datablocks as a plugin's draw function reads them.
+struct WorldDatablocks<'a>(&'a ClientWorld<TgeClientSet>);
+
+impl DatablockFields for WorldDatablocks<'_> {
+    fn field(&self, id: u32, name: &str, index: u32) -> Option<&Value> {
+        self.0.datablocks.get(&id)?.get(name, index)
+    }
+}
+
 /// TGE's own world.
 impl ShapeWorld for ClientWorld<TgeClientSet> {
     type Set = TgeClientSet;
@@ -266,12 +298,13 @@ impl ShapeWorld for ClientWorld<TgeClientSet> {
             TgeClass::WheeledVehicle | TgeClass::AiWheeledVehicle => ShapeKind::WheeledVehicle,
             TgeClass::FlyingVehicle | TgeClass::HoverVehicle => ShapeKind::Vehicle,
             TgeClass::Projectile => ShapeKind::Projectile,
+            TgeClass::Plugin(class) if self.plugin_shapes.contains(class) => ShapeKind::Static,
             _ => ShapeKind::None,
         }
     }
 
     fn shape_classes(&self) -> Vec<TgeClass> {
-        vec![
+        let mut classes = vec![
             TgeClass::StaticShape,
             TgeClass::ScopeAlwaysShape,
             TgeClass::WheeledVehicle,
@@ -282,7 +315,25 @@ impl ShapeWorld for ClientWorld<TgeClientSet> {
             TgeClass::Player,
             TgeClass::AiPlayer,
             TgeClass::Projectile,
-        ]
+        ];
+        classes.extend(self.plugin_shapes.classes().map(TgeClass::Plugin));
+        classes
+    }
+
+    fn drawn_shape(&self, ghost: &Ghost<TgeClientSet>) -> Option<ShapeDraw> {
+        let Some(TgeRecord::Plugin(class, record)) = ghost.record.as_ref() else {
+            return None;
+        };
+        self.plugin_shapes
+            .draw(*class, &**record, &WorldDatablocks(self))
+    }
+
+    fn drawn_class(&self, class: TgeClass) -> bool {
+        matches!(class, TgeClass::Plugin(class) if self.plugin_shapes.contains(class))
+    }
+
+    fn interpolated_class(&self, class: TgeClass) -> bool {
+        matches!(class, TgeClass::Plugin(class) if self.plugin_shapes.interpolates(class))
     }
 
     fn field(&self, id: u32, name: &str, index: u32) -> Option<&Value> {

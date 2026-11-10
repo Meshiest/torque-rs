@@ -20,7 +20,9 @@ use std::rc::Rc;
 
 use crate::classes::Validator;
 use crate::fields::{self, FieldType, Value};
+use crate::memory::{FIELD_COST, MemoryAccount, OBJECT_COST};
 use crate::text::{atoi, fold, until_nul, with_folded};
+use crate::vars::refill;
 use crate::vm::Vm;
 
 /// An object's id as scripts see it (printed signed: RootGroup's is -1).
@@ -96,6 +98,9 @@ pub struct StaticField {
     /// The byte offset of element 0 in the C++ object: fields of one class chain at the same offset share storage.
     pub offset: Option<u32>,
     pub validator: Option<Validator>,
+    /// What the field is for, shown by `dump` beside its range: set by Rust classes that document their fields
+    /// (`#[derive(EngineClass)]`); the console's own classes have none.
+    pub doc: Option<&'static str>,
 }
 
 impl StaticField {
@@ -107,6 +112,7 @@ impl StaticField {
             count: 1,
             offset: None,
             validator: None,
+            doc: None,
         }
     }
 }
@@ -455,10 +461,56 @@ impl ClassRegistry {
 /// Dynamic fields: case-insensitive names, kept in name order. TGE iterates them in the order of
 /// its string table's pointer hashes, which cannot be reproduced; its `dump` sorts them by name, as this
 /// order does.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Once its object is registered, the fields count their bytes in the `Vm`'s [`MemoryAccount`]
+/// ([`attach`](Self::attach)), with what the object keeps besides them: a write the account cannot take is not made.
+#[derive(Debug, Default)]
 pub struct Fields {
     /// Folded name -> (the spelling the field was created with, the value).
     map: BTreeMap<Vec<u8>, (Vec<u8>, Vec<u8>)>,
+    /// What the fields count ([`field_size`] of each).
+    held: usize,
+    /// What their object counts besides them ([`SimObject::own_size`]), once attached.
+    other: usize,
+    account: Option<MemoryAccount>,
+}
+
+/// What one field counts in the account: its key, its spelling, its value's room and [`FIELD_COST`].
+fn field_size(key: &[u8], name: &[u8], value: &Vec<u8>) -> usize {
+    FIELD_COST + key.len() + name.len() + value.capacity()
+}
+
+impl PartialEq for Fields {
+    fn eq(&self, other: &Fields) -> bool {
+        self.map == other.map
+    }
+}
+
+impl Eq for Fields {}
+
+impl Clone for Fields {
+    /// A copy on no account (the copy's object attaches it when it is registered).
+    fn clone(&self) -> Fields {
+        let map = self.map.clone();
+        let held = map
+            .iter()
+            .map(|(key, (name, value))| field_size(key, name, value))
+            .sum();
+        Fields {
+            map,
+            held,
+            other: 0,
+            account: None,
+        }
+    }
+}
+
+impl Drop for Fields {
+    fn drop(&mut self) {
+        if let Some(account) = &self.account {
+            account.settle(self.held + self.other, 0);
+        }
+    }
 }
 
 impl Fields {
@@ -466,20 +518,94 @@ impl Fields {
         with_folded(name, |k| self.map.get(k)).map(|(_, v)| v.as_slice())
     }
 
-    /// Sets a field; the empty string deletes it.
+    /// Counts the fields, and `other` bytes their object keeps besides them, in `account` from now on; false, and nothing
+    /// changed, when the account cannot take them (the object should not be registered).
+    pub fn attach(&mut self, account: &MemoryAccount, other: usize) -> bool {
+        let before = self.held + self.other;
+        let attached = self.account.as_ref().is_some_and(|a| a.same(account));
+        let counted = if attached { before } else { 0 };
+        if !account.fits((self.held + other).saturating_sub(counted)) {
+            return false;
+        }
+        if let Some(old) = self.account.take() {
+            old.settle(before, 0);
+        }
+        self.other = other;
+        account.settle(0, self.held + other);
+        self.account = Some(account.clone());
+        true
+    }
+
+    /// Whether the account takes `extra` more bytes (always, before the fields are attached).
+    pub(crate) fn fits(&self, extra: usize) -> bool {
+        self.account.as_ref().is_none_or(|a| a.fits(extra))
+    }
+
+    /// Notes a refused store on the account (none before the fields are attached).
+    pub(crate) fn refuse(&self) {
+        if let Some(account) = &self.account {
+            account.refuse();
+        }
+    }
+
+    /// Their object keeps `other` bytes besides them now (nothing is counted before the fields are attached).
+    pub(crate) fn set_other(&mut self, other: usize) {
+        if let Some(account) = &self.account {
+            account.settle(self.other, other);
+            self.other = other;
+        }
+    }
+
+    /// The fields held `before` bytes and hold `after` now (`held` and `account` are the fields', apart from the map a
+    /// caller may be borrowing).
+    fn settle(held: &mut usize, account: Option<&MemoryAccount>, before: usize, after: usize) {
+        *held = held.saturating_sub(before).saturating_add(after);
+        if let Some(account) = account {
+            account.settle(before, after);
+        }
+    }
+
+    /// Sets a field; the empty string deletes it. A write the account cannot take is not made.
     pub fn set(&mut self, name: &[u8], value: &[u8]) {
         let value = until_nul(value);
-        let key = fold(name);
-        if value.is_empty() {
-            self.map.remove(&key);
+        // An existing field is found by a folded copy of the name on the stack and its value buffer is reused; only a
+        // new field allocates (a key, a spelling and a value).
+        let done = with_folded(name, |key| {
+            let Some((spelling, old)) = self.map.get_mut(key) else {
+                return false;
+            };
+            let before = field_size(key, spelling, old);
+            let account = self.account.as_ref();
+            if value.is_empty() {
+                self.map.remove(key);
+                Fields::settle(&mut self.held, account, before, 0);
+                return true;
+            }
+            let extra = value.len().saturating_sub(old.capacity());
+            if let Some(account) = account
+                && extra > 0
+                && !account.fits(extra)
+            {
+                account.refuse();
+                return true;
+            }
+            refill(old, value);
+            let after = field_size(key, spelling, old);
+            Fields::settle(&mut self.held, account, before, after);
+            true
+        });
+        if done || value.is_empty() {
             return;
         }
-        match self.map.get_mut(&key) {
-            Some(entry) => entry.1 = value.to_vec(),
-            None => {
-                self.map.insert(key, (name.to_vec(), value.to_vec()));
-            }
+        let key = fold(name);
+        let value = value.to_vec();
+        let size = field_size(&key, name, &value);
+        if !self.fits(size) {
+            self.refuse();
+            return;
         }
+        self.map.insert(key, (name.to_vec(), value));
+        Fields::settle(&mut self.held, self.account.as_ref(), 0, size);
     }
 
     pub fn len(&self) -> usize {
@@ -707,11 +833,40 @@ impl SimObject {
         self.extras.as_ref()?.internal_name.as_deref()
     }
 
-    /// Sets the internal name (Torque3D's `setInternalName`); an empty name clears it.
+    /// Sets the internal name (Torque3D's `setInternalName`); an empty name clears it. A name the memory account cannot
+    /// take is not set.
     pub fn set_internal_name(&mut self, name: &[u8]) {
         let name = until_nul(name);
+        let old = self.internal_name().map_or(0, <[u8]>::len);
+        if !self.has_room(name.len().saturating_sub(old)) {
+            return;
+        }
         let extras = self.extras.get_or_insert_with(Box::default);
         extras.internal_name = (!name.is_empty()).then(|| name.to_vec());
+        self.settle_own();
+    }
+
+    /// What the object counts in the memory account besides its dynamic fields: [`OBJECT_COST`], its name (kept twice:
+    /// here and in the name table), its internal name and the texts of its static fields.
+    pub fn own_size(&self) -> usize {
+        let name = self.name.as_ref().map_or(0, Vec::len);
+        let statics: usize = self.statics.iter().map(Value::held_bytes).sum();
+        OBJECT_COST + 2 * name + self.internal_name().map_or(0, <[u8]>::len) + statics
+    }
+
+    /// Whether the memory account takes `extra` more bytes for the object; a refusal is noted.
+    pub(crate) fn has_room(&self, extra: usize) -> bool {
+        if extra == 0 || self.fields.fits(extra) {
+            return true;
+        }
+        self.fields.refuse();
+        false
+    }
+
+    /// Brings the account up to date with [`own_size`](Self::own_size) (after a write of a static field or a name).
+    pub(crate) fn settle_own(&mut self) {
+        let size = self.own_size();
+        self.fields.set_other(size);
     }
 
     /// The console-type tag of the dynamic field `name` (its array index appended), if one was set.
@@ -890,10 +1045,11 @@ impl SimObject {
                 && let Some(stored) = self.statics.get_mut(slot)
             {
                 fields::set(ty, stored, value, &mut PlainEnv(classes.field_rules));
+                self.settle_own();
             }
             return;
         }
-        self.fields.set(&dynamic_name(name, array), value);
+        with_dynamic_name(name, array, |full| self.fields.set(full, value));
     }
 
     /// `getDataField`: a static field when the class declares `name` (see [`read_slot`](Self::read_slot);
@@ -929,15 +1085,43 @@ impl SimObject {
                 })
                 .unwrap_or_default();
         }
-        let found = if until_nul(array).is_empty() {
-            self.fields.get(until_nul(name))
-        } else {
-            self.fields.get(&dynamic_name(name, array))
-        };
-        match found {
-            Some(value) if charge(value.len() as u64) => value.to_vec(),
-            _ => Vec::new(),
+        let mut out = Vec::new();
+        self.dynamic_field_charged_into(name, array, charge, &mut out);
+        out
+    }
+
+    /// [`data_field_charged`](Self::data_field_charged) appending the value to `out` (a buffer the caller reuses): a
+    /// dynamic field is copied once, into it.
+    pub fn data_field_charged_into(
+        &self,
+        classes: &ClassRegistry,
+        name: &[u8],
+        array: &[u8],
+        names: &dyn Fn(ObjId) -> Option<Vec<u8>>,
+        charge: &mut dyn FnMut(u64) -> bool,
+        out: &mut Vec<u8>,
+    ) {
+        if classes.static_field(self.class, name).is_some() {
+            out.extend_from_slice(&self.data_field_charged(classes, name, array, names, charge));
+            return;
         }
+        self.dynamic_field_charged_into(name, array, charge, out);
+    }
+
+    fn dynamic_field_charged_into(
+        &self,
+        name: &[u8],
+        array: &[u8],
+        charge: &mut dyn FnMut(u64) -> bool,
+        out: &mut Vec<u8>,
+    ) {
+        with_dynamic_name(name, array, |full| {
+            if let Some(value) = self.fields.get(full)
+                && charge(value.len() as u64)
+            {
+                out.extend_from_slice(value);
+            }
+        });
     }
 
     /// `setDataField` of a DYNAMIC field (the empty string deletes it). False when `name` is a static field
@@ -953,7 +1137,7 @@ impl SimObject {
         if classes.static_field(self.class, name).is_some() {
             return false;
         }
-        self.fields.set(&dynamic_name(name, array), value);
+        with_dynamic_name(name, array, |full| self.fields.set(full, value));
         true
     }
 
@@ -1038,6 +1222,7 @@ impl SimObject {
                 fields::set(*ty, stored, text, env);
             }
         }
+        self.settle_own();
     }
 }
 
@@ -1063,16 +1248,43 @@ impl fields::FieldEnv for PlainEnv {
     }
 }
 
-/// The dynamic field name for `name[array]`. TGE copies name and index into a 255-byte buffer, so a
-/// name with an index is cut at [`MAX_FIELD_NAME`] bytes; a name without one is used as it is.
-fn dynamic_name(name: &[u8], array: &[u8]) -> Vec<u8> {
-    let mut full = until_nul(name).to_vec();
-    let array = until_nul(array);
-    if !array.is_empty() {
-        full.extend_from_slice(array);
-        full.truncate(MAX_FIELD_NAME);
+/// A field spec as a script names a field in one string (`"name[index]"`, what Torque3D's `setFieldValue` takes): the
+/// name up to the first `[`, and the index after it up to the first `]` (to the end when there is none); the whole spec
+/// is the name when it has no `[`. Each part is cut at its first NUL, as a field write cuts them. Join the parts with
+/// [`dynamic_name`] for the field's name.
+pub fn split_field_spec(spec: &[u8]) -> (&[u8], &[u8]) {
+    let spec = until_nul(spec);
+    match spec.iter().position(|&b| b == b'[') {
+        None => (spec, &[]),
+        Some(open) => {
+            let rest = &spec[open + 1..];
+            let close = rest.iter().position(|&b| b == b']').unwrap_or(rest.len());
+            (&spec[..open], &rest[..close])
+        }
     }
-    full
+}
+
+/// The dynamic field name for `name[array]`, as every field read and write builds it: each part up to its first NUL, the
+/// index appended to the name. TGE copies name and index into a 255-byte buffer, so a name with an index is cut at
+/// [`MAX_FIELD_NAME`] bytes; a name without one is used as it is. A host that checks field names (a policy on what a
+/// script language may write) builds them with this, so it sees the name the write will use.
+pub fn dynamic_name(name: &[u8], array: &[u8]) -> Vec<u8> {
+    with_dynamic_name(name, array, <[u8]>::to_vec)
+}
+
+/// [`dynamic_name`] handed to `f`, built on the stack: a field read or written by a script costs no name allocation.
+pub fn with_dynamic_name<R>(name: &[u8], array: &[u8], f: impl FnOnce(&[u8]) -> R) -> R {
+    let name = until_nul(name);
+    let array = until_nul(array);
+    if array.is_empty() {
+        return f(name);
+    }
+    let mut full = [0u8; MAX_FIELD_NAME];
+    let name_len = name.len().min(MAX_FIELD_NAME);
+    full[..name_len].copy_from_slice(&name[..name_len]);
+    let array_len = array.len().min(MAX_FIELD_NAME - name_len);
+    full[name_len..name_len + array_len].copy_from_slice(&array[..array_len]);
+    f(&full[..name_len + array_len])
 }
 
 /// What [`Objects::register`] did. `wrapped`: the dynamic id counter wrapped (the caller may say so).
@@ -1104,6 +1316,8 @@ pub struct Objects {
     /// pending events go. One entry per unregistered object; the VM looks at the start of every outermost
     /// run, in every event native and before every event fires.
     unregistered: Vec<ObjId>,
+    /// What registered objects and their dynamic fields count in (the `Vm`'s account).
+    memory: MemoryAccount,
 }
 
 impl Default for Objects {
@@ -1133,6 +1347,7 @@ impl Objects {
             datablock_group: 0,
             work: Cell::new(0),
             unregistered: Vec::new(),
+            memory: MemoryAccount::default(),
         };
         let mut root = SimObject::new(SIM_GROUP, &objects.classes);
         root.set_id(ROOT_GROUP_ID);
@@ -1151,6 +1366,11 @@ impl Objects {
 
     pub fn add_work(&self, units: u64) {
         self.work.set(self.work.get().saturating_add(units));
+    }
+
+    /// The account registered objects and their dynamic fields count in.
+    pub fn memory(&self) -> &MemoryAccount {
+        &self.memory
     }
 
     /// The work counted since the last call (the VM charges it to the step budget).
@@ -1176,8 +1396,13 @@ impl Objects {
     /// Enters an object in the id and name tables (`registerObject` before `onAdd`).
     /// Id 0 gets the next dynamic id: the counter is incremented first, wraps to the config's start ([`SimConfig`])
     /// past its `max_dynamic_id` and skips ids in use. None (and the object is dropped) when an
-    /// explicit id is already taken.
+    /// explicit id is already taken, or when the [`memory`](Self::memory) account cannot take the object and its fields.
     pub fn register(&mut self, mut object: SimObject) -> Option<Registered> {
+        let own = object.own_size();
+        if !object.fields.attach(&self.memory, own) {
+            self.memory.refuse();
+            return None;
+        }
         let mut wrapped = false;
         if object.id == 0 {
             let mut id = self.last_dynamic.saturating_add(1);
@@ -1407,6 +1632,10 @@ impl Objects {
         let Some(object) = self.live.get(&id) else {
             return;
         };
+        let old_len = object.name.as_ref().map_or(0, Vec::len);
+        if !object.has_room(2 * name.len().saturating_sub(old_len)) {
+            return;
+        }
         let (old, old_seq, group, group_seq) = (
             object.name.clone(),
             object.name_seq,
@@ -1431,7 +1660,17 @@ impl Objects {
             object.name = new;
             object.name_seq = seq;
             object.group_seq = new_group_seq;
+            object.settle_own();
         }
+    }
+
+    /// The stored value of the static field `name` of a registered object, its first element: None when the object or the
+    /// field does not exist (a dynamic field is text). A host's hot read of a number or a flag, which [`field`](Self::field)
+    /// would format as text for the host to parse again.
+    pub fn static_value(&self, id: ObjId, name: &[u8]) -> Option<&Value> {
+        let object = self.live.get(&id)?;
+        let field = self.classes.static_field(object.class(), name)?;
+        SimObject::read_slot(field, b"").and_then(|slot| object.slot(slot))
     }
 
     /// A field of a registered object (None when the object does not exist). Not charged to the step budget: a

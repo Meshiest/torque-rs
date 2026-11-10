@@ -553,3 +553,173 @@ fn a_projectile_that_exploded_brings_its_explosion_once() {
     s.step(32);
     assert_eq!(explosions(&s), 1, "one explosion per ghost");
 }
+
+/// Hostile ghost sequences, not just hostile bytes. Structured records first: a server whose objects are of random TGE
+/// classes, with random datablocks (the image's among them), image fire counts, positions (huge and NaN too) and mount links
+/// to random objects (itself, gone ones), added, changed and removed at random, writes real records. Then sections written
+/// by hand: random ghost indexes, delete flags and class ids (past the table too) over random record bits. Both are fed to
+/// a fresh client in a seeded order (replayed, dropped, reordered, so deletes come before creates and links and mounts name
+/// ghosts the client never had), some with bits flipped, cut short or spliced. The client may refuse a packet; nothing
+/// panics, and the world follows only what was read. `TORQUE_FUZZ_GHOSTS` sets the number of packets fed (default 3,000).
+#[test]
+fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
+    use net::testrng::TestRng;
+    let cases: u64 = std::env::var("TORQUE_FUZZ_GHOSTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3_000);
+    let mut rng = TestRng::new(0x9e37_79b9_7f4a_7c15);
+    // The classes a server of TGE's table ghosts (the engine's own and plugins' are not in it).
+    let classes: Vec<TgeClass> = TgeClass::ALL
+        .into_iter()
+        .filter(|c| !matches!(c, TgeClass::Plugin(_)))
+        .collect();
+    let mut s = Session::new();
+    s.world.apply_datablock(70, image_datablock());
+    let mut packets = Vec::new();
+    let mut next_id: ObjId = 1;
+    for tick in 0..96u32 {
+        for _ in 0..1 + rng.index(4) {
+            match rng.below(4) {
+                0 | 1 => {
+                    let class = classes[rng.index(classes.len())];
+                    let view = random_view(&mut rng, next_id);
+                    s.add(next_id, class, view);
+                    next_id += 1;
+                }
+                2 if next_id > 1 => {
+                    let id = 1 + rng.below(u64::from(next_id - 1)) as ObjId;
+                    s.host.objs.remove(&id);
+                }
+                _ if next_id > 1 => {
+                    let id = 1 + rng.below(u64::from(next_id - 1)) as ObjId;
+                    if let Some(o) = s.host.objs.get_mut(&id) {
+                        o.view = random_view(&mut rng, next_id);
+                    }
+                }
+                _ => {}
+            }
+        }
+        s.seq += 1;
+        s.host.now = tick * 32;
+        let mut w = BitWriter::with_limit(12_000);
+        w.enable_string_buffer();
+        s.mgr.write_section(
+            &mut w,
+            8 * 1400,
+            s.seq,
+            tick * 32,
+            &mut s.host,
+            SectionBudget {
+                scan: &mut |_| true,
+                records: &mut |_| true,
+            },
+        );
+        s.mgr.on_notify(s.seq, true);
+        packets.push((w.bits(), w.into_bytes()));
+    }
+    // Sections by hand: random indexes, deletes and class ids over random record bits.
+    let class_bits = s.host.classes.id_bits(Kind::Object);
+    for _ in 0..32 {
+        let mut w = BitWriter::with_limit(12_000);
+        w.write_flag(true);
+        let id_bits = 3 + rng.below(13) as u8;
+        w.write_bits(u32::from(id_bits - 3), 5);
+        for _ in 0..1 + rng.index(8) {
+            w.write_flag(true);
+            w.write_bits(rng.below(1 << id_bits) as u32, id_bits);
+            let delete = rng.below(4) == 0;
+            w.write_flag(delete);
+            if !delete {
+                w.write_bits(rng.below(1 << class_bits) as u32, class_bits);
+                for _ in 0..rng.index(64) {
+                    w.write_bits(rng.next_u64() as u32, 32);
+                }
+            }
+        }
+        w.write_flag(false);
+        packets.push((w.bits(), w.into_bytes()));
+    }
+    // A fresh client, fed in a hostile order.
+    let fresh = Session::new();
+    let (mut client, mut world) = (fresh.client, fresh.world);
+    world.apply_datablock(70, image_datablock());
+    let (mut read, mut refused) = (0u64, 0u64);
+    for case in 0..cases {
+        let (bits, bytes) = &packets[rng.index(packets.len())];
+        let mut bytes = bytes.clone();
+        let mut bits = *bits;
+        match rng.below(5) {
+            0 | 1 => {}
+            2 => {
+                for _ in 0..1 + rng.below(4) {
+                    let at = rng.index(bytes.len());
+                    if let Some(b) = bytes.get_mut(at) {
+                        *b ^= 1 << rng.below(8);
+                    }
+                }
+            }
+            3 => bits = rng.index(bits.max(1)),
+            _ => {
+                // The head of one packet and the tail of another.
+                let (other_bits, other) = &packets[rng.index(packets.len())];
+                let at = rng.index(bytes.len().min(other.len()));
+                bytes.truncate(at);
+                bytes.extend_from_slice(&other[at..]);
+                bits = *other_bits;
+            }
+        }
+        let bits = bits.min(bytes.len() * 8);
+        let mut r = BitReader::with_bit_len(&bytes, bits);
+        r.enable_string_buffer();
+        client
+            .codec_mut()
+            .set_budget(Some(ghosts::datagram_budget(bytes.len())));
+        match client.read_section(&mut r) {
+            Ok(_) => read += 1,
+            Err(_) => refused += 1,
+        }
+        let changes = client.take_log();
+        world.set_clock(case as u32 * 32);
+        world.apply_ghosts(case as usize, &changes, &client, [0.0; 3], &mut ());
+        // Now and then the server resets ghosting, and the client forgets its table.
+        if rng.below(200) == 0 {
+            client.clear();
+            let changes = client.take_log();
+            world.apply_ghosts(case as usize, &changes, &client, [0.0; 3], &mut ());
+        }
+    }
+    assert!(read > 0 && refused > 0, "{read} read, {refused} refused");
+}
+
+/// An object's fields at random: datablocks (the image's among them), an image with a fire count, a position that may be
+/// huge or NaN, a scale, a thread, and a mount link to a random object of the `past` made so far (itself and gone ones too).
+fn random_view(rng: &mut net::testrng::TestRng, past: ObjId) -> MapView {
+    let f = |rng: &mut net::testrng::TestRng| match rng.below(6) {
+        0 => f32::NAN,
+        1 => 1.0e30,
+        _ => (rng.below(2_000) as f32) - 1_000.0,
+    };
+    let mut view = MapView::default()
+        .with("datablock", 0, Value::Id(Some(rng.below(100) as u32)))
+        .with(
+            "image_datablock",
+            0,
+            Value::Id(Some(if rng.below(2) == 0 {
+                70
+            } else {
+                rng.below(100) as u32
+            })),
+        )
+        .with("image_loaded", 0, Value::Bool(rng.below(2) == 0))
+        .with("image_fire_count", 0, Value::Int(rng.below(16) as i64))
+        .with("thread_sequence", 0, Value::Int(rng.below(8) as i64 - 1))
+        .floats("position", &[f(rng), f(rng), f(rng)])
+        .floats("rotation", &[0.0, 0.0, 1.0])
+        .floats("scale", &[1.0, f(rng), 1.0]);
+    if rng.below(2) == 0 {
+        view.links
+            .insert("mount".into(), 1 + rng.below(u64::from(past)) as ObjId);
+    }
+    view
+}

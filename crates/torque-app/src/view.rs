@@ -5,11 +5,17 @@
 //! renderer ([`HdWorld`]) into the rectangle the canvas's `GameTSCtrl` gave the world this frame ([`GuiDraws::worlds`]), then
 //! the GUI's batches over it with the [`GuiPass`] (no clear between). A canvas without a `GameTSCtrl` drawn draws the GUI alone.
 //!
+//! The view draws with one renderer of the renderer slot ([`renderers`](crate::renderers)): the engine's own by default, any
+//! other a plugin registered when swapped to ([`WorldView::set_renderer`]), or none when the build or the engine has none (the
+//! GUI alone). Attached to a client ([`WorldView::attach_to`]), it follows that client's slot (`setRenderer` in its scripts)
+//! from its next frame.
+//!
 //! The shapes are posed on the CPU: [`WorldView::shape_object`] turns a [`SceneShape`] and its [`ShapeInstance`] (after its
 //! threads were advanced and animated) into an object whose vertices are in the world. [`WorldView::set_objects`] hands the
 //! frame its objects and keeps the last frame's, which give each object its motion (the anti-aliasing's history follows it).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use torque_gui::GuiDraws;
@@ -20,12 +26,12 @@ use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture, StaticCells};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
 use torque_render_scene::hd::environment::ClientDay;
-use torque_render_scene::hd::objects::objects_of;
+use torque_render_scene::hd::objects::{KeptObject, carry_motion, objects_of};
 use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::scatter::ScatterLook;
+use torque_render_scene::hd::view_cull::{ViewCull, is_cut};
 use torque_render_scene::hd::{
-    DynamicObject, HdCamera, HdDraw, HdMode, HdScene, HdSpot, Quality, WaterZone, bounding_sphere,
-    material,
+    DynamicObject, HdCamera, HdDraw, HdScene, HdSpot, Quality, WaterZone, bounding_sphere, material,
 };
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
@@ -38,6 +44,24 @@ use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 use torque_shapes::instance::ShapeInstance;
 use torque_shapes::shape::Shape;
+
+#[cfg(feature = "gizmos")]
+use crate::gizmos::{GizmoPainter, Gizmos};
+use crate::render::{
+    EmitterFrame, EmitterKind, EmitterKinds, HdPass, Stage, StaticBatch, StaticBatchSource,
+};
+use crate::renderers::{DEFAULT_RENDERER, RenderFeatures, RenderFrame, RendererSlot, SwitchError};
+
+/// What the view draws its world with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drawing {
+    /// Nothing: no renderer is built in or registered.
+    None,
+    /// The engine's own renderer (the view's [`HdWorld`]).
+    Default,
+    /// Another registered renderer, made and kept by the slot: its place among the slot's renderers.
+    Other(usize),
+}
 
 /// The least turn of the day's sun the view is lit again for: the cosine of a quarter of a degree.
 pub const DAY_STEP_COS: f32 = 0.999_990_5;
@@ -112,8 +136,44 @@ const MESH_SAMPLER: Sampler = Sampler {
 /// The key of static mesh `index` among the view's static geometry ([`WorldView::set_static_mesh`]): a cell key of its own,
 /// far from any cell of the world's grid.
 pub fn static_mesh_key(index: u32) -> [i32; 3] {
-    const FAR: i32 = -(1 << 28);
-    [(index & 0x0fff_ffff) as i32, FAR, FAR]
+    [(index & 0x0fff_ffff) as i32, FAR_KEY, FAR_KEY]
+}
+
+/// Where the keys of the view's own static geometry lie, far from any cell of the world's grid.
+const FAR_KEY: i32 = -(1 << 28);
+
+/// The most static batches a view holds at once ([`WorldView::set_static_batch`]'s ids are below it).
+pub const MAX_STATIC_BATCHES: u32 = 1 << 20;
+
+/// The key of chunk `chunk` of static batch `batch` among the view's static geometry ([`WorldView::set_static_batch`]): beside
+/// the static meshes' keys, never one of theirs.
+pub fn static_batch_key(batch: u32, chunk: u32) -> [i32; 3] {
+    [
+        (chunk & 0x0fff_ffff) as i32,
+        FAR_KEY,
+        FAR_KEY + 1 + (batch % MAX_STATIC_BATCHES) as i32,
+    ]
+}
+
+/// The most warnings a view keeps for the console between takes ([`WorldView::take_warnings`]).
+pub const MAX_WARNINGS: usize = 16;
+
+/// The static batch ids ([`WorldView::set_static_batch`], below [`MAX_STATIC_BATCHES`]) fall in three ranges: below
+/// [`RESTING_BATCHES`] the game's own; from [`RESTING_BATCHES`] to [`PLUGIN_BATCHES`] a ghost scene's resting shapes
+/// ([`crate::ghosts::GhostScene`], [`MAX_RESTING_SHAPES`] of them); from [`PLUGIN_BATCHES`] the plugins' sources
+/// ([`crate::render::StaticBatchSource`], [`crate::render::MAX_ADDS`] of them).
+pub const PLUGIN_BATCHES: u32 = MAX_STATIC_BATCHES - crate::render::MAX_ADDS as u32;
+
+/// The most shapes a ghost scene keeps resting ghosts of as static batches at once: the resting ghosts of a shape past them are
+/// drawn every frame, as moving shapes are.
+pub const MAX_RESTING_SHAPES: u32 = 256;
+/// The first id of a ghost scene's resting shapes' batches (see [`PLUGIN_BATCHES`] for the three ranges).
+pub const RESTING_BATCHES: u32 = PLUGIN_BATCHES - MAX_RESTING_SHAPES;
+
+/// A plugin's static batch source and the generation of it the view laid out last.
+struct BatchSource {
+    source: Box<dyn StaticBatchSource>,
+    seen: Option<u64>,
 }
 
 /// The sun, the ambient light and the fog of a scene. Colors are gamma-space 0 to 1, as a mission's Sun and Sky give them.
@@ -177,6 +237,40 @@ impl SceneShape {
         ShapeInstance::new(self.shape(), &mut |_| true).ok()
     }
 
+    /// The shape at its rest pose in its own space (its drawn detail, unscaled, unskinned) as a static batch with no copies
+    /// yet: the mesh [`StaticBatch::transforms`] places. None for a shape with nothing to draw.
+    pub fn batch(&self, assets: &dyn Assets) -> Option<StaticBatch> {
+        let model = &self.loaded.model;
+        let detail = model.shape.details.get(self.detail()?).copied()?;
+        let instance = self.instance()?;
+        let mut set = TextureSet::new(assets);
+        let (draws, _) = shape_draws(
+            model,
+            &instance,
+            ShapeParts {
+                sub_shape: detail.sub_shape,
+                object_detail: detail.object_detail,
+                hidden: &[],
+                colors: None,
+                ifl_frames: &Default::default(),
+                hidden_objects: None,
+                skin: None,
+                color_all: None,
+            },
+            &Mat::IDENTITY,
+            &Mat::IDENTITY,
+            true,
+            &[],
+            &mut set,
+            &self.path,
+        );
+        (!draws.is_empty()).then(|| StaticBatch {
+            draws,
+            textures: set.into_textures(),
+            transforms: Vec::new(),
+        })
+    }
+
     /// The index of the node named `name`.
     pub fn node(&self, name: &str) -> Option<usize> {
         let shape = self.shape();
@@ -201,6 +295,34 @@ pub struct WorldView {
     day_sun: Option<[f32; 3]>,
     /// The shadows' color of the last [`Daylight`]: a day whose look names none keeps it.
     daylight_shadow: [f32; 3],
+    /// The renderer drawing.
+    drawing: Drawing,
+    /// The GPU the slot's other renderers are made on.
+    gpu: Gpu,
+    /// The engine's renderer's quality step and features.
+    quality: Quality,
+    features: RenderFeatures,
+    /// The particle light rule the game asked for ([`WorldView::set_particle_light`]), drawn when the features have lit
+    /// particles.
+    particle_light: Option<ParticleLight>,
+    /// The client's renderer slot the view follows, and the switches it has seen.
+    slot: Option<(Rc<RendererSlot>, u64)>,
+    /// The client's debug gizmos, drawn over the world.
+    #[cfg(feature = "gizmos")]
+    gizmos: Option<GizmoPainter>,
+    /// The cells of each static batch the view holds, by its id.
+    batch_keys: HashMap<u32, (Vec<[i32; 3]>, usize)>,
+    /// Warnings for the console of the client the view draws ([`WorldView::take_warnings`]).
+    warnings: Vec<String>,
+    /// The most triangles the static batches lay out together ([`WorldView::set_static_batch_budget`]).
+    batch_budget: usize,
+    /// The plugins' static batch sources (laid out under the ids from [`PLUGIN_BATCHES`]).
+    batch_sources: Vec<BatchSource>,
+    /// The plugins' emitter kinds.
+    kinds: EmitterKinds,
+    /// What the last frame's moving objects were made of ([`objects_of`]'s kept objects): an object whose builds did not change
+    /// is the last frame's again.
+    kept: HashMap<u32, KeptObject>,
 }
 
 impl WorldView {
@@ -229,6 +351,24 @@ impl WorldView {
             statics_changed: true,
             day_sun: None,
             daylight_shadow: Daylight::default().shadow,
+            drawing: if cfg!(feature = "renderer") {
+                Drawing::Default
+            } else {
+                Drawing::None
+            },
+            gpu: gpu.clone(),
+            quality: Quality::High,
+            features: RenderFeatures::ALL,
+            particle_light: Some(ParticleLight::BLENDED),
+            slot: None,
+            #[cfg(feature = "gizmos")]
+            gizmos: None,
+            batch_keys: HashMap::new(),
+            warnings: Vec::new(),
+            batch_budget: crate::render::MAX_VIEW_BATCH_TRIANGLES,
+            batch_sources: Vec::new(),
+            kinds: EmitterKinds::default(),
+            kept: HashMap::new(),
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -262,9 +402,315 @@ impl WorldView {
         self.world.reset_history();
     }
 
-    /// The renderer's quality step.
+    /// The engine's renderer's quality step.
     pub fn set_quality(&mut self, quality: Quality) {
-        self.scene.mode = Some(HdMode::new(quality));
+        self.quality = quality;
+        self.scene.mode = Some(self.features.mode(quality));
+    }
+
+    /// The id of the renderer drawing (None: the world is not drawn).
+    pub fn current_renderer(&self) -> Option<&str> {
+        match self.drawing {
+            Drawing::None => None,
+            Drawing::Default => Some(DEFAULT_RENDERER),
+            Drawing::Other(i) => self.slot.as_ref().and_then(|(slot, _)| slot.ids().nth(i)),
+        }
+    }
+
+    /// Draws with the renderer `id` from the next frame. Attached to a client, through its slot (its scripts' `getRenderer`
+    /// sees it); else only the engine's own renderer is known. Err: no renderer has the id (naming the registered ones), or
+    /// the renderer could not be made (the one drawing stays).
+    pub fn set_renderer(&mut self, id: &str) -> Result<(), String> {
+        if let Some((slot, _)) = &self.slot {
+            slot.switch(id).map_err(|e| e.to_string())?;
+            self.follow_slot();
+            return Ok(());
+        }
+        if !cfg!(feature = "renderer") || id != DEFAULT_RENDERER {
+            let registered = if cfg!(feature = "renderer") {
+                vec![DEFAULT_RENDERER.to_owned()]
+            } else {
+                Vec::new()
+            };
+            return Err(SwitchError::Unknown {
+                id: id.to_owned(),
+                registered,
+            }
+            .to_string());
+        }
+        Ok(())
+    }
+
+    /// Follows the renderer slot of the client `host` runs, when its engine has one ([`RendererSlotPlugin`](crate::renderers::RendererSlotPlugin)):
+    /// the view draws with the slot's renderer and its features, and with each swap from its next frame. A renderer chosen
+    /// before (a script at start-up) that cannot be made on this view's GPU gives way to the engine's own, with a warning on
+    /// the client's console.
+    pub fn attach_to(&mut self, host: &mut crate::Host) {
+        use torque_client::host::GameServer;
+        let vm = host.server.vm_mut();
+        if let Some(slot) = RendererSlot::of(vm)
+            && let Err(e) = self.attach_slot(slot)
+        {
+            vm.warn(format!("renderer: {e}"));
+        }
+        #[cfg(feature = "gizmos")]
+        if let Some(gizmos) = Gizmos::of(vm) {
+            self.attach_gizmos(gizmos);
+        }
+    }
+
+    /// Draws `gizmos` over the world from the next frame ([`attach_to`](Self::attach_to) does this for the set of the client it
+    /// follows), and ages them by each frame it draws.
+    #[cfg(feature = "gizmos")]
+    pub fn attach_gizmos(&mut self, gizmos: Rc<Gizmos>) {
+        self.gizmos = Some(GizmoPainter::new(gizmos));
+    }
+
+    /// The debug gizmos of the client the view is attached to (None: it was made without
+    /// [`GizmosPlugin`](crate::gizmos::GizmosPlugin), or the view is not attached).
+    #[cfg(feature = "gizmos")]
+    pub fn gizmos(&self) -> Option<&Rc<Gizmos>> {
+        self.gizmos.as_ref().map(GizmoPainter::gizmos)
+    }
+
+    /// Every frame ages the gizmos by `seconds` (None: by the time the clock says passed since the last frame). The offscreen
+    /// runners set it, so a picture does not depend on how long the machine took.
+    #[cfg(feature = "gizmos")]
+    pub fn set_gizmo_frame_seconds(&mut self, seconds: Option<f32>) {
+        if let Some(painter) = &mut self.gizmos {
+            painter.set_frame_seconds(seconds);
+        }
+    }
+
+    /// Follows `slot` (see [`attach_to`](Self::attach_to)); its renderers are made on this view's GPU. Err: the renderer the
+    /// slot had chosen could not be made (the engine's own draws instead, else none).
+    pub fn attach_slot(&mut self, slot: Rc<RendererSlot>) -> Result<(), String> {
+        self.features = slot.features();
+        self.scene.mode = Some(self.features.mode(self.quality));
+        self.world.features = self.features.features;
+        let lit = self.features.particle_light;
+        self.scene.particle_light = self.particle_light.filter(|_| lit);
+        self.take_adds(&slot);
+        let made = slot.attach_gpu(&self.gpu).map_err(|e| e.to_string());
+        // Any generation but the slot's: the next follow takes its renderer.
+        self.slot = Some((Rc::clone(&slot), slot.generation().wrapping_sub(1)));
+        self.follow_slot();
+        made
+    }
+
+    /// What the slot's plugins added to the rendering, made for this view: its passes, static batch sources and emitter kinds
+    /// in place of any the view held before.
+    fn take_adds(&mut self, slot: &RendererSlot) {
+        let adds = slot.adds();
+        let passes = self.world.passes_mut();
+        passes.clear();
+        for e in &adds.passes {
+            passes.add(e.stage(), e.make());
+        }
+        for i in 0..self.batch_sources.len() {
+            self.remove_static_batch(PLUGIN_BATCHES + i as u32);
+        }
+        self.batch_sources = adds
+            .batches
+            .iter()
+            .map(|e| BatchSource {
+                source: e.make(),
+                seen: None,
+            })
+            .collect();
+        self.kinds.kinds = adds
+            .kinds
+            .iter()
+            .map(|e| (e.name().to_owned(), e.make()))
+            .collect();
+    }
+
+    /// Runs `pass` at `stage` of every frame the engine's renderer draws, after the passes there ([`crate::render`]). A view
+    /// attached to a client starts again from the passes its plugins added.
+    pub fn add_pass(&mut self, stage: Stage, pass: impl HdPass) {
+        self.world.add_pass(stage, pass);
+    }
+
+    /// Lays out `source`'s batch from the next frame, and again whenever it changes ([`StaticBatchSource`]). False: the view
+    /// holds [`crate::render::MAX_ADDS`] sources.
+    pub fn add_static_batch_source(&mut self, source: impl StaticBatchSource) -> bool {
+        if self.batch_sources.len() >= crate::render::MAX_ADDS {
+            return false;
+        }
+        self.batch_sources.push(BatchSource {
+            source: Box::new(source),
+            seen: None,
+        });
+        true
+    }
+
+    /// Draws `kind`'s particles into each frame's particles from the next ([`WorldView::emitter_draws`]); a kind named `name`
+    /// already is replaced.
+    pub fn add_emitter_kind(&mut self, name: &str, kind: impl EmitterKind) {
+        let kind: Box<dyn EmitterKind> = Box::new(kind);
+        match self.kinds.kinds.iter_mut().find(|(n, _)| n == name) {
+            Some(slot) => slot.1 = kind,
+            None => self.kinds.kinds.push((name.to_owned(), kind)),
+        }
+    }
+
+    /// The names of the emitter kinds the view draws, in order.
+    pub fn emitter_kinds(&self) -> impl Iterator<Item = &str> + '_ {
+        self.kinds.kinds.iter().map(|(n, _)| n.as_str())
+    }
+
+    /// Every frame runs the emitter kinds on by `seconds` (None: by the time the clock says passed since the last frame). The
+    /// offscreen runners set it, so a picture does not depend on how long the machine took.
+    pub fn set_effect_frame_seconds(&mut self, seconds: Option<f32>) {
+        self.kinds.fixed = seconds;
+    }
+
+    /// The emitter kinds run on by a frame's step and drawn for `frame` into `draws` (the frame's particles, their textures in
+    /// `textures`): what [`GhostScene::effects`](crate::ghosts::GhostScene::effects) adds beside TGE's emitters. Nothing without
+    /// a kind.
+    pub fn emitter_draws(
+        &mut self,
+        frame: &EmitterFrame,
+        textures: &mut TextureSet<'_>,
+        draws: &mut Vec<(f32, Draw)>,
+    ) {
+        if let Some(warning) = self.kinds.frame(frame, textures, draws) {
+            self.warn(warning);
+        }
+    }
+
+    /// Puts `batch` into the view's static geometry as the static batch `id` (below [`MAX_STATIC_BATCHES`]; the plugins' sources
+    /// take the ids from [`PLUGIN_BATCHES`]), replacing the one there: cut into chunks ([`StaticBatch::layout`]), each a cell kept
+    /// on the GPU and culled there, as [`WorldView::set_static_mesh`] keeps a mesh. An empty batch takes it out. At most
+    /// [`MAX_BATCH_TRIANGLES`](crate::render::MAX_BATCH_TRIANGLES) triangles of it are laid out, and no more than the view's
+    /// other batches leave of [`MAX_VIEW_BATCH_TRIANGLES`](crate::render::MAX_VIEW_BATCH_TRIANGLES): the copies past them are
+    /// left out, in order. Some: copies were left out, the warning (also queued for the console, [`WorldView::take_warnings`]).
+    pub fn set_static_batch(&mut self, id: u32, batch: &StaticBatch) -> Option<String> {
+        let id = id % MAX_STATIC_BATCHES;
+        self.remove_static_batch(id);
+        if batch.draws.is_empty() {
+            return None;
+        }
+        let others: usize = self.batch_keys.values().map(|(_, t)| t).sum();
+        let budget = self.batch_budget.saturating_sub(others);
+        let layout = batch.layout(budget);
+        let warning = (layout.left_out > 0).then(|| {
+            format!(
+                "static batch {id}: {} of its {} copies are left out (a batch lays out at most {} triangles, this view {} over all \
+                 its batches; {} were free)",
+                layout.left_out,
+                batch.transforms.len(),
+                crate::render::MAX_BATCH_TRIANGLES,
+                self.batch_budget,
+                budget,
+            )
+        });
+        if let Some(w) = &warning {
+            self.warn(w.clone());
+        }
+        if layout.chunks.is_empty() {
+            return warning;
+        }
+        let local = self.intern(batch.textures.clone());
+        let mut keys = Vec::with_capacity(layout.chunks.len());
+        for (n, copies) in layout.chunks.iter().enumerate() {
+            let key = static_batch_key(id, n as u32);
+            self.put_static_mesh(key, &local, &batch.chunk_draws(copies));
+            if self.scene.frame.cells.cells.contains_key(&key) {
+                keys.push(key);
+            }
+        }
+        self.batch_keys.insert(id, (keys, layout.triangles));
+        warning
+    }
+
+    /// The most triangles the view's static batches lay out together from the next batch laid out: `triangles`, at most
+    /// [`MAX_VIEW_BATCH_TRIANGLES`](crate::render::MAX_VIEW_BATCH_TRIANGLES) (the default). The batches laid out already stay.
+    pub fn set_static_batch_budget(&mut self, triangles: usize) {
+        self.batch_budget = triangles.min(crate::render::MAX_VIEW_BATCH_TRIANGLES);
+    }
+
+    /// The triangles the view's static batches lay out, all together.
+    pub fn static_batch_triangles(&self) -> usize {
+        self.batch_keys.values().map(|(_, t)| t).sum()
+    }
+
+    /// The warnings for the console since the last take (a static batch's copies left out, an emitter kind's sprites past the
+    /// cap); the window and offscreen runners put them on the client's console each frame ([`WorldView::report_warnings`]).
+    pub fn take_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.warnings)
+    }
+
+    /// The warnings since the last take on the console of the client `host` runs.
+    pub fn report_warnings(&mut self, host: &mut crate::Host) {
+        if self.warnings.is_empty() {
+            return;
+        }
+        use torque_client::host::GameServer;
+        let vm = host.server.vm_mut();
+        for w in self.take_warnings() {
+            vm.warn(format!("render: {w}"));
+        }
+    }
+
+    /// Queues `warning` for the console (at most [`MAX_WARNINGS`] wait).
+    pub(crate) fn warn(&mut self, warning: String) {
+        if self.warnings.len() < MAX_WARNINGS {
+            self.warnings.push(warning);
+        }
+    }
+
+    /// Takes the static batch `id` out of the view (nothing if there is none).
+    pub fn remove_static_batch(&mut self, id: u32) {
+        let Some((keys, _)) = self.batch_keys.remove(&(id % MAX_STATIC_BATCHES)) else {
+            return;
+        };
+        for key in keys {
+            self.remove_static_mesh(key);
+        }
+    }
+
+    /// The cells the static batch `id` is laid out in (0: the view holds no such batch).
+    pub fn static_batch_cells(&self, id: u32) -> usize {
+        self.batch_keys
+            .get(&(id % MAX_STATIC_BATCHES))
+            .map_or(0, |(keys, _)| keys.len())
+    }
+
+    /// The plugins' static batches that changed, laid out again (a compare a source otherwise).
+    fn follow_batch_sources(&mut self) {
+        for i in 0..self.batch_sources.len() {
+            let b = &mut self.batch_sources[i];
+            let generation = b.source.generation();
+            if b.seen == Some(generation) {
+                continue;
+            }
+            b.seen = Some(generation);
+            let batch = b.source.batch();
+            self.set_static_batch(PLUGIN_BATCHES + i as u32, &batch);
+        }
+    }
+
+    /// The slot's renderer, when it was swapped since the last frame (one compare otherwise). The engine's own renderer starts
+    /// its histories again when it comes back.
+    fn follow_slot(&mut self) {
+        let Some((slot, seen)) = &mut self.slot else {
+            return;
+        };
+        let generation = slot.generation();
+        if *seen == generation {
+            return;
+        }
+        *seen = generation;
+        let was = self.drawing;
+        self.drawing = match (slot.current_index(), slot.current_entry()) {
+            (Some(index), Some(e)) if e.make().is_some() => Drawing::Other(index),
+            (_, Some(_)) => Drawing::Default,
+            _ => Drawing::None,
+        };
+        if self.drawing == Drawing::Default && was != Drawing::Default {
+            self.world.reset_history();
+        }
     }
 
     /// How the volumetric clouds look (None: the engine's, [`CloudLook::DEFAULT`]).
@@ -718,20 +1164,59 @@ impl WorldView {
         textures: TextureSet,
     ) -> Vec<DynamicObject> {
         let local = self.intern(textures.into_textures());
-        objects_of(world, shaped, &local, &mut self.scene.objects, None)
+        objects_of(
+            world,
+            shaped,
+            &local,
+            &mut self.scene.objects,
+            Some(&mut self.kept),
+        )
     }
 
-    /// The frame's moving objects. Each takes its motion from the last frame's object of the same id: its transform then and
-    /// where its vertices were.
-    pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
-        let before: HashMap<u32, &DynamicObject> =
-            self.scene.objects.iter().map(|b| (b.ghost, b)).collect();
-        for o in &mut objects {
-            if let Some(before) = before.get(&o.ghost) {
-                o.prev_transform = before.transform;
-                o.previous = o.previous_from(before);
-            }
+    /// What a frame drawn by this view can show of `world`'s moving shapes ([`ViewCull`]): from `eye` (the eye the host is about
+    /// to draw from, the boom's or the orbit's in a third person or an orbit), the world's camera and the eye the last frame was
+    /// drawn from, their shadows, the water's reflection and the light capture included. None (nothing left out): no frame drawn
+    /// yet, a cut ([`is_cut`]: the eye jumped from the last frame's), or another renderer than the engine's drawing (its frame is
+    /// not the one the cull knows).
+    pub fn ghost_cull<W: ShapeWorld + ?Sized>(
+        &self,
+        world: &W,
+        eye: Option<&Eye>,
+    ) -> Option<ViewCull> {
+        if self.drawing != Drawing::Default {
+            return None;
         }
+        let records = world.records();
+        let frame = &self.scene.frame;
+        let last = frame.eye?;
+        let camera = records.eye();
+        if eye.copied().or(camera).is_some_and(|e| is_cut(&last, &e)) {
+            return None;
+        }
+        let fov = records.fov_deg();
+        let eyes: Vec<(Eye, f32)> = eye
+            .map(|e| (*e, e.fov.map_or(fov, f32::from)))
+            .into_iter()
+            .chain(camera.map(|e| (e, fov)))
+            .chain(Some((last, f32::from(frame.fov))))
+            .collect();
+        ViewCull::new(
+            frame,
+            &eyes,
+            self.world.capture_on(),
+            self.world.shadow_range().map(|r| r.end),
+        )
+    }
+
+    /// The last frame's moving objects (a host takes the draws of one it hands out again as they were).
+    pub(crate) fn objects_mut(&mut self) -> &mut [DynamicObject] {
+        &mut self.scene.objects
+    }
+
+    /// The frame's moving objects. Each takes its motion from the last frame's object of the same id (its transform then and where
+    /// its vertices were), unless it brings its own ([`carry_motion`]).
+    pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
+        carry_motion(&mut objects, &self.scene.objects);
         self.scene.objects = objects;
     }
 
@@ -749,7 +1234,9 @@ impl WorldView {
     /// Which particle draws the enhanced renderer lights (none: all unlit, as TGE draws them; [`ParticleLight::BLENDED`]: smoke
     /// and dust lit, glows not), from the next frame's particles on.
     pub fn set_particle_light(&mut self, rule: Option<ParticleLight>) {
-        self.scene.particle_light = rule;
+        self.particle_light = rule;
+        let lit = self.features.particle_light;
+        self.scene.particle_light = rule.filter(|_| lit);
     }
 
     /// The frame's particles and decals (the decals' draws lie on surfaces: not faded into them as the particles are), their
@@ -775,14 +1262,19 @@ impl WorldView {
     ) -> Result<bool, String> {
         let texture = target.texture();
         let (width, height) = (texture.width(), texture.height());
-        let world = gui.worlds.first().and_then(|w| {
-            let [x, y, w, h] = w.rect;
-            let x0 = u32::try_from(x).ok()?.min(width);
-            let y0 = u32::try_from(y).ok()?.min(height);
-            let w = u32::try_from(w).ok()?.min(width - x0);
-            let h = u32::try_from(h).ok()?.min(height - y0);
-            (w > 0 && h > 0).then_some([x0, y0, w, h])
-        });
+        self.follow_slot();
+        let world = gui
+            .worlds
+            .first()
+            .filter(|_| self.drawing != Drawing::None)
+            .and_then(|w| {
+                let [x, y, w, h] = w.rect;
+                let x0 = u32::try_from(x).ok()?.min(width);
+                let y0 = u32::try_from(y).ok()?.min(height);
+                let w = u32::try_from(w).ok()?.min(width - x0);
+                let h = u32::try_from(h).ok()?.min(height - y0);
+                (w > 0 && h > 0).then_some([x0, y0, w, h])
+            });
         if let Some(rect) = world {
             self.draw_world(target, rect, eye)?;
         }
@@ -798,6 +1290,13 @@ impl WorldView {
         [x, y, w, h]: [u32; 4],
         eye: Eye,
     ) -> Result<(), String> {
+        self.follow_slot();
+        if self.drawing == Drawing::None {
+            return Err("no renderer: the build or the engine has none".to_string());
+        }
+        if !self.batch_sources.is_empty() {
+            self.follow_batch_sources();
+        }
         let fov = eye.fov.unwrap_or(DEFAULT_FOV);
         let s = &mut self.scene;
         s.eye = Some(eye);
@@ -809,11 +1308,33 @@ impl WorldView {
             s.control_generation += 1;
         }
         let camera = HdCamera::new(eye, fov, s.visible_distance, w, h);
-        self.world.upload(&self.scene);
-        let format = target.texture().format();
-        self.world
-            .draw(&self.scene, &camera, Some((target, format, [x, y])))
-            .map_err(|e| format!("the world: {e}"))
+        #[cfg_attr(not(feature = "gizmos"), allow(unused_variables))]
+        let own = if let (Drawing::Other(i), Some((slot, _))) = (self.drawing, &self.slot) {
+            slot.draw(
+                i,
+                RenderFrame {
+                    scene: &self.scene,
+                    camera: &camera,
+                    target,
+                    rect: [x, y, w, h],
+                },
+            )?;
+            false
+        } else {
+            self.world.upload(&self.scene);
+            let format = target.texture().format();
+            self.world
+                .draw(&self.scene, &camera, Some((target, format, [x, y])))
+                .map_err(|e| format!("the world: {e}"))?;
+            true
+        };
+        // The debug gizmos over the finished world; the engine's renderer has a depth to hide them behind.
+        #[cfg(feature = "gizmos")]
+        if let Some(painter) = &mut self.gizmos {
+            let depth = own.then(|| self.world.depth_view()).flatten();
+            painter.paint(&self.gpu, target, [x, y, w, h], &camera, depth);
+        }
+        Ok(())
     }
 
     /// The scene alone seen from `eye`, drawn offscreen at `size` and read back.

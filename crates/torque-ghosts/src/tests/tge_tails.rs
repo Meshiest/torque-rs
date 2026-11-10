@@ -6,8 +6,8 @@ use torque_net::control::{CameraPacketData, ControlData, ControlReader, checksum
 use super::tge_shapes::{canonical, ghost_bits, later_ctx, with_link};
 use super::*;
 use crate::tails::{
-    MAX_NESTED_TAILS, PlayerTail, ShapeTail, TailClass, TailData, TgePacketData, TgeTails,
-    VehicleTail, WheeledTail,
+    MAX_NESTED_TAILS, PlayerTail, ShapeTail, TailClass, TailData, TailFrame, TgePacketData,
+    TgeTails, VehicleTail, WheeledTail,
 };
 
 const SHAPE: &str = "tail.energy:32 tail.rechargeRate:32";
@@ -246,5 +246,49 @@ impl Rng {
         x ^= x << 17;
         self.0 = x;
         x
+    }
+}
+
+/// A frame ends the data on a connection that carries frames: one bit for the world's, the parent's ghost and node for a
+/// parent's; a reader of such a connection reads it back, and the checksum covers a parent's.
+#[test]
+fn a_frame_ends_the_data_and_reads_back_where_frames_are_on() {
+    let gb = widths().ghost_bits;
+    let classes = class_of;
+    // A Player that controls nothing: nothing nested comes before the frame.
+    let plain = TgePacketData::new(TailData::Player(PlayerTail::pack(&MapView::default(), gb)));
+    let (_, plain_bits) = written(&plain);
+    let frames = [
+        (TailFrame::World, 1),
+        (
+            TailFrame::Parent {
+                ghost: 5,
+                node: None,
+            },
+            2 + usize::from(gb),
+        ),
+        (
+            TailFrame::Parent {
+                ghost: 5,
+                node: Some(300),
+            },
+            2 + usize::from(gb) + 16,
+        ),
+    ];
+    for (frame, bits) in frames {
+        let mut data = plain.clone();
+        data.frame = frame;
+        let (bytes, n) = written(&data);
+        assert_eq!(n, plain_bits + bits, "{frame:?}");
+        let mut tails = TgeTails::new(&classes).with_frames(true);
+        let mut r = BitReader::with_bit_len(&bytes, n);
+        let back = tails
+            .read_control(1, &mut r, gb, &mut free_charge())
+            .unwrap();
+        assert_eq!(r.bits_left(), 0, "{frame:?}");
+        assert!(back.same_as(&data), "{frame:?}");
+        if frame != TailFrame::World {
+            assert_ne!(checksum(&data, gb), checksum(&plain, gb), "{frame:?}");
+        }
     }
 }

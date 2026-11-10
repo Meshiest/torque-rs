@@ -16,6 +16,14 @@
 //! [`ObjectPolicy::drop_now`]) gets a kill record (the object stays and may come back in scope), a ghost always in scope or
 //! scoped by a script excepted. The pass is resumable under the work budget.
 //!
+//! **The host's veto.** A host may keep an object out of a connection's scope whatever the policy says
+//! ([`ObjectSource::scope_hidden`]): no scope walk makes a ghost of it (an object always in scope, a script's `scopeToClient`
+//! and an object's dependents included), and the ghosts of the objects hidden since the manager last looked
+//! ([`ObjectSource::scope_hidden_stamp`]) are killed at the start of its next scan, whether or not an update is pending, and
+//! the ghosts the host links to them ([`ObjectSource::marks_on_ghost`]) are marked. An always-in-scope object whose veto is
+//! lifted is scoped again at once. The veto never holds for the connection's own scope object, nor for what that rides, which
+//! would leave the connection blind.
+//!
 //! **Order.** The pending ghosts are sent in priority order unless the policy names another ([`GhostPolicy::pending_order`]).
 //!
 //! **Implied class.** A policy whose NewGhost records carry a flag ahead of the class ([`GhostPolicy::implied_class_flag`]) writes
@@ -79,6 +87,12 @@ pub enum PendingOrder {
 /// A game's ghosting rules, the part that needs no world. See the module docs; every default is TGE's. The questions about objects
 /// are [`ObjectPolicy`]'s.
 pub trait GhostPolicy {
+    /// Whether a Ready the client sends again for the same ghosting sequence is ignored: `onGhostAlwaysObjectsReceived` runs
+    /// once a sequence. Torque runs it for every Ready (`false`), and a game's scripts that spawn there would spawn again.
+    fn ready_once(&self) -> bool {
+        false
+    }
+
     /// The scope radius around the scope object (read with every packet).
     fn radius(&self) -> ScopeRadius {
         ScopeRadius::default()
@@ -89,6 +103,15 @@ pub trait GhostPolicy {
     fn full_query_due(&mut self, now: u32, resuming: bool) -> bool {
         let _ = (now, resuming);
         true
+    }
+
+    /// Whether a full query has no effect of the policy's own: it scopes every object its walk meets, whatever it is, makes every
+    /// ghost the table has room for ([`ObjectPolicy::admit`], [`ObjectPolicy::query_visit`] always true), asks for no drop pass and
+    /// keeps no state of the walk. A query of such a policy over a source with a [`ObjectSource::scope_stamp`] that has run to
+    /// its end with every ghost made and the stamp unchanged since only has to count its objects the next time, not scope them
+    /// again. Torque's does; a policy that overrides any of those questions leaves this false (the default).
+    fn plain_query(&self) -> bool {
+        false
     }
 
     /// Whether a complete full query detaches the ghosts with updates pending that it did not find (`detachObject`).
@@ -201,6 +224,10 @@ pub trait ObjectPolicy<S: ObjectSource>: GhostPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TorqueGhosts;
 
-impl GhostPolicy for TorqueGhosts {}
+impl GhostPolicy for TorqueGhosts {
+    fn plain_query(&self) -> bool {
+        true
+    }
+}
 
 impl<S: ObjectSource> ObjectPolicy<S> for TorqueGhosts {}

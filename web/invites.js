@@ -71,12 +71,12 @@ const NO_RELAY =
   "invite offer on the other connection server. Some networks can't connect without a relay server, which this page " +
   'does not use; players on one network can pick Same network only.';
 
-// Whether private addresses may be used: the same-network server, or on the host's own page `?lan=1`. A joining page
-// ignores `?lan`: its address came from the host, so only the invite's server decides.
-export function privateAllowed(server, search, joining) {
-  return server === 'lan' || (!joining && new URLSearchParams(search).has('lan'));
+// Whether private addresses may be used: the same-network server, or on the host's own page `?lan=1` when the page's code
+// allows it (`pageLan`, `soloPage`'s and `hostInvites`' `lan`): a link alone never turns it on. A joining page ignores
+// `?lan`: its address came from the host, so only the invite's server decides.
+export function privateAllowed(server, search, joining, pageLan = false) {
+  return server === 'lan' || (!joining && pageLan && new URLSearchParams(search).has('lan'));
 }
-const lanFor = (server) => privateAllowed(server, location.search, false);
 const pageLink = () => `${location.origin}${location.pathname}`;
 
 // The code the page's fragment carries ({ kind, code }), with the fragment cleared from the address bar; or null.
@@ -437,8 +437,10 @@ const OVER = ['failed', 'expired', 'left', 'closed'];
 // The host's invites (one for the page): `hosting(h)` is host.js's
 // `onHost` (`h` null once that server stopped), `show()` opens the Host with a link panel, `away(true)` closes every
 // invite still open and the panel and lets no one in (the page is in another player's game) until `away(false)`.
-// `open`: the panel opens once the server runs.
-export function hostInvites({ open = false } = {}) {
+// `open`: the panel opens once the server runs. `lan`: whether a `?lan=1` link may let invites use private addresses on
+// other servers than the same-network one (the page's choice, see `privateAllowed`).
+export function hostInvites({ open = false, lan = false } = {}) {
+  const lanFor = (key) => privateAllowed(key, location.search, false, lan);
   let host = null;
   const invites = new Map();
   const used = new Set();
@@ -1091,8 +1093,8 @@ export function joinInvite(code, { back = closePanel, again = null, opening = nu
 // once the module is loaded; `onHost` is host.js's `onHost` and `hosted(handle)` takes `hostGame`'s handle, for a game
 // whose own server runs in the page's worker from the start (the arena: joining another game ends its players, and the
 // server runs on). `startHost(onHost)`, for a game played alone in the page itself (the vehicle demo), starts that server
-// when the page first hosts and returns its handle (joining another game stops it).
-export function soloPage() {
+// when the page first hosts and returns its handle (joining another game stops it). `lan` is `hostInvites`' `lan`.
+export function soloPage({ lan = false } = {}) {
   let game = null;
   let startHost = null;
   let join = null;
@@ -1100,7 +1102,7 @@ export function soloPage() {
   let hosted = null;
   let starting = null;
   let mode = 'solo';
-  const book = () => (invites ??= hostInvites());
+  const book = () => (invites ??= hostInvites({ lan }));
 
   function joinWith(code) {
     if (mode === 'link') back();

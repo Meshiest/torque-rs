@@ -96,13 +96,13 @@ fn a_page_not_played_alone_also_offers_to_host_and_join_by_room_code() {
     // Host asks the page to host; a code typed in asks it to join that room, and none asks nothing.
     eval("JoinAddressButton.performClick();");
     assert_eq!(eval("return $World::WebJoinCode;"), "");
-    eval("AddressEdit.setValue(\"abcd-efgh\"); joinRoomCode();");
-    assert_eq!(eval("return $World::WebJoinCode;"), "abcd-efgh");
+    eval("AddressEdit.setValue(\"abcd-efgh-jkmn-pqrs\"); joinRoomCode();");
+    assert_eq!(eval("return $World::WebJoinCode;"), "abcd-efgh-jkmn-pqrs");
     eval("hostOnPage();");
     assert_eq!(eval("return $World::WebHostAsked;"), "1");
     // A hosted game's code shows on the menu.
-    eval("$World::RoomCode = \"ABCD-EFGH\"; showMenu();");
-    assert!(eval("return MenuStatus.getValue();").contains("ABCD-EFGH"));
+    eval("$World::RoomCode = \"ABCD-EFGH-JKMN-PQRS\"; showMenu();");
+    assert!(eval("return MenuStatus.getValue();").contains("ABCD-EFGH-JKMN-PQRS"));
 }
 
 #[test]

@@ -36,13 +36,14 @@ pub use client::{
 };
 pub use manager::{
     GhostConfig, GhostError, GhostEvent, GhostManager, GhostPackCtx, GhostView, KILL_PRIORITY,
-    MessageOutcome, SectionBudget, SectionStats,
+    MessageOutcome, SHARE_FIRST_PRIORITY, SHARE_PRIORITY_MAX, SectionBudget, SectionStats,
+    share_cap, share_priority,
 };
 pub use policy::{GhostPolicy, ObjectPolicy, PendingOrder, ScopeRadius, TableCounts, TorqueGhosts};
 
 pub use source::{
-    CamInfo, GhostScripts, NoScripts, ObjId, ObjectSource, SCOPE_OVERRIDE, flags, net_flags,
-    priority_compare, scope_radius_used,
+    CamInfo, ConnectionGhosts, GhostScripts, NoScripts, ObjId, ObjectSource, SCOPE_OVERRIDE, flags,
+    net_flags, priority_compare, scope_radius_used,
 };
 
 #[cfg(test)]

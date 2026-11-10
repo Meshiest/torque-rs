@@ -11,10 +11,13 @@
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 
-use torque::app::client::{ClientBuilder, ClientSetup, GameClient};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::orbit::Orbit;
+use torque::app::plugins::{ActionMapPlugin, ClientHostPlugin, GuiPlugin, ScreenPlugin};
+use torque::app::run::EngineRun;
 use torque::app::view::{Daylight, SceneShape, WorldView};
 use torque::app::{App, Host};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginId, Requires};
 use torque::gui::GuiDraws;
 use torque::shapes::instance::ShapeInstance;
 use torque::shapes::math::mul_p;
@@ -40,6 +43,26 @@ pub const ZOOM_STEP: f32 = 0.9;
 /// The example's game folder: `main.cs` builds the canvas, its profiles and the action map.
 pub fn game_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("game")
+}
+
+/// The example's plugin: the parts of a client it uses (the GUI, the action maps, the screen and the client host), and the
+/// game itself, made from the built engine when the engine runs.
+#[derive(Clone, Copy, Debug, Default, PluginId)]
+#[plugin(id = "example.character", crate = torque::engine)]
+pub struct CharacterPlugin;
+
+impl Plugin for CharacterPlugin {
+    fn requires(&self, requires: &mut Requires) {
+        requires
+            .plugin::<GuiPlugin>()
+            .plugin::<ActionMapPlugin>()
+            .plugin::<ScreenPlugin>()
+            .plugin::<ClientHostPlugin>();
+    }
+
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.app(CharacterGame::from_engine);
+    }
 }
 
 /// The example's client: the engine's [`GameClient`] (which it derefs to: its host and globals; it hosts no server), the
@@ -72,7 +95,17 @@ impl DerefMut for CharacterGame {
 }
 
 impl CharacterGame {
+    /// The game over an engine of [`CharacterPlugin`] alone.
     pub fn new() -> Result<CharacterGame, String> {
+        let engine = EngineBuilder::new()
+            .add_plugins(CharacterPlugin)
+            .build()
+            .map_err(|e| e.to_string())?;
+        CharacterGame::from_engine(&engine)
+    }
+
+    /// The game over `engine`: its client, with `main.cs` evaluated once the engine's parts are built.
+    pub fn from_engine(engine: &Engine) -> Result<CharacterGame, String> {
         let assets = KitAssets::new().map_err(|e| format!("the asset kit: {e}"))?;
         let shape =
             SceneShape::load(&assets, &kit_path("figure.dts")).ok_or("the figure does not load")?;
@@ -82,7 +115,7 @@ impl CharacterGame {
         let pistol =
             SceneShape::load(&assets, &kit_path("pistol.dts")).ok_or("the pistol does not load")?;
         let pistol_pose = pistol.instance().ok_or("the pistol does not pose")?;
-        let mut b = ClientBuilder::new(ClientSetup::default())?;
+        let mut b = ClientBuilder::from_engine(engine, None, ClientNet::None)?;
         let main = game_dir().join("main.cs");
         let script = std::fs::read(&main).map_err(|e| format!("main.cs: {e}"))?;
         b.vm.eval(&script).map_err(|e| format!("main.cs: {e}"))?;

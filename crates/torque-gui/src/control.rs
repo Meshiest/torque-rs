@@ -66,6 +66,9 @@ pub fn parent(vm: &Vm, id: ObjId) -> Option<ObjId> {
 
 /// Two integers of a `Point2I` field.
 pub fn point(vm: &Vm, id: ObjId, field: &[u8]) -> (i32, i32) {
+    if let Some(Value::Ints2([x, y])) = vm.objects().static_value(id, field) {
+        return (*x, *y);
+    }
     let text = vm.objects().field(id, field, b"").unwrap_or_default();
     let mut words = text
         .split(|b| *b == b' ')
@@ -95,6 +98,9 @@ fn field_text(vm: &Vm, id: ObjId, field: &[u8]) -> Vec<u8> {
 
 /// A Bool field.
 pub fn flag(vm: &Vm, id: ObjId, field: &[u8]) -> bool {
+    if let Some(Value::Bool(on)) = vm.objects().static_value(id, field) {
+        return *on;
+    }
     atob(&field_text(vm, id, field))
 }
 
@@ -117,7 +123,9 @@ pub(crate) fn resize_at(
     if depth > MAX_TREE_DEPTH || !vm.charge_work(VISIT_WORK) {
         return;
     }
-    if classes::resize(vm, gui, id, position, extent, depth) {
+    if classes::resize(vm, gui, id, position, extent, depth)
+        || crate::custom::resize(vm, gui, id, position, extent, depth)
+    {
         return;
     }
     base_resize(vm, gui, id, position, extent, depth);
@@ -318,10 +326,13 @@ fn on_wake(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmError> {
     // The remembered first responder, a tabable control that takes key focus.
     crate::input::on_wake(vm, gui, id)?;
     classes::on_wake(vm, gui, id);
-    vm.call_method(id, b"onWake", &[])?;
+    if !gui.is_realm(id) {
+        vm.call_method(id, b"onWake", &[])?;
+    }
     // What a class's `onWake` does after `GuiControl::onWake` returned (the script's `onWake` ran inside it).
     if vm.objects().contains(id) && gui.is_control(id) {
         classes::after_wake(vm, gui, id);
+        crate::custom::wake(vm, gui, id)?;
     }
     Ok(())
 }
@@ -355,7 +366,12 @@ fn sleep_at(vm: &mut Vm, gui: &Gui, id: ObjId, depth: usize) -> Result<(), VmErr
     crate::msgvector::on_sleep(gui, id);
     // The first responder cleared and the mouse unlocked before the script's `onSleep`.
     crate::input::on_sleep(vm, gui, id)?;
-    let result = vm.call_method(id, b"onSleep", &[]).map(|_| ());
+    crate::custom::sleep(vm, gui, id)?;
+    let result = if gui.is_realm(id) {
+        Ok(())
+    } else {
+        vm.call_method(id, b"onSleep", &[]).map(|_| ())
+    };
     if let Some(control) = gui.0.borrow_mut().controls.get_mut(&id) {
         control.awake = false;
         // Sleeping clears the "has rendered" flag with the awake one: the script's `onRender` runs once again on the first
@@ -410,6 +426,27 @@ pub(crate) fn remove_child(
     Ok(vm.objects_mut().remove(parent, child))
 }
 
+/// A control the host makes itself for a client-script realm: an object of `class` that scripts neither read nor write
+/// ([`SimObject::engine_made`]), with no name, no `GuiGroup` membership and no script callbacks (`onAdd`, `onWake`, `onSleep`,
+/// `onRemove` and `onRender` never run for it). The control's state is made as a script-made control's is. `None` for an
+/// unknown class or when no id is free.
+pub(crate) fn make_realm_control(
+    vm: &mut Vm,
+    gui: &Gui,
+    class: &str,
+    fields: &[(&[u8], &[u8], &[u8])],
+) -> Option<ObjId> {
+    let id = vm.add_engine_object(class.as_bytes(), fields)?;
+    let mut control = Control {
+        selected: -1,
+        realm: true,
+        ..Control::default()
+    };
+    control.active = crate::custom::made(vm, gui, id).unwrap_or(false);
+    gui.0.borrow_mut().controls.insert(id, control);
+    Some(id)
+}
+
 /// The behaviour of `GuiControl` and every subclass.
 struct ControlClass(Gui);
 
@@ -423,8 +460,11 @@ impl EngineClass for ControlClass {
         if classes::has_text_state(vm, id) {
             control.text = Some(classes::initial_text(vm, id));
         }
-        control.active =
-            ACTIVE_CLASSES.iter().any(|c| is_a(vm, id, c)) || self.0.ext().starts_active(vm, id);
+        // A plugin control's state is made here whatever the other checks say.
+        let made = crate::custom::made(vm, &self.0, id).unwrap_or(false);
+        control.active = made
+            || ACTIVE_CLASSES.iter().any(|c| is_a(vm, id, c))
+            || self.0.ext().starts_active(vm, id);
         if is_a(vm, id, "GuiTextEditCtrl") {
             control.edit = Some(Box::new(crate::input::EditState::new()));
         }
@@ -452,7 +492,9 @@ impl EngineClass for ControlClass {
     fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
         // The script's `onRemove` first (`Con::executef(this, "onRemove")`: silent without one), then the first
         // responder cleared and SimGroup's own.
-        vm.call_method(id, b"onRemove", &[])?;
+        if !self.0.is_realm(id) {
+            vm.call_method(id, b"onRemove", &[])?;
+        }
         let result = if self.0.is_awake(id) {
             sleep(vm, &self.0, id)
         } else {
@@ -460,6 +502,8 @@ impl EngineClass for ControlClass {
         };
         crate::input::forget(&self.0, id);
         self.0.ext().removed(id);
+        crate::custom::removed(&self.0, id);
+        crate::client_script::forget(&self.0, id);
         let mut state = self.0.0.borrow_mut();
         state.controls.remove(&id);
         if state.canvas == Some(id) {
@@ -770,3 +814,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         },
     );
 }
+
+#[cfg(test)]
+#[path = "control_tests.rs"]
+mod tests;

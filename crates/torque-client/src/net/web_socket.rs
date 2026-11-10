@@ -217,6 +217,14 @@ mod native {
         fn port(&self) -> u16 {
             self.port
         }
+
+        /// A game socket: TCP proved the address; datagrams are kept to a data channel's size, as the server keeps them.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind {
+                max_datagram: net::engine::LinkKind::WEB_RTC.max_datagram,
+                ..net::engine::LinkKind::web_socket(false)
+            }
+        }
     }
 }
 
@@ -353,6 +361,14 @@ mod web {
         fn port(&self) -> u16 {
             // A browser's socket has no port of its own to show; the stand-in's.
             self.server.port()
+        }
+
+        /// A game socket: TCP proved the address; datagrams are kept to a data channel's size, as the server keeps them.
+        fn link_kind(&self) -> net::engine::LinkKind {
+            net::engine::LinkKind {
+                max_datagram: net::engine::LinkKind::WEB_RTC.max_datagram,
+                ..net::engine::LinkKind::web_socket(false)
+            }
         }
     }
 }

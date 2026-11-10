@@ -16,12 +16,14 @@
 //! ([`attach_host`]); the transport opens a socket only when the script's `setNetPort` binds. Without one, no state exists, the
 //! tick loop does no network work, and the `GameConnection` methods are the class table's stubs.
 //!
-//! **A datagram's way.** The receive pass drains the transport (at most [`NET_DATAGRAMS_PER_PASS`] datagrams and
-//! [`NET_WORK_PER_TICK`] units of work a pass; the rest waits), hands each to `torque_net::handshake::Server::handle_datagram`,
+//! **A datagram's way.** The receive pass drains the transport (at most [`NET_DATAGRAMS_PER_PASS`] datagrams of connections
+//! and [`NET_WORK_PER_TICK`] units of work a pass; the rest waits), hands each to `torque_net::handshake::Server::handle_datagram`,
 //! and acts on what comes back with the state released: a reply is sent; a connect request becomes a `GameConnection` object
 //! and an outermost run of the script's `onConnectRequest` under the network's own step limits ([`NET_SCRIPT_RUN_STEPS`] a run,
 //! [`NET_SCRIPT_WINDOW_STEPS`] per [`NET_SCRIPT_WINDOW_MS`]; not the run's lifetime budget, which these scripts do not draw on;
-//! what they `schedule()` is a Sim event and does) after a global rate of [`NET_REQUESTS_PER_S`] (a request over a budget, or
+//! what they `schedule()` is a Sim event and does) after a global rate of [`NET_REQUESTS_PER_S`], one source network at most an
+//! eighth of it ([`torque_net::fair::FairLimits::shared`]; a reject the handshake made has its own such budget,
+//! [`NET_REJECTS_PER_S`]) (a request over a budget, or
 //! whose script hits its limit, is dropped without a reply and counted, and an older connection from the same address is
 //! dropped only once the request is admitted); an accepted one joins `ClientGroup`, runs `onConnect` (a limit there drops the
 //! connection properly: the Disconnect datagram and `onDrop`, reason `Script limit.`), and only then gets its accept datagram;
@@ -48,8 +50,16 @@
 //! then the host's bookkeeping. `delete()` from a script goes through `deleteObject`, which posts the `DeleteThisEvent` 1 ms
 //! later; the others destroy at once.
 //!
+//! **Strangers.** A datagram that is not a game packet of a connection the host holds (a challenge, a request, a query, junk,
+//! a spoofed source's) is a stranger's: strangers share a pool of [`NET_STRANGER_WORK_PER_TICK`] units a tick and
+//! [`NET_STRANGER_DATAGRAMS_PER_PASS`] datagrams a pass, and one past the pool is read and dropped at no cost (counted in
+//! [`Counters::strangers_dropped`]), up to [`NET_READS_PER_PASS`] reads a pass, so a flood from many sources cannot take the
+//! tick's work or its datagrams from the players.
+//!
 //! **Caps.** [`NET_DATAGRAMS_PER_PASS`] 256, [`NET_WORK_PER_TICK`] 4,096, [`NET_TIMEOUT_SWEEP_MS`] 1,500,
-//! [`NET_DROP_REASON_BYTES`] 255, [`NET_WORK_PER_SOURCE`] 2,048, [`NET_REQUESTS_PER_S`] 32,
+//! [`NET_DROP_REASON_BYTES`] 255, [`NET_WORK_PER_SOURCE`] 2,048, [`NET_REQUESTS_PER_S`] 32, [`NET_REJECTS_PER_S`] 32,
+//! [`NET_STRANGER_WORK_PER_TICK`] 1,024, [`NET_STRANGER_WORK_PER_SOURCE`] 512, [`NET_STRANGER_DATAGRAMS_PER_PASS`] 64,
+//! [`NET_READS_PER_PASS`] 8,192, [`NET_UNKNOWN_COMMAND_STEPS`] 1,000,
 //! [`NET_SCRIPT_RUN_STEPS`] 5,000,000, [`NET_SCRIPT_WINDOW_STEPS`] 10,000,000 per [`NET_SCRIPT_WINDOW_MS`] 1,000,
 //! [`NET_CONN_SCRIPT_SHARE_STEPS`] 2,500,000.
 //!
@@ -67,6 +77,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::rc::Rc;
 use web_time::Instant;
 
+use torque_net::fair::{FairLimiter, FairLimits};
 use torque_net::handshake::{ConnId, RateWindow, Server as Handshake};
 use torque_net::huffman::Table;
 use torque_net::serverquery::InfoLimiter;
@@ -82,15 +93,34 @@ use super::transport::SharedTransport;
 use super::{commands, conn, datablocks};
 use crate::state::{NetParts, START_GHOST_BITS, ServerState};
 
-/// The most datagrams one receive pass reads; the rest stay in the transport for the next pass (the socket's own queue holds
-/// the rest).
+/// The most datagrams of connections one receive pass handles; the rest stay in the transport for the next pass (the socket's
+/// own queue holds the rest).
 pub const NET_DATAGRAMS_PER_PASS: usize = 256;
+/// The most datagrams of strangers (anything but a connection's game packet) one receive pass handles; past it they are read
+/// and dropped.
+pub const NET_STRANGER_DATAGRAMS_PER_PASS: usize = NET_DATAGRAMS_PER_PASS / 4;
+/// The share of a tick's work strangers' datagrams may use in all; past it they are read and dropped.
+pub const NET_STRANGER_WORK_PER_TICK: u32 = NET_WORK_PER_TICK / 4;
+/// The most datagrams one receive pass reads, the dropped ones included: a flood is drained at near-zero cost (no copy, no
+/// handling) up to it, so a player's packet behind a few thousand of a stranger's is still read in the same pass.
+pub const NET_READS_PER_PASS: usize = 32 * NET_DATAGRAMS_PER_PASS;
+/// The share of the strangers' pool one source IP may use in a tick.
+pub const NET_STRANGER_WORK_PER_SOURCE: u32 = NET_STRANGER_WORK_PER_TICK / 2;
+/// The steps a remote command that names no function costs its connection's share of the script window (plus one a byte of
+/// its name): about what a short command's run takes, so a flood of them runs out of share as real ones would.
+pub const NET_UNKNOWN_COMMAND_STEPS: u64 = 1_000;
 /// The network work one pass may do: a unit for a datagram and one per 64 bytes of it, the same for a packet built, eight more
 /// for a connect request (it runs script). A pass that has spent it stops and the rest waits for the next tick.
 pub const NET_WORK_PER_TICK: u32 = 4_096;
 /// The share of a tick's work one source address may use: a source over it is skipped for the rest of the tick, so one client
 /// cannot hold the tick's budget.
 pub const NET_WORK_PER_SOURCE: u32 = NET_WORK_PER_TICK / 2;
+// A game packet of the largest datagram must fit a source's share, or it would be skipped for good: a reliable lane would send it
+// again for ever.
+const _: () = assert!(
+    reserve_for(torque_net::cap::NET_MAX_DATAGRAM) <= NET_WORK_PER_SOURCE,
+    "the largest datagram does not fit a source's share of a tick's work"
+);
 /// How often the timeout sweep acts (only when more than 1,500 ms passed since the last).
 pub const NET_TIMEOUT_SWEEP_MS: u32 = 1_500;
 /// The longest reason a drop keeps (the connection's 256-byte buffer less the NUL).
@@ -98,6 +128,15 @@ pub const NET_DROP_REASON_BYTES: usize = 255;
 /// The verified connect requests the whole server takes a second (the handshake limits each source to 4; this is the total, so
 /// many sources cannot run the script more than this often). A request over it is dropped without a reply.
 pub const NET_REQUESTS_PER_S: u32 = 32;
+/// The connect requests a second whose reject the handshake made itself (a wrong password, a full server): each takes an
+/// object and runs `onDrop`, so they have a budget of their own, shared out per network as [`NET_REQUESTS_PER_S`] is.
+pub const NET_REJECTS_PER_S: u32 = 32;
+
+/// The budget of [`NET_REQUESTS_PER_S`] or [`NET_REJECTS_PER_S`]: `total` a second, one network at most an eighth of it.
+#[must_use]
+pub fn request_budget(total: u32) -> FairLimiter {
+    FairLimiter::new(FairLimits::shared(total, total))
+}
 /// The steps one script run the network starts may take (`onConnectRequest`, `onConnect`, `onDrop`, a client's command): the
 /// caller is a stranger. Ordinary hooks take thousands.
 pub const NET_SCRIPT_RUN_STEPS: u64 = 5_000_000;
@@ -120,8 +159,12 @@ pub const NET_CONN_SCRIPT_SHARE_STEPS: u64 = NET_SCRIPT_WINDOW_STEPS / 4;
 /// The most work a game datagram of `len` bytes can cost, reserved before it is handled (a datagram the tick's budget cannot
 /// cover waits in the queue): the datagram's own cost, a unit per event (an event takes 11 bits at least, and a tag argument 7
 /// more bits and a unit of its own, so one unit per 7 bits bounds both), and a unit per 64 bytes of event.
-pub fn reserve_for(len: usize) -> u32 {
-    let len = u32::try_from(len).unwrap_or(u32::MAX);
+pub const fn reserve_for(len: usize) -> u32 {
+    let len = if len > u32::MAX as usize {
+        u32::MAX
+    } else {
+        len as u32
+    };
     super::pump::cost(len as usize)
         .saturating_add(len.saturating_mul(8) / 7)
         .saturating_add(len / 64)
@@ -158,6 +201,15 @@ pub struct Counters {
     pub drops: u64,
     /// Requests and commands dropped because the global request rate or the network script budget was spent.
     pub over_budget: u64,
+    /// Strangers' datagrams read and dropped past their pool ([`NET_STRANGER_WORK_PER_TICK`],
+    /// [`NET_STRANGER_DATAGRAMS_PER_PASS`]).
+    pub strangers_dropped: u64,
+    /// Datagrams over [`NET_MAX_DATAGRAM`](torque_net::cap::NET_MAX_DATAGRAM) dropped as they were read, in the engine's protocol (its
+    /// clients send no more; Torque's protocol counts them in `ignored`).
+    pub oversize: u64,
+    /// Remote commands that named no function ([`NET_UNKNOWN_COMMAND_STEPS`] charged each); their warnings are the script
+    /// engine's, limited per connection (`Vm::invoke_from`).
+    pub unknown_commands: u64,
     /// The script steps the network has used.
     pub script_steps: u64,
     /// Remote commands dropped because their connection had run [`NetShared::commands_per_conn_per_s`] in the second (none by
@@ -317,6 +369,8 @@ pub struct ConnRec<C> {
     pub dropping: bool,
     /// The remote commands of the current second ([`NetShared::commands_per_conn_per_s`]).
     pub cmd_rate: RateWindow,
+    /// The standing with the server commands plugins declared ([`NetShared::commands`]).
+    pub plugin_cmds: super::cmdlimit::ConnCommands,
     /// The script window ([`NetShared::window_start`]) `share_used` counts in.
     pub share_window: u32,
     /// The steps this connection's scripts took in that window ([`NET_CONN_SCRIPT_SHARE_STEPS`]).
@@ -333,6 +387,22 @@ pub struct ConnRec<C> {
     pub game: C,
 }
 
+/// A connection held in a downloading state: its `onConnect` waits until its content is delivered.
+#[derive(Debug, Clone)]
+pub struct Awaiting {
+    pub conn: ConnId,
+    pub obj: ObjId,
+    /// The connect arguments `onConnect` is called with.
+    pub args: Vec<Vec<u8>>,
+    /// The network time of the accept.
+    pub since: u32,
+    /// What the host holds the client to.
+    pub limits: super::content::ContentLimits,
+    /// The game's progress count when last looked at, and the network time it last changed.
+    pub seen: u64,
+    pub moved: u32,
+}
+
 /// The state the passes and the natives share (`Rc<RefCell<..>>`: never borrowed across script).
 pub struct NetShared<G: NetGame> {
     pub transport: SharedTransport,
@@ -341,6 +411,8 @@ pub struct NetShared<G: NetGame> {
     pub hs: Handshake,
     /// The host's limits of the server-query answers ([`query`](super::query)).
     pub info: InfoLimiter,
+    /// The info answer's script output of the last second ([`query`](super::query)).
+    pub info_cache: torque_net::serverquery::InfoCache,
     pub engine: Engine<G>,
     pub conns: HashMap<ObjId, ConnRec<G::Conn>>,
     pub by_conn: HashMap<ConnId, ObjId>,
@@ -361,8 +433,6 @@ pub struct NetShared<G: NetGame> {
     pub counters: Counters,
     /// When set, every phase of the tick loop pushes itself here.
     pub trace: Option<Vec<Phase>>,
-    /// The step limit of an outermost run outside the network host, which the passes put back after a run of theirs.
-    pub step_limit: Option<u64>,
     /// The steps one script run the network starts may take ([`NET_SCRIPT_RUN_STEPS`]).
     pub run_limit: u64,
     /// The remote commands one connection may run a second; the rest of the second's are dropped and counted. None (the
@@ -370,6 +440,12 @@ pub struct NetShared<G: NetGame> {
     /// bounded by its share of the script window ([`NET_CONN_SCRIPT_SHARE_STEPS`]) and the tick's network work
     /// ([`NET_WORK_PER_SOURCE`]).
     pub commands_per_conn_per_s: Option<u32>,
+    /// The server commands plugins declared, whose calls a client sends are held to their limits
+    /// ([`set_commands`](Self::set_commands)); none by default.
+    pub commands: Option<Rc<super::cmdlimit::CommandTable>>,
+    /// The server ticks run so far: what the commands' token buckets count in (the host that runs the passes sets it before each
+    /// receive, [`NetHost::set_tick`](crate::server::NetHost::set_tick)).
+    pub tick: u64,
     /// The steps the scripts the network starts may take together in a window of [`NET_SCRIPT_WINDOW_MS`]
     /// ([`NET_SCRIPT_WINDOW_STEPS`]). These are not the run's lifetime budget (`Server::run`'s): a stranger's datagrams cannot
     /// spend that.
@@ -382,13 +458,48 @@ pub struct NetShared<G: NetGame> {
     pub window_used: u64,
     /// The connection whose packet's followups are running (a script's `delete()` of it waits for the end of the packet).
     pub packet_obj: Option<ObjId>,
-    pub requests: RateWindow,
+    /// The verified connect requests the scripts are run for ([`NET_REQUESTS_PER_S`]).
+    pub requests: FairLimiter,
+    /// The connect requests the handshake rejected itself ([`NET_REJECTS_PER_S`]).
+    pub rejects: FairLimiter,
     pub work_used: u32,
+    /// The work strangers' datagrams used this tick ([`NET_STRANGER_WORK_PER_TICK`]).
+    pub stranger_work: u32,
     pub last_sweep: u32,
     pub cursor: u32,
+    /// Connections accepted with content to send, whose `onConnect` waits for it ([`content`](super::content)).
+    pub awaiting: Vec<Awaiting>,
+    /// Engine mode's sessions and their state ([`engine`](super::engine)); `None` for a server that speaks Torque's protocol.
+    pub engine_host: Option<Box<super::engine::EngineHost>>,
 }
 
 impl<G: NetGame> NetShared<G> {
+    /// Holds the calls clients send to the declared server commands to their limits (none declared: nothing is held, and the
+    /// commands run as TGE's do).
+    pub fn set_commands(&mut self, table: super::cmdlimit::CommandTable) {
+        self.commands = (!table.is_empty()).then(|| Rc::new(table));
+    }
+
+    /// The handshake this server speaks (what its connect gate's manifest is made for).
+    pub fn handshake_profile(&self) -> torque_net::profile::HandshakeProfile {
+        self.hs.config().profile.clone()
+    }
+
+    /// Judges every connect request that passes the standard checks with `gate`, before `onConnectRequest` runs
+    /// ([`ServerConfig::gate`](torque_net::handshake::ServerConfig::gate)): a refused client gets the gate's reason and the
+    /// scripts never see it.
+    pub fn set_connect_gate(&mut self, gate: impl torque_net::connect::ConnectGate + 'static) {
+        self.hs.config_mut().gate = Some(std::sync::Arc::new(gate));
+    }
+
+    /// Tells the server the address clients reach it by, which its auth provider binds tickets to
+    /// ([`ServerConfig::address`](torque_net::handshake::ServerConfig::address)). A server behind a NAT, a relay or a socket
+    /// bound to every interface needs its public address here; without one, a provider that binds to the address refuses every
+    /// ticket.
+    pub fn set_public_address(&mut self, address: Option<std::net::SocketAddr>) {
+        self.hs.config_mut().address = address;
+    }
+
     /// The string coder's table ([`NetGame::string_table`]).
     pub fn string_table(&self) -> Rc<Table> {
         self.game.string_table()
@@ -436,14 +547,15 @@ impl<G: NetGame> NetShared<G> {
     }
 
     /// Sets the VM's step limit for a script the network starts: [`NET_SCRIPT_RUN_STEPS`], or what is left of the window for a
-    /// `strict` one (cleanup, a drop's `onDrop`, is not strict: it runs whatever the window says, within the run limit). False,
+    /// `strict` one (cleanup, a drop's `onDrop`, is not strict: it runs whatever the window says, within the run limit). None,
     /// and nothing set, when a strict run has no steps left. `cap` lowers the limit further (a connection's share,
-    /// [`NET_CONN_SCRIPT_SHARE_STEPS`]).
-    pub fn begin_run(&mut self, vm: &mut Vm, strict: bool, cap: Option<u64>) -> bool {
+    /// [`NET_CONN_SCRIPT_SHARE_STEPS`]). The returned [`NetRun`] holds the limit the VM had, which
+    /// [`end_run`](Self::end_run) puts back: the server's own limit on every other run must survive the network's.
+    pub fn begin_run(&mut self, vm: &mut Vm, strict: bool, cap: Option<u64>) -> Option<NetRun> {
         self.roll_window();
         let left = self.window_budget.saturating_sub(self.window_used);
         if strict && left == 0 {
-            return false;
+            return None;
         }
         let mut limit = if strict {
             self.run_limit.min(left)
@@ -453,17 +565,18 @@ impl<G: NetGame> NetShared<G> {
         if let Some(cap) = cap {
             limit = limit.min(cap);
         }
+        let outer = vm.step_limit();
         vm.set_step_limit(Some(limit));
-        true
+        Some(NetRun { outer })
     }
 
-    /// Ends a run [`begin_run`](Self::begin_run) started: its steps join the window and the counters, and the VM's limit is put
-    /// back. Returns the steps the run took.
-    pub fn end_run(&mut self, vm: &mut Vm) -> u64 {
+    /// Ends a run [`begin_run`](Self::begin_run) started: its steps join the window and the counters, and the VM's limit from
+    /// before the run is put back. Returns the steps the run took.
+    pub fn end_run(&mut self, vm: &mut Vm, run: NetRun) -> u64 {
         let used = vm.steps();
         self.window_used = self.window_used.saturating_add(used);
         self.counters.script_steps = self.counters.script_steps.saturating_add(used);
-        vm.set_step_limit(self.step_limit);
+        vm.set_step_limit(run.outer);
         used
     }
 
@@ -502,10 +615,18 @@ impl<G: NetGame> NetShared<G> {
     }
 }
 
+/// A script run the network started ([`NetShared::begin_run`]): the step limit the VM had before it, which
+/// [`NetShared::end_run`] puts back.
+#[must_use = "a network run must end with `end_run`, which puts the VM's own step limit back"]
+#[derive(Debug)]
+pub struct NetRun {
+    outer: Option<u64>,
+}
+
 /// Sixteen bytes for the challenge digest's key, from the operating system's randomness as the standard library's hasher seeds
 /// draw it (a different seed per process and per call), mixed with the clock. The digest is keyed and verified server-side
 /// only.
-fn digest_key() -> [u8; 16] {
+pub(crate) fn digest_key() -> [u8; 16] {
     let mut key = [0u8; 16];
     for (i, half) in key.chunks_mut(8).enumerate() {
         let mut hasher = RandomState::new().build_hasher();
@@ -524,8 +645,6 @@ pub struct Host<G: NetGame> {
     /// The game's state of the host.
     pub game: G,
     pub engine: Engine<G>,
-    /// The step limit of an outermost run outside the network host ([`NetShared::step_limit`]).
-    pub step_limit: Option<u64>,
     pub clock: NetClock,
     /// The game's ghost sources: the hub's game.
     pub ghosts: G::Ghosts,
@@ -543,7 +662,6 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         transport,
         game,
         engine,
-        step_limit,
         clock,
         ghosts: sources,
         container,
@@ -558,6 +676,7 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         codecs: Rc::clone(&codecs),
         hs: Handshake::new(codecs.server_config(G::DEFAULT_MAX_PLAYERS), digest_key()),
         info: InfoLimiter::default(),
+        info_cache: Default::default(),
         engine,
         conns: HashMap::new(),
         by_conn: HashMap::new(),
@@ -569,9 +688,10 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         source_work: HashMap::new(),
         counters: Counters::default(),
         trace: None,
-        step_limit,
         run_limit: NET_SCRIPT_RUN_STEPS,
         commands_per_conn_per_s: None,
+        commands: None,
+        tick: 0,
         window_budget: NET_SCRIPT_WINDOW_STEPS,
         game,
         clock,
@@ -579,10 +699,14 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         window_start: 0,
         window_used: 0,
         packet_obj: None,
-        requests: RateWindow::default(),
+        requests: request_budget(NET_REQUESTS_PER_S),
+        rejects: request_budget(NET_REJECTS_PER_S),
         work_used: 0,
+        stranger_work: 0,
         last_sweep: 0,
+        awaiting: Vec::new(),
         cursor: 0,
+        engine_host: None,
     }));
     conn::install(vm, &shared);
     let hub = GhostHub::new(

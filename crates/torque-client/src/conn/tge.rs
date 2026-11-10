@@ -14,11 +14,13 @@
 //!
 //! **Datablocks.** A `SimDataBlockEvent` is read as TGE's `SimDataBlockEvent::unpack` reads it: `flag(modified)`, then the id
 //! (`ranged` over the datablock-id range), the class id, the position in the server's datablock group and the group's size,
-//! then the class's `packData` record ([`TgeDatablocks`]). The datablock joins the world under its id (its fields named as
-//! the script fields, [`ghosts::datablocks::fields::fields`]) and the scripts hear `onDataBlockObjectReceived(index, total)`.
-//! The server's `DataBlocksDone` message is answered with `DataBlocksDownloadDone` and its sequence: the client has every
-//! datablock it was sent (the server then runs `onDataBlocksDone`). The client's packet carries its control block and the events it posted (a remote command, the answer to the
-//! server's ghost-always message).
+//! then the class's `packData` record ([`TgeDatablocks`]). A class id past the table's is a plugin's datablock class, read with
+//! its own record; a plugin's ghost classes are read past the engine's own ([`TgeFeed::set_plugins`]: the client's engine's
+//! set). The datablock joins the world under its id (its fields named as the script fields,
+//! [`ghosts::datablocks::fields::fields`]) and the scripts hear `onDataBlockObjectReceived(index, total)`. The server's
+//! `DataBlocksDone` message is answered with `DataBlocksDownloadDone` and its sequence: the client has every datablock it was
+//! sent (the server then runs `onDataBlocksDone`). The client's packet carries its control block and the events it posted (a
+//! remote command, the answer to the server's ghost-always message).
 //!
 //! **The world** ([`TgeWorld`]) poses nothing (every shape stands at its default pose), names a ghost by its ShapeBase name block,
 //! and draws to the Sky's visible distance.
@@ -30,18 +32,22 @@
 //! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code is this crate's own.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
+use ghost_world::world::TouchedGhosts;
 use ghost_world::{ClientWorld, Ghost};
+use ghosts::block::BlockSections;
 use ghosts::datablocks::DatablockCodecSet;
+use ghosts::plugin::PluginClasses;
 use ghosts::{NetWidths, TgeClass, TgeDatablocks, TgeRecord, Value, tge_reps};
 use net::NetError;
-use net::bits::BitReader;
+use net::bits::{BitReader, BitWriter};
 use net::classes::{Kind, NetClasses};
 use net::client::{Client, ClientEvent as Handshake};
+use net::connect::BlockSource;
 use net::control::{ClientBlock, ControlSection, ServerHead};
 use net::events::{
     ConnectionMessage, EventCtx, EventIds, EventQueue, EventReceiver, EventRegistry, EventUnpacker,
@@ -54,10 +60,17 @@ use net::profile::DEFAULT_DATABLOCK_BITS;
 use net::protocol::{RateConfig, Received, Role, reader_at};
 use shapes::instance::ShapeInstance;
 use shapes::shape::Shape;
+use torque_engine::net_classes::{
+    ClientGhostLookup, ClientGhosts, DrawnShapes, GhostSinks, PluginStills, RawGhostEvent,
+};
+use torque_engine::{Engine, ProtocolKind};
+use torque_server::net::channels::ClientChannels;
 use torque_server::net::codecs::{DATABLOCKS_DONE, DATABLOCKS_DOWNLOAD_DONE};
+use torque_server::net::rpc::RpcLanes;
 use ts_vm::fields::{FieldRules, FieldType};
 use ts_vm::vm::Vm;
 
+use super::engine_wire::{EngineNonceKey, EngineStart, EngineWire, WireEvent, engine_nonce};
 use super::{ConnGame, Connect, Feed, FeedEvent, Link, Started, WorldOf};
 use crate::datablocks::{Unpacked, UnpackedField};
 use crate::hud::{HudWorld, ShapeName};
@@ -90,6 +103,8 @@ pub struct TgeWorld {
     pub records: ClientWorld<TgeClientSet>,
     /// The control Player's state as the client predicts it.
     pub control_state: Option<ControlState>,
+    /// The plugin ghosts the plugins' handlers have heard of, for each handler: the ghost's index, its birth and its updates.
+    pub plugin_seen: Vec<HashMap<u32, (u64, u32)>>,
 }
 
 impl Deref for TgeWorld {
@@ -246,6 +261,8 @@ fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
     world.first_person_nodes = old.first_person_nodes;
     world.first_person_clear = old.first_person_clear;
     world.max_view_distance = old.max_view_distance;
+    world.plugin_shapes = old.plugin_shapes;
+    world.stills = old.stills;
     world.effect_seq = old.effect_seq;
     world.effects_dropped = old.effects_dropped;
     world.player_move_seq = old.player_move_seq;
@@ -368,13 +385,17 @@ enum Incoming {
 struct Unpacker<'a> {
     ghosts: &'a mut GhostClient<TgeCodec>,
     classes: &'a NetClasses,
+    plugins: &'a PluginClasses,
 }
 
-/// `SimDataBlockEvent::unpack`: the flag, the id, the class id, the position, the group's size and the record.
+/// `SimDataBlockEvent::unpack`: the flag, the id, the class id, the position, the group's size and the record. A class id past
+/// the table's is a plugin's datablock class (`plugins`, numbered from the table's end); any other is refused.
 fn read_datablock(
     r: &mut BitReader,
     ctx: &EventCtx<'_>,
     classes: &NetClasses,
+    plugins: &PluginClasses,
+    charge: &mut ghosts::ChargeFn<'_>,
 ) -> Result<Option<(TgeDatablockEvent, u32, u32)>, NetError> {
     if !r.read_flag()? {
         return Ok(None);
@@ -385,14 +406,29 @@ fn read_datablock(
     let class_id = r.read_bits(classes.id_bits(Kind::DataBlock))?;
     let index = r.read_bits(ctx.datablock_bits)?;
     let total = r.read_bits(ctx.datablock_bits + 1)?;
+    let table_len = classes.count(Kind::DataBlock);
+    if class_id as usize >= table_len {
+        let class = plugins
+            .by_id(
+                Kind::DataBlock,
+                class_id,
+                PluginClasses::datablock_base(table_len),
+            )
+            .ok_or(NetError::Invalid("datablock class id"))?;
+        let record = class.decode(r, ctx.table, charge, &ghosts::ReadCtx::new(widths, true))?;
+        let datablock = TgeDatablock {
+            class: class.name().to_string(),
+            fields: record.record_fields(),
+        };
+        return Ok(Some((TgeDatablockEvent { id, datablock }, index, total)));
+    }
     let name = classes
         .classes(Kind::DataBlock)
         .get(class_id as usize)
         .map(|c| c.name.as_str())
         .ok_or(NetError::Invalid("datablock class id"))?;
     let class = TgeDatablocks::class_by_name(name).ok_or(NetError::Invalid("datablock class"))?;
-    let record =
-        TgeDatablocks::decode(class, r, ctx.table, &mut net::events::free_charge(), widths)?;
+    let record = TgeDatablocks::decode(class, r, ctx.table, charge, widths)?;
     let datablock = TgeDatablock {
         class: name.to_string(),
         fields: ghosts::datablocks::fields::fields(&record, widths),
@@ -412,10 +448,70 @@ impl EventUnpacker for Unpacker<'_> {
         if class == ctx.ids.ghost_always_object {
             self.ghosts.read_always_event(r).map(Incoming::Always)
         } else if class == ctx.ids.sim_data_block {
-            read_datablock(r, ctx, self.classes).map(Incoming::DataBlock)
+            // A datablock event draws on its datagram's budget, as the ghost records do.
+            let mut charge = self.ghosts.codec().charge();
+            read_datablock(r, ctx, self.classes, self.plugins, &mut charge).map(Incoming::DataBlock)
         } else {
             NetEvent::unpack(class, r, ctx).map(Incoming::Net)
         }
+    }
+}
+
+/// What a client's engine adds to every connect request it makes: its manifest and a ticket from its auth provider
+/// ([`Engine::connect_block`]). Attached to the client's script engine by [`ConnectHello::install`]; a network connection takes
+/// its [`BlockSource`] when it starts and the block is made once the server's challenge response is in, for that server and that
+/// connection (a local connection needs none). An engine that says nothing on the wire attaches nothing, so its requests are
+/// Torque's.
+pub struct ConnectHello {
+    engine: Engine,
+}
+
+impl ConnectHello {
+    /// Attaches the engine's hello to `vm` when the engine [says anything on the wire](Engine::is_networked) or speaks the
+    /// engine's protocol (whose connect always carries the manifest).
+    pub fn install(vm: &mut Vm, engine: &Engine) {
+        if engine.is_networked() || engine.protocol() == ProtocolKind::Engine {
+            vm.set_extension(Rc::new(ConnectHello {
+                engine: engine.clone(),
+            }));
+        }
+    }
+
+    /// The sections of the per-ghost block the client's engine reads (its plugins put them on the engine, and are in its
+    /// manifest, so a server that accepts the client writes the same).
+    #[must_use]
+    pub fn blocks(&self) -> BlockSections {
+        self.engine
+            .resource::<BlockSections>()
+            .map(|b| *b)
+            .unwrap_or_default()
+    }
+
+    /// Whether the client's engine speaks the engine's protocol.
+    #[must_use]
+    pub fn engine_mode(&self) -> bool {
+        self.engine.protocol() == ProtocolKind::Engine
+    }
+
+    /// What makes the block of one connect: an `Err` it returns is the auth provider's reason it has no ticket.
+    fn source(&self, vm: &Vm) -> BlockSource {
+        let engine = self.engine.clone();
+        // What the client holds of mods is read once, as the connection starts.
+        let mods = vm
+            .extension::<torque_engine::net::ConnectExtras>()
+            .and_then(|extras| (extras.0)(vm));
+        let always = self.engine_mode();
+        BlockSource::new(move |cx| {
+            let block = if always {
+                Some(engine.engine_connect_block(&net::profile::HandshakeProfile::default(), cx)?)
+            } else {
+                engine.connect_block(cx)?
+            };
+            Ok(block.map(|mut block| {
+                block.mods.clone_from(&mods);
+                block
+            }))
+        })
     }
 }
 
@@ -444,6 +540,17 @@ pub struct TgeFeed {
     checked: Option<u32>,
     gone: bool,
     control_set: bool,
+    /// The bulk channels of the engine, read from the front of each server packet once they are active.
+    channels: Option<Rc<ClientChannels>>,
+    /// The plugins' ghost and datablock classes the feed reads past the class table's ids.
+    plugins: PluginClasses,
+    /// The sections of the per-ghost block after each record (none: no block, as from a TGE server).
+    blocks: BlockSections,
+    /// The engine-mode session that carries the connection in place of TGE's handshake and packet header
+    /// ([`TgeFeed::over_engine`]).
+    engine: Option<EngineWire>,
+    /// Engine mode's RPC carrier, which the session's RPC lanes fill and empty.
+    rpc_lanes: Option<Rc<RpcLanes>>,
 }
 
 impl TgeFeed {
@@ -468,13 +575,43 @@ impl TgeFeed {
         local: Option<(u32, u8)>,
         rates: RateConfig,
     ) -> Result<TgeFeed, String> {
+        let mut feed = TgeFeed::made(link, password, args, seq, local, rates)?;
+        match local {
+            Some((_, bits)) => feed.accepted(bits),
+            None => feed.challenge(),
+        }
+        Ok(feed)
+    }
+
+    /// A feed whose connection rides an engine-mode session ([`super::engine_wire`]): the connect is made at the first
+    /// pump, from `start`; `lanes` carries the RPCs.
+    pub fn over_engine(
+        link: Box<dyn Link>,
+        start: EngineStart,
+        lanes: Option<Rc<RpcLanes>>,
+        rates: RateConfig,
+    ) -> Result<TgeFeed, String> {
+        let mut feed = TgeFeed::made(link, &start.password, start.args.clone(), 0, None, rates)?;
+        feed.engine = Some(EngineWire::new(start));
+        feed.rpc_lanes = lanes;
+        Ok(feed)
+    }
+
+    fn made(
+        link: Box<dyn Link>,
+        password: &[u8],
+        args: Vec<Vec<u8>>,
+        seq: u32,
+        local: Option<(u32, u8)>,
+        rates: RateConfig,
+    ) -> Result<TgeFeed, String> {
         let tables = TgeTables::tge()?;
         let fields = ConnectFields::standard(password, args);
         let client = match local {
             Some((protocol, bits)) => Client::local(fields, rates, protocol, u32::from(bits), 0),
             None => Client::new(seq, fields).with_rates(rates),
         };
-        let mut feed = TgeFeed {
+        Ok(TgeFeed {
             link,
             reader: None,
             wheel_counts: std::collections::BTreeMap::new(),
@@ -493,12 +630,44 @@ impl TgeFeed {
             checked: None,
             gone: false,
             control_set: false,
-        };
-        match local {
-            Some((_, bits)) => feed.accepted(bits),
-            None => feed.challenge(),
+            channels: None,
+            plugins: PluginClasses::default(),
+            blocks: BlockSections::default(),
+            engine: None,
+            rpc_lanes: None,
+        })
+    }
+
+    /// The engine's bulk channels this connection reads. They start over for this connection ([`ClientChannels::reset`]) and
+    /// are turned on when the server's accept says its gate matched the channels this client listed in its manifest.
+    pub fn set_channels(&mut self, channels: Option<Rc<ClientChannels>>) {
+        if let Some(channels) = &channels {
+            channels.reset();
         }
-        Ok(feed)
+        self.channels = channels;
+    }
+
+    /// The plugins' ghost and datablock classes the feed reads (the server's set: the client's engine has the same plugins).
+    pub fn set_plugins(&mut self, plugins: PluginClasses) {
+        if let Some(ghosts) = self.ghosts.as_mut() {
+            ghosts.codec_mut().plugins = plugins.clone();
+        }
+        self.plugins = plugins;
+    }
+
+    /// The sections of the per-ghost block the server writes after each record ([`ghosts::block`]; the client's engine
+    /// has the plugins that fill them, and so has the server, whose manifest matched: [`ConnectHello::blocks`]).
+    pub fn set_blocks(&mut self, blocks: BlockSections) {
+        if let Some(ghosts) = self.ghosts.as_mut() {
+            ghosts.codec_mut().blocks = blocks;
+        }
+        self.blocks = blocks;
+    }
+
+    /// Adds the block `source` makes (the engine's manifest and a ticket for `server`, the address dialed, and the challenge) to the
+    /// connect request, after its arguments.
+    pub fn set_connect_source(&mut self, server: std::net::SocketAddr, source: BlockSource) {
+        self.client.set_block_source(server, source);
     }
 
     /// The game's files the feed reads a WheeledVehicleData's shape from.
@@ -507,7 +676,143 @@ impl TgeFeed {
     }
 
     fn connected(&self) -> bool {
-        *self.client.state() == net::client::ClientState::Connected
+        match &self.engine {
+            Some(wire) => wire.is_accepted(),
+            None => *self.client.state() == net::client::ClientState::Connected,
+        }
+    }
+
+    /// The pump in engine mode: the session's own timers, then the datagrams that came, each as the session reads it.
+    fn engine_pump(&mut self, world: &mut TgeWorld) -> Result<(), String> {
+        let mut out = Vec::new();
+        if let Some(wire) = self.engine.as_mut() {
+            wire.pump(&mut *self.link, self.now, &mut out);
+        }
+        self.apply_wire(world, std::mem::take(&mut out))?;
+        for _ in 0..DATAGRAMS_PER_PUMP {
+            if self.events.len() >= MAX_WAITING_EVENTS || self.gone {
+                break;
+            }
+            let Some(data) = self
+                .link
+                .recv(std::time::Duration::ZERO)
+                .map_err(|e| e.to_string())?
+            else {
+                break;
+            };
+            if let Some(wire) = self.engine.as_mut() {
+                wire.receive(&data, self.now, &mut out);
+            }
+            self.apply_wire(world, std::mem::take(&mut out))?;
+        }
+        Ok(())
+    }
+
+    /// What the session said, as the feed's events and the payload's reads and fates.
+    fn apply_wire(&mut self, world: &mut TgeWorld, events: Vec<WireEvent>) -> Result<(), String> {
+        for event in events {
+            if self.gone {
+                break;
+            }
+            match event {
+                WireEvent::Sent => self.events.push_back(FeedEvent::ChallengeSent),
+                WireEvent::Answered => self.events.push_back(FeedEvent::ChallengeAnswered),
+                WireEvent::Accepted { ghost_bits } => {
+                    // Every peer of the engine's protocol has the channels on, both ways.
+                    let bits = if ghost_bits == 0 {
+                        self.default_ghost_bits()
+                    } else {
+                        ghost_bits
+                    };
+                    if let Some(channels) = &self.channels {
+                        channels.set_active(true);
+                        channels.set_ghost_bits(bits);
+                    }
+                    self.accepted(bits);
+                    self.events.push_back(FeedEvent::Accepted);
+                }
+                WireEvent::Packet { seq, data } => {
+                    self.game_packet(world, &Received::payload(u32::from(seq)), &data, 0)
+                        .map_err(|e| e.to_string())?;
+                }
+                WireEvent::Rpc(batch) => {
+                    let kept = self
+                        .rpc_lanes
+                        .as_ref()
+                        .is_some_and(|lanes| lanes.received(None, batch));
+                    if !kept {
+                        return Err(
+                            "the server sent RPC messages this client does not take".to_string()
+                        );
+                    }
+                }
+                WireEvent::Fate {
+                    send_seq,
+                    delivered,
+                } => {
+                    let mut settled = Vec::new();
+                    self.out.on_notify(send_seq, delivered, &mut settled);
+                    if let Some(channels) = &self.channels {
+                        channels.on_notify(send_seq, delivered);
+                    }
+                }
+                WireEvent::Ended(event) => self.end(event),
+                WireEvent::Failed(why) => return Err(why),
+            }
+        }
+        Ok(())
+    }
+
+    /// The ghost-id width of a server's accept that names none.
+    fn default_ghost_bits(&self) -> u8 {
+        net::ghost::GhostConfig {
+            max_ghosts: net::profile::DEFAULT_GHOST_LIMIT,
+            local: false,
+            class_bits: self.tables.classes.id_bits(Kind::Object),
+        }
+        .ghost_bits()
+    }
+
+    /// The tick's packet in engine mode: the control block, then the events that wait, in the move lane.
+    fn engine_send(&mut self, world: &mut TgeWorld, block: &ClientBlock) {
+        let Some(wire) = self.engine.as_mut() else {
+            return;
+        };
+        if let Some(lanes) = &self.rpc_lanes {
+            wire.feed_rpcs(lanes);
+        }
+        let (queue, channels, tables, widths) =
+            (&mut self.out, &self.channels, &self.tables, self.widths);
+        let mut write = |send_seq: u32, room: usize| {
+            let packet_bits = room * 8;
+            let mut w = BitWriter::with_limit(packet_bits);
+            w.enable_string_buffer();
+            // The upstream channels' chunks come first, in the room the moves leave.
+            if let Some(channels) = channels
+                && channels.writes_upstream()
+            {
+                let mut moves = BitWriter::new();
+                block.write(&mut moves);
+                channels.write_upstream(&mut w, send_seq, packet_bits, moves.bits());
+            }
+            block.write(&mut w);
+            let params = SectionParams {
+                ghosting: false,
+                hold_ordered: false,
+                packet_bits,
+                min_start_bits: w.bits(),
+            };
+            // The client's events are a few bits each: a section that does not write sends nothing this tick, and its events
+            // wait for the next.
+            let written =
+                queue.write_section_stalling(&mut w, &tables.ctx(widths), send_seq, params);
+            (written.is_ok() && !w.is_overflowed()).then(|| w.into_bytes())
+        };
+        let mut out = Vec::new();
+        wire.send(&mut *self.link, self.now, &mut write, &mut out);
+        if let Err(why) = self.apply_wire(world, out) {
+            self.end(FeedEvent::Dropped(why.into_bytes()));
+        }
     }
 
     /// `WheeledVehicleData::preload` on the client for datablock `id` (just received): its wheel count from the hubs of the
@@ -526,6 +831,8 @@ impl TgeFeed {
             return;
         };
         let mut work = 0;
+        // Each datablock's read has the loads' whole budget.
+        self.shapes.start_tick();
         let Some(shape) =
             self.shapes
                 .get(path, self.reader.as_ref(), &mut work, WHEEL_SHAPE_BUDGET)
@@ -558,7 +865,9 @@ impl TgeFeed {
             .classes(Kind::Object)
             .iter()
             .map(|c| c.name.as_str());
-        let codec = TgeCodec::new(names, self.widths, self.tables.table.clone());
+        let codec = TgeCodec::new(names, self.widths, self.tables.table.clone())
+            .with_plugins(self.plugins.clone())
+            .with_blocks(self.blocks);
         let class_bits = self.tables.classes.id_bits(Kind::Object);
         let mut ghosts = GhostClient::new(codec, class_bits, ghost_bits);
         ghosts.codec_mut().facts.wheels = self.wheel_counts.clone();
@@ -568,6 +877,9 @@ impl TgeFeed {
 
     fn end(&mut self, event: FeedEvent<()>) {
         self.gone = true;
+        if let Some(channels) = &self.channels {
+            channels.closed();
+        }
         self.events.push_back(event);
     }
 
@@ -579,17 +891,17 @@ impl TgeFeed {
                 self.events.push_back(FeedEvent::ChallengeAnswered);
             }
             Handshake::Accepted(accept) => {
-                let bits = accept.ghost_bits.map_or_else(
-                    || {
-                        net::ghost::GhostConfig {
-                            max_ghosts: net::profile::DEFAULT_GHOST_LIMIT,
-                            local: false,
-                            class_bits: self.tables.classes.id_bits(Kind::Object),
-                        }
-                        .ghost_bits()
-                    },
-                    |b| b as u8,
-                );
+                if accept.channels
+                    && let Some(channels) = &self.channels
+                {
+                    channels.set_active(true);
+                }
+                let bits = accept
+                    .ghost_bits
+                    .map_or_else(|| self.default_ghost_bits(), |b| b as u8);
+                if let Some(channels) = &self.channels {
+                    channels.set_ghost_bits(bits);
+                }
                 self.accepted(bits);
                 self.events.push_back(FeedEvent::Accepted);
             }
@@ -617,6 +929,9 @@ impl TgeFeed {
         for notify in &received.notifies {
             self.out
                 .on_notify(notify.send_seq, notify.delivered, &mut settled);
+            if let Some(channels) = &self.channels {
+                channels.on_notify(notify.send_seq, notify.delivered);
+            }
         }
         if received.answer_ping
             && let Some(protocol) = self.client.protocol_mut()
@@ -624,28 +939,40 @@ impl TgeFeed {
             let ack = protocol.ack_packet(self.now);
             let _ = self.link.send(&ack);
         }
-        let Some(ghosts) = self.ghosts.as_mut() else {
-            return Ok(());
-        };
         if !received.payload {
             return Ok(());
         }
         let mut r = reader_at(data, payload_bit);
         r.enable_string_buffer();
-        let mut charge = net::events::free_charge();
-        let class_of = |index: u32| {
-            let g = ghosts.ghost(index)?;
-            let wheels = g
-                .datablock
-                .and_then(|db| ghosts.codec().facts.wheels.get(&db).copied());
-            g.class?.tail_class(wheels)
+        // The bulk channels' chunks come first in the payload when the server writes them.
+        if let Some(channels) = &self.channels {
+            channels.read(&mut r)?;
+        }
+        let Some(ghosts) = self.ghosts.as_mut() else {
+            return Ok(());
         };
-        let head = ServerHead::read_with(
-            &mut r,
-            self.widths.ghost_bits,
-            &mut charge,
-            &mut ghosts::TgeTails::new(&class_of),
-        )?;
+        // What one datagram's decoders may spend, so a server cannot make the client expand more per packet than its bytes
+        // allow ([`ghosts::datagram_budget`]): the head, the datablock events and the ghost records all draw on the codec's.
+        ghosts
+            .codec_mut()
+            .set_budget(Some(ghosts::datagram_budget(data.len())));
+        let head = {
+            let mut charge = ghosts.codec().charge();
+            let class_of = |index: u32| {
+                let g = ghosts.ghost(index)?;
+                let wheels = g
+                    .datablock
+                    .and_then(|db| ghosts.codec().facts.wheels.get(&db).copied());
+                g.class?.tail_class(wheels)
+            };
+            ServerHead::read_with(
+                &mut r,
+                self.widths.ghost_bits,
+                &mut charge,
+                // The packet data ends with its frame where the per-ghost block carries the scene hierarchy.
+                &mut ghosts::TgeTails::new(&class_of).with_frames(self.blocks.links),
+            )?
+        };
         // The point the head left the stream at, which the ghosts are read against: a resent Player at a vehicle's wheel sends no
         // position of its own, and the vehicle's packet data nested in it sets the point.
         let cp = stream_point(&r)?;
@@ -657,6 +984,7 @@ impl TgeFeed {
             &mut Unpacker {
                 ghosts,
                 classes: &self.tables.classes,
+                plugins: &self.plugins,
             },
             &mut incoming,
             None,
@@ -763,6 +1091,9 @@ impl Feed for TgeFeed {
         if self.gone {
             return Ok(());
         }
+        if self.engine.is_some() {
+            return self.engine_pump(world);
+        }
         let handshaking = matches!(
             self.client.state(),
             net::client::ClientState::Idle | net::client::ClientState::Challenging
@@ -804,13 +1135,18 @@ impl Feed for TgeFeed {
         if self.gone {
             return;
         }
-        if self.connected() {
+        if let Some(wire) = self.engine.as_mut() {
+            wire.disconnect(&mut *self.link, reason, self.now);
+        } else if self.connected() {
             let bye = self
                 .client
                 .disconnect_datagram(&self.tables.table, reason.as_bytes());
             let _ = self.link.send(&bye);
         }
         self.gone = true;
+        if let Some(channels) = &self.channels {
+            channels.closed();
+        }
     }
 
     fn take_events(&mut self, max: usize) -> Vec<FeedEvent<()>> {
@@ -827,11 +1163,20 @@ impl Feed for TgeFeed {
     }
 
     fn protocol_version(&self) -> u32 {
-        self.client.accept().map_or(0, |a| a.protocol)
+        match &self.engine {
+            Some(wire) if wire.is_accepted() => {
+                net::profile::HandshakeProfile::default().protocol_current
+            }
+            Some(_) => 0,
+            None => self.client.accept().map_or(0, |a| a.protocol),
+        }
     }
 
     fn round_trip(&self) -> f32 {
-        self.client.protocol().map_or(0.0, |p| p.round_trip())
+        match &self.engine {
+            Some(wire) => wire.round_trip(),
+            None => self.client.protocol().map_or(0.0, |p| p.round_trip()),
+        }
     }
 
     fn room_ordered(&self) -> usize {
@@ -844,9 +1189,16 @@ impl Feed for TgeFeed {
         }
     }
 
+    fn engine_session(&self) -> bool {
+        self.engine.is_some()
+    }
+
     fn send_tick(&mut self, world: &mut TgeWorld, block: &ClientBlock) {
-        let _ = world;
         if self.gone || !self.connected() {
+            return;
+        }
+        if self.engine.is_some() {
+            self.engine_send(world, block);
             return;
         }
         let Some(mut w) = self.client.begin_data_packet(self.now, false) else {
@@ -858,6 +1210,14 @@ impl Feed for TgeFeed {
         let send_seq = protocol.last_send_seq();
         let packet_bits = protocol.packet_limit_bits();
         w.enable_string_buffer();
+        // The upstream channels' chunks come first in the payload, in the room the moves leave.
+        if let Some(channels) = &self.channels
+            && channels.writes_upstream()
+        {
+            let mut moves = BitWriter::new();
+            block.write(&mut moves);
+            channels.write_upstream(&mut w, send_seq, packet_bits, moves.bits());
+        }
         block.write(&mut w);
         let params = SectionParams {
             ghosting: false,
@@ -882,7 +1242,7 @@ pub struct TgeConn;
 
 impl ConnGame for TgeConn {
     type Feed = TgeFeed;
-    type Parts = ();
+    type Parts = TgeParts;
 
     const HANDSHAKE_WAIT_MS: u32 = TGE_HANDSHAKE_WAIT_MS;
     const HANDSHAKE_TRIES: u32 = TGE_HANDSHAKE_TRIES;
@@ -895,18 +1255,64 @@ impl ConnGame for TgeConn {
         let _ = client;
         let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
         let reader = crate::game::installed_game(vm).and_then(|g| g.file_reader());
-        let mut feed = TgeFeed::with_rates(
-            connect.link,
-            &connect.password,
-            connect.args,
-            connect.seq,
-            local,
-            client_rates(vm),
-        )?;
+        let hello = vm.extension::<ConnectHello>();
+        let mut feed = match hello.filter(|h| local.is_none() && h.engine_mode()) {
+            Some(hello) => {
+                vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+                    connect.server.into(),
+                )));
+                let start = EngineStart {
+                    server: connect.server.into(),
+                    nonce: engine_nonce(vm.extension::<EngineNonceKey>().as_deref(), connect.seq),
+                    source: Some(hello.source(vm)),
+                    password: connect.password,
+                    args: connect.args,
+                    kind: connect.link.kind(),
+                };
+                TgeFeed::over_engine(
+                    connect.link,
+                    start,
+                    vm.extension::<RpcLanes>(),
+                    client_rates(vm),
+                )?
+            }
+            None => TgeFeed::with_rates(
+                connect.link,
+                &connect.password,
+                connect.args,
+                connect.seq,
+                local,
+                client_rates(vm),
+            )?,
+        };
+        if local.is_none()
+            && feed.engine.is_none()
+            && let Some(hello) = vm.extension::<ConnectHello>()
+        {
+            vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+                connect.server.into(),
+            )));
+            feed.set_connect_source(connect.server.into(), hello.source(vm));
+        }
         feed.set_reader(reader.clone());
+        feed.set_channels(vm.extension::<ClientChannels>());
+        if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
+            feed.set_plugins((*plugins).clone());
+        }
+        if let Some(hello) = vm.extension::<ConnectHello>() {
+            feed.set_blocks(hello.blocks());
+        }
+        // The plugin ghost classes the renderer draws as shapes.
+        let mut world = TgeWorld::default();
+        if let Some(drawn) = vm.extension::<DrawnShapes>() {
+            world.records.plugin_shapes = (*drawn).clone();
+        }
+        if let Some(stills) = vm.extension::<PluginStills>() {
+            world.records.stills = (*stills).clone();
+        }
         Ok(Started {
             feed,
-            world: TgeWorld::default(),
+            world,
             part: Box::new(super::NoPart),
             reader,
         })
@@ -914,6 +1320,34 @@ impl ConnGame for TgeConn {
 
     fn frame(game: &GameSlot, world: &mut WorldOf<TgeConn>) {
         let _ = (game, world);
+    }
+
+    fn register_natives(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>, gui: &gui::Gui) {
+        let _ = gui;
+        vm.set_extension(Rc::new(ClientGhostLookup(Rc::new(GhostPlaces(Rc::clone(
+            client,
+        ))))));
+    }
+
+    fn world_left(st: &mut ClientState<TgeConn>, world: &mut TgeWorld) {
+        // The plugin ghosts the handlers were told of go with the world: they hear it at the next tick.
+        let seen = std::mem::take(&mut world.plugin_seen);
+        let gone = &mut st.parts.gone;
+        if gone.len() < seen.len() {
+            gone.resize_with(seen.len(), Vec::new);
+        }
+        for (k, seen) in seen.into_iter().enumerate() {
+            gone[k].extend(seen.into_keys());
+        }
+    }
+
+    fn tick_detached(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        flush_gone_plugin_ghosts(vm, client);
+    }
+
+    fn tick(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        flush_gone_plugin_ghosts(vm, client);
+        deliver_plugin_ghosts(vm, client);
     }
 
     /// The first Sun's colour (its `update` block's colour).
@@ -925,6 +1359,226 @@ impl ConnGame for TgeConn {
             }),
             _ => None,
         })
+    }
+}
+
+/// Where the connection's ghosts are, for the plugins ([`ClientGhosts`]): a scene-hierarchy child where its parents' poses put it
+/// ([`ClientWorld::world_pose`]), any other ghost where the client draws it or its record puts it. A parent's node counts as the parent's
+/// origin: the connection holds no shapes to pose.
+struct GhostPlaces(Rc<RefCell<ClientState<TgeConn>>>);
+
+impl ClientGhosts for GhostPlaces {
+    fn position(&self, index: u32) -> Option<[f32; 3]> {
+        if let Some(m) = self.pose(index) {
+            return Some(collide::math::translation(&m));
+        }
+        let st = self.0.try_borrow().ok()?;
+        st.conn
+            .conn
+            .as_ref()?
+            .world
+            .records
+            .ghosts
+            .get(&index)?
+            .position
+    }
+
+    fn pose(&self, index: u32) -> Option<collide::math::Matrix> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        records.world_pose(index, &|_, _| None).map(|(m, _)| m)
+    }
+
+    fn tick_pose(&self, index: u32) -> Option<collide::math::Matrix> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        records
+            .tick_pose(index, &|_, _| None, &|_| None)
+            .map(|(m, _)| m)
+    }
+
+    fn parent(&self, index: u32) -> Option<u32> {
+        let st = self.0.try_borrow().ok()?;
+        let records = &st.conn.conn.as_ref()?.world.records;
+        Some(records.links.parent(index)?.object.0)
+    }
+
+    fn has_children(&self, index: u32) -> bool {
+        let Ok(st) = self.0.try_borrow() else {
+            return false;
+        };
+        st.conn
+            .conn
+            .as_ref()
+            .is_some_and(|c| c.world.records.links.children(index).next().is_some())
+    }
+}
+
+/// What the client keeps of the plugin ghosts of a connection that is over, until its handlers have heard that they are gone.
+#[derive(Debug, Default)]
+pub struct TgeParts {
+    /// For each handler, the indexes of the ghosts it was told of.
+    pub gone: Vec<Vec<u32>>,
+}
+
+/// Tells each handler that the ghosts of a connection that ended are gone.
+fn flush_gone_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+    if client.borrow().parts.gone.iter().all(Vec::is_empty) {
+        return;
+    }
+    let gone = std::mem::take(&mut client.borrow_mut().parts.gone);
+    let Some(sinks) = vm.extension::<GhostSinks>() else {
+        return;
+    };
+    for (sink, indexes) in sinks.0.iter().zip(gone) {
+        for index in indexes {
+            sink.run(vm, RawGhostEvent::Removed { index });
+        }
+    }
+}
+
+/// One thing that happened to a plugin ghost, with its record when it has one.
+enum Heard {
+    Added(u32, Box<dyn ghosts::plugin::Record>),
+    Changed(u32, Box<dyn ghosts::plugin::Record>),
+    Removed(u32),
+}
+
+/// Whether a ghost is one of a plugin class's with a record of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Presence {
+    Present,
+    Absent,
+}
+
+/// What the handler `k` of a plugin class has heard of its ghosts (`seen`), against the world's.
+struct PluginHearing<'a> {
+    seen: &'a mut HashMap<u32, (u64, u32)>,
+    records: &'a ClientWorld<TgeClientSet>,
+    class: TgeClass,
+    k: usize,
+}
+
+impl PluginHearing<'_> {
+    /// What the handler is to hear of the ghost `index`, if it is a ghost of the class: it is added, replaced (made again on its
+    /// index) or changed (an update reached it), or there is nothing new.
+    fn hear(&mut self, index: u32, heard: &mut Vec<(usize, Heard)>) -> Presence {
+        let k = self.k;
+        let Some(ghost) = self
+            .records
+            .ghosts
+            .get(&index)
+            .filter(|g| g.class == Some(self.class))
+        else {
+            return Presence::Absent;
+        };
+        let Some(TgeRecord::Plugin(_, record)) = &ghost.record else {
+            return Presence::Absent;
+        };
+        let birth = self.records.birth_order.get(&index).copied().unwrap_or(0);
+        match self.seen.get(&index) {
+            None => heard.push((k, Heard::Added(index, record.clone()))),
+            Some(&(was, _)) if was != birth => {
+                heard.push((k, Heard::Removed(index)));
+                heard.push((k, Heard::Added(index, record.clone())));
+            }
+            Some(&(_, updates)) if updates != ghost.updates => {
+                heard.push((k, Heard::Changed(index, record.clone())));
+            }
+            Some(_) => return Presence::Present,
+        }
+        self.seen.insert(index, (birth, ghost.updates));
+        Presence::Present
+    }
+}
+
+/// Tells each plugin handler of a ghost class ([`torque_engine::net_classes::GhostSinks`]) which ghosts of its class appeared,
+/// changed (an update reached them) or went since the last tick. The handlers run with no borrow of the client held.
+fn deliver_plugin_ghosts(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+    let Some(sinks) = vm.extension::<GhostSinks>() else {
+        return;
+    };
+    let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) else {
+        return;
+    };
+    let mut heard: Vec<(usize, Heard)> = Vec::new();
+    {
+        let mut st = client.borrow_mut();
+        let Some(conn) = st.conn.conn.as_mut() else {
+            return;
+        };
+        let world = &mut conn.world;
+        world.plugin_seen.resize_with(sinks.0.len(), HashMap::new);
+        // Only the ghosts the applied sections changed can have news, unless the changes were too many to list.
+        let touched = match world.records.take_touched() {
+            TouchedGhosts::Listed(mut changed) => {
+                changed.sort_unstable();
+                changed.dedup();
+                Some(changed)
+            }
+            TouchedGhosts::All => None,
+        };
+        for (k, sink) in sinks.0.iter().enumerate() {
+            let Some(class) = plugins.ghost(sink.class()) else {
+                continue;
+            };
+            let class = TgeClass::Plugin(class);
+            let mut hearing = PluginHearing {
+                seen: &mut world.plugin_seen[k],
+                records: &world.records,
+                class,
+                k,
+            };
+            match &touched {
+                None => {
+                    let mut present = HashSet::new();
+                    for (index, _) in world.records.of_class(class) {
+                        if hearing.hear(index, &mut heard) == Presence::Present {
+                            present.insert(index);
+                        }
+                    }
+                    let gone: Vec<u32> = hearing
+                        .seen
+                        .keys()
+                        .copied()
+                        .filter(|index| !present.contains(index))
+                        .collect();
+                    for index in gone {
+                        hearing.seen.remove(&index);
+                        heard.push((k, Heard::Removed(index)));
+                    }
+                }
+                Some(changed) => {
+                    for &index in changed {
+                        if hearing.hear(index, &mut heard) == Presence::Absent
+                            && hearing.seen.remove(&index).is_some()
+                        {
+                            heard.push((k, Heard::Removed(index)));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (k, event) in heard {
+        let sink = &sinks.0[k];
+        match &event {
+            Heard::Added(index, record) => sink.run(
+                vm,
+                RawGhostEvent::Added {
+                    index: *index,
+                    record: &**record,
+                },
+            ),
+            Heard::Changed(index, record) => sink.run(
+                vm,
+                RawGhostEvent::Changed {
+                    index: *index,
+                    record: &**record,
+                },
+            ),
+            Heard::Removed(index) => sink.run(vm, RawGhostEvent::Removed { index: *index }),
+        }
     }
 }
 

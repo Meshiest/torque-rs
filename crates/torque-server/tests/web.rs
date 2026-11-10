@@ -334,6 +334,15 @@ fn a_game_socket_carries_datagrams_both_ways() {
     assert_eq!(data, [1, 2, 3]);
     assert!(is_stand_in(from), "a stand-in address: {from}");
     assert_eq!(t.peer_of(from), Some(local));
+    // The host's caps count the TCP peer behind the stand-in, and a socket's link is a validated one.
+    assert_eq!(t.peer_ip(from), local.ip());
+    assert!(t.link_kind(from).facts.validated);
+    let elsewhere = SocketAddr::from(([192, 168, 3, 4], 5_000));
+    assert_eq!(
+        t.peer_ip(elsewhere),
+        elsewhere.ip(),
+        "an address that is no stand-in is its own"
+    );
     assert!(t.holds(from) && !t.holds(local));
     assert!(t.send_to(from, &[9; 1400]));
     assert!(
@@ -1175,5 +1184,30 @@ fn tls_records_without_plaintext_are_metered_and_closed() {
             "upgrade {upgrade}: a pass took {longest:?}"
         );
         assert!(sent > cap, "upgrade {upgrade}: the flood sent {sent} bytes");
+    }
+}
+
+/// A folder's files are served as they read, and a link in it fails the load with its path rather than being followed.
+#[test]
+fn a_folder_is_read_without_following_links() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("web-files");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("index.html"), PAGE).unwrap();
+    let served = WebFiles::from_dir(&dir).unwrap();
+    assert_eq!(&*served.get("index.html").unwrap().bytes, PAGE);
+    let secret = dir.with_file_name("web-files-secret.txt");
+    std::fs::write(&secret, b"secret").unwrap();
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&secret, dir.join("leak.txt")).is_ok();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_file(&secret, dir.join("leak.txt")).is_ok();
+    #[cfg(not(any(unix, windows)))]
+    let linked = false;
+    if linked {
+        let error = WebFiles::from_dir(&dir).expect_err("a link fails the load");
+        assert!(error.to_string().contains("leak.txt"), "{error}");
+    } else {
+        eprintln!("no symbolic links here: the link case is skipped");
     }
 }

@@ -22,11 +22,32 @@ torque-import = { path = "../../crates/torque-import" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
+# The levels' furniture and desk items as props a figure pushes, the client predicting the ones it pushes.
+torque-plugin-props = { path = "../../crates/torque-plugin-props" }
+# A rope across the plaza (the `rope` feature).
+torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
+# The smoothed predictor beside TGE's (the `smooth-prediction` feature).
+torque-plugin-smooth-prediction = { path = "../../crates/torque-plugin-smooth-prediction", optional = true }
 
 [features]
+# A rope the plaza has hung between its front pillars, simulated and drawn by `torque-plugin-rope` (`--rope-shots` draws it; with the
+# feature off, or on a map other than the plaza, the demo is as it was). It also turns on the props' `jointRope`.
+rope = ["dep:torque-plugin-rope", "torque-plugin-props/rope"]
+# The smoothed predictor registered beside TGE's (`setPredictor("smooth")` swaps to it; the demo starts with TGE's), and
+# `--correction-shots`, which draws a forced correction with each.
+smooth-prediction = ["dep:torque-plugin-smooth-prediction"]
 # Built for the web: the module carries its files (the pack whose path is in `TORQUE_WEB_PACK` when it is built) instead of
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []
+
+# The prop catalog (`catalog`, native builds only): a server-offered mod whose menu runs in the realm of each client. Not built for the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The mods the catalog's server requires of its clients.
+torque = { path = "../../crates/torque", default-features = false, features = ["mods"] }
+torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["wasmtime"] }
+torque-client-script-format = { path = "../../crates/torque-client-script-format" }
+torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script" }
+torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
 
 # Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

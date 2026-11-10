@@ -43,19 +43,48 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `gui/core/guiControl.cpp` (Copyright (c)
 //! 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.), `gui/core/guiCanvas.cpp` (Copyright (c) 2012 GarageGames, LLC;
 //! Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
+//!
+//! # Maintaining
+//!
+//! Rules a change must keep, each guarded by a test:
+//! - Every font lookup names whose it is ([`torque_fonts::FontUse`]): ML text's `<font:>` styles and a server's client-script
+//!   layer are markup, so they never take a profile's font; the GUI starts a font frame every frame (`Gui::frame`,
+//!   `draw::draw_canvas`; the server's layer is [`torque_fonts::FontUse::Server`]), and a frame's drawing loads at most
+//!   [`draw::MAX_FRAME_MARKUP_LOADS`] new markup fonts (`client_script_the_server_layer_fonts_are_markup_and_never_the_games`,
+//!   `a_reflow_of_a_thousand_font_tags_stays_within_the_markup_quota_and_spares_the_profiles`).
+//! - A reflow charges every font it loads before it rasterizes it, and names at most [`mltext::MAX_REFLOW_FACES`] faces
+//!   (`a_reflow_that_cannot_pay_for_its_fonts_stops`).
+//! - A reflow resolves at most [`mltext::MAX_REFLOW_BITMAP_NAMES`] bitmap names, each candidate and byte charged, each file
+//!   sized from its first [`mltext::BITMAP_HEADER_BYTES`] (`a_bitmap_is_sized_from_its_first_bytes_and_every_lookup_is_charged`,
+//!   `a_reflow_of_five_thousand_bitmap_names_resolves_at_most_its_cap_and_reads_only_headers`); a file not sized by its prefix is
+//!   read again at most once, up to [`mltext::BITMAP_SIZE_BYTES`] paid for first, and a file not sized is remembered so
+//!   (`a_bitmap_with_no_header_in_reach_is_read_at_most_once_and_never_past_its_cap`).
+//! - Every pass of a reflow is constant work: tags are pushed and their ids kept in a set, and every number is read from its tag
+//!   alone (`a_reflow_of_sixty_five_thousand_tags_is_linear`, `a_duplicate_tag_id_is_still_counted_once`).
+//!
+//! Costs a frame must not grow back (bench `gui draw 300 controls`, timed under the bench lock): a control's class is matched
+//! by its borrowed name (no copy a control, and none for a plugin's control), a run of glyphs finds its font sheet once a sheet
+//! (no key a glyph, no copy of the face's name for a face drawn last), a font is looked up once a frame for each face and size, a
+//! position or a flag is read as the number it is stored as (no text made and read back), a control with no children does not
+//! read its parent's clip, and an outline is laid out once and pushed at each of its offsets when its passes are the same. The
+//! client-script layer is kept from frame to frame while nothing it draws from changes (`client_script`, **Kept draws**), so an
+//! idle realm costs the canvas next to nothing; the justfile's `client-script-bench` holds the whole frame to its budgets.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use torque_ts_vm::idhash::IdMap;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 pub mod backdrop;
 pub mod canvas;
 mod classes;
+pub mod client_script;
 pub mod console;
 mod control;
+pub mod custom;
 pub mod draw;
 pub mod ext;
 pub mod hud;
@@ -80,7 +109,7 @@ pub use control::{
     awaken, bounds, children, flag, is_a, parent, parent_resized, point, resize, screen_position,
     sleep,
 };
-pub use draw::{DrawCache, GuiDraws, draw_canvas, run_callbacks};
+pub use draw::{DrawCache, GuiDraws, TextLook, draw_canvas, run_callbacks};
 pub use ext::{FontSource, GuiExtension, NoExtension};
 pub use input::{CursorShape, hover_cursor};
 
@@ -156,6 +185,8 @@ pub struct Control {
     pub message_vector: Option<ObjId>,
     /// A GuiGraphCtrl's plots ([`hud::GraphState`]).
     pub graph: Option<Box<hud::GraphState>>,
+    /// The host made the control for a client-script realm ([`client_script`]): no script callback runs for it.
+    pub realm: bool,
 }
 
 /// A GuiFadeinBitmapCtrl's state (`onWake`, `reset`, `onRender`): the tick count it woke or was reset at, whether `onWait`
@@ -217,6 +248,9 @@ pub struct GuiState {
     pub cursor: Option<ObjId>,
     /// `cursorOn`/`cursorOff` (TGE's constructor: on).
     pub cursor_on: bool,
+    /// How many times the game called `cursorOn` or `cursorOff`: the client-script layers give back a cursor they turned on
+    /// only while the game has not set it since.
+    pub cursor_calls: u64,
     /// `showCursor`/`hideCursor` (on).
     pub show_cursor: bool,
     /// `getCursorPos` (headless: what `setCursorPos` stored).
@@ -225,7 +259,7 @@ pub struct GuiState {
     /// system's cursor while the canvas's is on and none was drawn, so a game without a GuiCursor still has a pointer.
     pub cursor_drawn: bool,
     pub render_front: bool,
-    pub controls: HashMap<ObjId, Control>,
+    pub controls: IdMap<ObjId, Control>,
     /// Frames drawn ([`Gui::frame`]).
     pub frames: u64,
     /// Text controls whose profile asked for an automatic size that could not be computed (no font for the profile's face and
@@ -253,9 +287,13 @@ pub struct GuiState {
     pub hud: hud::HudFeed,
     /// The host's extension ([`GuiExtension`]).
     pub ext: Extension,
+    /// The control classes plugins added and their controls ([`custom`]).
+    pub(crate) custom: custom::Custom,
     /// The host's overlays ([`Gui::set_overlay`]): controls drawn over the canvas's children, never members of the canvas, so a
     /// script's `Canvas.getCount()` and `Canvas.getObject(%i)` count only what the scripts put there.
     pub overlays: Vec<ObjId>,
+    /// The host layers of client scripts: the server layer, the engine layer and the chip ([`client_script`]).
+    pub client_script: client_script::LayerState,
 }
 
 impl Default for GuiState {
@@ -265,11 +303,12 @@ impl Default for GuiState {
             canvas_size: DEFAULT_CANVAS_SIZE,
             cursor: None,
             cursor_on: true,
+            cursor_calls: 0,
             show_cursor: true,
             cursor_pos: (0, 0),
             cursor_drawn: false,
             render_front: false,
-            controls: HashMap::new(),
+            controls: IdMap::default(),
             frames: 0,
             autosize_skipped: 0,
             fonts: SharedFonts::default(),
@@ -282,7 +321,9 @@ impl Default for GuiState {
             world_camera: false,
             hud: hud::HudFeed::default(),
             ext: Extension::default(),
+            custom: custom::Custom::default(),
             overlays: Vec::new(),
+            client_script: client_script::LayerState::default(),
         }
     }
 }
@@ -356,6 +397,11 @@ impl Gui {
     /// `f` of the control's state, mutable, under a short borrow (no script may run inside `f`).
     pub fn with_mut<R>(&self, id: ObjId, f: impl FnOnce(&mut Control) -> R) -> Option<R> {
         self.0.borrow_mut().controls.get_mut(&id).map(f)
+    }
+
+    /// Whether the host made the control for a client-script realm ([`Control::realm`]).
+    pub fn is_realm(&self, id: ObjId) -> bool {
+        self.0.borrow().controls.get(&id).is_some_and(|c| c.realm)
     }
 
     /// The control's dialog layer (0 for one the model does not know).
@@ -465,9 +511,13 @@ impl Gui {
                 control::resize(vm, self, o, (0, 0), size);
             }
         }
+        // The host layers of client scripts: sized to the canvas, the holds checked against what is on screen.
+        client_script::frame(vm, self, size);
         // The render pass, as far as it runs scripts: the GuiFadeinBitmapCtrl clocks of the controls drawn (awake, and visible
         // with every parent: `renderChildControls` draws the visible children only), in drawing order.
         let mut calls: Vec<(ObjId, &'static [u8])> = Vec::new();
+        // The plugins' controls shown, parents first: their `update` runs after the walk.
+        let mut updates: Vec<ObjId> = Vec::new();
         let now = vm.sim_time();
         let mut stack: Vec<(ObjId, usize)> = control::children(vm, canvas)
             .into_iter()
@@ -486,6 +536,9 @@ impl Gui {
             {
                 calls.push((id, call));
             }
+            if self.is_custom(id) {
+                updates.push(id);
+            }
             if depth < MAX_TREE_DEPTH {
                 stack.extend(
                     control::children(vm, id)
@@ -496,7 +549,22 @@ impl Gui {
             }
         }
         vm.end_host_budget(saved);
+        // The plugins' controls' `update`, under a budget of their own (one may run script); an error is printed and the
+        // other controls still update.
+        if !updates.is_empty() {
+            let saved = vm.begin_host_budget_with_runs(MAX_FRAME_WORK, input::MAX_EVENT_STEPS);
+            for id in updates {
+                if vm.objects().contains(id)
+                    && let Err(error) = custom::update(vm, self, id)
+                {
+                    vm.error(format!("update of control {id}: {error}"));
+                }
+            }
+            vm.end_host_budget(saved);
+        }
         self.0.borrow_mut().frames += 1;
+        let fonts = self.0.borrow().fonts.0.clone();
+        fonts.borrow_mut().next_frame();
         // `preRender` (`renderFrame` runs it over the canvas's children after the resize, before drawing): the dirty ML text
         // controls reflow (their `onResize` is a script call), the consoles follow the log, the console texts evaluate, under a
         // budget of their own.
