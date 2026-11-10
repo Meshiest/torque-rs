@@ -149,9 +149,10 @@ native-ext-sample:
     cargo build --manifest-path examples/native-extension/Cargo.toml
 
 # The Lua extension (crates/torque-plugin-lua) built on its own as a release library, with the C++ runtime linked in so the
-# library alone is what a plugins folder needs; it builds Luau's C++, so it needs a C++ compiler (the engine never does)
+# library alone is what a plugins folder needs; it builds Luau's C++, so it needs a C++ compiler (the engine never does). It goes
+# into the workspace's build folder (`release/`), where the examples look for it, not the extension's own workspace's
 lua:
-    $env:RUSTFLAGS = "-C target-feature=+crt-static"; cargo build --release --manifest-path crates/torque-plugin-lua/Cargo.toml
+    $env:RUSTFLAGS = "-C target-feature=+crt-static"; cargo build --release --manifest-path crates/torque-plugin-lua/Cargo.toml --target-dir "{{web_target}}"
 
 # The Lua extension's tests, clippy, formatting and licenses (its own workspace)
 lua-test:
