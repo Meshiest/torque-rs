@@ -3,7 +3,10 @@
 //! its members) is registered under the server's id and joins DataBlockGroup, so scripts that walk `getDataBlockGroupSize()` /
 //! `getDataBlock(i)` (a dialog's lists of player types and items, an inventory's icons) read its fields as on the server. A
 //! datablock with that id already there (a second mission's) takes the new data and is preloaded again (the event's other branch:
-//! `packData` of the new one, `unpackData` into the old one, `preload(false)`). Client datablocks have no names.
+//! `packData` of the new one, `unpackData` into the old one, `preload(false)`), when the client made it from an earlier event; an
+//! object the client did not make (the server's own, on the script engine a local client shares with its server) is preloaded
+//! and left as it is. Client datablocks have no names. Each object's generation is kept in [`DatablockObjects`], for the caches
+//! a plugin builds from an object's fields.
 //!
 //! **The fields' text** is the game's unpack ([`Unpacked`], from [`crate::game::ClientGame::unpack_datablock`]: what the
 //! client's getters print from the members `unpackData` wrote; TGE's in [`crate::conn::tge`]); a text field
@@ -19,11 +22,87 @@
 //! Credit: follows TGE's `SimDataBlockEvent` as Torque3D carries it (MIT: `T3D/gameBase/gameConnectionEvents.cpp` and
 //! `T3D/gameBase/gameConnection.cpp`, each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.).
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+use std::rc::Rc;
+
 use ts_vm::fields::FieldType;
 use ts_vm::sim::ObjId;
 use ts_vm::vm::{Vm, VmError};
 
 use crate::game::{ClientGame, client_game};
+
+/// The client's datablock objects by id, as the events made and changed them: a generation per id, moved by every event that
+/// wrote the object (or, for an object the client did not make, that carried a record for it), and whether the client made it
+/// ([`receive`]). A script engine's extension ([`DatablockObjects::of`]); a plugin that copies a datablock's fields out of its
+/// object (a prop's numbers) keys the copy on `(id, generation)` and reads again when the generation moved. The world's record
+/// store has a generation of its own (`ghost_world::ClientWorld::datablock_generation`), moved when the record arrives; this one
+/// moves when the object is written, which can be a tick or more later (the events of a tick are capped), so a copy made from
+/// the object is keyed on this one.
+///
+/// Ids are the ones the script engine accepted as datablock ids (its datablock range), so the table is bounded by that range.
+#[derive(Debug, Default)]
+pub struct DatablockObjects(RefCell<ObjectGenerations>);
+
+#[derive(Debug, Default)]
+struct ObjectGenerations {
+    /// Moves at every change of any datablock object.
+    epoch: u64,
+    /// By id: the epoch at its last change, and whether the client made the object from an event.
+    objects: BTreeMap<u32, (u64, bool)>,
+}
+
+impl DatablockObjects {
+    /// The client's table, once an event made or changed a datablock object on `vm`.
+    pub fn of(vm: &Vm) -> Option<Rc<DatablockObjects>> {
+        vm.extension::<DatablockObjects>()
+    }
+
+    /// The epoch: a value other than the one last seen means some datablock object changed.
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.0.borrow().epoch
+    }
+
+    /// The generation of datablock object `id`: 0 for one no event has made or changed, else the epoch of its last change.
+    #[must_use]
+    pub fn generation(&self, id: u32) -> u64 {
+        self.0.borrow().objects.get(&id).map_or(0, |o| o.0)
+    }
+
+    /// Whether the object at `id` is one the client made from a datablock event and still there (an object made by a script,
+    /// or the server's own in a shared engine, is not the client's to write). The client's own datablocks are unnamed: a named
+    /// object at the id is a script's, made after the client's went.
+    #[must_use]
+    pub fn made(&self, vm: &Vm, id: u32) -> bool {
+        self.0.borrow().objects.get(&id).is_some_and(|o| o.1)
+            && vm
+                .objects()
+                .get(id)
+                .is_some_and(|o| o.name().is_none_or(|n| n.is_empty()))
+    }
+
+    /// Notes the event for `id`: its object made (or, on an update, written) by the client when `made`.
+    fn changed(&self, id: u32, made: bool) {
+        let mut g = self.0.borrow_mut();
+        g.epoch += 1;
+        let epoch = g.epoch;
+        g.objects.insert(id, (epoch, made));
+    }
+}
+
+/// Notes that the event for datablock `id` made (`made`) or changed its object on `vm`.
+fn note_changed(vm: &mut Vm, id: u32, made: bool) {
+    let objects = match DatablockObjects::of(vm) {
+        Some(o) => o,
+        None => {
+            let o = Rc::new(DatablockObjects::default());
+            vm.set_extension(Rc::clone(&o));
+            o
+        }
+    };
+    objects.changed(id, made);
+}
 
 /// A field the unpack writes: its name, its array index ("" for a scalar) and its text.
 pub type FieldText = (Vec<u8>, Vec<u8>, Vec<u8>);
@@ -163,14 +242,35 @@ pub fn receive(
             return Ok(Received::Refused);
         }
         // The other branch (`packData` of the new one, `unpackData` into the one there, `preload(false)`) resolves a pointer by its
-        // id: in a local game the one there is the server's own datablock and its pointers keep naming the same objects. The
-        // pointer fields' texts are the names [`pointer_name`] resolved (a local game's `play3D` reads `description` back by
-        // name), or empty for an id the preload would not resolve.
-        for (name, index, text) in &fields {
-            vm.set_object_member(id, name, index, text);
+        // id. The fields are written only into an object the client made from an earlier event (a second mission's datablock):
+        // in a local game the object at the id is the server's own datablock, written by the server's scripts, which the
+        // client's reading of the wire must not write back (its texts are the wire's roundings of the server's values, and a
+        // server that refreshes its objects on every write would take its own event for an edit). The pointer fields' texts
+        // are the names [`pointer_name`] resolved (a local game's `play3D` reads `description` back by name), or empty for an
+        // id the preload would not resolve.
+        let made = DatablockObjects::of(vm).is_some_and(|o| o.made(vm, id));
+        // A resend of what the object holds (a second mission's unchanged datablock) writes and changes nothing; an object the
+        // client did not make counts as changed (the server sent the record for a reason).
+        let mut changed = !made;
+        if made {
+            for (name, index, text) in &fields {
+                let target = ts_vm::vm::FieldTarget::Live(id);
+                if vm.read_field_of(target, name, index) != *text {
+                    changed = true;
+                    vm.set_object_member(id, name, index, text);
+                }
+            }
+            if let (Some(ids), Some(values)) = (&d.emitter_ids, values) {
+                values.set_emitter_ids(id, ids.clone());
+            }
         }
         return Ok(match vm.preload_engine_datablock(id)? {
-            true => Received::Updated(id),
+            true => {
+                if changed {
+                    note_changed(vm, id, made);
+                }
+                Received::Updated(id)
+            }
             false => Received::Refused,
         });
     }
@@ -183,7 +283,10 @@ pub fn receive(
         values.forget(id);
     }
     Ok(match added {
-        Some(id) => Received::Added(id),
+        Some(id) => {
+            note_changed(vm, id, true);
+            Received::Added(id)
+        }
         None => Received::Refused,
     })
 }

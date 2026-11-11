@@ -100,6 +100,16 @@
 //!   `conn::engine_wire::EngineWire::refresh`): a secure link (QUIC) learns the server's identity and derives its binding only
 //!   as its handshake ends, and the ticket that answers the server's challenge is made for both. A socket without them keeps
 //!   today's context bytes (torque-app's `tests/quic_link.rs`).
+//! - A datablock changed mid-game refreshes the predictors in place, never by making them again: `predict::Predicted`,
+//!   `predict::drive::DrivenVehicle` and the ghost vehicles keep the datablock's generation
+//!   (`ghost_world::ClientWorld::datablock_generation`) and bring their tuning up to it (`refresh_tuning`, `refresh_wheels`
+//!   with a generation per tire and spring) when it moved, so the tuning equals a fresh predictor's while position, velocity
+//!   and state stay the same to the bit; a record of another class or an unreadable shape takes the generation and keeps the
+//!   tuning; a resend moves nothing (`tests/datablock_refresh.rs`). The ghost vehicles are refreshed at most
+//!   [`ghost_world::world::MAX_REFRESHES_PER_FRAME`] a tick (`Predictor::refresh_ghost_vehicles`). The script objects' side
+//!   is [`datablocks::DatablockObjects`]: an event writes the fields only of an object the client made from an earlier event
+//!   (on a shared engine the object is the server's own: preloaded, not written) and moves the object's generation when
+//!   something changed, which a plugin's copy of the fields is keyed on (torque-plugin-props' `tests/datablock_refresh.rs`).
 
 pub mod actionmap;
 pub mod conn;

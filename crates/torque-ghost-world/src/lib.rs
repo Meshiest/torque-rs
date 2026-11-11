@@ -31,6 +31,11 @@
 //!   each ghost a tick's chains reach is worked out once ([`world::TickPoses`]) and charged, and a refused charge stops the
 //!   walk (torque-plugin-hierarchy's `tests/ride.rs`: within a millimetre of the server's pose at the latest record's tick;
 //!   torque-client's `predict::linked_tests`: the largest tree the links hold within one tick's budget).
+//! - A datablock event that carries the record the world holds changes nothing; one that differs takes the next
+//!   [`world::ClientWorld::datablock_epoch`] as the id's generation ([`world::ClientWorld::datablock_generation`]), the one
+//!   number every cache built from a record is keyed on (torque-client's `tests/datablock_refresh.rs`: 100 resends move no
+//!   generation). The generations table holds only ids the datablock table holds, and
+//!   [`world::MAX_REFRESHES_PER_FRAME`] is the budget every consumer spreads its refreshes by.
 
 pub mod effects;
 pub mod images;

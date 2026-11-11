@@ -154,6 +154,13 @@
 //! then a restore and replay when the server sent new states (or one step), the drawn poses eased and the predicted states
 //! written into the book, which the Player's next move meets.
 //!
+//! **A datablock changed mid-game.** Each prop's numbers ([`client::ClientProp::params`]) are read from the `PropData` object
+//! and keyed on that object's generation (`torque_client::datablocks::DatablockObjects`, moved when a datablock event wrote
+//! it); the tick after the events (`client::refresh_datablocks`) reads them again for the props whose datablock moved, at most
+//! `MAX_REFRESHES_PER_FRAME` props a tick, and notes where the datablock's collision hulls come from again. The predicted
+//! bodies take the new numbers at their next step with their poses and speeds kept. `tests/datablock_refresh.rs`: the book's
+//! numbers equal a fresh book's after 100 edits, a resend reads nothing again, a refresh of three ticks' worth takes four ticks.
+//!
 //! **Props that collide as their shape.** A datablock's `collision` field (`PropCollision`; it is in the datablock record, so
 //! network version 4) picks box or shape. For shape, `PropParams` holds `PropShape::Hulls { half, volume }`: `half` is the box
 //! that still stands for the prop wherever only a box is asked (`size` or `radius`: the placement checks, the collision source,
@@ -570,6 +577,10 @@ impl Plugin for PropsPlugin {
         let placed = book.clone();
         engine.push(ClientTick::new(move |vm| {
             client::refresh_places(vm, &placed)
+        }));
+        let edited = book.clone();
+        engine.push(ClientTick::new(move |vm| {
+            client::refresh_datablocks(vm, &edited)
         }));
         let published = (book.clone(), std::cell::Cell::new(0));
         engine.push(ClientTick::new(move |vm| {

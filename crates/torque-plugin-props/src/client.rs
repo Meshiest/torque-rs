@@ -9,10 +9,12 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use torque_client::datablocks::DatablockObjects;
 use torque_collide::source::{
     CollisionShape, CollisionSource, MAX_SHAPES_PER_SOURCE, next_revision,
 };
 use torque_engine::net_classes::{DatablockFields, GhostEvent, ShapeDraw};
+use torque_ghost_world::world::MAX_REFRESHES_PER_FRAME;
 use torque_ghosts::Value;
 use torque_ts_vm::vm::Vm;
 
@@ -30,6 +32,9 @@ pub struct ClientProp {
     /// The datablock's id, and its numbers (none until the client has that datablock).
     pub data: Option<u32>,
     pub params: Option<PropParams>,
+    /// The generation of the datablock object the numbers were read at ([`torque_client::datablocks::DatablockObjects`]): a
+    /// datablock changed under the prop has them read again ([`PropBook::refresh_params`]).
+    pub generation: u64,
     /// The server's slot for it: its collision shape's key.
     pub slot: u16,
     /// What the server collides it as, when that is its shape's hulls ([`HullDigest`]); none when it is the datablock's box.
@@ -99,6 +104,8 @@ pub struct PropBook {
     frozen: crate::frozen::client::FrozenTable,
     /// Moves whenever a slot gains or loses a ghost: what decides which frozen props are drawn from the table.
     slots_revision: u64,
+    /// The datablock objects' epoch the props' numbers were last brought up to ([`PropBook::refresh_params`]).
+    params_epoch: u64,
 }
 
 /// Where a datablock of `collision = "shape"` takes its hulls from: its shape file and draw scale, as the client has them.
@@ -162,10 +169,24 @@ impl PropBook {
     }
 
     /// A ghost's record, as a client's handler hears it (the whole record, updates merged); `params` reads a datablock's numbers.
+    /// The numbers are taken as generation 0 of their datablock: [`PropBook::refresh_params`] reads them again once the
+    /// datablock objects move. [`PropBook::heard_at`] takes the generation they were read at.
     pub fn heard(
         &mut self,
         index: u32,
         record: &PropGhost,
+        params: impl FnOnce(u32) -> Option<PropParams>,
+    ) {
+        self.heard_at(index, record, |_| 0, params);
+    }
+
+    /// [`PropBook::heard`], with `generation` the generation of each datablock object `params` reads
+    /// ([`torque_client::datablocks::DatablockObjects::generation`]).
+    pub fn heard_at(
+        &mut self,
+        index: u32,
+        record: &PropGhost,
+        generation: impl FnOnce(u32) -> u64,
         params: impl FnOnce(u32) -> Option<PropParams>,
     ) {
         let full = self.props.len() >= MAX_CLIENT_PROPS;
@@ -182,6 +203,7 @@ impl PropBook {
                 self.props.entry(index).or_insert(ClientProp {
                     data: None,
                     params: None,
+                    generation: 0,
                     slot: 0,
                     hulls: None,
                     mine: false,
@@ -199,6 +221,7 @@ impl PropBook {
         let data = record.data_block.0;
         if data != entry.data || entry.params.is_none() {
             entry.data = data;
+            entry.generation = data.map_or(0, generation);
             entry.params = data.and_then(params);
         }
         if let Some(init) = record.init {
@@ -221,6 +244,53 @@ impl PropBook {
             entry.held = flags.held;
         }
         entry.updates = entry.updates.wrapping_add(1);
+    }
+
+    /// Reads the numbers again of every prop whose datablock object moved past the generation they were read at (`generation`
+    /// gives a datablock's generation now, `params` its numbers), at most `budget` props a call: the rest wait for the next
+    /// call, and `epoch` (the datablock objects' epoch now) is taken as seen only once none waits, so a call that found
+    /// nothing to do costs one comparison ([`PropBook::params_current`]). Returns the datablocks whose props were read again,
+    /// each once.
+    pub fn refresh_params(
+        &mut self,
+        epoch: u64,
+        generation: impl Fn(u32) -> u64,
+        mut params: impl FnMut(u32) -> Option<PropParams>,
+        budget: usize,
+    ) -> Vec<u32> {
+        let mut refreshed = Vec::new();
+        let mut left = budget;
+        let mut waiting = false;
+        for p in self.props.values_mut() {
+            let Some(data) = p.data else { continue };
+            let now = generation(data);
+            if now == p.generation {
+                continue;
+            }
+            if left == 0 {
+                waiting = true;
+                break;
+            }
+            left -= 1;
+            p.generation = now;
+            p.params = params(data);
+            if !refreshed.contains(&data) {
+                refreshed.push(data);
+            }
+        }
+        if !refreshed.is_empty() {
+            self.revision = next_revision();
+        }
+        if !waiting {
+            self.params_epoch = epoch;
+        }
+        refreshed
+    }
+
+    /// Whether the props' numbers were brought up to datablock objects' epoch `epoch` ([`PropBook::refresh_params`]).
+    #[must_use]
+    pub fn params_current(&self, epoch: u64) -> bool {
+        self.params_epoch == epoch
     }
 
     /// A ghost the server deleted (or the connection ended).
@@ -374,6 +444,32 @@ pub fn hull_source_of(vm: &Vm, id: u32) -> Option<HullSource> {
     Some(HullSource { path, scale })
 }
 
+/// Reads the numbers again of the props whose `PropData` object a datablock event changed (an edit of a running game), and where
+/// their datablocks' collision hulls come from: at most [`MAX_REFRESHES_PER_FRAME`] props a tick, the rest on the next ticks.
+/// Once a tick, after the client's events, so the objects are written before they are read. The bodies the prediction made of
+/// the props take the new numbers at their next step; their poses and speeds stay.
+pub fn refresh_datablocks(vm: &Vm, book: &ClientProps) {
+    let Some(objects) = DatablockObjects::of(vm) else {
+        return;
+    };
+    let epoch = objects.epoch();
+    let Ok(mut book) = book.0.try_borrow_mut() else {
+        return;
+    };
+    if book.params_current(epoch) {
+        return;
+    }
+    let refreshed = book.refresh_params(
+        epoch,
+        |id| objects.generation(id),
+        |id| params_of(vm, id),
+        MAX_REFRESHES_PER_FRAME,
+    );
+    for data in refreshed {
+        book.set_hull_source(data, hull_source_of(vm, data));
+    }
+}
+
 /// Finds where each prop of the book is in the scene hierarchy: a child's pose for a prediction tick, from its parents' latest
 /// records and its last local pose, and whether it carries others. Once a tick, after the client's other work (the client's
 /// state is not being changed then, so the lookup answers).
@@ -421,7 +517,13 @@ pub fn heard(vm: &mut Vm, book: &ClientProps, event: GhostEvent<'_, PropGhost>) 
     };
     match event {
         GhostEvent::Added { index, record } | GhostEvent::Changed { index, record } => {
-            book.heard(index, record, |id| params_of(vm, id));
+            let objects = DatablockObjects::of(vm);
+            book.heard_at(
+                index,
+                record,
+                |id| objects.as_ref().map_or(0, |o| o.generation(id)),
+                |id| params_of(vm, id),
+            );
             if let Some(data) = record.data_block.0
                 && book
                     .get(index)

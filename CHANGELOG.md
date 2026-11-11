@@ -20,6 +20,11 @@ different.
   for a write (the fields an object copied) and whole for a redeclare (`onNewDataBlock` again, script threads kept by sequence
   name and position), for ShapeBase, StaticShape, Item and Player; a game's class registers its own on `EngineClass::datablock_changed`
   (`#[class(refresh = ..)]` on a plugin class), and `%db.onReloaded()` runs after a refresh. The book's "Live datablocks" chapter.
+- A client refreshes what it built from a datablock when a new record for it arrives mid-game, in place: the predicted
+  Player's and vehicles' tuning (position, velocity and state kept to the bit), the tires and springs, a Player's live pose,
+  the preloaded shapes and a plugin's copies of a datablock object's fields (the props' numbers), each keyed on a per-datablock
+  generation that moves only when the record differs, at most 64 refreshes a frame. A local client over its server leaves the
+  server's own datablock objects unwritten. TGE rebuilds nothing on a client once a datablock is received.
 
 #### Mods
 

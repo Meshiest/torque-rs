@@ -1519,6 +1519,7 @@ mod tests {
         let prop = ClientProp {
             data: Some(1),
             params: Some(params),
+            generation: 0,
             slot: 0,
             hulls: None,
             mine: false,

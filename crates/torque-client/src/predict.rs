@@ -56,12 +56,13 @@ use collide::mesh::Hull;
 use collide::{Exhausted, ObjectId};
 use ghost_world::Ghost;
 use ghost_world::effects::Effect;
-use ghost_world::world::{Eye, Pose};
+use ghost_world::world::{Eye, MAX_REFRESHES_PER_FRAME, Pose};
 use ghosts::Value;
 use glam::Vec3;
 use net::control::{ControlData, ControlSection, checksum};
 use net::moves::{Move, MoveQueue};
 use sim::player::host::{LiquidStatics, PlayerHost, ZoneView};
+use sim::player::pose::object_box;
 use sim::player::{NoSkeleton, Player, PlayerClass, PlayerData, PlayerState, Skeleton};
 use torque_game::scene::container::CandidateOrder;
 use torque_game::sim_classes::PlayerKind;
@@ -192,6 +193,8 @@ pub struct Predicted {
     /// The control object's ghost index and its datablock.
     pub index: u32,
     pub datablock: u32,
+    /// The datablock's generation the Player's tuning was made from ([`ghost_world::ClientWorld::datablock_generation`]).
+    pub generation: u64,
     pub data: PlayerData,
     /// The Player class its datablock makes (the game's, [`game::PredictGame::player_kind`]).
     pub kind: Rc<dyn PlayerKind>,
@@ -202,6 +205,80 @@ pub struct Predicted {
     pub frames: bool,
     /// The parent frame the Player is predicted in, when the server sends its local pose ([`framed`]).
     pub frame: Option<framed::ChildFrame>,
+}
+
+impl Predicted {
+    /// A predicted Player of datablock `db` at `pos` and `yaw`, with the tuning of the datablock as the world holds it now.
+    /// `None` when the world's datablock is not a PlayerData.
+    pub fn new<W: PredictWorld>(
+        world: &W,
+        index: u32,
+        db: u32,
+        pos: F3,
+        yaw: f32,
+        game: &dyn game::PredictGame<W>,
+    ) -> Option<Predicted> {
+        let data = player_data(world, db, game)?;
+        let kind = game.player_kind(world, db);
+        let mut s = kind.new_state(SELF_ID, &data, pos, yaw);
+        s.recharge_rate = world_f32(world, db, "rechargeRate").unwrap_or(0.0);
+        Some(Predicted {
+            index,
+            datablock: db,
+            generation: world.datablock_generation(db),
+            data,
+            kind,
+            player: Player::new(s),
+            vehicle: None,
+            frames: false,
+            frame: None,
+        })
+    }
+
+    /// Brings the Player's tuning up to its datablock's current generation, in place: the datablock's values, the speeds, the
+    /// box and the recharge rate the state keeps, and the class's own (the server's `onNewDataBlock` for a Player that has its
+    /// state). Position, velocity and everything else the moves made stay as they are. Returns whether anything was
+    /// refreshed (`false`: already current, or the datablock is no PlayerData any more: the Player keeps its tuning and takes
+    /// the generation, so the record is not read again until it changes).
+    pub fn refresh_tuning<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        game: &dyn game::PredictGame<W>,
+    ) -> bool {
+        let generation = world.datablock_generation(self.datablock);
+        if generation == self.generation {
+            return false;
+        }
+        self.generation = generation;
+        let Some(data) = player_data(world, self.datablock, game) else {
+            return false;
+        };
+        let kind = game.player_kind(world, self.datablock);
+        let s = &mut *self.player.s;
+        s.mass = data.mass;
+        if self.data.drag != data.drag {
+            s.drag = data.drag;
+        }
+        s.speeds = [
+            data.max_forward_speed,
+            data.max_side_speed,
+            data.max_backward_speed,
+            data.max_underwater_forward_speed,
+            data.max_underwater_side_speed,
+            data.max_underwater_backward_speed,
+        ];
+        kind.datablock_changed(s, &data);
+        s.obj_box = object_box(data.poses.box_size(&data, s.pose));
+        if s.pose_ticks == u32::MAX {
+            s.pose_reach = s.obj_box;
+        }
+        kind.update_scaled_box(s);
+        s.reset_world_box();
+        s.recharge_rate = world_f32(world, self.datablock, "rechargeRate").unwrap_or(0.0);
+        self.data = data;
+        self.kind = kind;
+        true
+    }
 }
 
 /// The client's control object as it predicts it, over the game's world `W`.
@@ -235,6 +312,8 @@ pub struct Predictor<W: PredictWorld> {
     /// The vehicles nobody on this client drives, run forward as TGE's client runs its ghosts (by ghost index), the last vehicle
     /// update read, and the end of the move list at the last tick (the client's ticks are its moves).
     pub ghost_vehicles: std::collections::BTreeMap<u32, drive::GhostVehicle>,
+    /// The world's datablock epoch the ghost vehicles were last brought up to ([`ghost_world::ClientWorld::datablock_epoch`]).
+    pub vehicles_epoch: u64,
     /// The driven vehicle's updates that carried its state (no driver on the server's side) since the last resend, from the
     /// last with a pose on, in order, with their positions: applied to it when a resend ends the drive.
     pub driven_pending: Vec<(VehicleUpdate, Option<[f32; 3]>)>,
@@ -340,6 +419,7 @@ impl<W: PredictWorld> Predictor<W> {
             shapes: drive::ShapeCache::default(),
             camera: None,
             ghost_vehicles: std::collections::BTreeMap::new(),
+            vehicles_epoch: 0,
             driven_pending: Vec::new(),
             projectiles: None,
             newest_move: None,
@@ -719,29 +799,14 @@ impl<W: PredictWorld> Predictor<W> {
             .is_none_or(|x| x.index != index || x.datablock != db_id);
         if fresh {
             let game = Rc::clone(self.game());
-            let Some(data) = player_data(world, db_id, &*game) else {
-                self.predicted = None;
-                return;
-            };
             let pos = p.free.map_or([0.0; 3], |f| f.position);
-            let kind = game.player_kind(world, db_id);
-            let mut s = kind.new_state(SELF_ID, &data, pos, p.rot_z);
-            s.recharge_rate = world_f32(world, db_id, "rechargeRate").unwrap_or(0.0);
-            self.predicted = Some(Predicted {
-                index,
-                datablock: db_id,
-                data,
-                kind,
-                player: Player::new(s),
-                vehicle: None,
-                frames: false,
-                frame: None,
-            });
+            self.predicted = Predicted::new(world, index, db_id, pos, p.rot_z, &*game);
         }
         let game = Rc::clone(self.game());
         let Some(pr) = self.predicted.as_mut() else {
             return;
         };
+        pr.refresh_tuning(world, &*game);
         let s = &mut *pr.player.s;
         let e = p.energy;
         let max = pr.data.max_energy;
@@ -823,10 +888,55 @@ impl<W: PredictWorld> Predictor<W> {
                     .get(&index)
                     .map_or(0, |g| g.warp.prediction);
             }
+        } else if let Some(d) = pr.vehicle.as_mut() {
+            let mut work = 0u64;
+            d.refresh_tuning(
+                world,
+                &mut self.shapes,
+                self.static_world.reader.as_ref(),
+                &mut work,
+                TICK_WORK,
+                &*self.static_world.game.0,
+            );
         }
         match pr.vehicle.as_mut() {
             Some(d) => d.read_packet_data(v, &mut ClientCollision::empty()),
             None => self.predicted = None,
+        }
+    }
+
+    /// Brings the ghost vehicles' tuning up to the datablocks the world holds now, once the world's datablock epoch has moved:
+    /// at most [`MAX_REFRESHES_PER_FRAME`] vehicles a call (the epoch is taken as seen when all were
+    /// looked at, so the rest are done by the next calls). Each is changed in place: its pose and momenta stay.
+    fn refresh_ghost_vehicles(&mut self, world: &W) {
+        if world.datablock_epoch == self.vehicles_epoch {
+            return;
+        }
+        let game = Rc::clone(self.game());
+        let mut budget = MAX_REFRESHES_PER_FRAME;
+        let mut waiting = false;
+        let mut work = 0u64;
+        for g in self.ghost_vehicles.values_mut() {
+            let body = &mut g.body;
+            if world.datablock_generation(body.datablock) != body.generation {
+                if budget == 0 {
+                    return;
+                }
+                budget -= 1;
+                body.refresh_tuning(
+                    world,
+                    &mut self.shapes,
+                    self.static_world.reader.as_ref(),
+                    &mut work,
+                    TICK_WORK,
+                    &*game,
+                );
+                waiting |= world.datablock_generation(body.datablock) != body.generation;
+            }
+            body.refresh_wheels(world);
+        }
+        if !waiting {
+            self.vehicles_epoch = world.datablock_epoch;
         }
     }
 
@@ -900,6 +1010,7 @@ impl<W: PredictWorld> Predictor<W> {
                 g.unpack(&rec, u.position, true, &mut ClientCollision::empty());
             }
         }
+        self.refresh_ghost_vehicles(world);
         let ticks = match self.last_end {
             Some(e) => end.wrapping_sub(e).min(MAX_GHOST_TICKS),
             None => 0,
@@ -1123,7 +1234,17 @@ impl<W: PredictWorld> Predictor<W> {
             Some(v) if pr.player.s.control_object.is_some() => v.v.s.position(),
             _ => pr.player.s.position(),
         };
+        pr.refresh_tuning(world, &*game);
         if let Some(v) = pr.vehicle.as_mut() {
+            let mut work = 0;
+            v.refresh_tuning(
+                world,
+                &mut self.shapes,
+                self.static_world.reader.as_ref(),
+                &mut work,
+                TICK_WORK,
+                &*game,
+            );
             v.refresh_wheels(world);
         }
         let mut collision = ClientCollision::new(

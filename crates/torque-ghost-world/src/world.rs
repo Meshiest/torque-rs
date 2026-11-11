@@ -433,6 +433,10 @@ impl<S: ClientSet> GhostIndex<S> {
     }
 }
 
+/// The most objects a frame or tick brings up to a changed datablock (a predicted vehicle's tuning, a ghost's props, a preloaded
+/// shape): the rest wait for the next one, so an edit under thousands of users spreads over frames.
+pub const MAX_REFRESHES_PER_FRAME: usize = 64;
+
 /// The most ghosts a client's world follows, whatever ghost table the connection's accept allows (an engine server's 24-bit
 /// table names 16.7 million): a ghost created past it is left out (counted in [`ClientWorld::over_cap`]) until room is made.
 pub const MAX_WORLD_GHOSTS: usize = 1 << 18;
@@ -443,6 +447,14 @@ pub const MAX_WORLD_GHOSTS: usize = 1 << 18;
 pub struct ClientWorld<S: ClientSet> {
     /// Datablocks by id, as their events carried them (an event without a body leaves what the client had).
     pub datablocks: BTreeMap<u32, S::Datablock>,
+
+    /// The generation of each datablock the world holds: the value of [`ClientWorld::datablock_epoch`] when an event last changed
+    /// its record (an event that carried the record the world had changes nothing). A cache built from a datablock keeps the id
+    /// and this number, and is stale when the number moves ([`ClientWorld::datablock_generation`]).
+    pub datablock_gen: BTreeMap<u32, u64>,
+
+    /// How many events changed a datablock's record. A value other than the one a consumer last saw means some datablock changed.
+    pub datablock_epoch: u64,
 
     /// The server-to-client net strings by slot.
     pub strings: BTreeMap<u8, Vec<u8>>,
@@ -677,6 +689,8 @@ impl<S: ClientSet> Default for ClientWorld<S> {
     fn default() -> ClientWorld<S> {
         ClientWorld {
             datablocks: Default::default(),
+            datablock_gen: Default::default(),
+            datablock_epoch: Default::default(),
             strings: Default::default(),
             ghosts: Default::default(),
             control: Default::default(),
@@ -1528,11 +1542,25 @@ impl<S: ClientSet> ClientWorld<S> {
         }
     }
 
-    /// A datablock event's datablock.
-    pub fn apply_datablock(&mut self, id: u32, datablock: S::Datablock) {
+    /// A datablock event's datablock. The record is compared with the one held: an identical one (a resend) changes nothing, a
+    /// different or new one takes the next generation ([`ClientWorld::datablock_generation`]). Returns whether the datablock changed.
+    pub fn apply_datablock(&mut self, id: u32, datablock: S::Datablock) -> bool {
+        if self.datablocks.get(&id) == Some(&datablock) {
+            return false;
+        }
         self.image_states_cache.remove(&id);
         self.datablocks_changed();
         self.datablocks.insert(id, datablock);
+        self.datablock_epoch += 1;
+        self.datablock_gen.insert(id, self.datablock_epoch);
+        true
+    }
+
+    /// The generation of datablock `id`: 0 for one [`ClientWorld::apply_datablock`] has not received, else the epoch its record
+    /// last changed at (never lower than an earlier answer for the same id).
+    #[must_use]
+    pub fn datablock_generation(&self, id: u32) -> u64 {
+        self.datablock_gen.get(&id).copied().unwrap_or(0)
     }
 
     /// A ghost-always event for ghost `index`.

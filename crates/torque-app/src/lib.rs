@@ -135,6 +135,10 @@
 //!   `known_servers` under the user's data folder ([`transports::known_servers_path`]); the link's state comes back as a
 //!   `torque_net_quic::QuicWatch` in the [`transports::LinkInfo`] (`tests/quic_link.rs`: a pinned identity connects and gets
 //!   its ghosts, a wrong one is refused naming both hashes, a changed key is refused, a moved socket keeps its connection).
+//! - A [`ghosts::GhostScene`] keys a Player's live pose on its datablock's generation beside the shape's node count and the
+//!   ghost's birth: a datablock changed under it (a shape of the same node count among them) makes the pose again, at most
+//!   `MAX_REFRESHES_PER_FRAME` poses a frame, the rest drawn as they are until a later frame; the preload loads what a changed
+//!   datablock names, keyed on the same generation (`a_players_datablock_change_rebuilds_its_live_pose_within_the_frames_budget`).
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.

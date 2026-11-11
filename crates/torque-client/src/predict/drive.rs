@@ -346,6 +346,15 @@ impl ShapeCache {
         found?.as_ref()
     }
 
+    /// Whether a read of `path` failed for good (not there, not a shape the client reads, or past the shapes the cache keeps),
+    /// so no later [`ShapeCache::get`] of it gives a shape.
+    #[must_use]
+    pub fn failed(&self, path: &[u8]) -> bool {
+        self.shapes
+            .get(&path.to_ascii_lowercase())
+            .is_some_and(Option::is_none)
+    }
+
     /// The shape at `path`, read through `reader` the first time and kept, found or not (at most [`MAX_SHAPES`] shapes). The
     /// load draws on what this tick's loads have left of [`SHAPE_LOAD_WORK`] and takes [`SHAPE_LOAD_TICK_WORK`] of the tick's
     /// `work` up to `budget`; a tick without that room reads nothing and answers None, and a load the rest of the tick's load
@@ -695,6 +704,11 @@ impl PreloadShape for ClientPreload<'_> {
 pub struct DrivenVehicle {
     pub index: u32,
     pub datablock: u32,
+    /// The datablock's generation the data was made from, the path of its shape, and the generations of each wheel's tire and
+    /// spring as last read ([`DrivenVehicle::refresh_tuning`], [`DrivenVehicle::refresh_wheels`]).
+    pub generation: u64,
+    pub shape_file: Vec<u8>,
+    pub wheel_gens: [[u64; 2]; wheeled::WHEELS],
     pub data: Rc<WheeledVehicleData>,
     /// The game's subclass of the datablock and its steering rules ([`PredictGame::wheeled`]), the type masks its step uses.
     pub class: Option<Rc<dyn WheeledClass>>,
@@ -736,7 +750,8 @@ impl DrivenVehicle {
         let g = world.ghosts.get(&index)?;
         let rec = g.record.as_ref()?.vehicle().filter(|v| !v.flying)?;
         let db = g.datablock()?;
-        let shape = shapes.get(shape_path(world, db)?, reader, work, budget)?;
+        let path = shape_path(world, db)?;
+        let shape = shapes.get(path, reader, work, budget)?;
         let data = wheeled_data(world, db, &shape)?;
         let wheeling = game.wheeled(world, db);
         let m = collide::math::IDENTITY;
@@ -746,16 +761,24 @@ impl DrivenVehicle {
         // `ShapeBase::onNewDataBlock`: the recharge rate is the datablock's (the energy step adds it every tick).
         v.s.recharge_rate = float(world, db, "rechargeRate", 0, 0.0);
         game.new_wheeled(&mut v.s);
+        let mut wheel_gens = [[0; 2]; wheeled::WHEELS];
         if let Some(wheels) = &rec.wheel_datablocks {
-            for (w, b) in v.k.wheels.iter_mut().zip(wheels) {
+            for ((w, b), gens) in v.k.wheels.iter_mut().zip(wheels).zip(&mut wheel_gens) {
                 let Some(b) = b else { continue };
                 w.tire = tire_data(world, b.tire).map(|t| (ObjectId(b.tire), t));
                 w.spring = spring_data(world, b.spring).map(|s| (ObjectId(b.spring), s));
+                *gens = [
+                    world.datablock_generation(b.tire),
+                    world.datablock_generation(b.spring),
+                ];
             }
         }
         Some(DrivenVehicle {
             index,
             datablock: db,
+            generation: world.datablock_generation(db),
+            shape_file: path.to_vec(),
+            wheel_gens,
             data: Rc::new(data),
             class: wheeling.class,
             steer: wheeling.steer,
@@ -767,7 +790,104 @@ impl DrivenVehicle {
         })
     }
 
-    /// The wheels' tires and springs as the ghost's last wheel block set them (`WheeledVehicle::unpackUpdate`).
+    /// Brings the vehicle's tuning up to its datablock's current generation, in place: the datablock's data and wheel records,
+    /// the rigid's mass, inertia, friction, restitution and center of mass, the drag, the recharge rate, the class, steering rules
+    /// and solver the game makes of it, and the object box when the shape changed. The pose, the momenta (so the velocities the
+    /// next tick derives), the wheels' motion and the tires and springs are kept ([`DrivenVehicle::refresh_wheels`] re-reads those
+    /// by their own generations). Returns whether it refreshed; `false` when it was current, or when the record is no
+    /// WheeledVehicleData with a shape the client can read (the vehicle keeps its tuning and takes the generation). A shape
+    /// whose read waits for a later tick leaves the vehicle as it is, to try again.
+    pub fn refresh_tuning<W: PredictWorld>(
+        &mut self,
+        world: &W,
+        shapes: &mut ShapeCache,
+        reader: Option<&FileReader>,
+        work: &mut u64,
+        budget: u64,
+        game: &dyn PredictGame<W>,
+    ) -> bool {
+        let generation = world.datablock_generation(self.datablock);
+        if generation == self.generation {
+            return false;
+        }
+        let Some(path) = shape_path(world, self.datablock) else {
+            self.generation = generation;
+            return false;
+        };
+        let shape = if path == self.shape_file.as_slice() {
+            Rc::clone(&self.shape)
+        } else if let Some(shape) = shapes.get(path, reader, work, budget) {
+            shape
+        } else {
+            if shapes.failed(path) {
+                self.generation = generation;
+            }
+            return false;
+        };
+        let Some(data) = wheeled_data(world, self.datablock, &shape) else {
+            self.generation = generation;
+            return false;
+        };
+        let wheeling = game.wheeled(world, self.datablock);
+        let old = Rc::clone(&self.data);
+        let s = &mut *self.v.s;
+        if path != self.shape_file.as_slice() {
+            s.obj_box = shape.bounds();
+            s.body_box = Box3::new(
+                [
+                    s.obj_box.min[0] * s.scale[0],
+                    s.obj_box.min[1] * s.scale[1],
+                    s.obj_box.min[2] * s.scale[2],
+                ],
+                [
+                    s.obj_box.max[0] * s.scale[0],
+                    s.obj_box.max[1] * s.scale[1],
+                    s.obj_box.max[2] * s.scale[2],
+                ],
+            );
+            s.reset_world_box();
+        }
+        // The class's `onNewDataBlock` on a copy at the live pose: what it sets from the datablock is taken over, the rest of the
+        // live state stays.
+        let mut fresh = (*self.v.s).clone();
+        let mut fresh_k = self.v.k;
+        wheeled::on_new_data_block(&mut fresh, &mut fresh_k, &data);
+        let s = &mut *self.v.s;
+        s.mass = fresh.mass;
+        if old.base.shape.drag != data.base.shape.drag {
+            s.drag = fresh.drag;
+        }
+        let (r, f) = (&mut s.rigid, &fresh.rigid);
+        r.mass = f.mass;
+        r.one_over_mass = f.one_over_mass;
+        r.friction = f.friction;
+        r.restitution = f.restitution;
+        r.com = f.com;
+        r.inertia = f.inertia;
+        r.inv_inertia = f.inv_inertia;
+        r.update_inertial_tensor();
+        r.update_center_of_mass();
+        s.recharge_rate = float(world, self.datablock, "rechargeRate", 0, 0.0);
+        let front =
+            |d: &WheeledVehicleData, i: usize| d.wheels.get(i).is_some_and(|w| w.pos[1] > 0.0);
+        for (i, (w, f)) in self.v.k.wheels.iter_mut().zip(&fresh_k.wheels).enumerate() {
+            if front(&old, i) != front(&data, i) {
+                w.steering = f.steering;
+            }
+        }
+        self.generation = generation;
+        self.shape_file = path.to_vec();
+        self.shape = shape;
+        self.data = Rc::new(data);
+        self.class = wheeling.class;
+        self.steer = wheeling.steer;
+        self.masks = game.type_masks();
+        self.solver = game.body_solver(world, self.datablock);
+        true
+    }
+
+    /// The wheels' tires and springs as the ghost's last wheel block set them (`WheeledVehicle::unpackUpdate`), each read again
+    /// when the block names another datablock or its datablock's generation moved.
     pub fn refresh_wheels<W: PredictWorld>(&mut self, world: &W) {
         let Some(rec) = world
             .ghosts
@@ -781,19 +901,32 @@ impl DrivenVehicle {
         let Some(wheels) = &rec.wheel_datablocks else {
             return;
         };
-        for (w, b) in self.v.k.wheels.iter_mut().zip(wheels) {
+        for ((w, b), gens) in self
+            .v
+            .k
+            .wheels
+            .iter_mut()
+            .zip(wheels)
+            .zip(&mut self.wheel_gens)
+        {
             match b {
                 Some(b) => {
-                    if w.tire.map(|t| t.0) != Some(ObjectId(b.tire)) {
+                    let now = [
+                        world.datablock_generation(b.tire),
+                        world.datablock_generation(b.spring),
+                    ];
+                    if w.tire.map(|t| t.0) != Some(ObjectId(b.tire)) || gens[0] != now[0] {
                         w.tire = tire_data(world, b.tire).map(|t| (ObjectId(b.tire), t));
                     }
-                    if w.spring.map(|t| t.0) != Some(ObjectId(b.spring)) {
+                    if w.spring.map(|t| t.0) != Some(ObjectId(b.spring)) || gens[1] != now[1] {
                         w.spring = spring_data(world, b.spring).map(|s| (ObjectId(b.spring), s));
                     }
+                    *gens = now;
                 }
                 None => {
                     w.tire = None;
                     w.spring = None;
+                    *gens = [0; 2];
                 }
             }
         }

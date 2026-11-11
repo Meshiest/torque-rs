@@ -249,6 +249,8 @@ pub fn client_rates(vm: &Vm) -> RateConfig {
 fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
     let old = std::mem::take(world);
     world.datablocks = old.datablocks;
+    world.datablock_gen = old.datablock_gen;
+    world.datablock_epoch = old.datablock_epoch;
     world.strings = old.strings;
     world.client_strings = old.client_strings;
     world.commands = old.commands;

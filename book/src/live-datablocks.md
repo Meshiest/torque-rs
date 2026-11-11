@@ -1,11 +1,10 @@
 # Live datablocks
 
 A datablock is read once. The objects built from it keep what they took: a Player its mass, speeds and box, a shape its
-instance and hulls, a StaticShape the type bits its `dynamicType` gave it. In TGE an edited datablock is a stale object until
-the mission is loaded again. Here the server notices the edit and brings the objects that use the datablock up to date at the
-next tick, so a game can change a datablock while it runs. This chapter is the server side: the model, the two kinds of
-change, what is refreshed for which class, the limits and the script callback. The client side of a live datablock (a ghost's
-record, the predictors) is its own work.
+instance and hulls, a StaticShape the type bits its `dynamicType` gave it. In TGE an edited datablock is a stale object
+until the mission is loaded again. Here the server notices the edit and brings the objects that use the datablock up to date
+at the next tick, so a game can change a datablock while it runs. This chapter covers the server's refresh (the model, the
+two kinds of change, what is refreshed for which class, the limits and the script callback) and the client's.
 
 ## The model
 
@@ -96,3 +95,44 @@ left out, and a hook that deletes one itself leaves the hooks after it in the ch
 - `%db.onReloaded()` runs once per tick for a datablock that was refreshed and had users, after the refresh, whatever the
   number of writes or redeclares in the tick. A datablock without users runs it never.
 - `%db.onNewDataBlock(%obj)` is not run again by a refresh: the object's datablock did not change.
+
+## Client refresh
+
+A client keeps a datablock in two places: the connection's world holds the **record** as the event carried it (what the
+renderer, the collision world and the predictors read), and the script engine holds the **object** made of it (what scripts
+and the plugins that read fields through the engine see). Each has a generation.
+
+- `ClientWorld::datablock_generation(id)` moves when an event carries a record that **differs** from the one held (a record
+  sent again unchanged costs one comparison and moves nothing); `ClientWorld::datablock_epoch` moves with any of them. Every
+  cache built from a record keeps `(id, generation)` and is refreshed when the generation moved:
+  - the predicted Player's tuning (`Predicted::refresh_tuning`): mass, drag, speeds, box and recharge rate, as the server's
+    own Player takes a new datablock. Its position, velocity and the rest of what the moves made stay the same to the bit.
+  - a driven vehicle's and a ghost vehicle's tuning (`DrivenVehicle::refresh_tuning`): the datablock's data and wheel
+    records, the rigid body's mass, inertia, friction, restitution and center of mass, the drag and recharge rate, the object
+    box when the shape changed; the pose, the momenta and the wheels' motion stay. Each wheel's tire and spring are
+    generations of their own records (`refresh_wheels`).
+  - a Player's live pose (its shape instance and animation threads) is made again when its datablock moved, even when the
+    new shape has the same node count.
+  - the scene's preload loads the shapes and textures a changed datablock names, so a new shape is not read in the frame
+    of its first use.
+- `torque_client::datablocks::DatablockObjects` (a script-engine extension) keeps the objects' generations: moved when an
+  event wrote the object, which can be a tick or more after the record arrived (a tick takes a bounded number of events).
+  A plugin that copies an object's fields (the props' numbers, `PropBook::refresh_params`) keys the copy on this one, so it
+  never records a copy made from an object not yet written.
+
+The refresh work is spread: at most `MAX_REFRESHES_PER_FRAME` (64) ghost vehicles, live poses and props are brought up to date
+in one frame or tick; the rest wait for the next one, and a generation is taken as seen only once nothing waits.
+
+A record of another class under a predictor's id, or one whose shape the client cannot read, leaves the predictor's tuning as
+it was and takes the generation (the record is not read again until it changes); a shape still loading is tried again on the
+next tick.
+
+On the script engine a local client shares with its server, the object at a datablock's id is the server's own. An update
+event preloads it but writes nothing into it: the texts the client read off the wire are the wire's roundings of the
+server's values, and a server that refreshes its objects on every write would take its own event for an edit. The client's
+record store takes the record as on any client. An object the client did not make from an event (a script's own datablock at
+that id) is treated the same way.
+
+A server that resends its datablocks mid-play costs a client one record comparison per event; the events of a tick are
+capped, every refresh is budgeted per frame, and the tables added (the generations by id) hold only ids the world's record
+table and the script engine's datablock range already hold.

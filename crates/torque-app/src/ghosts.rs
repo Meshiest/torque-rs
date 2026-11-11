@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use glam::Vec3;
 
@@ -465,6 +466,9 @@ pub struct LivePlayer {
     at_ms: u32,
     /// A new object at the same ghost index (a respawned Player) starts a new animation at `root`.
     birth: Option<u64>,
+    /// The generation of its datablock the instance was made at ([`ClientWorld::datablock_generation`]): a datablock changed
+    /// under it (its shape may be another with the same node count) makes the instance again.
+    generation: u64,
     /// The count of its images' recoils last played ([`ImageRecoil::count`]).
     recoils: Option<u32>,
     /// Its `steering` thread while it drives a WheeledVehicle ([`GhostHooks::advance_live`]).
@@ -585,6 +589,10 @@ struct GhostHooks {
     synced: bool,
     /// The ghosts drawn as still copies this frame ([`Hooks::still`]).
     still: BTreeSet<u32>,
+    /// The live poses made again this frame because their datablock changed: at most
+    /// [`MAX_REFRESHES_PER_FRAME`](torque_ghost_world::world::MAX_REFRESHES_PER_FRAME); the rest are drawn as they are
+    /// and made again on a later frame.
+    refreshes: AtomicUsize,
 }
 
 impl GhostHooks {
@@ -602,7 +610,21 @@ impl GhostHooks {
             return kept;
         };
         let birth = world.birth_order.get(&ask.index).copied();
+        let generation = world.datablock_generation(ask.db);
         let kept = kept.filter(|l| l.nodes == ask.shape.nodes.len() && l.birth == birth);
+        let kept = match kept {
+            Some(l) if l.generation != generation => {
+                if self.refreshes.load(Ordering::Relaxed)
+                    >= torque_ghost_world::world::MAX_REFRESHES_PER_FRAME
+                {
+                    Some(l)
+                } else {
+                    self.refreshes.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+            }
+            kept => kept,
+        };
         let mut live = match kept {
             Some(l) => l,
             None => {
@@ -615,6 +637,7 @@ impl GhostHooks {
                     nodes: ask.shape.nodes.len(),
                     at_ms: world.anim_ms,
                     birth,
+                    generation,
                     recoils: self
                         .inputs
                         .get(&ask.index)
@@ -891,8 +914,10 @@ pub struct GhostScene<S = Plain> {
     pub dust: VehicleDust,
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
     pub tracks: Option<TireTracks>,
-    /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]).
-    preloaded: BTreeSet<u32>,
+    /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]), each with the generation it was loaded
+    /// at, and the world's datablock epoch at the last look.
+    preloaded: BTreeMap<u32, u64>,
+    preloaded_epoch: u64,
     /// The moving shapes' builds kept from the last frame ([`shapecache`]): a shape posed as it was is not built again.
     builds: Store,
 }
@@ -940,7 +965,8 @@ impl<S: GhostStyle> GhostScene<S> {
             eye_pose: EyePose::default(),
             dust: VehicleDust::default(),
             tracks: None,
-            preloaded: BTreeSet::new(),
+            preloaded: BTreeMap::new(),
+            preloaded_epoch: 0,
             builds: Store::default(),
         }
     }
@@ -989,6 +1015,7 @@ impl<S: GhostStyle> GhostScene<S> {
             dust: _,
             tracks: _,
             preloaded: self.preloaded,
+            preloaded_epoch: self.preloaded_epoch,
             builds: self.builds,
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
@@ -1161,19 +1188,33 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
-    /// Loads the shapes and the particles' and decals' textures each new datablock names (`shapeFile`, `projectileShapeName`,
-    /// `textureName`), as TGE's datablocks preload theirs: kept by the loaders' caches, they are not read and decoded mid-game
-    /// in the frame of a first shot, hit or hole.
+    /// Loads the shapes and the particles' and decals' textures each new or changed datablock names (`shapeFile`,
+    /// `projectileShapeName`, `textureName`), as TGE's datablocks preload theirs: kept by the loaders' caches, they are not read
+    /// and decoded mid-game in the frame of a first shot, hit or hole. A datablock changed mid-game is looked at again (a new
+    /// shape it names loads here, not in the frame of its first use). At most
+    /// [`MAX_REFRESHES_PER_FRAME`](torque_ghost_world::world::MAX_REFRESHES_PER_FRAME) datablocks a frame; the rest wait for
+    /// the next frame (the epoch is taken as seen only once none waits).
     fn preload(&mut self, assets: &dyn Assets, world: &World) {
-        if world.datablocks.len() == self.preloaded.len() {
+        if world.datablocks.len() == self.preloaded.len()
+            && world.datablock_epoch == self.preloaded_epoch
+        {
             return;
         }
+        let mut left = torque_ghost_world::world::MAX_REFRESHES_PER_FRAME;
+        let mut waiting = false;
         let mut set = TextureSet::new(assets);
         let mut notes = Vec::new();
         for (&id, db) in &world.datablocks {
-            if !self.preloaded.insert(id) {
+            let generation = world.datablock_generation(id);
+            if self.preloaded.get(&id) == Some(&generation) {
                 continue;
             }
+            if left == 0 {
+                waiting = true;
+                break;
+            }
+            left -= 1;
+            self.preloaded.insert(id, generation);
             for (name, _, value) in &db.fields {
                 let Value::Str(text) = value else {
                     continue;
@@ -1193,6 +1234,9 @@ impl<S: GhostStyle> GhostScene<S> {
                     _ => {}
                 }
             }
+        }
+        if !waiting {
+            self.preloaded_epoch = world.datablock_epoch;
         }
     }
 
@@ -1759,6 +1803,7 @@ impl<S: GhostStyle> GhostScene<S> {
         } else {
             BTreeSet::new()
         };
+        self.hooks.refreshes.store(0, Ordering::Relaxed);
         let hooks = &self.hooks;
         // The vehicle the client drives: the one it runs that its control object rides.
         let driven = world
@@ -2069,5 +2114,172 @@ mod tests {
         let tracks = scene.tracks.as_mut().unwrap();
         tracks.update(&[wheel(7, 2.0), wheel(8, 2.0)], &flat, 0.016);
         assert_eq!(tracks.len(), laid + 1, "only ghost 8's strip runs on");
+    }
+
+    fn player_ask<'a>(
+        index: u32,
+        world: &'a World,
+        shape: &'a torque_shapes::shape::Shape,
+    ) -> LiveAsk<'a, World> {
+        LiveAsk {
+            index,
+            ghost: world.ghosts.get(&index).expect("the ghost"),
+            shape,
+            db: 5,
+            pitch: 0.0,
+            dl: 0,
+        }
+    }
+
+    /// A Player's datablock changed under its live pose (another shape with the same node count) makes the pose again, at most
+    /// `MAX_REFRESHES_PER_FRAME` a frame; one kept past the budget is made again on the next frame, and the same record sent
+    /// again changes nothing.
+    #[test]
+    fn a_players_datablock_change_rebuilds_its_live_pose_within_the_frames_budget() {
+        use torque_ghost_world::tge::TgeDatablock;
+        use torque_ghost_world::world::{Ghost, MAX_REFRESHES_PER_FRAME};
+        use torque_ghosts::TgeShapeBase;
+        use torque_ghosts::parts::GameBase;
+        use torque_ghosts::player::Player as PlayerRecord;
+        let b = [-0.5, -0.5, 0.0, 0.5, 0.5, 2.0];
+        let model =
+            torque_shapes::synth::hull_shape(b, &[("detail2", b)], &["eye"], &["root", "look"]);
+        let shape = model.shape;
+        let mut world = World::default();
+        let db = |file: &str| TgeDatablock {
+            class: "PlayerData".into(),
+            fields: vec![("shapeFile".into(), 0, Value::str(file))],
+        };
+        world.apply_datablock(5, db("kit/a.dts"));
+        let count = MAX_REFRESHES_PER_FRAME as u32 + 1;
+        for i in 1..=count {
+            world.ghosts.insert(
+                i,
+                Ghost {
+                    class: Some(TgeClass::Player),
+                    serial: i as usize,
+                    always: false,
+                    record: Some(TgeRecord::Player(PlayerRecord {
+                        shape: TgeShapeBase {
+                            game: GameBase {
+                                scale: None,
+                                datablock: Some(5),
+                            },
+                            body: None,
+                        },
+                        ..PlayerRecord::default()
+                    })),
+                    part: (),
+                    position: None,
+                    updates: 0,
+                },
+            );
+        }
+        let hooks = GhostHooks::default();
+        let mut kept: Vec<LivePlayer> = (1..=count)
+            .map(|i| {
+                hooks
+                    .advance(&world, player_ask(i, &world, &shape), None)
+                    .expect("a live pose")
+            })
+            .collect();
+        let generation = world.datablock_generation(5);
+        assert!(kept.iter().all(|l| l.generation == generation));
+        // A mark no pose made again carries.
+        for l in &mut kept {
+            l.recoils = Some(77);
+        }
+        let advance =
+            |hooks: &GhostHooks, world: &World, kept: Vec<LivePlayer>| -> Vec<LivePlayer> {
+                kept.into_iter()
+                    .enumerate()
+                    .map(|(k, l)| {
+                        hooks
+                            .advance(world, player_ask(k as u32 + 1, world, &shape), Some(l))
+                            .expect("a live pose")
+                    })
+                    .collect()
+            };
+        // The same record again: every pose kept.
+        assert!(!world.apply_datablock(5, db("kit/a.dts")));
+        let kept = advance(&hooks, &world, kept);
+        assert!(kept.iter().all(|l| l.recoils == Some(77)));
+        // Another shape of the same node count: a new generation, the budget's worth made again this frame.
+        assert!(world.apply_datablock(5, db("kit/b.dts")));
+        let generation = world.datablock_generation(5);
+        let advanced = advance(&hooks, &world, kept);
+        let rebuilt = advanced
+            .iter()
+            .filter(|l| l.generation == generation)
+            .count();
+        assert_eq!(rebuilt, MAX_REFRESHES_PER_FRAME);
+        assert!(
+            advanced
+                .iter()
+                .all(|l| (l.generation == generation) == l.recoils.is_none()),
+            "a pose made again starts without the mark"
+        );
+        // The next frame takes the one that waited.
+        hooks.refreshes.store(0, Ordering::Relaxed);
+        let last = advance(&hooks, &world, advanced);
+        assert!(
+            last.iter()
+                .all(|l| l.generation == generation && l.recoils.is_none())
+        );
+    }
+
+    struct NoAssets;
+
+    impl Assets for NoAssets {
+        fn read(&self, _path: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+
+    /// New and changed datablocks are preloaded at most `MAX_REFRESHES_PER_FRAME` a frame, the rest on the next frames; an
+    /// unchanged world costs nothing after that.
+    #[test]
+    fn the_preload_takes_at_most_the_frames_budget_of_new_and_changed_datablocks() {
+        use torque_ghost_world::tge::TgeDatablock;
+        use torque_ghost_world::world::MAX_REFRESHES_PER_FRAME;
+        let budget = MAX_REFRESHES_PER_FRAME as u32;
+        let db = |file: String| TgeDatablock {
+            class: "StaticShapeData".into(),
+            fields: vec![("shapeFile".into(), 0, Value::str(file))],
+        };
+        let mut world = World::default();
+        let count = budget + 10;
+        for id in 1..=count {
+            world.apply_datablock(id, db(format!("kit/{id}.dts")));
+        }
+        let mut scene = GhostScene::new(GhostOptions::default());
+        scene.preload(&NoAssets, &world);
+        assert_eq!(scene.preloaded.len(), MAX_REFRESHES_PER_FRAME);
+        assert_ne!(scene.preloaded_epoch, world.datablock_epoch, "some wait");
+        scene.preload(&NoAssets, &world);
+        assert_eq!(scene.preloaded.len(), count as usize);
+        assert_eq!(scene.preloaded_epoch, world.datablock_epoch);
+        // Every record changed: two frames again, each id at its new generation at the end.
+        for id in 1..=count {
+            assert!(world.apply_datablock(id, db(format!("kit/{id}b.dts"))));
+        }
+        scene.preload(&NoAssets, &world);
+        let current = |scene: &GhostScene, world: &World| {
+            scene
+                .preloaded
+                .iter()
+                .filter(|(id, g)| world.datablock_generation(**id) == **g)
+                .count()
+        };
+        assert_eq!(current(&scene, &world), MAX_REFRESHES_PER_FRAME);
+        scene.preload(&NoAssets, &world);
+        assert_eq!(current(&scene, &world), count as usize);
+        assert_eq!(scene.preloaded_epoch, world.datablock_epoch);
+        // The same records again: nothing to do.
+        for id in 1..=count {
+            assert!(!world.apply_datablock(id, db(format!("kit/{id}b.dts"))));
+        }
+        scene.preload(&NoAssets, &world);
+        assert_eq!(scene.preloaded_epoch, world.datablock_epoch);
     }
 }
