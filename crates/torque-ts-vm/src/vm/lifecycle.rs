@@ -77,6 +77,7 @@ impl Vm {
         self.deleting_datablocks = false;
         result?;
         self.objects.set_next_datablock_id(FIRST_DATABLOCK_ID);
+        self.clear_script_files();
         Ok(())
     }
 

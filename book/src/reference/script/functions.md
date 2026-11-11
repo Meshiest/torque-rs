@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-313 entries in 1 namespace.
+314 entries in 1 namespace.
 
 ## Global
 
@@ -595,6 +595,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; server and client*
 - `registerFont(string face, string path)` - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
   *arguments: 2; client*
+- `reloadDataBlocks(file [, removeMissing])` - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
+  *arguments: 1 to 2; server*
 - `removeField(text, index)` - the text without that field
   *arguments: 2; server and client*
 - `removeRecord(text, index)` - the text without that record

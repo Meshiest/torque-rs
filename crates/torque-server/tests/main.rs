@@ -7,6 +7,7 @@ mod channels;
 mod control_index;
 mod datablock_live;
 mod datablock_reload;
+mod datablock_watch;
 mod ghost_pass;
 mod ghosting;
 mod hitboxes;

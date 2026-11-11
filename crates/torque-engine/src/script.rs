@@ -343,7 +343,9 @@ pub fn dev_allowed(vm: &Vm) -> bool {
     dev_allowed_in(vm, cfg!(debug_assertions))
 }
 
-/// [`dev_allowed`] for a debug build (`debug_build` true: always) or a release build (only with [`DEV_PREF`] true).
+/// [`dev_allowed`] for a debug build (`debug_build` true: always) or a release build (only with [`DEV_PREF`] true): a host's
+/// own development gate (a watcher that only runs in development) asks this with its build, so its tests can hold it to a
+/// release build's rule.
 pub fn dev_allowed_in(vm: &Vm, debug_build: bool) -> bool {
     debug_build
         || vm
@@ -374,11 +376,14 @@ fn dev_gate(vm: &mut Vm, info: &NativeInfo) -> bool {
     if !info.dev || dev_allowed(vm) {
         return true;
     }
-    vm.error(format!(
-        "{}: a development command: set {DEV_PREF} to 1 to use it",
-        info.label
-    ));
+    vm.error(dev_refusal(&info.label));
     false
+}
+
+/// The error a development command named `label` prints when it may not run ([`dev_allowed_in`] false): for a host's
+/// own development natives, so every refusal reads the same.
+pub fn dev_refusal(label: &str) -> String {
+    format!("{label}: a development command: set {DEV_PREF} to 1 to use it")
 }
 
 macro_rules! native_fns {

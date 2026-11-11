@@ -65,6 +65,20 @@
 //! a changed `.dts` marks its datablocks preloaded for that same drain. A release server with `$Pref::Dev` unset reads no file
 //! time there (`tests/shape_reload.rs`).
 //!
+//! **A changed datablock file is reloaded through one path** (`reload.rs`): `reloadDataBlocks(%file [, %removeMissing])`
+//! and the development watcher (`reload::poll`, run by `server.rs` before the tick's drain, only when
+//! `torque_engine::script::dev_allowed_in` says so and once per `HOT_RELOAD_INTERVAL_MS` of server time) both run
+//! `reload::reload`: `Vm::exec_file_checked` (the source, nothing of a source with a syntax error), the refresh drained, the
+//! `before_round` hooks, one live round through the `LiveRound` the network host gives `reload::install`. Invariants, each
+//! in `tests/datablock_watch.rs`: a changed file is reloaded within a poll interval and a tick and its values reach a
+//! connected client; an unchanged file is never run again; a syntax error keeps every datablock, prints one error and is
+//! retried only when the file changes again; outside development no change time is read and the native is refused; the
+//! datablocks a file no longer declares are reported, and removed only with `%removeMissing` or `$Pref::Dev::RemoveMissing`
+//! and only without users (a refusal is an error naming the count); a file that registers other objects is warned about
+//! once. The removal of a missing datablock is the plain `delete()` behind a user-count check; the checked removal with a
+//! fallback is the one to use once it exists. Extension point: `reload::before_round` (a plugin reads its content again
+//! before the round; capped at `MAX_BEFORE_ROUND_HOOKS`). Check: `cargo test -p torque-server --test main datablock_watch`.
+//!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one
 //! limiter, not a second here) (`unknown_commands_cost_the_connections_share_and_their_warnings_are_limited` in
@@ -94,5 +108,6 @@ pub mod game;
 pub mod net;
 pub mod pacing;
 pub mod platform;
+pub mod reload;
 pub mod server;
 pub mod state;

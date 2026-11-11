@@ -847,8 +847,11 @@ impl<N: NetParts> Server<N> {
                     torque_engine::assets::HOT_RELOAD_INTERVAL_MS,
                 );
                 this.keep_errors(reload_errors);
-                // The datablocks the scripts changed since the last tick refresh their users, once for the batch, before any
-                // object steps (`torque_game::scene::refresh`).
+                // In development, a script file that declared datablocks and changed on disk is run again (its own drain
+                // and round inside), then the datablocks the scripts changed since the last tick refresh their users, once
+                // for the batch, before any object steps (`torque_game::scene::refresh`).
+                let reload_errors = crate::reload::poll(&mut this.vm);
+                this.keep_errors(reload_errors);
                 let refresh_errors = torque_game::scene::refresh::drain(&mut this.vm);
                 this.keep_errors(refresh_errors);
                 let hooks = this.tick_hooks.clone();

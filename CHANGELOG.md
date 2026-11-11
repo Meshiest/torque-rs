@@ -40,6 +40,11 @@ different.
 - A development server (a debug build, or `$Pref::Dev`) reloads a shape whose `.dts` changed on disk and refreshes the objects of
   every datablock on it at the next tick (box, hulls, threads kept), where TGE reads a shape once per mission; a file that no
   longer loads keeps the old shape. Off, nothing reads a file time.
+- `reloadDataBlocks(%file [, %removeMissing])`, a development command: runs a script file again, refreshes the objects built
+  from its datablocks, sends the changed datablocks to the connected clients in one live round and reports the datablocks the
+  file no longer declares (removed only when asked and only while unused); in development the server also watches every
+  script file that declared a datablock and reloads the ones that change on disk, keeping every datablock when the new text
+  does not compile. In TGE a changed datablock file waits for the next mission load.
 
 #### Mods
 

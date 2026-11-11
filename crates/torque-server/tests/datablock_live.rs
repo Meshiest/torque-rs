@@ -1,7 +1,7 @@
 //! The live datablock chain over the memory transport, read by a client that speaks Torque's protocol and records every
 //! `SimDataBlockEvent` it gets: datablocks added and edited mid-game reach the client once each, in key order (a referrer after
 //! the datablock it names), an edit made while the client still downloads its mission's datablocks is not lost, a lossy link
-//! converges, and the server's callbacks run once per chain.
+//! converges, and the server's callbacks run once per chain. The rig and its client are shared with `datablock_watch`.
 
 use crate::net_client;
 
@@ -51,10 +51,13 @@ function GameConnection::onDataBlocksUpdated(%client, %count) { $updated++; $cou
 
 type Shared = Rc<RefCell<NetShared<TorqueNet>>>;
 
-fn game_server() -> (NetServer, Shared, MemoryEnd) {
+/// The test game's server over `files`.
+pub(crate) fn game_server_with(
+    files: impl torque_ts_vm::host::FileHost + 'static,
+) -> (NetServer, Shared, MemoryEnd) {
     let mut vm = Vm::new();
     torque_game::specs::install(&mut vm);
-    vm.set_file_host(MemFiles::new());
+    vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let game = torque_server::game::install(&mut vm, &state);
     let mut s = Server::with_state(vm, Rc::clone(&state));
@@ -83,15 +86,15 @@ fn game_server() -> (NetServer, Shared, MemoryEnd) {
     (s, shared, end)
 }
 
-fn global(s: &NetServer, name: &str) -> String {
+pub(crate) fn global(s: &NetServer, name: &str) -> String {
     String::from_utf8_lossy(&s.vm.global(name).unwrap_or_default()).into_owned()
 }
 
-fn answer(s: &mut NetServer, code: &str) -> String {
+pub(crate) fn answer(s: &mut NetServer, code: &str) -> String {
     String::from_utf8(s.vm.eval(code.as_bytes()).unwrap()).unwrap()
 }
 
-fn id_of(s: &NetServer, name: &str) -> u32 {
+pub(crate) fn id_of(s: &NetServer, name: &str) -> u32 {
     s.vm.objects().find(name.as_bytes()).expect(name)
 }
 
@@ -219,7 +222,7 @@ impl EventUnpacker for Unpacker<'_> {
 }
 
 /// A client of the server over Torque's protocol that keeps the datablocks it was sent and every datablock event it read.
-struct LiveClient {
+pub(crate) struct LiveClient {
     addr: SocketAddr,
     client: Client,
     table: Table,
@@ -229,10 +232,10 @@ struct LiveClient {
     ghosts: Option<GhostClient<TgeCodec>>,
     out: EventQueue<NetEvent>,
     receiver: EventReceiver<Ev>,
-    datablocks: BTreeMap<u32, Vec<(String, u32, Value)>>,
+    pub(crate) datablocks: BTreeMap<u32, Vec<(String, u32, Value)>>,
     seen: Vec<Seen>,
-    dones: u32,
-    errors: Vec<String>,
+    pub(crate) dones: u32,
+    pub(crate) errors: Vec<String>,
 }
 
 impl LiveClient {
@@ -263,12 +266,12 @@ impl LiveClient {
         *self.client.state() == ClientState::Connected
     }
 
-    fn ids(&self) -> BTreeSet<u32> {
+    pub(crate) fn ids(&self) -> BTreeSet<u32> {
         self.datablocks.keys().copied().collect()
     }
 
     /// A datablock's `referenceDistance`, as the client holds it (the record's member name, less its prefix).
-    fn distance(&self, id: u32) -> Option<f32> {
+    pub(crate) fn distance(&self, id: u32) -> Option<f32> {
         self.datablocks
             .get(&id)?
             .iter()
@@ -458,11 +461,11 @@ impl LiveClient {
 }
 
 /// A server and its clients, stepped by hand, with a share of the datagrams lost.
-struct Rig {
-    s: NetServer,
+pub(crate) struct Rig {
+    pub(crate) s: NetServer,
     shared: Shared,
     end: MemoryEnd,
-    clients: Vec<LiveClient>,
+    pub(crate) clients: Vec<LiveClient>,
     /// Datagrams lost, in a hundred.
     loss: u64,
     rng: Rng,
@@ -471,7 +474,12 @@ struct Rig {
 
 impl Rig {
     fn new() -> Rig {
-        let (s, shared, end) = game_server();
+        Rig::with_files(MemFiles::new())
+    }
+
+    /// A rig whose server reads `files`.
+    pub(crate) fn with_files(files: impl torque_ts_vm::host::FileHost + 'static) -> Rig {
+        let (s, shared, end) = game_server_with(files);
         Rig {
             s,
             shared,
@@ -498,7 +506,7 @@ impl Rig {
     }
 
     /// One server tick with the datagrams carried both ways.
-    fn tick(&mut self) {
+    pub(crate) fn tick(&mut self) {
         self.s.run(TICK_MS, |_| false);
         let now = self.s.vm.sim_time();
         for (to, datagram) in self.end.take_sent() {
@@ -518,7 +526,11 @@ impl Rig {
     }
 
     /// Ticks until `done`, at most `limit` ticks; the ticks it took, or None.
-    fn run_until(&mut self, limit: usize, mut done: impl FnMut(&Rig) -> bool) -> Option<usize> {
+    pub(crate) fn run_until(
+        &mut self,
+        limit: usize,
+        mut done: impl FnMut(&Rig) -> bool,
+    ) -> Option<usize> {
         for tick in 0..limit {
             if done(self) {
                 return Some(tick);
@@ -529,7 +541,7 @@ impl Rig {
     }
 
     /// Connects a client and runs its mission chain to the end.
-    fn connected(&mut self) -> usize {
+    pub(crate) fn connected(&mut self) -> usize {
         let c = self.join();
         let took = self.run_until(600, |r| r.clients[c].dones == 1);
         assert!(

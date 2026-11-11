@@ -7,6 +7,7 @@
 //! Follows Torque3D's MIT-licensed `console/torquescript/runtime.cpp` and `console/console.cpp` (the latter Copyright
 //! (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use torque_ts_bytecode::DsoFile;
@@ -14,6 +15,7 @@ use torque_ts_bytecode::DsoFile;
 use super::{COMPILE_BASE_WORK, MAX_LOG_LINE, Mode, Native, NativeCall, Vm, VmError, lossy};
 use crate::code::CodeBlock;
 use crate::host::{Compiled, FileRead, Purpose, Refusal};
+use crate::sim::{ObjId, SimObject};
 use crate::text::{atoi, fold, until_nul};
 use crate::vm::{Level, LogLine};
 
@@ -29,6 +31,57 @@ const MAX_PATH: usize = 1023;
 const MAX_FILE_NAME_BYTES: usize = 16 << 20;
 /// The length from which the `eval error >>` line is not printed.
 pub const EVAL_ERROR_TEXT_BYTES: usize = 1000;
+/// The script files [`Vm::script_file`] remembers at most (a game execs some hundreds). Past the cap a file runs as
+/// before but is not remembered, so a watcher of the table cannot see it change.
+pub const MAX_TRACKED_SCRIPT_FILES: usize = 4096;
+/// The objects one trace ([`Vm::trace_new_objects`]) lists at most; the rest are counted.
+pub const MAX_TRACED_OBJECTS: usize = 8192;
+
+/// A script file `exec` ran ([`Vm::script_file`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptFile {
+    /// The expanded path, as `exec` first spelled it.
+    pub path: Rc<[u8]>,
+    /// The file's change time when it was last run (`FileHost::modified`; None when the host gives none).
+    pub modified: Option<u64>,
+    /// A `datablock` declaration in the file's code registered a datablock.
+    pub declares_datablocks: bool,
+}
+
+/// What `exec` recorded: the files it ran, and the file whose code declared each datablock
+/// ([`Vm::datablocks_declared_by`]). Both are cleared by `deleteDataBlocks`. The files are capped
+/// ([`MAX_TRACKED_SCRIPT_FILES`]) and the declarations hold one entry per datablock id, so they are bounded by the
+/// datablock id range.
+#[derive(Default)]
+pub(crate) struct ScriptFiles {
+    /// By the folded path.
+    files: HashMap<Rc<[u8]>, ScriptFile>,
+    /// A datablock's id to the folded path of the file whose code last declared it.
+    declared_in: HashMap<ObjId, Rc<[u8]>>,
+    /// The objects registered while a trace is on, and how many past the cap.
+    traced: Option<(Vec<ObjId>, usize)>,
+}
+
+/// How `exec` runs a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecWay {
+    /// TGE's `exec`: the compiled file when it is at least as new, two compiles of a source, the statements before a
+    /// syntax error run.
+    Tge,
+    /// [`Vm::exec_file_checked`]: the source, compiled once, nothing of one with a syntax error.
+    Checked,
+}
+
+/// What [`Vm::exec_file_checked`] did with the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecCheck {
+    /// The file ran to its end.
+    Ran,
+    /// The source has a syntax error (printed once): nothing of it ran.
+    SyntaxError,
+    /// The file is missing, refused, or empty (the message was printed): nothing ran.
+    NotRun,
+}
 
 /// A replacement of the report of an `eval` with a syntax error (see [`Vm::set_eval_report`]).
 pub type EvalReport = Rc<dyn Fn(&mut Vm, &[u8], Option<usize>) -> Result<(), VmError>>;
@@ -164,6 +217,8 @@ enum Prepared {
     Run(Rc<CodeBlock>, Mode),
     /// The step budget was spent before a compile (see `compile_source`): the run ends with `StepLimit`.
     OutOfBudget,
+    /// A checked exec ([`Vm::exec_file_checked`]) found a syntax error: nothing runs.
+    SyntaxError,
     /// A file of another language ([`ScriptLanguage`](crate::policy::ScriptLanguage)): boxed, so this stays as small
     /// as the frames on the recursion path need.
     Foreign(Box<Foreign>),
@@ -393,6 +448,117 @@ impl Vm {
         let _ = self.first_spelling(path);
     }
 
+    /// `exec` found `path` (the expanded name) and is about to run it: the table of script files takes it with the
+    /// change time the host gives now (an entry past [`MAX_TRACKED_SCRIPT_FILES`] is not made).
+    #[inline(never)]
+    fn note_executed(&mut self, path: &[u8]) {
+        let modified = self.files.modified(path);
+        let key = fold(path);
+        if let Some(file) = self.script_files.files.get_mut(key.as_slice()) {
+            file.modified = modified;
+            return;
+        }
+        if self.script_files.files.len() >= MAX_TRACKED_SCRIPT_FILES {
+            return;
+        }
+        let spelled: Rc<[u8]> = Rc::from(self.first_spelling(path));
+        self.script_files.files.insert(
+            Rc::from(key),
+            ScriptFile {
+                path: spelled,
+                modified,
+                declares_datablocks: false,
+            },
+        );
+    }
+
+    /// ADD_OBJECT registered `id` from the code block named `block`: a datablock (one in DataBlockGroup) is recorded as
+    /// declared by that file when `exec` ran it, and a trace in progress ([`trace_new_objects`](Self::trace_new_objects))
+    /// takes every object.
+    #[inline(never)]
+    pub(crate) fn note_registered(&mut self, id: ObjId, block: Option<&[u8]>) {
+        if let Some((traced, over)) = &mut self.script_files.traced {
+            if traced.len() < MAX_TRACED_OBJECTS {
+                traced.push(id);
+            } else {
+                *over = over.saturating_add(1);
+            }
+        }
+        let Some(block) = block else {
+            return;
+        };
+        let in_group =
+            self.objects.get(id).and_then(SimObject::group) == Some(self.objects.datablock_group());
+        if !in_group {
+            return;
+        }
+        self.objects.add_work(block.len() as u64);
+        let Some((key, file)) = self
+            .script_files
+            .files
+            .get_key_value(fold(block).as_slice())
+        else {
+            return;
+        };
+        let key = Rc::clone(key);
+        if !file.declares_datablocks
+            && let Some(file) = self.script_files.files.get_mut(&key)
+        {
+            file.declares_datablocks = true;
+        }
+        self.script_files.declared_in.insert(id, key);
+    }
+
+    /// The script file `exec` ran at `path` (an expanded name, compared without case), with the change time it had then.
+    pub fn script_file(&self, path: &[u8]) -> Option<&ScriptFile> {
+        self.script_files.files.get(fold(path).as_slice())
+    }
+
+    /// The script files `exec` ran whose code declared a datablock, by path.
+    pub fn script_files_declaring_datablocks(&self) -> Vec<ScriptFile> {
+        let mut files: Vec<ScriptFile> = self
+            .script_files
+            .files
+            .values()
+            .filter(|f| f.declares_datablocks)
+            .cloned()
+            .collect();
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    }
+
+    /// The live datablocks whose last declaration was in the file at `path` (an expanded name, compared without case),
+    /// in id order; the entries of datablocks that are gone are dropped on the way.
+    pub fn datablocks_declared_by(&mut self, path: &[u8]) -> Vec<ObjId> {
+        let key = fold(path);
+        let objects = &self.objects;
+        let declared = &mut self.script_files.declared_in;
+        declared.retain(|id, _| objects.contains(*id));
+        let mut ids: Vec<ObjId> = declared
+            .iter()
+            .filter(|(_, file)| file.as_ref() == key.as_slice())
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    /// Starts (`on`) or ends a trace of the objects ADD_OBJECT registers: ending one returns the objects it took, in
+    /// order, and how many more there were past [`MAX_TRACED_OBJECTS`]. Starting one again empties it.
+    pub fn trace_new_objects(&mut self, on: bool) -> (Vec<ObjId>, usize) {
+        let taken = self.script_files.traced.take().unwrap_or_default();
+        if on {
+            self.script_files.traced = Some((Vec::new(), 0));
+        }
+        taken
+    }
+
+    /// Forgets every script file and declaration recorded (`deleteDataBlocks` does this).
+    pub fn clear_script_files(&mut self) {
+        self.script_files.files.clear();
+        self.script_files.declared_in.clear();
+    }
+
     /// The path as the runtime-wide string table has it: the folder (everything before the last `/`) and the name
     /// each in the first spelling the table has of them, ignoring case (`ResManager::find` interns both:
     /// TGE's `getPaths`). Out of line, and only the table's own cap (16 MiB) bounds what it keeps.
@@ -512,9 +678,10 @@ impl Vm {
     /// On the recursion path of a file that execs files: everything but running the block happens in
     /// `prepare_exec`, which has returned by then, so this frame stays small.
     pub fn exec_file(&mut self, name: &[u8], no_calls: bool) -> Result<bool, VmError> {
-        match self.prepare_exec(name, no_calls)? {
+        match self.prepare_exec(name, no_calls, ExecWay::Tge)? {
             Prepared::Done(ran) => Ok(ran),
             Prepared::OutOfBudget => Err(VmError::StepLimit),
+            Prepared::SyntaxError => Ok(true),
             Prepared::Run(block, mode) => {
                 self.run_here(block, mode)?;
                 Ok(true)
@@ -522,6 +689,30 @@ impl Vm {
             Prepared::Foreign(foreign) => {
                 self.run_foreign(*foreign)?;
                 Ok(true)
+            }
+        }
+    }
+
+    /// [`exec_file`](Self::exec_file) for a host that runs a file again because it changed: the source is run when there
+    /// is one (a compiled `.dso` beside it is not preferred, however new), it is compiled once, and a source with a
+    /// syntax error runs nothing (`exec` runs the statements before the error): the error is printed and the result says
+    /// so. The name is expanded and checked as `exec` checks it, so the file comes from the same roots.
+    ///
+    /// # Errors
+    /// The run's budget was spent, or the file's code stopped the run.
+    pub fn exec_file_checked(&mut self, name: &[u8]) -> Result<ExecCheck, VmError> {
+        match self.prepare_exec(name, false, ExecWay::Checked)? {
+            Prepared::Done(true) => Ok(ExecCheck::Ran),
+            Prepared::Done(false) => Ok(ExecCheck::NotRun),
+            Prepared::OutOfBudget => Err(VmError::StepLimit),
+            Prepared::SyntaxError => Ok(ExecCheck::SyntaxError),
+            Prepared::Run(block, mode) => {
+                self.run_here(block, mode)?;
+                Ok(ExecCheck::Ran)
+            }
+            Prepared::Foreign(foreign) => {
+                self.run_foreign(*foreign)?;
+                Ok(ExecCheck::Ran)
             }
         }
     }
@@ -552,6 +743,7 @@ impl Vm {
             self.warn(format!("Missing file: {}!", lossy(&name)));
             return Ok(Prepared::Done(false));
         };
+        self.note_executed(path);
         self.print(format!("Executing {}.", lossy(&name)).as_bytes());
         Ok(Prepared::Foreign(Box::new(Foreign {
             language,
@@ -566,7 +758,12 @@ impl Vm {
     /// holds what the lookups return; the checks and the choice between source and compiled file are in
     /// helpers that have returned before any lookup that can run a script.
     #[inline(never)]
-    fn prepare_exec(&mut self, name: &[u8], no_calls: bool) -> Result<Prepared, VmError> {
+    fn prepare_exec(
+        &mut self,
+        name: &[u8],
+        no_calls: bool,
+        way: ExecWay,
+    ) -> Result<Prepared, VmError> {
         let path = self.expand_or_report(name);
         let Some(compiled) = self.check_exec_name(&path) else {
             return Ok(Prepared::Done(false));
@@ -588,7 +785,10 @@ impl Vm {
             *slot = self.find_file(&lookup_path(&path, step == 1))?;
         }
         let [source, dso] = found;
-        Ok(self.choose_exec(&path, compiled, (source, dso), no_calls))
+        if source.is_some() || dso.is_some() {
+            self.note_executed(&path);
+        }
+        Ok(self.choose_exec(&path, compiled, (source, dso), no_calls, way))
     }
 
     /// The checks `exec` makes on the expanded name (printed before it looks at any file). None
@@ -606,7 +806,8 @@ impl Vm {
     /// What `exec` does with what the lookups found (`source`, `.dso`): the compiled file when it is at
     /// least as new as the source or there is no source, else the source; the messages and the compiling.
     /// Nothing here runs script code; a step budget that the bytes read or an earlier compile spent stops it
-    /// (`compile_source`).
+    /// (`compile_source`). [`ExecWay::Checked`] is [`Vm::exec_file_checked`]'s way: a source is the one run, compiled
+    /// once, and a syntax error runs nothing.
     #[inline(never)]
     fn choose_exec(
         &mut self,
@@ -614,7 +815,9 @@ impl Vm {
         compiled: bool,
         (source, dso): (Option<Vec<u8>>, Option<Vec<u8>>),
         no_calls: bool,
+        way: ExecWay,
     ) -> Prepared {
+        let checked = way == ExecWay::Checked;
         let name = self.file_name(path);
         let dso_path = dso_path(path);
         let mut loadable = None;
@@ -622,7 +825,8 @@ impl Vm {
         let mut again = None;
         let mut dso = dso;
         if dso.is_some()
-            && (source.is_none() || self.files.modified(&dso_path) >= self.files.modified(path))
+            && (source.is_none()
+                || (!checked && self.files.modified(&dso_path) >= self.files.modified(path)))
         {
             loadable = dso
                 .take()
@@ -635,7 +839,7 @@ impl Vm {
                 self.error(format!("exec: invalid script file {}.", lossy(&name)));
                 return Prepared::Done(false);
             }
-            if compiled {
+            if compiled && !checked {
                 // `CodeBlock::compile`: only its messages (nothing is written), and an existing (older) DSO
                 // runs after all. A `.mis` has no compiled form and skips this pass.
                 let (first, verdict) = self.compile_with(text, Some(&name), Purpose::Check, None);
@@ -664,6 +868,9 @@ impl Vm {
         let (compiled, verdict) = self.compile_with(&text, Some(&name), Purpose::Run, again);
         if verdict == Verdict::OutOfBudget {
             return Prepared::OutOfBudget;
+        }
+        if checked && compiled.syntax_error {
+            return Prepared::SyntaxError;
         }
         match compiled.code {
             Some(code) => match self.load_compiled(code, Some(&name)) {

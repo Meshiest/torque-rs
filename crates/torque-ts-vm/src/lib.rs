@@ -60,6 +60,12 @@
 //!   case at the cap, 1 MiB arguments, every server native), `TORQUE_FUZZ_SEED` another seed.
 //! - [`host::FileHost::read_prefix`] keeps `read`'s refusals; a host over real files reads only the prefix
 //!   (`a_prefix_read_gives_the_first_bytes_of_a_file_or_an_entry_with_the_reads_refusals`, in `torque-resource`).
+//! - `exec` remembers the files it ran with their change times and the file whose code declared each datablock
+//!   ([`vm::Vm::script_file`], [`vm::Vm::script_files_declaring_datablocks`], [`vm::Vm::datablocks_declared_by`]): at most
+//!   [`vm::MAX_TRACKED_SCRIPT_FILES`] files and one entry per datablock id, both cleared by `deleteDataBlocks`.
+//!   [`vm::Vm::exec_file_checked`] runs a file for a host that reloads it: the source, compiled once, and nothing of a source
+//!   with a syntax error; [`vm::Vm::trace_new_objects`] lists what a run registered, up to [`vm::MAX_TRACED_OBJECTS`]
+//!   (torque-server's `tests/datablock_watch.rs`).
 //!
 //! **Speed** (`just bench-script` prints the workloads below, for both executors; a change that alters what a script
 //! prints changes a digest it prints):

@@ -709,6 +709,8 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
         engine_host: None,
     }));
     conn::install(vm, &shared);
+    let round = Rc::clone(&shared);
+    crate::reload::install(vm, Rc::new(move |vm| conn::update_datablocks(vm, &round)));
     let hub = GhostHub::new(
         sources,
         container,

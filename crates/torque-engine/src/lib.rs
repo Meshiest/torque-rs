@@ -73,9 +73,12 @@
 //! error, never a deleted datablock (`the_refresh_hook_runs_with_the_fields_as_they_are_now_and_a_failure_is_an_error` in
 //! `class_tests.rs`). A class with datablock users and neither hook is warned about once by the server's drain.
 //!
-//! **One dev gate.** [`script::dev_allowed`] (a debug build, or `$Pref::Dev` true) is the gate of a `dev` native, of
-//! [`Assets::hot_reload_on`] and of a server's shape reload (torque-server's tick), and [`assets::HOT_RELOAD_INTERVAL_MS`] is
-//! the one interval both watchers poll at: a change to either reaches every watcher.
+//! **One development gate.** [`script::dev_allowed_in`] and [`script::dev_refusal`] are the rule and the refusal of every
+//! development command: the natives declared `dev` and a host's own development features (torque-server's `reload` and
+//! shape reload, the assets' hot reload) ask them with their build ([`script::dev_allowed`] for this one), never
+//! `cfg!(debug_assertions)` alone, so `$Pref::Dev` opens all of them in a release build and a test can hold a debug build
+//! to the release rule (`a_development_command_runs_in_a_debug_build_or_with_the_pref` in `script_tests.rs`).
+//! [`assets::HOT_RELOAD_INTERVAL_MS`] is the one interval the assets' hot reload and a server's shape reload poll at.
 //!
 //! A native, global or pref that writes or deletes files, runs code from text, changes the engine as a whole (mods, limits,
 //! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on

@@ -25,7 +25,10 @@ mod console;
 mod file_natives;
 mod files;
 pub use files::MAX_DSO_BYTES;
-pub use files::{EVAL_ERROR_TEXT_BYTES, EvalReport};
+pub use files::{
+    EVAL_ERROR_TEXT_BYTES, EvalReport, ExecCheck, MAX_TRACED_OBJECTS, MAX_TRACKED_SCRIPT_FILES,
+    ScriptFile,
+};
 mod interface;
 mod lifecycle;
 pub use lifecycle::{DELETE_DATABLOCKS_USAGE, HostBudgetSaved, QUIT_USAGE};
@@ -450,6 +453,9 @@ pub struct Vm {
     host_budget: lifecycle::HostBudget,
     /// The script profile while a host has it on ([`Vm::set_profiling`]; boxed, off by default).
     profile: Option<Box<profile::Profiler>>,
+    /// The script files `exec` ran and the file whose code declared each datablock ([`Vm::script_file`],
+    /// [`Vm::datablocks_declared_by`]; boxed like every field added since the stack rows were measured).
+    script_files: Box<files::ScriptFiles>,
     /// The "Unknown command" warnings of each source's second in progress ([`MAX_UNKNOWN_COMMAND_LINES`]).
     unknown_commands: std::collections::HashMap<CommandSource, UnknownCommands>,
     /// The remote party whose command is running ([`Vm::command_source`]).
@@ -558,6 +564,7 @@ impl Vm {
             step_limit: None,
             host_budget: Default::default(),
             profile: None,
+            script_files: Box::default(),
             unknown_commands: std::collections::HashMap::new(),
             command_source: CommandSource::LOCAL,
         };

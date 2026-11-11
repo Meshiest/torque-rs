@@ -391,7 +391,11 @@ impl Vm {
                 None => return Ok(AddedObject::Failed(fail)),
             },
         };
-        self.after_add(id, place_at_root, site, (fail, target))
+        let added = self.after_add(id, place_at_root, site, (fail, target))?;
+        if let AddedObject::Added(id) = added {
+            self.note_registered(id, site.0.name());
+        }
+        Ok(added)
     }
 
     /// The rest of ADD_OBJECT once the object is registered (or re-declared): a datablock's `preload`, then

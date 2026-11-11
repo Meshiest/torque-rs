@@ -218,6 +218,50 @@ A server, honest or not, cannot grow or busy a client's datablocks without bound
 
 The counts are in the client state's `datablocks_refused`.
 
+## Reloading a file
+
+A datablock edited in its script file reaches a running server by running the file again. `reloadDataBlocks(%file
+[, %removeMissing])` does that in one step, and in development a watcher does it for every file that changed:
+
+```
+// After editing scripts/weapons.cs:
+echo(reloadDataBlocks("scripts/weapons.cs"));   // changed:12 added:1 removed:0
+```
+
+The file is run again as `exec` runs it (the same name expansion, roots and policy), with two differences: its source is
+the text run, whatever `.dso` sits beside it, and a source with a syntax error runs nothing, so every datablock stays as it
+was and the error is printed once (`exec` runs the statements before the error). Each `datablock` the file declares again
+is a redeclare (the heavy refresh above) and a new one is added; the reload drains the marks at once, then one live round
+sends what changed to every connected client, whose `onDataBlocksUpdated` runs as for any round. The result is a count
+line: `changed:N` datablocks the file declared before and declares again, `added:N` new ones, `removed:N` removed.
+
+**What the file no longer declares.** The engine remembers which file's code declared each datablock (`deleteDataBlocks()`
+forgets it). A datablock the file declared last time and not this time is reported, `no longer declared by
+scripts/weapons.cs: RocketLauncherImage (ShapeBaseImageData)`, and left alone: a datablock stays until something removes
+it. With `%removeMissing` true, or `$Pref::Dev::RemoveMissing` set, the reload removes each such datablock that no object
+uses; one with users is refused with an error naming the count and stays. A datablock that only another datablock's
+field names (an image's `projectile`, a profile's `description`) has no users and is removed, and that field then names
+nothing: check the referrers before asking, or edit them in the same file.
+
+**Other objects.** A file's top level runs again whole: its functions are redefined, which a reload is for, but a
+`new SimObject(...)` or a global assignment runs again too, as TGE's `exec` would run it. The first reload of a file that
+registers objects besides its datablocks warns once, naming them (`weapons.cs creates 2 object(s) besides its datablocks,
+made again at every reload: WeaponSet (SimSet), ...`). Keep datablocks in files of their own.
+
+**The watcher.** In development only (a debug build, or `$Pref::Dev` true: the gate the assets' hot reload uses) the
+server looks every 250 ms of server time at the change time of every script file that declared a datablock and reloads
+each one whose time differs from the one `exec` saw, so an edit is live within a poll interval and a tick. A file that
+fails to compile keeps its
+datablocks and is looked at again only when it changes again. Outside development nothing is read. The watcher removes
+missing datablocks only with `$Pref::Dev::RemoveMissing`.
+
+**Plugins.** A plugin that builds content from script files registers a hook (`torque_server::reload::before_round`) that
+runs after a reload's refresh and before its round, so what it reads again is what the round sends; at most 64 hooks.
+
+**Limits.** `reloadDataBlocks` is a development command (`$Pref::Dev` or a debug build) of a server script: no client
+reaches it, and no file outside `exec`'s roots. The engine remembers at most 4,096 script files; a file past the cap runs
+but is not watched. A reload asked for inside a reload (a reloaded file calling `reloadDataBlocks`) is refused.
+
 ## The two protocols
 
 | | Torque's protocol | The engine's protocol |

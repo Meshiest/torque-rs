@@ -298,6 +298,7 @@ mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
 purgeResources 1..1 Purge resources from the resource manager.
 quit 1..1 quit() - asks the main loop to stop
+reloadDataBlocks 2..3 reloadDataBlocks(file [, removeMissing]) - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
