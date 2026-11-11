@@ -176,7 +176,9 @@ impl DownloadLimits {
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub enum CacheChoice {
     /// A per-user cache folder (`%LOCALAPPDATA%`, `~/Library/Caches`, `$XDG_CACHE_HOME` or `~/.cache`) when the system gives one,
-    /// else memory for the session. Never the game's folder.
+    /// else memory for the session. Never the game's folder. In a browser, the page's IndexedDB database when
+    /// `open_browser_cache` opened it before the engine was made and the plugin names the server
+    /// ([`ModsPlugin::cache_server`](crate::ModsPlugin::cache_server)), else memory for the session.
     #[default]
     PerUser,
     /// This folder on the disk (not on the web).
@@ -186,7 +188,9 @@ pub enum CacheChoice {
 }
 
 impl CacheChoice {
-    pub(crate) fn open(&self, max_bytes: u64) -> ContentCache {
+    /// The cache of a client. `named` is whether the client names its server itself ([`crate::ModsPlugin::cache_server`]): a browser's
+    /// storage is used only then, because without a name every server would share one key and could see what the others sent.
+    pub(crate) fn open(&self, max_bytes: u64, named: bool) -> ContentCache {
         #[cfg(not(target_family = "wasm"))]
         {
             let dir = match self {
@@ -198,8 +202,17 @@ impl CacheChoice {
                 return ContentCache::new(Box::new(crate::cache::DiskStore::new(dir)), max_bytes);
             }
         }
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        if *self == CacheChoice::PerUser
+            && named
+            && let Some(store) = crate::web_cache::opened()
+        {
+            return ContentCache::new(store, max_bytes);
+        }
         #[cfg(target_family = "wasm")]
-        let _ = default_cache_dir;
+        let _ = (default_cache_dir, named);
+        #[cfg(not(target_family = "wasm"))]
+        let _ = named;
         ContentCache::in_memory(max_bytes)
     }
 }
@@ -210,6 +223,8 @@ pub(crate) struct NetOptions {
     pub(crate) limits: DownloadLimits,
     pub(crate) allow_downloads: bool,
     pub(crate) cache: CacheChoice,
+    /// What the client calls its server, when the address it dials does not tell servers apart.
+    pub(crate) server: Option<String>,
 }
 
 // ---- what a client does with what arrives

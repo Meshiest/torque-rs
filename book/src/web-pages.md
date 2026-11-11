@@ -9,6 +9,23 @@ the render scale (Auto, the default, draws all of them up to a 1920x1080 screen'
 50%), and lays its GUI out at that size; the browser stretches the drawing over the canvas. The page tells the game the
 scale on its root element's `data-torque-render-scale`, and the game writes the size it draws at on `data-torque-size`.
 
+## Storage the game keeps in the browser
+
+A game that downloads mods keeps them in the page's IndexedDB database, so a reload finds them. Its `web_exports!` names a
+`prepare` function (`prepare: my_game::web::prepare`) that calls `torque::mods::open_browser_cache().await`; the page awaits
+it before `startFetched` (and starts the game even if it fails), because the browser's storage answers later than a call is made.
+`open_browser_cache` never fails: any error, and any open and read that takes over five seconds, leaves the cache in memory for the
+page's life. The engine's `ModsPlugin` then keeps what it downloads there (`CacheChoice::PerUser`), but only when the game names the
+server it joins with `ModsPlugin::cache_server` (`torque::mods::server_name_of_url` of the server's address, or
+`server_name_of_room` of the room service's address and the room's code; a code names a host only within one service): a
+page's link dials one placeholder address for every server, so without a name the entries of every server would share one key and
+a server could see what the others sent. An address a browser might read differently (a backslash, an `@`, a control character, a
+host with anything but letters, digits, `-`, `.` and `_`) gets no name, so that page keeps its mods in memory. A browser that gives no storage (some
+private windows) and one that refuses a write (a full quota) also leave the cache in memory. It holds at most 128 MiB, all of it in
+the page's memory too; what the database holds is checked before it is copied (a name that is not an entry's, a value that is not
+bytes or is too large, and a stamp with no entry are deleted). See [Mods](mods.md) for what the cache is keyed by and checked
+against.
+
 ## The page and the scripts
 
 The page and the game's scripts call each other through the page bridge (`torque::app::page_bridge`, `web/bridge.js`).

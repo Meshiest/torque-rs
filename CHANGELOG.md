@@ -24,6 +24,10 @@ different.
   client is ready, in a burst (the whole packet, every tick), with caps on held clients, requests, time and idle time. TorqueScript
   is never sent or run; Lua files are kept as untrusted data. The offer and data messages carry a version, and a peer of another one
   is refused with both versions named. `getRequiredMod*`, `getModDownloadState`, `onModDownload*`.
+  In a browser the cache is the page's IndexedDB database (`open_browser_cache`, with the same keys, per-server scoping, hash
+  check on every read and least-recently-used cap, at most 128 MiB), so a reload finds the mods; it falls back to memory when the
+  browser gives no storage or the page does not name the server (`ModsPlugin::cache_server`: a browser's link has one address for
+  every server). `web_exports!` takes an optional async `prepare` the page awaits before it starts the game.
 
 #### Rendering
 

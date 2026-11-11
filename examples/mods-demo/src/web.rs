@@ -3,7 +3,7 @@
 //! that served the page (`mods-demo-server --transport web` or `both`), with a WebRTC data channel beside it when the server
 //! offers one (`--webrtc`), or to a desktop host by its room's code (`?room=<code>`, through the room service at `?rooms=`
 //! or the page's own host). The page joins at once and shows the same download screen as the window; the server's mods are
-//! kept in memory for as long as the page is open.
+//! kept in the browser's storage (IndexedDB, [`prepare`]) for the next page load, in memory when it gives none.
 //!
 //! **The page.** `?server=<ws or wss URL>` names a server elsewhere, `?name=<name>` the player's name. The page's root element
 //! carries the game's state for a check to wait on: `data-torque-frames`, `data-torque-join` (`$Join::State`),
@@ -27,8 +27,14 @@ use torque::mods::CacheChoice;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
-use crate::client_builder;
 use crate::game::{ClientOptions, SoccerGame};
+use crate::{client_builder, named_client_builder};
+
+/// Opens the browser's storage for the mods the page downloads, so the next page load has them (without storage they are kept in
+/// memory for as long as the page is open).
+pub async fn prepare() {
+    torque::mods::open_browser_cache().await;
+}
 
 /// This build carries no files: the page fetches them by its list.
 pub fn start_embedded() -> Result<(), String> {
@@ -61,11 +67,24 @@ pub fn start_fetched() -> Result<(), String> {
             .unwrap_or_else(|| "Browser player".to_string()),
         ..ClientOptions::default()
     };
-    let mut engine = client_builder(&files, CacheChoice::Memory)?;
+    let mut engine = match cache_name(&target) {
+        Some(name) => named_client_builder(&files, CacheChoice::PerUser, &name)?,
+        None => client_builder(&files, CacheChoice::Memory)?,
+    };
     engine
         .app(move |engine| WebSoccer::new(engine, &files, options.clone(), target.clone()))
         .run()
         .map_err(|e| e.to_string())
+}
+
+/// What the cache keeps a server's mods under: the server's address, or the room's code, as the page was told them (the link's own
+/// address is the same for every server). A target with no name of its own, or whose address a browser could read differently, keeps nothing across page loads.
+fn cache_name(target: &Target) -> Option<String> {
+    match target {
+        Target::Server(url) => torque::mods::server_name_of_url(url),
+        Target::Room { url, code } => torque::mods::server_name_of_room(url, code),
+        Target::Local | Target::Page => None,
+    }
 }
 
 /// What the join screen calls `target`: the host of the server's address (`ws://host:port/ws`), or the room by its code.

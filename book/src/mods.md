@@ -234,9 +234,11 @@ The client sends its requests as the remote command `TorqueModsGet`, so its conn
 ### For players
 
 A mod a server sends is saved in a cache folder of your own (`%LOCALAPPDATA%\torque-rs\mod-content`,
-`~/Library/Caches/torque-rs/mod-content` or `~/.cache/torque-rs/mod-content`; on the web it lasts the session). It is outside the
+`~/Library/Caches/torque-rs/mod-content` or `~/.cache/torque-rs/mod-content`; in a browser, the page's IndexedDB database, with at
+most 128 MiB, kept in memory for the session when the browser gives no storage or refuses a write). It is outside the
 game's folder and outside `plugins/`, and it holds only content. Each entry is named for its hash and for the server it came from
-(the address you dialed), and is checked again when it is used: an entry that does not match is deleted. One server holds at
+(the address you dialed; in a browser, the server's address in the page or the room's code), and is checked again when it is used: an entry that does not match is deleted (in a browser too: what the page read back from storage is checked the same way before it is mounted, so a stored
+entry that was changed is downloaded again). One server holds at
 most half the cache: past that, what it sends evicts its own oldest entries first, so a server cannot flush the others'. A
 server's offer names each mod once, with an id a mod of your own could have, and the older copies the client builds an update
 from are read only up to twice what the offer would download.

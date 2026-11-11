@@ -440,6 +440,12 @@
       if (solo) pageOf().hosted(handle);
       else rooms?.hosted(handle);
     } else {
+      // A game that keeps something in the browser's storage opens it first.
+      try {
+        if (typeof game.prepare === 'function') await game.prepare();
+      } catch (e) {
+        console.warn(`the game's storage did not open: ${e?.message ?? e}`);
+      }
       game.startFetched();
     }
   }

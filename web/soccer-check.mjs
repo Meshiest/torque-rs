@@ -2,7 +2,9 @@
 // soccer server (`mods-demo-server`, its Lua game mode and its bots) and headless Chrome from the cursor guard joining it.
 // The page has none of the server's mods: it must show the download screen with the soccer mod, its files and bytes and a
 // bar part way, then play the match (its player runs with D held), then leave and join again from its menu with nothing to
-// download (the mod is kept for as long as the page is open). No console error may show.
+// download (the mod is kept for as long as the page is open). Then the page is reloaded: the mod was kept in the browser's
+// storage (IndexedDB), so the join after it has nothing to download either. A stored entry whose bytes were changed is not
+// trusted: the next page's join downloads the mod again, and the one after that finds it kept. No console error may show.
 //
 // Usage: node soccer-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room]
 // - `join`: the server on UDP and the web (`--transport both`) serves the page; the page joins on its game socket.
@@ -10,7 +12,8 @@
 // - `room`: a room service (`torque-rooms`, serving the page) and `mods-demo-server --room`; the page joins by the room's
 //   code on a data channel.
 // Pictures: <screenshot>-download.png (the download screen), <screenshot>.png (the match), <screenshot>-again.png (the
-// second join, nothing to download). Build first: `node build.mjs mods-demo`, and the Lua extension (`just lua`). The native
+// second join, nothing to download), <screenshot>-reloaded.png (the join after a reload, nothing to download) and
+// <screenshot>-tampered.png (the join after a stored entry was changed, downloading again). Build first: `node build.mjs mods-demo`, and the Lua extension (`just lua`). The native
 // programs are built in release by cargo here (CARGO_TARGET_DIR's target folder). TORQUE_WEB_TOOLS and CHROME as `check.mjs`
 // reads them. The check presses keys only; it never moves or clicks the mouse.
 import { spawn, spawnSync } from 'node:child_process';
@@ -60,6 +63,53 @@ function start(file, args, name) {
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The page's mod storage (the database and object stores of torque-mods' browser cache), read and changed from the page.
+const STORAGE = `
+  const open = () =>
+    new Promise((ok, fail) => {
+      const r = indexedDB.open('torque-rs-mod-content');
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => fail(r.error);
+    });
+  const done = (r) =>
+    new Promise((ok, fail) => {
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => fail(r.error);
+    });
+`;
+/** How many mods the page's storage holds. */
+const storedMods = (page) =>
+  page.evaluate(`(async () => { ${STORAGE}
+    const db = await open();
+    const n = await done(db.transaction('content').objectStore('content').count());
+    db.close();
+    return n;
+  })()`);
+/** Waits until the page's storage holds a mod (its writes come after the download, in the browser's own time). */
+async function storedWithin(page, ms) {
+  const end = Date.now() + ms;
+  let n = await storedMods(page);
+  while (n < 1 && Date.now() < end) {
+    await pause(100);
+    n = await storedMods(page);
+  }
+  return n;
+}
+/** Changes one byte near the end of each stored mod's bytes (inside its last file); how many it changed. */
+const tamper = (page) =>
+  page.evaluate(`(async () => { ${STORAGE}
+    const db = await open();
+    const store = () => db.transaction('content', 'readwrite').objectStore('content');
+    const keys = await done(store().getAllKeys());
+    for (const key of keys) {
+      const bytes = await done(store().get(key));
+      bytes[bytes.length - 10] ^= 0xff;
+      await done(store().put(bytes, key));
+    }
+    db.close();
+    return keys.length;
+  })()`);
 const problems = [];
 const log = [];
 
@@ -174,6 +224,36 @@ try {
   console.log(`joined again: ${JSON.stringify(s)}; states seen: ${[...again].join(', ')}`);
   if (!again.has('cached') || again.has('downloading')) problems.push(`the second join downloaded again (${[...again].join(', ')})`);
   if (s.join !== 'playing') problems.push(`the second join did not play (${JSON.stringify(s)})`);
+
+  // The page reloaded: the mod is in the browser's storage, so there is nothing to download.
+  const kept = await storedWithin(page, 10_000);
+  if (kept < 1) problems.push('the browser storage holds no mod after the download');
+  await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
+  const reloaded = new Set();
+  s = await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading' || s.join === 'playing', reloaded);
+  if (s.join === 'cached') await writeFile(`${stem}-reloaded.png`, await page.screenshot());
+  s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, reloaded);
+  console.log(`joined after a reload: ${JSON.stringify(s)}; states seen: ${[...reloaded].join(', ')}`);
+  if (!reloaded.has('cached') || reloaded.has('downloading')) problems.push(`the join after a reload downloaded again (${[...reloaded].join(', ')})`);
+  if (s.join !== 'playing') problems.push(`the join after a reload did not play (${JSON.stringify(s)})`);
+
+  // A stored mod whose bytes were changed is not trusted: the next page downloads it again, and keeps the new copy.
+  const changed = await tamper(page);
+  if (changed < 1) problems.push('there was no stored mod to change');
+  await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
+  const tampered = new Set();
+  s = await wait(page, limit, (s) => s.join === 'downloading' && s.total > 0 && s.received / s.total > 0.3, tampered);
+  if (s.join === 'downloading') await writeFile(`${stem}-tampered.png`, await page.screenshot());
+  s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, tampered);
+  console.log(`joined after a stored mod was changed: ${JSON.stringify(s)}; states seen: ${[...tampered].join(', ')}`);
+  if (!tampered.has('downloading') || tampered.has('cached')) problems.push(`the changed mod was not downloaded again (${[...tampered].join(', ')})`);
+  if (s.join !== 'playing') problems.push(`the join after the change did not play (${JSON.stringify(s)})`);
+  await pause(1000);
+  await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
+  const healed = new Set();
+  await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading' || s.join === 'playing', healed);
+  s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, healed);
+  if (!healed.has('cached') || healed.has('downloading')) problems.push(`the copy downloaded again was not kept (${[...healed].join(', ')})`);
   status = problems.length ? 1 : 0;
 } catch (e) {
   problems.push(e.message);

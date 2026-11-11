@@ -31,6 +31,8 @@ torque = { path = "../../crates/torque", default-features = false, features = ["
 # Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+# `prepare`, the page's await before the game starts (opening the browser's storage).
+wasm-bindgen-futures = "0.4"
 
 [features]
 default = ["gizmos"]

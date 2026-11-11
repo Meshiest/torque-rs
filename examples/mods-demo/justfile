@@ -70,7 +70,8 @@ web port="28000" *args:
 
 # The browser check (build it first with `web` or `node web/build.mjs mods-demo`): the server on UDP and the web, headless
 # Chrome from the cursor guard joining from its page: the download screen with the soccer mod part way, the match, the
-# player running, a second join with nothing to download, no console error. Pictures into the target folder's `web`
+# player running, a second join with nothing to download, then after a page reload the same (the mod is kept in the browser's
+# storage), and a stored mod that was changed downloaded again; no console error. Pictures into the target folder's `web`
 web-check:
     just --justfile ../../justfile web-guard-test
     just --justfile ../../justfile --working-directory ../.. lua

@@ -108,6 +108,7 @@ impl ModsPlugin {
             limits: DownloadLimits::default(),
             allow_downloads: true,
             cache: CacheChoice::default(),
+            server: None,
         });
         self
     }
@@ -135,6 +136,17 @@ impl ModsPlugin {
         self = self.required_mods();
         if let Some(net) = &mut self.net {
             net.cache = cache;
+        }
+        self
+    }
+
+    /// Names the server a client joins, for the cache's keys: entries are kept by the server they came from, and a link whose
+    /// address is the same for every server (a browser's) needs this to tell them apart (`server_name_of_url`, or `server_name_of_room`).
+    /// A browser's storage is used only for a client that names its server.
+    pub fn cache_server(mut self, name: impl Into<String>) -> ModsPlugin {
+        self = self.required_mods();
+        if let Some(net) = &mut self.net {
+            net.server = Some(name.into());
         }
         self
     }

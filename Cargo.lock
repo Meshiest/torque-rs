@@ -4368,6 +4368,7 @@ dependencies = [
  "torque-render-core",
  "torque-render-scene",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -4575,6 +4576,7 @@ dependencies = [
 name = "torque-mods"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "serde",
  "serde_json",
  "sha2",
@@ -4585,6 +4587,9 @@ dependencies = [
  "torque-server",
  "torque-transfer",
  "torque-ts-vm",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "zip",
 ]
 

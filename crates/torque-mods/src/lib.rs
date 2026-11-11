@@ -70,6 +70,19 @@
 //!   the order it asked; a run answered out of turn ends the download
 //!   (`a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would`,
 //!   `a_download_of_many_runs_completes_with_another_channels_backlog_beside_it` in minimal-engine's tests).
+//! - The browser's cache is a [`MirroredStore`] over IndexedDB (`web_cache`): the cache runs on memory, each change goes to the
+//!   database in a transaction of its own (the browser runs them in order), and what is read back at the page's start is held to
+//!   the entry names and the store's own cap (`what_is_not_an_entry_or_does_not_fit_is_removed_from_the_database_on_load`,
+//!   `a_store_that_holds_less_than_the_cap_asks_lowers_it`) and to the hash check of every read, which deletes an entry whose
+//!   bytes changed here and in the database (`a_changed_entry_is_dropped_from_memory_and_the_database_and_downloaded_again`).
+//!   Entries are keyed by the name the client gives its server (`ModsPlugin::cache_server`), because a browser's link dials one address
+//!   for every server, and the browser's storage is used only with a name
+//!   (`two_servers_behind_one_address_cannot_see_each_others_entries_even_after_a_reload`). The database is read one value at a time
+//!   with the length checked before the copy, so a tampered database cannot run the page out of memory. A database that is missing or
+//!   refuses a write only leaves the cache in memory
+//!   (`a_database_that_refuses_writes_leaves_a_cache_that_works_for_the_session`). A new kind of backing implements [`Backing`] and
+//!   takes the same tests; `web/soccer-check.mjs` runs the real one (a reload with nothing to download, a changed entry downloaded
+//!   again).
 //! - A scan of the mods folder visits a bounded number of entries of every kind and keeps at most 64 warnings
 //!   (`a_mod_of_many_empty_folders_is_skipped_quickly_with_one_warning`, `the_warnings_of_a_scan_are_capped`); download
 //!   places are shared out per network (`one_network_holds_at_most_two_download_places` in minimal-engine's tests).
@@ -85,6 +98,7 @@ pub mod files;
 mod info;
 mod layout;
 mod manifest;
+mod mirror;
 mod mods;
 mod natives;
 pub mod offer;
@@ -93,12 +107,14 @@ mod plan;
 mod plugin;
 mod share;
 mod transfer;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+mod web_cache;
 
 #[cfg(not(target_family = "wasm"))]
 pub use cache::DiskStore;
 pub use cache::{
     CacheOwner, CacheScope, CacheStore, ContentCache, ENTRY_SUFFIX, IndexEntry, Listed,
-    MAX_ENTRIES, MemoryStore, default_cache_dir, index_of,
+    MAX_ENTRIES, MemoryStore, default_cache_dir, index_of, server_name_of_room, server_name_of_url,
 };
 pub use files::{MAX_CLIENT_FILES, MAX_CLIENT_IMAGE_BYTES, MAX_CLIENT_SCRIPT_BYTES};
 pub use info::{
@@ -111,9 +127,12 @@ pub use layout::{
     PrefsEnableList, PrereqPolicy, Problem, RootPlace, TopologicalOrder,
 };
 pub use manifest::{DEFAULT_FOLDER, MANIFEST, MAX_MANIFEST_BYTES};
+pub use mirror::{Backing, MirroredStore, Record};
 pub use mods::{ClientScriptOffer, ModStatus, ModSummary, Mods, RequiredInfo, package_name};
 pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};
 pub use share::{ModShare, ModShareDefault, Share};
 pub use transfer::{CHANNEL, CacheChoice, DownloadLimits, GET_RPC, ModsChannel, ModsGet};
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub use web_cache::{WEB_CACHE_BYTES, open_browser_cache};

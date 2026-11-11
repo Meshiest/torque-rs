@@ -209,3 +209,92 @@ fn entries_are_named_for_their_server_and_listed_apart() {
     assert_eq!(cache.index().len(), 1);
     assert_eq!(cache.index()[0].owner, Some(a));
 }
+
+#[test]
+fn a_client_that_names_its_server_is_keyed_by_the_name_not_the_address() {
+    let placeholder = std::net::SocketAddr::from(([127, 0, 0, 1], 28_000));
+    let key = |name| CacheOwner::of_connection(Some(name), Some(placeholder));
+    assert_ne!(key("server:a.example:1"), key("server:b.example:1"));
+    assert_eq!(key("server:a.example:1"), key("server:a.example:1"));
+    assert_ne!(
+        key("server:a.example:1"),
+        Some(CacheOwner::of_server(placeholder))
+    );
+    assert_eq!(
+        CacheOwner::of_connection(None, Some(placeholder)),
+        Some(CacheOwner::of_server(placeholder))
+    );
+    assert_eq!(CacheOwner::of_connection(None, None), None);
+}
+
+#[test]
+fn a_browsers_server_names_are_the_address_in_one_form_or_the_room_on_its_service() {
+    let url = |u: &str| server_name_of_url(u).unwrap_or_else(|| panic!("{u} has a name"));
+    let room = |s: &str, c: &str| server_name_of_room(s, c).unwrap();
+    assert_eq!(
+        url("wss://Play.Example.com:8443/ws?x=1"),
+        url("wss://play.example.com:8443/other#f")
+    );
+    assert_ne!(url("ws://h"), url("wss://h"));
+    assert_eq!(url("ws://h"), url("ws://h:80"));
+    assert_eq!(url("wss://H:443"), url("wss://h"));
+    assert_eq!(url(" ws://h:080/ "), url("ws://h"));
+    assert_ne!(url("ws://h"), url("ws://h:81"));
+    assert_ne!(url("ws://h"), url("ws://h:443"));
+    assert_ne!(url("ws://h:443"), url("wss://h:443"));
+    assert_eq!(url("ws://[::1]/x"), url("ws://[::1]:80"));
+    assert_eq!(url("ws://h/ x"), url("ws://h"));
+    let service = "wss://rooms.example";
+    assert_eq!(
+        room(service, " ABCD "),
+        room("wss://Rooms.Example:443/ws", "abcd")
+    );
+    assert_ne!(room(service, "abcd"), url("ws://abcd/"));
+    // One code on two services is two hosts.
+    assert_ne!(
+        room("wss://one.example", "abcd"),
+        room("wss://two.example", "abcd")
+    );
+    assert_ne!(
+        room("ws://one.example", "abcd"),
+        room("wss://one.example", "abcd")
+    );
+}
+
+#[test]
+fn an_address_a_browser_might_read_differently_has_no_name() {
+    for bad in [
+        "ws://victim\\@attacker/",
+        "ws://victim\\attacker/",
+        "ws://a@b/",
+        "ws://user:pw@b/",
+        "ws://h\tx/",
+        "ws://h\r\nx/",
+        "ws://h x/",
+        "ws://h%2e/",
+        "ws://h\u{e9}/",
+        "ws:///path",
+        "ws://:80/",
+        "ws://h:/",
+        "ws://h:8x/",
+        "ws://h:99999/",
+        "ws://h:80:80/",
+        "ws://[::1/",
+        "ws://[]/",
+        "ws://[zz]/",
+        "ftp://h/",
+        "//h/",
+        "h",
+        "",
+    ] {
+        assert_eq!(server_name_of_url(bad), None, "{bad:?}");
+        assert_eq!(server_name_of_room(bad, "abcd"), None, "{bad:?}");
+    }
+    for bad in ["", "ab cd", "ab/cd", "ab\\cd", "ab@cd", "ab\tcd"] {
+        assert_eq!(
+            server_name_of_room("wss://rooms.example", bad),
+            None,
+            "{bad:?}"
+        );
+    }
+}

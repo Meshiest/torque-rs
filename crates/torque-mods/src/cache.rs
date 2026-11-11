@@ -13,8 +13,9 @@
 //! The cache is bounded: [`ContentCache::store`] evicts the entries used least recently until the folder is within its cap, and an
 //! entry above the cap is not kept at all. A server holds at most half the cap: past that, what it stores evicts its own
 //! oldest entries first, so a server that sends new content on every connect churns its own share and leaves the other
-//! servers' entries alone. On the web, and when no per-user folder is known, the cache lives in memory for the
-//! session.
+//! servers' entries alone. When no per-user folder is known the cache lives in memory for the session. On the web it
+//! lives in the page's IndexedDB database ([`crate::MirroredStore`]) when the browser gives one, with a cap of its own
+//! (the entries are all held in the page's memory), and in memory when it does not.
 //!
 //! Only content is stored, so nothing in the cache can run: the folder is never a script path, and the files in it are read back
 //! only through the content rules above.
@@ -63,6 +64,11 @@ pub trait CacheStore {
     fn remove(&mut self, name: &str);
     /// Marks a file as used `stamp`.
     fn touch(&mut self, name: &str, stamp: u64);
+    /// The most bytes the store can hold, whatever cap the cache is given (a browser's memory is the browser's; the default is no
+    /// limit of its own).
+    fn limit(&self) -> u64 {
+        u64::MAX
+    }
 }
 
 /// The server an entry was downloaded from: a short key of its address, which an entry is named by.
@@ -83,6 +89,26 @@ impl CacheOwner {
         let mut key = [0u8; 8];
         key.copy_from_slice(&digest[..8]);
         CacheOwner(key)
+    }
+
+    /// The key of a server a client names itself (a browser's link always dials one placeholder address, so the address says
+    /// nothing of the server): the same name gives the same key, and no name gives an address's key.
+    pub fn of_name(name: &str) -> CacheOwner {
+        let mut hasher = Sha256::new();
+        hasher.update(b"mod cache name\0");
+        hasher.update(name.as_bytes());
+        let digest = hasher.finalize();
+        let mut key = [0u8; 8];
+        key.copy_from_slice(&digest[..8]);
+        CacheOwner(key)
+    }
+
+    /// The key of the server a connection is to: its name when the client has one, else the address it dialed.
+    pub fn of_connection(name: Option<&str>, target: Option<SocketAddr>) -> Option<CacheOwner> {
+        match (name, target) {
+            (Some(name), _) => Some(CacheOwner::of_name(name)),
+            (None, target) => target.map(CacheOwner::of_server),
+        }
     }
 
     /// The key as 16 lower-case hexadecimal digits: what an entry's name and a remembered choice are keyed by.
@@ -109,6 +135,83 @@ impl CacheOwner {
         }
         Some(CacheOwner(key))
     }
+}
+
+/// The address `url` (`scheme://host[:port]/path`, the scheme `ws`, `wss`, `http` or `https`) in one form: the scheme and host in
+/// lower case and the port number always there (the scheme's own when the address has none: 80 for `ws` and `http`, 443 for `wss`
+/// and `https`), with no path, query or fragment. The scheme stays, so a plain and a secure server of one host are two. Two
+/// addresses of one server may still differ (a miss), but two of different servers never match.
+///
+/// A browser reads an address by rules of its own (it ends the host at a backslash, takes what comes before an `@` as a user,
+/// drops tabs and line breaks, decodes `%` and punycodes), so an address this does not read exactly as written gets no form (`None`):
+/// one with a backslash or a control character anywhere, a scheme that is not one of those four, a host of anything but letters,
+/// digits, `-`, `.` and `_` (or an IPv6 address in brackets), a host that is empty, or a port that is not a number.
+fn normalized_address(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.contains(|c: char| c == '\\' || c.is_control()) {
+        return None;
+    }
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let default: u16 = match scheme.as_str() {
+        "ws" | "http" => 80,
+        "wss" | "https" => 443,
+        _ => return None,
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let (host, port) = if let Some(v6) = authority.strip_prefix('[') {
+        let (inside, after) = v6.split_once(']')?;
+        let plain = inside
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.');
+        if inside.is_empty() || !plain {
+            return None;
+        }
+        let port = if after.is_empty() {
+            None
+        } else {
+            Some(after.strip_prefix(':')?)
+        };
+        (format!("[{}]", inside.to_ascii_lowercase()), port)
+    } else {
+        let (host, port) = match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        };
+        let plain = host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+        if host.is_empty() || !plain {
+            return None;
+        }
+        (host.to_ascii_lowercase(), port)
+    };
+    let port = match port {
+        None => default,
+        Some(digits) if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) => {
+            digits.parse().ok()?
+        }
+        Some(_) => return None,
+    };
+    Some(format!("{scheme}://{host}:{port}"))
+}
+
+/// What a client in a browser calls the server at the WebSocket address `url`: the address in one form (see [`normalized_address`]),
+/// so `ws://h` and `ws://h:80` are one server and `ws://h` and `wss://h` are two. `None` for an address a browser might read
+/// differently than this does: that client keeps its mods in memory. For [`crate::ModsPlugin::cache_server`].
+pub fn server_name_of_url(url: &str) -> Option<String> {
+    Some(format!("server:{}", normalized_address(url)?))
+}
+
+/// What a client in a browser calls the host it joins by room `code` (case does not matter; letters and digits only, else `None`)
+/// through the room service at `service_url`: a code names a host only within one service, so the service's address (as for
+/// [`server_name_of_url`]) is part of the name. For [`crate::ModsPlugin::cache_server`].
+pub fn server_name_of_room(service_url: &str, code: &str) -> Option<String> {
+    let code = code.trim().to_ascii_lowercase();
+    if code.is_empty() || !code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return None;
+    }
+    Some(format!("room:{}:{code}", normalized_address(service_url)?))
 }
 
 /// Whose entries a connection may use, and under whose name it stores.
@@ -175,7 +278,7 @@ pub fn index_of(listed: &[Listed]) -> Vec<IndexEntry> {
     entries
 }
 
-fn entry_name(hash: &Hash, owner: Option<CacheOwner>) -> String {
+pub(crate) fn entry_name(hash: &Hash, owner: Option<CacheOwner>) -> String {
     match owner {
         Some(owner) => format!("{}.{}{ENTRY_SUFFIX}", hex(hash), owner.hex()),
         None => format!("{}{ENTRY_SUFFIX}", hex(hash)),
@@ -195,8 +298,8 @@ impl ContentCache {
     pub fn new(store: Box<dyn CacheStore>, max_bytes: u64) -> ContentCache {
         let clock = store.list().iter().map(|l| l.stamp).max().unwrap_or(0);
         ContentCache {
+            max_bytes: max_bytes.min(store.limit()),
             store,
-            max_bytes,
             clock,
             scope: CacheScope::default(),
         }
@@ -238,9 +341,9 @@ impl ContentCache {
         ContentCache::new(Box::new(MemoryStore::default()), max_bytes)
     }
 
-    /// Changes the cap (the next store evicts to it).
+    /// Changes the cap (the next store evicts to it), within the most the store can hold.
     pub fn set_max_bytes(&mut self, max_bytes: u64) {
-        self.max_bytes = max_bytes;
+        self.max_bytes = max_bytes.min(self.store.limit());
     }
 
     /// The cap.

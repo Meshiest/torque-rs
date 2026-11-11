@@ -23,6 +23,8 @@ Browsers and desktops in one match:
 just examples mods-demo web               # a browser joins at http://127.0.0.1:28000/
 ```
 
+A browser keeps the mod in its storage, so a reload downloads nothing.
+
 Open to the internet: `just examples mods-demo server-public` (UDP port 28000).
 
 **Controls:** W A S D run, Esc menu.

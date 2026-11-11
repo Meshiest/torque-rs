@@ -178,6 +178,16 @@ pub fn client_builder(files: &GameFiles, cache: CacheChoice) -> Result<EngineBui
     builder(files, ModsPlugin::new().cache(cache))
 }
 
+/// [`client_builder`] for a client that names the server it joins (`server`, for its cache's keys) because its link's address
+/// is the same for every server, as a browser's is.
+pub fn named_client_builder(
+    files: &GameFiles,
+    cache: CacheChoice,
+    server: &str,
+) -> Result<EngineBuilder, String> {
+    builder(files, ModsPlugin::new().cache(cache).cache_server(server))
+}
+
 /// An engine of the game for `role`, with the Lua extension when there is one.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn engine(files: &GameFiles, role: Role, lua: Option<&Lua>) -> Result<Engine, String> {

@@ -24,6 +24,7 @@ torque::app::web_exports! {
     embedded: false,
     start_embedded: torque_example_mods_demo::web::start_embedded,
     start_fetched: torque_example_mods_demo::web::start_fetched,
+    prepare: torque_example_mods_demo::web::prepare,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

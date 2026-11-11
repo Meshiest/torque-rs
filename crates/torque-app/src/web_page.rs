@@ -248,8 +248,10 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
 
 /// The functions a web build's page calls (`web/index.html`, `web/files.js`, `web/bridge.js`), in the game's program (the
 /// module's exports must be the program's own): `embedded`, `manifestMaxBytes`, `startEmbedded`, `readManifest`, `addFile`,
-/// `addFileDigest`, `startFetched`, and the page bridge's `torqueRequest`, `torqueOn` and `torqueOff` ([`crate::page_bridge`]). `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
-/// (functions returning `Result<(), String>`). The program depends on `wasm-bindgen`.
+/// `addFileDigest`, `startFetched` (and `prepare`, when the game names one), and the page bridge's `torqueRequest`, `torqueOn` and `torqueOff` ([`crate::page_bridge`]). `embedded` is whether the module carries its files; `start_embedded` and `start_fetched` start the game
+/// (functions returning `Result<(), String>`). `prepare` is an async function the page awaits before `startFetched` (a game opens
+/// the browser's storage there, which answers later than a call is made); it cannot fail the start. The program depends on
+/// `wasm-bindgen` (and `wasm-bindgen-futures` with `prepare`).
 ///
 /// ```ignore
 /// #[cfg(target_arch = "wasm32")]
@@ -257,11 +259,12 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
 ///     embedded: false,
 ///     start_embedded: my_game::web::start_embedded,
 ///     start_fetched: my_game::web::start_fetched,
+///     prepare: my_game::web::prepare, // optional
 /// }
 /// ```
 #[macro_export]
 macro_rules! web_exports {
-    (embedded: $embedded:expr, start_embedded: $start_embedded:path, start_fetched: $start_fetched:path $(,)?) => {
+    (embedded: $embedded:expr, start_embedded: $start_embedded:path, start_fetched: $start_fetched:path $(, prepare: $prepare:path)? $(,)?) => {
         mod page {
             use wasm_bindgen::prelude::wasm_bindgen;
 
@@ -301,6 +304,14 @@ macro_rules! web_exports {
             ) -> Result<(), String> {
                 $crate::web_page::add_file_digest(path, bytes, digest)
             }
+
+            $(
+                /// What the game needs of the page before `startFetched`.
+                #[wasm_bindgen]
+                pub async fn prepare() {
+                    $prepare().await
+                }
+            )?
 
             #[wasm_bindgen(js_name = startFetched)]
             pub fn start_fetched() -> Result<(), String> {

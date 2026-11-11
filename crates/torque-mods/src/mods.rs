@@ -1488,9 +1488,11 @@ impl Mods {
             use torque_engine::VmPrefs;
             vm.prefs::<crate::plugin::ModPrefs>().share_cache
         };
-        let owner = vm
+        let name = self.net.as_ref().and_then(|net| net.server.as_deref());
+        let target = vm
             .extension::<torque_engine::net::ConnectTarget>()
-            .map(|target| crate::cache::CacheOwner::of_server(target.0));
+            .map(|target| target.0);
+        let owner = crate::cache::CacheOwner::of_connection(name, target);
         Some(downloads.begin_connect_to(caps, crate::cache::CacheScope { owner, share }))
     }
 
@@ -1506,7 +1508,7 @@ impl Mods {
             downloads: true,
             limits: net.limits,
         };
-        let cache = net.cache.open(net.limits.cache_bytes);
+        let cache = net.cache.open(net.limits.cache_bytes, net.server.is_some());
         let downloads = Rc::new(Downloads::new(
             Rc::clone(&self.table),
             self.limits,
