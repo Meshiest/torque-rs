@@ -9,12 +9,16 @@
 //! **Behaviours.** [`register`] gives the classes with an add-time or preload step their [`EngineClass`] (the classes that also
 //! load a shape get theirs through [`shapes`](crate::shapes), which composes these); the checks themselves are the host's
 //! [`DatablockRules`](rules::DatablockRules), TGE's by default. A datablock declared again runs no `onAdd`, only its
-//! `preload`, so the add-time checks are wrapped ([`revalidated`]): the preload of a redeclare runs them again, silently,
-//! and the clamps and the emitter's particle list are those a fresh declaration of the same fields would leave. The engine
-//! has no such step (`compiledEval.cpp`'s `OP_ADD_OBJECT` runs `onAdd` once, at the registration, and `DebrisData::onAdd`
-//! in `debris.cpp` prints its warnings there), so only the warnings follow it: they are printed once, for the declaration that
-//! adds the datablock. A redeclare whose values the checks refuse prints the checks' own warnings and the datablock keeps the
-//! values (a first declaration is deleted), so no object is left pointing at a deleted datablock.
+//! `preload` (`compiledEval.cpp`'s `OP_ADD_OBJECT` runs `onAdd` once, at the registration, and `DebrisData::onAdd` in
+//! `debris.cpp` clamps and warns there), so a redeclare writes no clamp: the fields hold what the script wrote, as a field
+//! assignment's do. What a redeclare must rebuild is state computed from the fields into a table of its own (the emitter's
+//! particle id list): a class with such state is wrapped ([`rederived`]), and the preload of a redeclare runs its add-time
+//! checks again with the warnings held back and every field put back as it was, so only the table changes. A redeclare whose
+//! values the checks refuse prints the checks' own warnings and the datablock keeps the values (a first declaration is
+//! deleted), so no object is left pointing at a deleted datablock. A client that is sent a changed datablock puts the
+//! values in range itself, as its first add did (`Vm::recheck_engine_datablock`, the warnings held); a changed record the
+//! checks refuse is dropped (the datablock keeps what it held) where the first add deletes the datablock, and an error line
+//! a check prints is said again for each changed record.
 
 pub mod fields;
 pub mod image;
@@ -44,7 +48,7 @@ struct Tables {
     /// The host's own tables of datablock state, which forget and clear with these.
     game: Option<Rc<dyn GameTables>>,
     /// The datablocks whose add-time checks ran for the declaration that made them and whose first `preload` is still to
-    /// come ([`Revalidate`]).
+    /// come ([`Rederive`]).
     added: HashSet<ObjId>,
 }
 
@@ -171,15 +175,16 @@ impl DbValues {
     }
 }
 
-/// An add-time behavior whose checks run again when the datablock is declared again (see the module docs): `on_add` marks
-/// the add, the first `preload` after it takes the mark and does nothing, every later `preload` is a redeclare and runs the
-/// checks again without their warnings (printed once, at the add, as the engine's `onAdd` does).
-struct Revalidate {
+/// An add-time behavior whose derived state is rebuilt when the datablock is declared again (see the module docs): `on_add`
+/// marks the add, the first `preload` after it takes the mark and does nothing, every later `preload` is a redeclare and runs the
+/// checks again with their warnings held and every field put back, so only the state the checks compute into a table of its own
+/// follows the redeclare.
+struct Rederive {
     add: Rc<dyn EngineClass>,
     values: DbValues,
 }
 
-impl EngineClass for Revalidate {
+impl EngineClass for Rederive {
     fn on_add(&self, vm: &mut Vm, id: ObjId) -> Result<bool, VmError> {
         self.values.mark_added(id);
         self.add.on_add(vm, id)
@@ -190,13 +195,15 @@ impl EngineClass for Revalidate {
         self.add.on_remove(vm, id)
     }
 
-    /// The checks again for a redeclare, their warnings held back; a redeclare they refuse (or fail) says them after all, and the
-    /// datablock stays as declared.
+    /// The checks again for a redeclare, their warnings held back and the fields they wrote put back; a redeclare they refuse (or
+    /// fail) says them after all, and the datablock stays as declared.
     fn preload(&self, vm: &mut Vm, id: ObjId) -> Result<(), PreloadError> {
         if self.values.take_added(id) {
             return Ok(());
         }
+        let fields = vm.static_values(id);
         let (added, warnings) = vm.holding_warnings(|vm| self.add.on_add(vm, id));
+        vm.restore_static_values(id, fields);
         if !matches!(added, Ok(true)) {
             for line in warnings {
                 vm.warn(line);
@@ -207,10 +214,10 @@ impl EngineClass for Revalidate {
     }
 }
 
-/// `add` wrapped so that its checks run again on a redeclare ([`Revalidate`]); for a class whose add-time behavior is one of
-/// another behavior's (the shape classes').
-pub fn revalidated(values: &DbValues, add: Rc<dyn EngineClass>) -> Rc<dyn EngineClass> {
-    Rc::new(Revalidate {
+/// `add` wrapped so that its checks rebuild the state they compute on a redeclare ([`Rederive`]); for a class whose add-time
+/// behavior computes such state (the emitter's particle list).
+pub fn rederived(values: &DbValues, add: Rc<dyn EngineClass>) -> Rc<dyn EngineClass> {
+    Rc::new(Rederive {
         add,
         values: values.clone(),
     })
@@ -220,16 +227,19 @@ pub fn revalidated(values: &DbValues, add: Rc<dyn EngineClass>) -> Rc<dyn Engine
 /// [`shapes::register`](crate::shapes::register), which calls this first), and the constructor defaults over the class table's.
 pub fn register(vm: &mut Vm, values: &DbValues) {
     let rules = rules::rules(vm);
-    let simple: [(&str, Rc<dyn EngineClass>); 5] = [
+    let simple: [(&str, Rc<dyn EngineClass>); 4] = [
         ("AudioDescription", rules.audio_description()),
         ("AudioProfile", rules.audio_profile()),
         ("DebrisData", rules.debris()),
         ("ParticleData", rules.particle()),
-        ("ParticleEmitterData", rules.particle_emitter(values)),
     ];
     for (class, behaviour) in simple {
-        vm.set_class_behaviour(class, revalidated(values, behaviour));
+        vm.set_class_behaviour(class, behaviour);
     }
+    vm.set_class_behaviour(
+        "ParticleEmitterData",
+        rederived(values, rules.particle_emitter(values)),
+    );
     rules.constructor_defaults(vm);
     // `%particle.reload()` and `%emitter.reload()`: the add-time checks again, their result dropped; the emitter's id list is
     // rebuilt when the checks got that far.

@@ -1035,10 +1035,7 @@ pub fn register(vm: &mut Vm) -> Rc<Shapes> {
             "ShapeBaseData" => (OnFailure::ShapeBase, None),
             "ExplosionData" => (
                 OnFailure::CouldntLoad,
-                Some(crate::dbvalues::revalidated(
-                    &shapes.values,
-                    crate::dbvalues::rules::rules(vm).explosion(),
-                )),
+                Some(crate::dbvalues::rules::rules(vm).explosion()),
             ),
             "ShapeBaseImageData" => (
                 OnFailure::Image,

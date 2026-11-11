@@ -169,3 +169,164 @@ fn over_a_script_engine_shared_with_the_server_the_servers_own_datablock_is_left
     );
     assert_eq!(vm.eval(b"return ServerDesc.volume;").unwrap(), b"0.5");
 }
+
+#[test]
+fn an_update_puts_an_out_of_range_value_in_range_as_the_first_add_does_and_says_nothing() {
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    torque_game::shapes::register(&mut vm);
+    let id = ts_vm::sim::FIRST_DATABLOCK_ID + 9;
+    let event = |lifetime: &str| Unpacked {
+        id,
+        class: "DebrisData".to_string(),
+        fields: vec![field("lifetime", lifetime)],
+        error: None,
+        emitter_ids: None,
+    };
+    let read = |vm: &Vm| vm.read_field_of(ts_vm::vm::FieldTarget::Live(id), b"lifetime", b"");
+    assert_eq!(
+        receive(&mut vm, &event("-1"), None).unwrap(),
+        Received::Added(id)
+    );
+    let added = read(&vm);
+    assert_ne!(added, b"-1", "the first add clamps");
+    assert_eq!(
+        receive(&mut vm, &event("4"), None).unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(read(&vm), b"4");
+    vm.drain_log();
+    assert_eq!(
+        receive(&mut vm, &event("-1"), None).unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(read(&vm), added, "an update clamps the same way");
+    assert!(
+        vm.log_texts().iter().all(|l| !l.contains("DebrisData")),
+        "{:?}",
+        vm.log_texts()
+    );
+}
+
+/// A client over the game classes' behaviors: its add-time checks run.
+fn checked_client() -> (Vm, Rc<torque_game::shapes::Shapes>) {
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    let shapes = torque_game::shapes::register(&mut vm);
+    (vm, shapes)
+}
+
+#[test]
+fn an_unchanged_resend_is_not_checked_again() {
+    let (mut vm, _) = checked_client();
+    let id = ts_vm::sim::FIRST_DATABLOCK_ID + 11;
+    let event = Unpacked {
+        id,
+        class: "DebrisData".to_string(),
+        fields: vec![field("lifetime", "2")],
+        error: None,
+        emitter_ids: None,
+    };
+    assert_eq!(receive(&mut vm, &event, None).unwrap(), Received::Added(id));
+    // Another field the record does not carry is out of range; a resend that changes nothing leaves it, a changed one checks it.
+    vm.set_object_member(id, b"friction", b"", b"50");
+    let friction = |vm: &Vm| vm.read_field_of(ts_vm::vm::FieldTarget::Live(id), b"friction", b"");
+    assert_eq!(
+        receive(&mut vm, &event, None).unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(friction(&vm), b"50");
+    let changed = Unpacked {
+        fields: vec![field("lifetime", "3")],
+        ..event
+    };
+    assert_eq!(
+        receive(&mut vm, &changed, None).unwrap(),
+        Received::Updated(id)
+    );
+    assert_ne!(friction(&vm), b"50");
+}
+
+#[test]
+fn a_datablock_the_client_did_not_make_is_not_checked() {
+    let (mut vm, _) = checked_client();
+    let id = vm
+        .eval(
+            b"datablock DebrisData(Mine) { lifetime = 4; }; Mine.lifetime = -1; return Mine.getId();",
+        )
+        .unwrap();
+    let id: u32 = String::from_utf8_lossy(&id).parse().unwrap();
+    let event = Unpacked {
+        id,
+        class: "DebrisData".to_string(),
+        fields: vec![field("lifetime", "-1")],
+        error: None,
+        emitter_ids: None,
+    };
+    for sharing in [Sharing::Own, Sharing::WithServer] {
+        assert_eq!(
+            receive_from(&mut vm, &event, None, sharing).unwrap(),
+            Received::Updated(id)
+        );
+        assert_eq!(vm.eval(b"return Mine.lifetime;").unwrap(), b"-1");
+    }
+}
+
+#[test]
+fn a_client_emitter_takes_its_ids_for_the_particle_string_and_is_clamped_on_update() {
+    let (mut vm, shapes) = checked_client();
+    let values = shapes.values();
+    let id = ts_vm::sim::FIRST_DATABLOCK_ID + 13;
+    let event = |fields: Vec<UnpackedField>| Unpacked {
+        id,
+        class: "ParticleEmitterData".to_string(),
+        fields,
+        error: None,
+        emitter_ids: Some(vec![7]),
+    };
+    let read = |vm: &Vm, name: &[u8]| vm.read_field_of(ts_vm::vm::FieldTarget::Live(id), name, b"");
+    // The first add: no `particles` string, only the ids; the lifetime is clamped.
+    assert_eq!(
+        receive(
+            &mut vm,
+            &event(vec![field("lifetimeMS", "-3")]),
+            Some(values)
+        )
+        .unwrap(),
+        Received::Added(id)
+    );
+    assert_eq!(read(&vm, b"lifetimeMS"), b"0");
+    assert_eq!(values.emitter_ids(id), vec![7]);
+    // An update with another out-of-range lifetime is clamped the same way.
+    assert_eq!(
+        receive(
+            &mut vm,
+            &event(vec![field("lifetimeMS", "-7")]),
+            Some(values)
+        )
+        .unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(read(&vm, b"lifetimeMS"), b"0");
+    assert_eq!(values.emitter_ids(id), vec![7]);
+    // An update the checks refuse (a particle string over 255 characters) is dropped: the fields the record carried, those the
+    // checks clamped before refusing and the ids all stay as they were.
+    let long = "a".repeat(300);
+    let refused = Unpacked {
+        emitter_ids: Some(vec![9]),
+        ..event(vec![
+            field("lifetimeMS", "5"),
+            field("ejectionPeriodMS", "0"),
+            field("particles", &long),
+        ])
+    };
+    let period = read(&vm, b"ejectionPeriodMS");
+    assert_eq!(
+        receive(&mut vm, &refused, Some(values)).unwrap(),
+        Received::Refused
+    );
+    assert_eq!(read(&vm, b"lifetimeMS"), b"0");
+    assert_eq!(read(&vm, b"ejectionPeriodMS"), period);
+    assert!(read(&vm, b"particles").is_empty());
+    assert_eq!(values.emitter_ids(id), vec![7]);
+}

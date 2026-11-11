@@ -3,8 +3,8 @@
 //! for field; the refresh is coalesced (one light refresh per user per tick for any number of writes, one heavy refresh per
 //! user for any number of redeclares, no shape rebuild for a write), script threads keep their sequence and position, and a
 //! drain scans nothing while no object uses a dirty datablock. The vehicles' rigid body and wheel records follow their
-//! datablock the same way; the add-time checks of the effect and audio datablocks run again on a redeclare; a Projectile
-//! whose datablock is deleted deletes itself.
+//! datablock the same way; a redeclared effect or audio datablock runs no add-time check (its fields stay as written; an
+//! emitter's particle list is rebuilt); a Projectile whose datablock is deleted deletes itself.
 
 use crate::net_client::{self, NetServer, eval};
 
@@ -900,8 +900,27 @@ fn fields_of(s: &mut NetServer, name: &str, fields: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The body of a declaration as the plain assignments a script would make to an existing object `name` (`a = 1; b = "x";` becomes
+/// `name.a = 1; name.b = "x";`).
+fn assignments(name: &str, body: &str) -> String {
+    body.split(';')
+        .map(str::trim)
+        .filter(|statement| !statement.is_empty())
+        .map(|statement| format!("{name}.{statement};"))
+        .collect()
+}
+
+/// What a class needs to be declared at all (an emitter without a particle is refused).
+fn minimal(class: &str) -> &'static str {
+    if class == "ParticleEmitterData" {
+        "particles = \"Dust\";"
+    } else {
+        ""
+    }
+}
+
 #[test]
-fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked_classes() {
+fn a_redeclare_writes_no_clamp_for_the_six_checked_classes() {
     let mut s = server();
     // The particle the emitters name and the description the profiles name.
     eval(
@@ -914,31 +933,59 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
             body,
             fields,
         } = checked;
-        // D declared in range (nothing clamped), then declared again with every value out of range; E fresh with the same.
-        eval(&mut s, &format!("datablock {class}(D{class}) {{ }};"));
+        let init = minimal(class);
+        // D declared in range, then declared again with every value out of range; W the same values written by assignments
+        // (nothing checks those); E a fresh declaration of them (the add-time checks clamp).
+        eval(
+            &mut s,
+            &format!("datablock {class}(D{class}) {{ {init} }};"),
+        );
         eval(
             &mut s,
             &format!("datablock {class}(D{class}) {{ {body} }};"),
         );
         eval(
             &mut s,
+            &format!("datablock {class}(W{class}) {{ {init} }};"),
+        );
+        eval(&mut s, &assignments(&format!("W{class}"), body));
+        eval(
+            &mut s,
             &format!("datablock {class}(E{class}) {{ {body} }};"),
         );
         assert!(
-            id_of(&s, &format!("D{class}")) < id_of(&s, &format!("E{class}")),
+            id_of(&s, &format!("D{class}")) < id_of(&s, &format!("W{class}")),
             "{class}: the redeclare kept the object"
         );
-        let (d, e) = (
-            fields_of(&mut s, &format!("D{class}"), fields),
-            fields_of(&mut s, &format!("E{class}"), fields),
-        );
+        let [d, w, e] = ["D", "W", "E"].map(|p| fields_of(&mut s, &format!("{p}{class}"), fields));
         assert_eq!(
-            d, e,
-            "{class}: the redeclared and the fresh datablock differ"
+            d, w,
+            "{class}: the redeclared datablock holds what the script wrote"
         );
+        if *class != "AudioProfile" {
+            assert_ne!(
+                d, e,
+                "{class}: a fresh declaration clamps, so the comparison tells"
+            );
+        }
     }
-    // The clamps themselves, for ParticleData: lifetime 1 ms, the variance below it, the drag at 0, the times ordered after
-    // the first, which is always 0.
+    // What a fresh declaration clamps, for ParticleData: lifetime 1 ms, the variance below it, the drag at 0, the times ordered
+    // after the first, which is always 0.
+    assert_eq!(
+        fields_of(
+            &mut s,
+            "EParticleData",
+            &[
+                "dragCoefficient",
+                "lifetimeMS",
+                "lifetimeVarianceMS",
+                "times[1]",
+                "times[3]"
+            ]
+        ),
+        ["0", "1", "0", "0.2", "0.9"]
+    );
+    // What the redeclare keeps for the same fields.
     assert_eq!(
         fields_of(
             &mut s,
@@ -951,7 +998,7 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
                 "times[3]"
             ]
         ),
-        ["0", "1", "0", "0.2", "0.9"]
+        ["-1", "-5", "10", "0.2", "0.1"]
     );
     // The emitter's particle list is built again by the redeclare: a redeclare naming another particle changes it.
     eval(
@@ -964,7 +1011,25 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
         values.values().emitter_ids(emitter),
         vec![id_of(&s, "Smoke") as i32]
     );
-    // A redeclare whose values the checks refuse prints the checks' line, once, and the datablock stays with them.
+    // The list is rebuilt from the new text and the out-of-range period the redeclare wrote stays.
+    eval(
+        &mut s,
+        "datablock ParticleData(Ash) {}; datablock ParticleEmitterData(DParticleEmitterData) { particles = \"Ash\"; ejectionPeriodMS = 0; };",
+    );
+    assert_eq!(
+        values.values().emitter_ids(emitter),
+        vec![id_of(&s, "Ash") as i32]
+    );
+    assert_eq!(
+        fields_of(&mut s, "DParticleEmitterData", &["ejectionPeriodMS"]),
+        ["0"]
+    );
+    eval(
+        &mut s,
+        "datablock ParticleEmitterData(DParticleEmitterData) { particles = \"Smoke\"; };",
+    );
+    // A redeclared profile is not checked again (`AudioProfile::onAdd` runs once): a description the add would refuse stays, with no
+    // line.
     logged(&mut s);
     eval(
         &mut s,
@@ -972,16 +1037,8 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
     );
     assert!(s.vm.objects().find(b"DAudioProfile").is_some());
     let lines = logged(&mut s);
-    assert_eq!(
-        lines
-            .iter()
-            .filter(|l| l.contains("not networkable"))
-            .count(),
-        1,
-        "{lines:?}"
-    );
-    assert_eq!(lines.len(), 1, "one line: {lines:?}");
-    // The emitter's redeclare is checked as a fresh add: an empty particle string is refused, the list stays.
+    assert!(lines.is_empty(), "no line: {lines:?}");
+    // The emitter's redeclare is checked for the list it builds: an empty particle string is refused, the list stays.
     eval(
         &mut s,
         "datablock ParticleEmitterData(DParticleEmitterData) { particles = \"\"; };",
@@ -998,7 +1055,7 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
 }
 
 /// A datablock declared again runs only its preload in the engine (`OP_ADD_OBJECT`), whose `onAdd` printed the warnings for
-/// the first declaration: the redeclare clamps again and prints nothing of its own.
+/// the first declaration: the redeclare prints nothing of its own (and writes no clamp, see above).
 #[test]
 fn a_redeclared_checked_datablock_warns_once() {
     let mut s = server();
@@ -1008,11 +1065,7 @@ fn a_redeclared_checked_datablock_warns_once() {
         "datablock ParticleData(Dust) {}; datablock AudioDescription(Voice) { volume = 0.5; };",
     );
     for checked in &CHECKED {
-        let Checked {
-            class,
-            body,
-            fields,
-        } = checked;
+        let Checked { class, body, .. } = checked;
         let name = format!("W{class}");
         let declare = format!("datablock {class}({name}) {{ {body} }};");
         logged(&mut s);
@@ -1021,24 +1074,41 @@ fn a_redeclared_checked_datablock_warns_once() {
             .into_iter()
             .filter(|l| l.contains(&name))
             .count();
-        let clamped = fields_of(&mut s, &name, fields);
-        // Out-of-range values written back over the clamped ones, then the same declaration again.
+        // The same declaration again.
         eval(&mut s, &format!("datablock {class}({name}) {{ {body} }};"));
         let second = logged(&mut s);
         assert!(
             second.iter().all(|l| !l.contains(&name)),
             "{class}: the redeclare warned again: {second:?}"
         );
-        assert_eq!(
-            fields_of(&mut s, &name, fields),
-            clamped,
-            "{class}: the redeclare did not clamp the same way"
-        );
         // The audio classes clamp without a warning.
         if !class.starts_with("Audio") {
             assert!(first > 0, "{class}: the first declaration warns");
         }
     }
+}
+
+/// A field a script set out of range stays so when the datablock is declared again with other fields: the redeclare runs no
+/// add-time check, so nothing clamps what it did not write (a debris lifetime of -1 reads -1 before and after).
+#[test]
+fn a_redeclare_keeps_a_field_a_script_set_out_of_range() {
+    let mut s = server();
+    eval(
+        &mut s,
+        "datablock DebrisData(Chip) { numBounces = 3; lifetime = 4; }; Chip.lifetime = -1;",
+    );
+    assert_eq!(
+        fields_of(&mut s, "Chip", &["numBounces", "lifetime"]),
+        ["3", "-1"]
+    );
+    logged(&mut s);
+    eval(&mut s, "datablock DebrisData(Chip) { numBounces = 9; };");
+    assert_eq!(
+        fields_of(&mut s, "Chip", &["numBounces", "lifetime"]),
+        ["9", "-1"]
+    );
+    let lines = logged(&mut s);
+    assert!(lines.iter().all(|l| !l.contains("Chip")), "{lines:?}");
 }
 
 /// How many objects of `class` the server has.

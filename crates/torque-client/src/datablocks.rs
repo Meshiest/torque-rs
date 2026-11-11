@@ -282,6 +282,8 @@ pub fn receive_from(
         // client did not make counts as changed (the server sent the record for a reason).
         let mut changed = !made;
         if made {
+            let before = vm.static_values(id);
+            let ids_before = values.map(|v| v.emitter_ids(id));
             for (name, index, text) in &fields {
                 let target = ts_vm::vm::FieldTarget::Live(id);
                 if vm.read_field_of(target, name, index) != *text {
@@ -291,6 +293,17 @@ pub fn receive_from(
             }
             if let (Some(ids), Some(values)) = (&d.emitter_ids, values) {
                 values.set_emitter_ids(id, ids.clone());
+            }
+            // The values written are the server's as they are (a redeclare keeps what a script wrote): the client's own add-time
+            // checks put them in range, their warnings held, as its first add did. Where the checks refuse, the first add deletes
+            // the datablock; an update they refuse is dropped instead (the datablock keeps what it held, its users stay valid).
+            // An error line a check prints is said again for each changed record.
+            if changed && !vm.recheck_engine_datablock(id)? {
+                vm.restore_static_values(id, before);
+                if let (Some(ids), Some(values)) = (ids_before, values) {
+                    values.set_emitter_ids(id, ids);
+                }
+                return Ok(Received::Refused);
             }
         }
         return Ok(match vm.preload_engine_datablock(id)? {

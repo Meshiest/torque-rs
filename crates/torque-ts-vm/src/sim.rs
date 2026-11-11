@@ -1024,6 +1024,15 @@ impl SimObject {
         self.statics.get_mut(slot)
     }
 
+    /// Every static element.
+    pub fn statics(&self) -> &[Value] {
+        &self.statics
+    }
+
+    pub fn statics_mut(&mut self) -> &mut [Value] {
+        &mut self.statics
+    }
+
     /// `getDataField` for a host that has no `Objects` at hand: a datablock field reads "".
     pub fn data_field(&self, classes: &ClassRegistry, name: &[u8], array: &[u8]) -> Vec<u8> {
         self.data_field_named(classes, name, array, &|_| None)

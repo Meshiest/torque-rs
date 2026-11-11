@@ -11,6 +11,7 @@ use std::rc::Rc;
 use super::{PRELOAD_ERROR_BYTES, Vm, VmError, lossy};
 use crate::classes::{EngineClass, PreloadError};
 use crate::code::CodeBlock;
+use crate::fields::Value;
 use crate::sim::{
     ClassId, ObjId, ROOT_GROUP_ID, SCRIPT_GROUP, SCRIPT_OBJECT, SIM_DATA_BLOCK, SimObject,
 };
@@ -1174,6 +1175,52 @@ impl Vm {
             return Ok(None);
         }
         Ok(self.preload_engine_datablock(id)?.then_some(id))
+    }
+
+    /// A copy of every static field of object `id` (empty for an object that is not there), to put back with
+    /// [`Vm::restore_static_values`].
+    pub fn static_values(&self, id: ObjId) -> Vec<Value> {
+        self.objects
+            .get(id)
+            .map_or_else(Vec::new, |o| o.statics().to_vec())
+    }
+
+    /// Puts the static fields `saved` ([`Vm::static_values`]) back into object `id`; nothing for an object that is gone or whose
+    /// layout is another one's.
+    pub fn restore_static_values(&mut self, id: ObjId, saved: Vec<Value>) {
+        if let Some(object) = self.objects.get_mut(id)
+            && object.slot_count() == saved.len()
+        {
+            for (stored, value) in object.statics_mut().iter_mut().zip(saved) {
+                *stored = value;
+            }
+        }
+    }
+
+    /// The add-time checks again for a datablock the host updated ([`Vm::add_engine_datablock`] ran them for the one it made):
+    /// the `on_add` of every behavior of its class chain, the root's first, with their warnings held back (error lines are
+    /// said as the add says them) and none of `onAdd`'s other work (the group join, the class hook). False when the object is
+    /// no datablock, one check refused or the object is gone; the object keeps what the checks wrote either way (the host that
+    /// drops a refused update puts back [`Vm::static_values`]). A run-level error is returned.
+    pub fn recheck_engine_datablock(&mut self, id: ObjId) -> Result<bool, VmError> {
+        let Some(class) = self.objects.get(id).map(SimObject::class) else {
+            return Ok(false);
+        };
+        if !self.objects.classes.is_a(class, SIM_DATA_BLOCK) {
+            return Ok(false);
+        }
+        let behaviours = self.objects.classes.behaviours(class);
+        self.depth = self.depth.saturating_add(BEHAVIOUR_COST);
+        let (result, _warnings) = self.holding_warnings(|vm| {
+            for behaviour in behaviours.iter() {
+                if !behaviour.on_add(vm, id)? || !vm.objects.contains(id) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        });
+        self.depth = self.depth.saturating_sub(BEHAVIOUR_COST);
+        result
     }
 
     /// `preload(false)` of a datablock the host made or updated ([`Vm::add_engine_datablock`]): every behaviour of its

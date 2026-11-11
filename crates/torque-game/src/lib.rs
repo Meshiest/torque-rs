@@ -52,11 +52,12 @@
 //!   `a_refreshed_wheeled_vehicle...`, `a_refreshed_flying_vehicle...`): the light refresh is [`sim::vehicle::refresh_written`]
 //!   (torque-vehicle's `rigid_from_data`, the pose and the momenta kept), the heavy one [`sim::vehicle::new_datablock`] with the
 //!   wheels' tires and springs put back ([`sim::vehicle::wheel_fittings`]; `a_refreshed_vehicle_keeps...`);
-//! - the add-time checks of the six checked datablock classes (Explosion, Debris, Particle, ParticleEmitter, AudioDescription,
-//!   AudioProfile) run again on a redeclare ([`dbvalues`]'s `Revalidate`: `on_add` marks, the first `preload` takes the mark,
-//!   a later one is a redeclare), so a redeclared datablock's clamps and the emitter's particle list equal a fresh one's
-//!   (`a_redeclare_leaves_the_same_clamped_fields...`); the redeclare's checks are silent, the warnings are printed once, at the
-//!   add (`a_redeclared_checked_datablock_warns_once`); a redeclare the checks refuse says its warnings and the datablock stays;
+//! - a redeclared checked datablock (Explosion, Debris, Particle, ParticleEmitter, AudioDescription, AudioProfile) runs no add-time
+//!   check, as in the engine (`OP_ADD_OBJECT` runs `onAdd` once): its fields hold what the script wrote
+//!   (`a_redeclare_writes_no_clamp_for_the_six_checked_classes`, `a_redeclare_keeps_a_field_a_script_set_out_of_range`); only the
+//!   emitter's particle id list, computed from its `particles` text, is rebuilt ([`dbvalues`]'s `Rederive`: `on_add` marks, the
+//!   first `preload` takes the mark, a later one is a redeclare; the checks' warnings and field writes are dropped); a redeclare
+//!   the checks refuse says its warnings and the datablock stays (`a_redeclared_checked_datablock_warns_once`);
 //! - a Projectile whose datablock was deleted deletes itself at its next tick ([`sim::projectile::tick`];
 //!   `a_projectile_data_removed...`): no dead id is read;
 //! - a plugin's objects outside the process list are found by the wide scan when a datablock's count says it has more users
