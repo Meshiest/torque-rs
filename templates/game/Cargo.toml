@@ -4,6 +4,8 @@ description = "The smallest game on the engine: a dedicated server and a client 
 version = "0.1.0"
 edition = "2024"
 publish = false
+# The template's own code is torque-rs's (MIT); a game made from it picks its own license here.
+license = "MIT"
 
 # The engine is not on crates.io: once this folder is copied out, point `torque` at a git or path source and keep the `app` feature.
 [dependencies]
