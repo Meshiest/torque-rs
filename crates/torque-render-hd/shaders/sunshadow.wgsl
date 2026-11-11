@@ -56,50 +56,77 @@ var<private> sun_layer: i32 = -1;
 var<private> sun_uv: vec2<f32> = vec2<f32>(0.0);
 // Set per fragment: a first-person image's lookups in the finest cascade read the map without the client's own Player.
 var<private> sun_no_self: bool = false;
+// The filter's radius (world units) the last sun_shadow_turned used, 0 for none: the penumbra's half width.
+var<private> sun_radius: f32 = 0.0;
 
-// The sun's visibility at `p` (normal `n`, N.L `nl` > 0) through the cascades, for an eye at `eye`. `steady`: the taps are not turned
-// per pixel (no TAA averages the pattern).
-fn sun_shadow_at(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3<f32>, steady: bool) -> f32 {
+// The cascade that holds `p` (normal `n`): its layer in x (-1 for none: no cascades, past the shadow distance, or outside every
+// cascade) and its uv and depth in yzw; `sun_layer` and `sun_uv` are set to it (the transmittance's lookup).
+fn sun_cascade(p: vec3<f32>, n: vec3<f32>, eye: vec3<f32>) -> vec4<f32> {
+    let none = vec4<f32>(-1.0, 0.0, 0.0, 0.0);
     let count = min(shadows.config.x, MAX_CASCADES);
     if count == 0u {
-        return 1.0;
+        return none;
     }
     // How far the shadows reach is a distance from the eye (a view depth's end would be a plane that moves as the camera turns).
-    let reach = distance(p, eye);
-    if reach >= shadows.sun.y {
-        return 1.0;
+    if distance(p, eye) >= shadows.sun.y {
+        return none;
     }
-    var layer = count;
-    var uvz = vec3<f32>(0.0);
     for (var i = 0u; i < count; i = i + 1u) {
         let prm = shadows.params[i];
         let q = cascade_uvz(i, p + n * (prm.y * NORMAL_OFFSET_TEXELS));
         let m = prm.x * (MAX_FILTER_TEXELS + 2.0);
         if all(q.xy > vec2<f32>(m)) && all(q.xy < vec2<f32>(1.0 - m)) && q.z < 1.0 {
-            layer = i;
-            uvz = q;
-            break;
+            sun_layer = i32(i);
+            sun_uv = q.xy;
+            return vec4<f32>(f32(i), q);
         }
     }
-    if layer == count {
-        return 1.0;
-    }
-    sun_layer = i32(layer);
-    sun_uv = uvz.xy;
-    var map = layer;
-    if sun_no_self && layer < u32(shadows.colour.z) {
-        map = u32(shadows.colour.y) - 1u + layer;
-    }
-    let prm = shadows.params[layer];
-    // The receiver's plane in the light's space, as depth (0..1) per uv. A face the sun lights has n . fwd = -N.L < 0; kept off the
-    // grazing limit.
-    let nlight = vec3<f32>(dot(n, shadows.right.xyz), dot(n, shadows.up.xyz), dot(n, shadows.fwd.xyz));
-    let nz = min(nlight.z, -0.05);
-    let per_uv = 1.0 / (prm.w * prm.z);
-    let grad = vec2<f32>(-nlight.x / nz, nlight.y / nz) * per_uv;
-    let z = uvz.z - 2e-4 / prm.z;
+    return none;
+}
+
+// The sun's visibility at `p` (normal `n`, N.L `nl` > 0) through the cascades, for an eye at `eye`. `steady`: the taps are not turned
+// per pixel (no TAA averages the pattern).
+fn sun_shadow_at(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3<f32>, steady: bool) -> f32 {
     // The taps turned per pixel only where the TAA averages it (else a speckle).
     let turn = select(ign(frag) * 6.2831853, 0.0, steady);
+    return sun_shadow_turned(p, n, nl, turn, eye);
+}
+
+// The map that holds cascade `layer` (a first-person image's own, without its Player, where it has one).
+fn sun_map(layer: u32) -> u32 {
+    if sun_no_self && layer < u32(shadows.colour.z) {
+        return u32(shadows.colour.y) - 1u + layer;
+    }
+    return layer;
+}
+
+// The receiver's plane (normal `n`) in cascade `layer`'s light space, as depth (0..1) per uv. A face the sun lights has
+// n . fwd = -N.L < 0; kept off the grazing limit.
+fn sun_plane(layer: u32, n: vec3<f32>) -> vec2<f32> {
+    let prm = shadows.params[layer];
+    let nlight = vec3<f32>(dot(n, shadows.right.xyz), dot(n, shadows.up.xyz), dot(n, shadows.fwd.xyz));
+    let nz = min(nlight.z, -0.05);
+    return vec2<f32>(-nlight.x / nz, nlight.y / nz) / (prm.w * prm.z);
+}
+
+// The receiver's depth at `uvz` in cascade `layer`, less the bias.
+fn sun_receiver(layer: u32, uvz: vec3<f32>) -> f32 {
+    return uvz.z - 2e-4 / shadows.params[layer].z;
+}
+
+// The same with the taps turned by `turn` radians.
+fn sun_shadow_turned(p: vec3<f32>, n: vec3<f32>, nl: f32, turn: f32, eye: vec3<f32>) -> f32 {
+    let found = sun_cascade(p, n, eye);
+    if found.x < 0.0 {
+        return 1.0;
+    }
+    let layer = u32(found.x);
+    let uvz = found.yzw;
+    let reach = distance(p, eye);
+    let map = sun_map(layer);
+    let prm = shadows.params[layer];
+    let grad = sun_plane(layer, n);
+    let z = sun_receiver(layer, uvz);
     let texel = prm.x;
     var radius = PCF_TEXELS * texel;
     let blockers = shadows.config.z;
@@ -116,6 +143,7 @@ fn sun_shadow_at(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3
         let pen = shadows.sun.x * max(uvz.z - sum.x / sum.y, 0.0) * prm.z * prm.w;
         radius = clamp(pen, MIN_FILTER_TEXELS * texel, MAX_FILTER_TEXELS * texel);
     }
+    sun_radius = radius / prm.w;
     let taps = max(shadows.config.y, 1u);
     var lit = 0.0;
     for (var i = 0u; i < taps; i = i + 1u) {
@@ -124,5 +152,17 @@ fn sun_shadow_at(p: vec3<f32>, n: vec3<f32>, nl: f32, frag: vec2<f32>, eye: vec3
     }
     lit = lit / f32(taps);
     return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, reach));
+}
+
+// The sun's visibility at `p` (normal `n`) through one bilinear 2 x 2 tap of its cascade: no turn and no search, so a still
+// point under a still shadow reads the same every frame.
+fn sun_shadow_plain(p: vec3<f32>, n: vec3<f32>, eye: vec3<f32>) -> f32 {
+    let found = sun_cascade(p, n, eye);
+    if found.x < 0.0 {
+        return 1.0;
+    }
+    let layer = u32(found.x);
+    let lit = csm_tap(sun_map(layer), found.yz, sun_receiver(layer, found.yzw), sun_plane(layer, n));
+    return mix(lit, 1.0, smoothstep(shadows.sun.z, shadows.sun.y, distance(p, eye)));
 }
 

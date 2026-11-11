@@ -178,8 +178,9 @@ pub const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const REVEAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// The grading table's format (filterable).
 const LUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// The contact shadows' mask format.
-const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+/// The sun's visibility mask (r: the cascades times the contact shadows, filtered in space; g: the contact shadows alone; b: how
+/// much of its tent the filter kept; a: the cascades at each pixel's unjittered place, filtered alike, the TAA's change test).
+pub(crate) const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// The timestamp queries: the frame's first pass's start, the tonemap's end, the shadow maps' end, the contact pass's start and end,
 /// the AO pass's start and its filter's end, the TAA's (or the FXAA-style filter's) start and end, the secondary views' and the
 /// SSR's start and end, and the volumetric clouds' start and end.
@@ -516,9 +517,12 @@ struct Targets {
     motions: [wgpu::Texture; 2],
     motion_views: [wgpu::TextureView; 2],
     normal_view: wgpu::TextureView,
-    /// The contact shadows' mask and the bind groups that make it from the depth.
-    contact_view: wgpu::TextureView,
+    /// The sun's visibility mask as the contact pass writes it, the filtered one of this frame and the last (the TAA's change
+    /// test reads both; the forward pass this frame's), and the groups that make them from the prepass.
+    contact_raw_view: wgpu::TextureView,
+    contact_views: [wgpu::TextureView; 2],
     contact_group: wgpu::BindGroup,
+    contact_filter_group: wgpu::BindGroup,
     ao_views: [wgpu::TextureView; 2],
     ao_groups: [wgpu::BindGroup; 2],
     /// The AO filtered in space: what the forward pass reads, always.
@@ -2150,6 +2154,22 @@ impl<E: HdExtension> HdWorld<E> {
                     wgpu::TextureViewDimension::D2,
                 ),
                 uniform(2, wgpu::ShaderStages::FRAGMENT),
+                texture_entry(
+                    3,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::TextureViewDimension::D2,
+                ),
+                texture_entry(
+                    4,
+                    wgpu::TextureSampleType::Depth,
+                    wgpu::TextureViewDimension::D2Array,
+                ),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
             ],
         });
         let clusters_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -5110,12 +5130,10 @@ impl<E: HdExtension> HdWorld<E> {
         };
         let motion_views = [view(&motions[0]), view(&motions[1])];
         let normal_view = view(&tex("hd normal", inner, NORMAL_FORMAT, target));
-        let contact_view = view(&tex(
-            "hd contact",
-            if uses.contact { inner } else { one },
-            CONTACT_FORMAT,
-            target,
-        ));
+        let contact_size = if uses.contact { inner } else { one };
+        let contact_raw_view = view(&tex("hd contact raw", contact_size, CONTACT_FORMAT, target));
+        let contact_views =
+            [0, 1].map(|_| view(&tex("hd contact", contact_size, CONTACT_FORMAT, target)));
         let ao_views = [0, 1].map(|_| view(&tex("hd ao", ao_size, AO_FORMAT, target)));
         let ao_smooth_view = view(&tex("hd ao smooth", ao_size, AO_FORMAT, target));
         let history = [0, 1].map(|_| {
@@ -5151,6 +5169,24 @@ impl<E: HdExtension> HdWorld<E> {
                     binding: 2,
                     resource: self.shadows.uniform.as_entire_binding(),
                 },
+                tv(3, &normal_view),
+                tv(4, self.shadows.csm_view()),
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.shadows.gather_sampler),
+                },
+            ],
+        });
+        // (The AO's layout; the motion slot is not read.)
+        let contact_filter_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hd contact filter"),
+            layout: &self.post.ao_layout,
+            entries: &[
+                frame_entry(0),
+                tv(1, &depth_view),
+                tv(2, &normal_view),
+                tv(3, &motion_views[0]),
+                tv(4, &contact_raw_view),
             ],
         });
         let ao_groups = [0, 1].map(|p| {
@@ -5183,6 +5219,8 @@ impl<E: HdExtension> HdWorld<E> {
                         binding: 8,
                         resource: wgpu::BindingResource::Sampler(&self.post.linear),
                     },
+                    tv(9, &contact_views[p]),
+                    tv(10, &contact_views[1 - p]),
                 ],
             })
         });
@@ -5296,8 +5334,10 @@ impl<E: HdExtension> HdWorld<E> {
             motions,
             motion_views,
             normal_view,
-            contact_view,
+            contact_raw_view,
+            contact_views,
             contact_group,
+            contact_filter_group,
             ao_views,
             ao_groups,
             ao_smooth_view,
@@ -6396,7 +6436,7 @@ impl<E: HdExtension> HdWorld<E> {
         let clear_colour = scene.clear.map(|c| f64::from(srgb_to_linear(c)));
         let frame_group = self.frame_group(
             &targets.background_view,
-            &targets.contact_view,
+            &targets.contact_views[p],
             ao_shown,
             Some(&targets.trans_depth_view),
         );
@@ -6404,14 +6444,14 @@ impl<E: HdExtension> HdWorld<E> {
         let frame_group_still = self.frame_group_with(
             &self.frame_still,
             &targets.background_view,
-            &targets.contact_view,
+            &targets.contact_views[p],
             ao_shown,
             &targets.trans_depth_view,
         );
         // The same without the front layer's depth (the passes that draw into it).
         let frame_group_front = self.frame_group(
             &targets.background_view,
-            &targets.contact_view,
+            &targets.contact_views[p],
             ao_shown,
             None,
         );
@@ -6669,15 +6709,7 @@ impl<E: HdExtension> HdWorld<E> {
             crate::count_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hd contact"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &targets.contact_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
+                color_attachments: &[Some(colour(&targets.contact_raw_view))],
                 depth_stencil_attachment: None,
                 timestamp_writes: self
                     .timer
@@ -6685,7 +6717,7 @@ impl<E: HdExtension> HdWorld<E> {
                     .map(|t| wgpu::RenderPassTimestampWrites {
                         query_set: &t.queries,
                         beginning_of_pass_write_index: Some(Q_CONTACT_BEGIN),
-                        end_of_pass_write_index: Some(Q_CONTACT_END),
+                        end_of_pass_write_index: None,
                     }),
                 occlusion_query_set: None,
                 multiview_mask: None,
@@ -6694,6 +6726,40 @@ impl<E: HdExtension> HdWorld<E> {
             pass.set_bind_group(0, &targets.contact_group, &[]);
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
+            drop(pass);
+            // The mask's spatial filter, into this frame's copy (the TAA reads the other as last frame's).
+            crate::count_pass();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hd contact filter"),
+                color_attachments: &[Some(colour(&targets.contact_views[p]))],
+                depth_stencil_attachment: None,
+                timestamp_writes: self
+                    .timer
+                    .as_ref()
+                    .map(|t| wgpu::RenderPassTimestampWrites {
+                        query_set: &t.queries,
+                        beginning_of_pass_write_index: None,
+                        end_of_pass_write_index: Some(Q_CONTACT_END),
+                    }),
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.post.contact_filter);
+            pass.set_bind_group(0, &targets.contact_filter_group, &[]);
+            pass.draw(0..3, 0..1);
+            crate::count_draws(1);
+        } else {
+            // No mask this frame (no sun's light or shadows): this frame's copy is cleared to b 0, which turns the TAA's change
+            // test off (the two copies left from the last masks drawn may differ, and the test would read them every frame).
+            crate::count_pass();
+            drop(encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hd contact clear"),
+                color_attachments: &[Some(colour(&targets.contact_views[p]))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            }));
         }
         mark!("contact");
         // The ambient occlusion and its spatial filter.

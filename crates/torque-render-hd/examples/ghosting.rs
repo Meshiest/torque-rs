@@ -4,8 +4,11 @@
 //! what the histories add: a trail, a lag, a smear.
 //!
 //! The scenes: a still camera with a buggy-sized box driving past over a dirt ground (its shadow and occlusion sweep the
-//! ground), the sun moving fast (a day sped up), a light switched on and off, the camera moving over still ground, and smoke
-//! rising then gone. Each starts with frames that settle, then the change, then frames held still.
+//! ground), the sun moving fast (a day sped up), a light switched on and off, the camera moving over still ground, smoke
+//! rising then gone, the sky's clouds under a fast sun and then a turning camera (the clouds' own history), a water mirror
+//! (at Medium: the screen-space reflections' history) with the buggy driving along it and then the camera moving, and thin
+//! poles far off under a moving camera (sub-pixel features against the history's clip). Each starts with frames that settle,
+//! then the change, then frames held still; a scene with two changes holds after each.
 //!
 //! Per scene: `floor` the share of pixels off the reference once settled before the change (the noise left), `worst` and `mean`
 //! the share off from the change on, `settle` the frames after each change ends (the motion stopped, the light switched) until
@@ -13,10 +16,13 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>]`: `--audit` draws each scene again with each pass's history off on its own (`HdWorld::histories`)
-//! and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its reference and their
-//! difference. The command fails when a scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to
-//! settle and a `ghosting::MAX_TRAIL` % trail).
+//! [--max-trail <percent>] [--trace]`: `--audit` draws each scene again with each pass's history off on its own
+//! (`HdWorld::histories`) and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its
+//! reference and their difference (`--frame <n>`: that frame too); `--trace` prints each frame's share off. Each row ends with
+//! the run's GPU time a frame (ms, the whole frame, the sun mask's pass and the anti-aliasing's; with the device's timestamps).
+//! The command fails when a gated scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to settle
+//! and a `ghosting::MAX_TRAIL` % trail); the cloud, mirror and thin-far scenes report their numbers without gating (their
+//! histories are measured here before they are worked on).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -52,6 +58,9 @@ struct State {
     light: bool,
     /// The smoke's age (frames), none: no smoke.
     smoke: Option<f32>,
+    /// The frame itself, where the scene moves with the time though nothing else changes (the water's waves): no two frames share
+    /// a reference.
+    frame: Option<usize>,
 }
 
 const BASE: State = State {
@@ -61,15 +70,49 @@ const BASE: State = State {
     buggy: None,
     light: false,
     smoke: None,
+    frame: None,
 };
 
-/// A scripted scene: its name, its frames after [`SETTLE`] (the change and the hold), the frames (from 0) where a change has
-/// just ended, and its state at each frame.
+/// A scripted scene: its name, its quality, its fixtures, its frames after [`SETTLE`] (the changes and the holds), the frames
+/// (from 0) each change starts and ends at, and its state at each frame.
 struct Shot {
     name: &'static str,
+    quality: Quality,
+    /// A water plane over the ground (the mirror), thin poles far off.
+    water: bool,
+    poles: bool,
+    /// Whether the scene's numbers fail the command past the limits.
+    gated: bool,
     frames: usize,
-    ends: Vec<usize>,
+    changes: Vec<(usize, usize)>,
     state: Box<dyn Fn(usize) -> State>,
+}
+
+/// A scene at High on the plain ground.
+fn plain(
+    name: &'static str,
+    frames: usize,
+    changes: Vec<(usize, usize)>,
+    state: impl Fn(usize) -> State + 'static,
+) -> Shot {
+    Shot {
+        name,
+        quality: Quality::High,
+        water: false,
+        poles: false,
+        gated: true,
+        frames,
+        changes,
+        state: Box::new(state),
+    }
+}
+
+/// A scene whose numbers are reported, not gated.
+fn reported(shot: Shot) -> Shot {
+    Shot {
+        gated: false,
+        ..shot
+    }
 }
 
 /// The frames' index after the settling ones (negative: settling).
@@ -83,47 +126,47 @@ fn shots() -> Vec<Shot> {
     let walk = 60;
     let smoke = 60;
     vec![
-        Shot {
-            name: "buggy-shadow",
-            frames: SETTLE + drive + HOLD,
-            ends: vec![SETTLE + drive],
-            state: Box::new(move |f| {
+        plain(
+            "buggy-shadow",
+            SETTLE + drive + HOLD,
+            vec![(SETTLE, SETTLE + drive)],
+            move |f| {
                 let t = after(f).clamp(0.0, drive as f32);
                 State {
                     buggy: Some([-9.0 + 0.25 * t, 1.0, 0.0]),
                     ..BASE
                 }
-            }),
-        },
-        Shot {
-            name: "sun-fast",
-            frames: SETTLE + sun + HOLD,
-            ends: vec![SETTLE + sun],
-            state: Box::new(move |f| {
+            },
+        ),
+        plain(
+            "sun-fast",
+            SETTLE + sun + HOLD,
+            vec![(SETTLE, SETTLE + sun)],
+            move |f| {
                 let t = after(f).clamp(0.0, sun as f32);
                 State {
                     sun: [-40.0 + 1.0 * t, 32.0 - 0.2 * t],
                     buggy: Some([0.0, 1.0, 0.0]),
                     ..BASE
                 }
-            }),
-        },
-        Shot {
-            name: "light-toggle",
-            frames: SETTLE + 30 + HOLD,
-            ends: vec![SETTLE, SETTLE + 30],
-            state: Box::new(|f| State {
+            },
+        ),
+        plain(
+            "light-toggle",
+            SETTLE + 30 + HOLD,
+            vec![(SETTLE, SETTLE), (SETTLE + 30, SETTLE + 30)],
+            |f| State {
                 sun: [-40.0, -3.0],
                 buggy: Some([0.0, 1.0, 0.0]),
                 light: (SETTLE..SETTLE + 30).contains(&f),
                 ..BASE
-            }),
-        },
-        Shot {
-            name: "camera-move",
-            frames: SETTLE + walk + HOLD,
-            ends: vec![SETTLE + walk],
-            state: Box::new(move |f| {
+            },
+        ),
+        plain(
+            "camera-move",
+            SETTLE + walk + HOLD,
+            vec![(SETTLE, SETTLE + walk)],
+            move |f| {
                 let t = after(f).clamp(0.0, walk as f32);
                 State {
                     eye: [-1.0 + 0.08 * t, -8.0 + 0.03 * t, 4.0],
@@ -131,17 +174,78 @@ fn shots() -> Vec<Shot> {
                     buggy: Some([0.0, 1.0, 0.0]),
                     ..BASE
                 }
-            }),
-        },
-        Shot {
-            name: "smoke",
-            frames: SETTLE + smoke + HOLD,
-            ends: vec![SETTLE + smoke],
-            state: Box::new(move |f| {
+            },
+        ),
+        plain(
+            "smoke",
+            SETTLE + smoke + HOLD,
+            vec![(SETTLE, SETTLE + smoke)],
+            move |f| {
                 let t = after(f);
                 State {
                     buggy: Some([0.0, 1.0, 0.0]),
                     smoke: (0.0..smoke as f32).contains(&t).then_some(t),
+                    ..BASE
+                }
+            },
+        ),
+        // The sky's clouds: the sun moving fast (their light changes), held, then the camera turning (their history reprojected).
+        reported(plain(
+            "clouds",
+            SETTLE + sun + HOLD + walk + HOLD,
+            vec![
+                (SETTLE, SETTLE + sun),
+                (SETTLE + sun + HOLD, SETTLE + sun + HOLD + walk),
+            ],
+            move |f| {
+                let t = after(f).clamp(0.0, sun as f32);
+                let u = (after(f) - (sun + HOLD) as f32).clamp(0.0, walk as f32);
+                State {
+                    target: [0.1 * u, 10.0, 14.0],
+                    sun: [-40.0 + 1.0 * t, 32.0 - 0.2 * t],
+                    ..BASE
+                }
+            },
+        )),
+        // A water mirror at Medium (its reflection is the screen-space reflections', with their history): the buggy driving along
+        // it, held, then the camera moving.
+        Shot {
+            name: "mirror",
+            quality: Quality::Medium,
+            water: true,
+            poles: false,
+            gated: false,
+            frames: SETTLE + drive + HOLD + walk + HOLD,
+            changes: vec![
+                (SETTLE, SETTLE + drive),
+                (SETTLE + drive + HOLD, SETTLE + drive + HOLD + walk),
+            ],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, drive as f32);
+                let u = (after(f) - (drive + HOLD) as f32).clamp(0.0, walk as f32);
+                State {
+                    eye: [-1.0 + 0.08 * u, -8.0 + 0.03 * u, 1.6],
+                    target: [0.05 * u, 1.5, 0.6],
+                    buggy: Some([-9.0 + 0.25 * t, 3.0, 0.0]),
+                    frame: Some(f),
+                    ..BASE
+                }
+            }),
+        },
+        // Thin poles far off (sub-pixel features): the camera moving slowly, then held.
+        Shot {
+            name: "thin-far",
+            quality: Quality::High,
+            water: false,
+            poles: true,
+            gated: false,
+            frames: SETTLE + walk + HOLD,
+            changes: vec![(SETTLE, SETTLE + walk)],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, walk as f32);
+                State {
+                    eye: [-1.0 + 0.03 * t, -8.0, 4.0],
+                    target: [0.02 * t, 40.0, 3.0],
                     ..BASE
                 }
             }),
@@ -315,6 +419,55 @@ fn blocks() -> Vec<DynamicObject> {
     ]
 }
 
+/// Thin poles far off, a pixel wide or less at this size: a row across the view at 60 to 110 units and a thin bar among them.
+fn poles() -> Vec<DynamicObject> {
+    let mut rng = Lcg::new(5);
+    let mut out = Vec::with_capacity(41);
+    for k in 0..40 {
+        let x = -30.0 + 1.5 * k as f32 + rng.unit();
+        let y = 60.0 + 50.0 * rng.unit();
+        let h = 1.5 + 2.5 * rng.unit();
+        out.push(tinted(10 + k, [x, y, h], [0.05, 0.05, h], [70, 60, 50]));
+    }
+    out.push(tinted(
+        50,
+        [0.0, 85.0, 3.0],
+        [30.0, 0.04, 0.04],
+        [90, 80, 70],
+    ));
+    out
+}
+
+/// A water plane just over the ground (the mirror).
+fn water(half: f32) -> Draw {
+    let corner = |x: f32, y: f32| Vertex {
+        position: [x, y, 0.02],
+        normal: [0.0, 0.0, 1.0],
+        color: [40, 80, 90, 128],
+        uv: [0.0; 2],
+    };
+    let (a, b, c, d) = (
+        corner(-half, -half),
+        corner(half, -half),
+        corner(half, half),
+        corner(-half, half),
+    );
+    Draw {
+        label: "water".into(),
+        vertices: vec![a, b, c, a, c, d],
+        lighting: true,
+        tex_env: TexEnv::None,
+        texture: None,
+        blend: Blend::Alpha,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
+        fog: true,
+        lights: Vec::new(),
+        vertex_key: None,
+    }
+}
+
 /// The smoke at `age` frames: puffs rising and spreading from behind the buggy, each at its eye distance.
 fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
     let mut rng = Lcg::new(11);
@@ -389,10 +542,12 @@ fn look() -> ScatterLook {
     }
 }
 
-/// The scene as the demo's view sets it up (the physical sky, its sun radius, occlusion and smooth occlusion), at High.
+/// The scene as the demo's view sets it up (the physical sky, its sun radius, occlusion and smooth occlusion), at the shot's
+/// quality with its fixtures.
 struct Stage {
     scene: PlainScene,
     puff: usize,
+    poles: bool,
     table: &'static ScatterTable,
     look: ScatterLook,
     /// The state last put in.
@@ -400,7 +555,7 @@ struct Stage {
 }
 
 impl Stage {
-    fn new() -> Stage {
+    fn new(shot: &Shot) -> Stage {
         let mut frame = HdScene::new(StaticCells::default());
         frame.atmosphere = true;
         frame.sun_radius = 0.27;
@@ -418,15 +573,19 @@ impl Stage {
             material::KIND_PLANE,
             &[ground_tex],
         )];
+        if shot.water {
+            frame.water = vec![HdDraw::from_fixed(&water(200.0), material::KIND_PLANE, &[])];
+        }
         frame.size = SIZE;
         frame.fov = FOV;
         Stage {
             scene: PlainScene {
                 frame,
-                mode: Some(HdMode::new(Quality::High)),
+                mode: Some(HdMode::new(shot.quality)),
                 time: 0.0,
             },
             puff,
+            poles: shot.poles,
             table: ScatterTable::earth(),
             look: look(),
             last: None,
@@ -453,6 +612,9 @@ impl Stage {
             s.clouds = Some(light.clouds([1.0, 0.4, 0.0]));
         }
         let mut objects = blocks();
+        if self.poles {
+            objects.extend(poles());
+        }
         if let Some(at) = st.buggy {
             let from = before.and_then(|b| b.buggy).unwrap_or(at);
             objects.push(buggy(at, from));
@@ -528,7 +690,7 @@ impl Drawer {
 
 /// The references of `shot`, one a frame (a frame whose state is the last one's shares its image).
 fn references(gpu: &Gpu, shot: &Shot) -> Result<Vec<Arc<Image>>, String> {
-    let mut stage = Stage::new();
+    let mut stage = Stage::new(shot);
     let mut d = Drawer::new(gpu)?;
     let mut out: Vec<Arc<Image>> = Vec::with_capacity(shot.frames);
     let mut last: Option<State> = None;
@@ -561,6 +723,8 @@ fn write_png(path: &Path, img: &Image) -> Result<(), String> {
 
 struct Args {
     audit: bool,
+    trace: bool,
+    frame: Option<usize>,
     shot: Option<String>,
     out: Option<PathBuf>,
     max_settle: Option<usize>,
@@ -570,6 +734,8 @@ struct Args {
 fn args() -> Result<Args, String> {
     let mut a = Args {
         audit: false,
+        trace: false,
+        frame: None,
         shot: None,
         out: None,
         max_settle: Some(MAX_SETTLE),
@@ -580,6 +746,8 @@ fn args() -> Result<Args, String> {
         let mut value = || it.next().ok_or(format!("{arg} wants a value"));
         match arg.as_str() {
             "--audit" => a.audit = true,
+            "--trace" => a.trace = true,
+            "--frame" => a.frame = Some(value()?.parse().map_err(|e| format!("{e}"))?),
             "--shot" => a.shot = Some(value()?),
             "--out" => a.out = Some(PathBuf::from(value()?)),
             "--max-settle" => a.max_settle = Some(value()?.parse().map_err(|e| format!("{e}"))?),
@@ -608,11 +776,14 @@ fn main() -> Result<(), String> {
         }
         let refs = references(&gpu, &shot)?;
         for (name, set) in ghosting::settings::<NoExtension>(args.audit) {
-            let mut stage = Stage::new();
+            let mut stage = Stage::new(&shot);
             let mut d = Drawer::new(&gpu)?;
             set(&mut d.world);
             let mut areas = Vec::with_capacity(shot.frames);
             let mut frames: Vec<Image> = Vec::new();
+            // The GPU time a frame: the whole frame, the sun mask's pass, the anti-aliasing's; the frames timed.
+            let mut gpu_ms = [0.0f64; 3];
+            let mut timed = 0usize;
             for (f, reference) in refs.iter().enumerate() {
                 let st = (shot.state)(f);
                 stage.scene.time = f as f32 / 60.0;
@@ -620,24 +791,44 @@ fn main() -> Result<(), String> {
                 d.world.upload(&stage.scene);
                 d.draw(&stage, &stage.camera(&st))?;
                 let img = d.read(&gpu)?;
+                if let Some(t) = d.world.gpu_ms() {
+                    let g = d.world.gpu_times().unwrap_or_default();
+                    gpu_ms[0] += t;
+                    gpu_ms[1] += g.contact;
+                    gpu_ms[2] += g.aa;
+                    timed += 1;
+                }
                 areas.push(ghosting::share_off(&img, reference));
                 if args.out.is_some() {
                     frames.push(img);
                 }
             }
-            let m = Measure::of(&areas, SETTLE, &shot.ends);
-            println!("{}", m.row(shot.name, name));
+            let m = Measure::of(&areas, &shot.changes);
+            let gpu_note = if timed > 0 {
+                let [f, c, a] = gpu_ms.map(|v| v / timed as f64);
+                format!("  gpu {f:.3} ms (mask {c:.3}, aa {a:.3})")
+            } else {
+                String::new()
+            };
+            println!("{}{gpu_note}", m.row(shot.name, name));
+            if args.trace {
+                let shares: Vec<String> =
+                    areas.iter().map(|a| format!("{:.2}", a * 100.0)).collect();
+                println!("  frames (% off): {}", shares.join(" "));
+            }
             if let Some(dir) = &args.out {
                 let stem = format!("{}-{}", shot.name, name.replace(' ', "-"));
-                let at = m.worst_at;
-                write_png(&dir.join(format!("{stem}-{at}.png")), &frames[at])?;
-                write_png(&dir.join(format!("{stem}-{at}-ref.png")), &refs[at])?;
-                write_png(
-                    &dir.join(format!("{stem}-{at}-diff.png")),
-                    &ghosting::difference(&frames[at], &refs[at]),
-                )?;
+                let picked = args.frame.filter(|&f| f < frames.len() && f != m.worst_at);
+                for at in [m.worst_at].into_iter().chain(picked) {
+                    write_png(&dir.join(format!("{stem}-{at}.png")), &frames[at])?;
+                    write_png(&dir.join(format!("{stem}-{at}-ref.png")), &refs[at])?;
+                    write_png(
+                        &dir.join(format!("{stem}-{at}-diff.png")),
+                        &ghosting::difference(&frames[at], &refs[at]),
+                    )?;
+                }
             }
-            if name == "default" {
+            if name == "default" && shot.gated {
                 if args.max_settle.is_some_and(|x| m.settle > x) {
                     failed.push(format!("{}: settles in {} frames", shot.name, m.settle));
                 }

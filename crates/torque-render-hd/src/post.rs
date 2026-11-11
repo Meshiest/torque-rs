@@ -100,6 +100,8 @@ pub struct PostPipes {
     pub ao: HashMap<bool, wgpu::RenderPipeline>,
     /// The AO's spatial filter on the AO pass's layout.
     pub ao_filter: wgpu::RenderPipeline,
+    /// The sun's visibility mask's spatial filter, on the AO pass's layout too (the depth, the normals, the mask as its input).
+    pub contact_filter: wgpu::RenderPipeline,
     pub taa: wgpu::RenderPipeline,
     pub fxaa: wgpu::RenderPipeline,
     pub linear: wgpu::Sampler,
@@ -135,6 +137,8 @@ impl PostPipes {
                 texture(6, false),
                 texture(7, true),
                 filtering(8),
+                texture(9, true),
+                texture(10, true),
             ],
         });
         let fxaa_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -182,6 +186,16 @@ impl PostPipes {
             "fs_ao_filter",
             &[AO_FORMAT],
         );
+        let contact_filter_module = module(device, Permutation::ContactFilter);
+        let contact_filter = full_frame(
+            device,
+            cache,
+            "hd contact filter",
+            &ao_layout,
+            &contact_filter_module,
+            "fs_contact_filter",
+            &[crate::CONTACT_FORMAT],
+        );
         let taa_module = module(device, Permutation::Taa);
         let taa = full_frame(
             device,
@@ -220,6 +234,7 @@ impl PostPipes {
             motion_layout,
             ao,
             ao_filter,
+            contact_filter,
             taa,
             fxaa,
             linear,

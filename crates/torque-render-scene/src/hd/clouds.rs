@@ -447,7 +447,7 @@ impl CloudQuality {
                 light_steps: 5,
                 detail: true,
                 ground_shadows: false,
-                history: 0.9,
+                history: 0.75,
                 spread: 1.25,
                 layers: 0b011,
             },

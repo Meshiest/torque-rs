@@ -36,6 +36,8 @@ const MAT_NODE: u32 = 0x80000000u;
 const MOVING_CASTERS: u32 = 16u;
 // The ground's roughness.
 const PLANE_ROUGHNESS: f32 = 0.7;
+// The penumbra half width (screen pixels) the sun mask's alpha holds as 1 (contact.wgsl writes it, contact_filter.wgsl reads it).
+const PENUMBRA_PIXELS: f32 = 8.0;
 
 // One cluster's light mask: 1,024 bits.
 const CLUSTER_WORDS: u32 = 32u;

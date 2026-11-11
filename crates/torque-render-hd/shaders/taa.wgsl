@@ -23,6 +23,10 @@
 //   the box the frame it happens, whatever moved or did not. The lighting has no noise of its own from frame to frame (the
 //   shadows', the occlusion's and the contact shadows' patterns are fixed per pixel and filtered in space), so the box only
 //   spans edges and texture.
+// - The sun's mask (the contact pass's) holds the cascades' visibility looked up at each pixel's unjittered place, filtered in
+//   space: the same every frame for a still shadow, however hard its edge. Where it changed since last frame (read at the
+//   history's place), a shadow's edge passed (the sun moved, a caster moved) and the history starts again: the box alone would
+//   keep an old edge's colour inside it for the frames the history holds (a band a pixel wide lagging the edge).
 // - The blend is 1 / (n + 1) with n the frames the history holds (its alpha), and a history clipped far holds fewer.
 // - Left pixels: a static surface where a shape's part was around the history's texel last frame and is nowhere in the 3 x 3 now
 //   (a swing's last place: the outline's pixels held a share of it though their texel never was its) is clipped into a small
@@ -41,6 +45,10 @@
 @group(0) @binding(6) var history: texture_2d<f32>;
 @group(0) @binding(7) var shown_before: texture_2d<f32>;
 @group(0) @binding(8) var linear_clamp: sampler;
+// The sun's mask of this frame and the last (the internal size; 1 x 1 where the contact pass is off). A frame that drew no mask
+// clears its copy: b 0, no test.
+@group(0) @binding(9) var mask_now: texture_2d<f32>;
+@group(0) @binding(10) var mask_before: texture_2d<f32>;
 
 
 // The current sample's rebuilding filter: exp(-k d^2) of a jittered sample's distance d (pixels) from the pixel's centre (Karis's
@@ -65,6 +73,15 @@ const LEFT_BOX: f32 = 0.25;
 // (compressed luma).
 const CHANGE_SHARE: f32 = 0.4;
 const CHANGE_MARGIN: f32 = 0.02;
+// The change of the sun's unjittered visibility (the mask's a) at a pixel since last frame that starts its history again, and how
+// much of its filter's tent the mask must have kept (its b) for the test: less, and the mask may step at the pixel (a crease,
+// another surface nearby), which a read between the pixels or a moving camera's reprojection moves.
+const MASK_CHANGE: f32 = 0.15;
+const MASK_SMOOTH: f32 = 0.98;
+// Where the mask's change is read: the pixel and its four neighbors (internal pixels).
+const MASK_TAPS: array<vec2<f32>, 5> = array<vec2<f32>, 5>(
+    vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(-1.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(0.0, -1.0),
+);
 
 struct TaaOut {
     @location(0) history: vec4<f32>,
@@ -343,6 +360,34 @@ fn fs_taa(@builtin(position) frag: vec4<f32>) -> TaaOut {
     let level_before = cubic_at(shown_before, prev_uv).a;
     if abs(level - level_before) > CHANGE_SHARE * max(level, level_before) + CHANGE_MARGIN {
         n = 0.0;
+    }
+    // The sun's unjittered visibility now and at the history's place last frame, only where the 3 x 3 is one object (none of it
+    // sky) and the mask's filter kept its whole tent there (no crease, no other surface within its reach: there the mask steps,
+    // and a read between its pixels moves with the reprojection). A shadow's edge is wider than a pixel, so its change is read at
+    // the pixel and its four neighbors and taken where most of them show it.
+    var one_object = !sky;
+    for (var k = 0u; k < 9u; k = k + 1u) {
+        if abs(ids[k] - ids[4]) > 0.5 {
+            one_object = false;
+        }
+    }
+    if one_object {
+        var changed = 0u;
+        var whole = true;
+        for (var k = 0u; k < 5u; k = k + 1u) {
+            let o = MASK_TAPS[k] * frame.screen.zw;
+            let mask = textureSampleLevel(mask_now, linear_clamp, uv + o, 0.0);
+            let mask_last = textureSampleLevel(mask_before, linear_clamp, prev_uv + o, 0.0);
+            if min(mask.b, mask_last.b) < MASK_SMOOTH {
+                whole = false;
+            }
+            if abs(mask.a - mask_last.a) > MASK_CHANGE {
+                changed = changed + 1u;
+            }
+        }
+        if whole && changed >= 3u {
+            n = 0.0;
+        }
     }
     // The frames a history may hold: the still cap only for a pixel all but still; one moving at all is resampled every frame and
     // each resample softens it, so it holds fewer.

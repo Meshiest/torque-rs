@@ -611,13 +611,32 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
     var vis = 1.0;
     var tr = vec3<f32>(1.0);
     if sl_face > 0.0 {
-        sun_no_self = ((material >> MAT_KIND_SHIFT) & 3u) == KIND_SHAPE && (material & MAT_VIEW_ONLY) != 0u;
-        let cascade = sun_shadow(rest, s.ng, sl_face, frag);
+        let kind = (material >> MAT_KIND_SHIFT) & 3u;
+        sun_no_self = kind == KIND_SHAPE && (material & MAT_VIEW_ONLY) != 0u;
+        // The contact pass's mask holds this pixel (an opaque surface of the main view): r the cascades times the contact shadows,
+        // filtered in space, g the contact shadows alone.
+        let masked = opaque && shadows.tint.w > 0.0 && frame.flags.y < 0.5;
+        var cascade = 1.0;
         var near = 1.0;
-        if opaque && shadows.tint.w > 0.0 && frame.flags.y < 0.5 {
-            near = textureLoad(contact, vec2<i32>(frag), 0).r;
+        if masked && kind != KIND_SHAPE {
+            // A static surface takes the mask's visibility (a shape's point and normal are its own: the rest pose, no shadow of
+            // the client's own Player on a first-person image); the cascade is still picked for the transmittance's lookup, and
+            // the debug view shows the cascades' own value.
+            vis = textureLoad(contact, vec2<i32>(frag), 0).r;
+            if shadows.colour.x > 0.5 {
+                _ = sun_cascade(rest, s.ng, frame.eye.xyz);
+            }
+            if shadows.config.w == 1u {
+                cascade = sun_shadow(rest, s.ng, sl_face, frag);
+                near = textureLoad(contact, vec2<i32>(frag), 0).g;
+            }
+        } else {
+            cascade = sun_shadow(rest, s.ng, sl_face, frag);
+            if masked {
+                near = textureLoad(contact, vec2<i32>(frag), 0).g;
+            }
+            vis = min(cascade, near);
         }
-        vis = min(cascade, near);
         if shadows.config.w == 1u {
             debug_out = vec4<f32>(vis, cascade, near, 1.0);
         }

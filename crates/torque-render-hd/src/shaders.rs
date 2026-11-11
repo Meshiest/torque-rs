@@ -3,7 +3,7 @@
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 30] = [
+pub const FILES: [(&str, &str); 31] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
@@ -11,6 +11,10 @@ pub const FILES: [(&str, &str); 30] = [
     ("tonemap.wgsl", include_str!("../shaders/tonemap.wgsl")),
     ("shadow.wgsl", include_str!("../shaders/shadow.wgsl")),
     ("contact.wgsl", include_str!("../shaders/contact.wgsl")),
+    (
+        "contact_filter.wgsl",
+        include_str!("../shaders/contact_filter.wgsl"),
+    ),
     ("ao.wgsl", include_str!("../shaders/ao.wgsl")),
     ("ao_filter.wgsl", include_str!("../shaders/ao_filter.wgsl")),
     ("taa.wgsl", include_str!("../shaders/taa.wgsl")),
@@ -96,8 +100,10 @@ pub enum Permutation {
     Shadow {
         unclipped: bool,
     },
-    /// The screen-space contact shadows.
+    /// The sun's visibility mask: the cascades and the screen-space contact shadows at each pixel of the prepass.
     Contact,
+    /// The mask's spatial filter.
+    ContactFilter,
     /// The ambient occlusion (GTAO, or SSAO), each frame's estimate on its own.
     Ao {
         gtao: bool,
@@ -139,7 +145,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 27] = [
+    pub const ALL: [Permutation; 28] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -161,6 +167,7 @@ impl Permutation {
         Permutation::Shadow { unclipped: true },
         Permutation::Shadow { unclipped: false },
         Permutation::Contact,
+        Permutation::ContactFilter,
         Permutation::Ao { gtao: true },
         Permutation::Ao { gtao: false },
         Permutation::AoFilter,
@@ -191,6 +198,7 @@ impl Permutation {
             Permutation::Tonemap => "tonemap.wgsl".to_string(),
             Permutation::Shadow { unclipped } => format!("shadow.wgsl (UNCLIPPED = {unclipped})"),
             Permutation::Contact => "contact.wgsl".to_string(),
+            Permutation::ContactFilter => "contact_filter.wgsl".to_string(),
             Permutation::Ao { gtao } => format!("ao.wgsl (GTAO = {gtao})"),
             Permutation::AoFilter => "ao_filter.wgsl".to_string(),
             Permutation::Taa => "taa.wgsl".to_string(),
@@ -280,7 +288,15 @@ impl Permutation {
                 file("shadow.wgsl"),
                 ext.shadow
             ),
-            Permutation::Contact => format!("{}\n{}", common, file("contact.wgsl")),
+            Permutation::Contact => format!(
+                "{}\n{}\n{}",
+                common,
+                file("sunshadow.wgsl"),
+                file("contact.wgsl")
+            ),
+            Permutation::ContactFilter => {
+                format!("{}\n{}", common, file("contact_filter.wgsl"))
+            }
             Permutation::Ao { gtao } => format!(
                 "const GTAO: bool = {gtao};\n{}\n{}",
                 common,

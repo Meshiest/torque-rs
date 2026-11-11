@@ -56,14 +56,6 @@ fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
     return p.xyz / p.w;
 }
 
-// The 4 x 4 ordered-dither (Bayer) matrix's entry at `t`: the bits of x xor y and of y, interleaved and reversed.
-fn bayer(t: vec2<u32>) -> u32 {
-    let x = t.x & 3u;
-    let y = t.y & 3u;
-    let e = x ^ y;
-    return ((e & 1u) << 3u) | ((y & 1u) << 2u) | (e & 2u) | ((y >> 1u) & 1u);
-}
-
 // A hash of an integer pair to [0, 1) (PCG's output permutation).
 fn hash2(v: vec2<u32>) -> f32 {
     var h = v.x * 747796405u + v.y * 2891336453u + 2654435769u;

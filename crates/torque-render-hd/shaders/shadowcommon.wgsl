@@ -36,6 +36,16 @@ fn ign(p: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
 }
 
+// The 4 x 4 ordered-dither (Bayer) matrix's entry at `t`: the bits of x xor y and of y, interleaved and reversed. Every 4 x 4
+// tile holds each of the 16 once (the AO's noise, the sun mask's turn: a 5 x 5 tent over it averages all 16 alike, a 3 x 3 box
+// nine).
+fn bayer(t: vec2<u32>) -> u32 {
+    let x = t.x & 3u;
+    let y = t.y & 3u;
+    let e = x ^ y;
+    return ((e & 1u) << 3u) | ((y & 1u) << 2u) | (e & 2u) | ((y >> 1u) & 1u);
+}
+
 // Sample i of n on a Vogel (golden-angle) disk of unit radius, turned by `turn` radians.
 fn vogel(i: u32, n: u32, turn: f32) -> vec2<f32> {
     let r = sqrt((f32(i) + 0.5) / f32(n));

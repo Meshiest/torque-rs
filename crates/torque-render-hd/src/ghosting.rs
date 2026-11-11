@@ -90,9 +90,10 @@ pub fn settled<E: HdExtension>(
     Ok(sum)
 }
 
-/// A scene's summary: `floor` the share off once settled before the change, `worst` and `mean` from the change on, `settle`
-/// the most frames after a change ended until every frame to the next change is within ([`AREA_OK`], or half again the
-/// floor), `trail` the worst share after a change ended, `worst_at` the frame of the worst share.
+/// A scene's summary: `floor` the share off once settled before the first change, `worst` and `mean` from it on, `settle`
+/// the most frames after a change ended until every frame to the next change's start is within ([`AREA_OK`], or half again
+/// the floor), `trail` the worst share after a change ended and before the next began, `worst_at` the frame of the worst
+/// share.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct Measure {
     pub floor: f64,
@@ -104,9 +105,10 @@ pub struct Measure {
 }
 
 impl Measure {
-    /// Of the frames' shares off `areas`, the change starting at frame `start` (after at least [`FLOOR_FRAMES`]) and ending at
-    /// each of `ends` (in order; each runs to the next or the last frame).
-    pub fn of(areas: &[f64], start: usize, ends: &[usize]) -> Measure {
+    /// Of the frames' shares off `areas`, with the scene's `changes` as the frames each starts and ends at (in order; the first
+    /// after at least [`FLOOR_FRAMES`]; a change over in one frame starts and ends at the same frame).
+    pub fn of(areas: &[f64], changes: &[(usize, usize)]) -> Measure {
+        let start = changes.first().map_or(areas.len(), |c| c.0);
         let floor_frames = &areas[start.saturating_sub(FLOOR_FRAMES)..start];
         let floor = floor_frames.iter().sum::<f64>() / floor_frames.len().max(1) as f64;
         let (worst_at, worst) = areas
@@ -118,8 +120,8 @@ impl Measure {
         let mean = rest.iter().sum::<f64>() / rest.len().max(1) as f64;
         let within = AREA_OK.max(floor * 1.5);
         let (mut settle, mut trail) = (0, 0.0f64);
-        for (k, &end) in ends.iter().enumerate() {
-            let next = ends.get(k + 1).copied().unwrap_or(areas.len());
+        for (k, &(_, end)) in changes.iter().enumerate() {
+            let next = changes.get(k + 1).map_or(areas.len(), |c| c.0);
             let span = &areas[end.min(next)..next];
             trail = trail.max(span.iter().copied().fold(0.0, f64::max));
             settle = settle.max(span.iter().rposition(|&a| a > within).map_or(0, |i| i + 1));

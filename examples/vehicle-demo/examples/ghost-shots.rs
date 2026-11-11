@@ -235,7 +235,7 @@ fn one(
     for key in [Key::W, Key::A, Key::D] {
         a.game.key(key, false);
     }
-    let measure = Measure::of(&areas, SETTLE, &[SETTLE + DRIVE]);
+    let measure = Measure::of(&areas, &[(SETTLE, SETTLE + DRIVE)]);
     let passes = if n > 0 {
         [
             "shadow maps",
