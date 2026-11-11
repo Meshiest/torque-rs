@@ -101,6 +101,8 @@ struct OwnLook {
     panel: Panel,
     pass: Option<GuiPass>,
     draws: u32,
+    /// The view starts with no GPU world ([`WorldView::released`]).
+    released: bool,
 }
 
 impl App for OwnLook {
@@ -121,7 +123,11 @@ impl App for OwnLook {
     }
 
     fn view(&self, gpu: &Gpu) -> WorldView {
-        self.panel.view(gpu)
+        if self.released {
+            WorldView::released(gpu)
+        } else {
+            self.panel.view(gpu)
+        }
     }
 
     fn advance(&mut self, ms: u32) {
@@ -192,6 +198,7 @@ fn a_games_own_draw_paints_the_frame_in_place_of_the_view() {
         panel: Panel { client: client() },
         pass: None,
         draws: 0,
+        released: false,
     };
     let mut seat = Seat::new(own, &gpu, SIZE).expect("the seat");
     let own = seat.picture(&gpu).expect("the picture");
@@ -215,4 +222,23 @@ fn a_games_own_draw_paints_the_frame_in_place_of_the_view() {
         (SIZE.0 * SIZE.1 - 32 * 16) as usize,
         "every pixel but the panel's differs"
     );
+}
+
+#[test]
+fn a_game_whose_view_starts_released_draws_its_own_frames_offscreen() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let own = |released| OwnLook {
+        panel: Panel { client: client() },
+        pass: None,
+        draws: 0,
+        released,
+    };
+    let mut seat = Seat::new(own(true), &gpu, SIZE).expect("a seat over a released view");
+    assert!(!seat.view.has_gpu(), "the seat builds no GPU world for it");
+    let released = seat.picture(&gpu).expect("the picture");
+    let mut built = Seat::new(own(false), &gpu, SIZE).expect("the seat");
+    let built = built.picture(&gpu).expect("the picture");
+    assert!(released.rgba == built.rgba, "the game's own frames differ");
 }

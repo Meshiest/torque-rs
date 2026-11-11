@@ -350,6 +350,9 @@ pub struct WorldView<E: HdExtension<Scene: ViewScene> = NoExtension> {
     kept: HashMap<u32, KeptObject>,
     /// The effects' clock ([`WorldView::advance_time`]); the scene's time is its wrapped `f32`.
     effect_clock: EffectClock,
+    /// Whether the renderer's uploads and the clouds' noise are held to no time ([`WorldView::set_unbudgeted`]): kept for a
+    /// world installed later.
+    unbudgeted: bool,
 }
 
 impl WorldView {
@@ -425,6 +428,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             kinds: EmitterKinds::default(),
             kept: HashMap::new(),
             effect_clock: EffectClock::default(),
+            unbudgeted: false,
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -573,6 +577,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         }
         if self.slot.is_some() {
             world.features = self.features.features;
+        }
+        if self.unbudgeted {
+            world.set_unbudgeted();
         }
         world.warm_effects();
         self.world = Some(world);
@@ -780,6 +787,16 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// offscreen runners set it, so a picture does not depend on how long the machine took.
     pub fn set_effect_frame_seconds(&mut self, seconds: Option<f32>) {
         self.kinds.fixed = seconds;
+    }
+
+    /// Holds what the renderer draws to no time ([`HdWorld::set_unbudgeted`]): its uploads and the clouds' noise are made in
+    /// full each frame, as offscreen pictures need. Applied now if the view has its GPU world, and to every world it installs
+    /// later ([`restore_gpu`](Self::restore_gpu), [`adopt_gpu`](Self::adopt_gpu)).
+    pub fn set_unbudgeted(&mut self) {
+        self.unbudgeted = true;
+        if let Some(world) = &mut self.world {
+            world.set_unbudgeted();
+        }
     }
 
     /// The emitter kinds run on by a frame's step and drawn for `frame` into `draws` (the frame's particles, their textures in
