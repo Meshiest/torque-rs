@@ -35,6 +35,20 @@ pub const CHALLENGE_KEY: [u8; 16] = [7; 16];
 pub const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
 const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
 
+/// Fixes the keys a server draws at random (its challenge digests', and the engine host's session table's) to
+/// [`CHALLENGE_KEY`], so the datagrams of a run are a function of its inputs.
+///
+/// # Errors
+/// The server has no network host.
+pub fn fix_server_keys<G: NetGame>(server: &GameServer<G>) -> Result<(), &'static str> {
+    let shared = server.shared().ok_or("the server has no network host")?;
+    shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
+    if let Some(host) = ensure_host(server.vm(), &mut shared.borrow_mut()) {
+        host.table.rekey(CHALLENGE_KEY);
+    }
+    Ok(())
+}
+
 /// The network protocol a run speaks. Each line `trace-hash` prints names it, so a protocol's hashes are pinned apart from the
 /// others'.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,18 +321,16 @@ impl<G: NetGame> Rig<G> {
         files: MemFiles,
         setup: impl FnOnce(&mut Vm) -> Result<(), String>,
     ) -> Result<Rig<G>, String> {
-        let shared = server.shared().ok_or("the server has no network host")?;
+        if server.shared().is_none() {
+            return Err("the server has no network host".into());
+        }
         if server.memory_end().is_none() || server.address() != Some(SocketAddr::V4(SERVER)) {
             return Err(format!(
                 "the server listens at {:?}, not on the rig's memory link at {SERVER}",
                 server.address()
             ));
         }
-        // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs too.
-        shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
-        if let Some(host) = ensure_host(server.vm(), &mut shared.borrow_mut()) {
-            host.table.rekey(CHALLENGE_KEY);
-        }
+        fix_server_keys(&server)?;
 
         let peer = Peer::connect(&engine, files, CLIENT, setup)?;
         Ok(Rig {

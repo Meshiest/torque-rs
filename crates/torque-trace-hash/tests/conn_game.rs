@@ -8,11 +8,8 @@
 //! the file again.
 
 use std::cell::{Cell, RefCell};
-use std::fmt::Write as _;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
-use sha2::{Digest, Sha256};
 use torque::app::client::{ClientBuilder, ClientError, ClientNet, GameClient};
 use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
@@ -21,10 +18,8 @@ use torque::app::plugins::{
     ClientHostPlugin, ClientParts, ClientWiring, DefaultPlugins, ZoomPlugin,
 };
 use torque::app::server::{GameServer, Listen};
-use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
 use torque_app_server::plugins::set_protocol;
-use torque_client::conn::engine_wire::EngineNonceKey;
 use torque_client::conn::tge::{TgeConn, TgeFeed, start_feed};
 use torque_client::conn::{ConnGame, Connect, Started};
 use torque_client::host::{ClientPass, EnginePass};
@@ -32,16 +27,15 @@ use torque_client::state::ClientState;
 use torque_engine::ProtocolKind;
 use torque_example_minimal_engine::{ExamplePlugin, files, server};
 use torque_gui::Gui;
-use torque_server::net::engine::ensure_host;
-use torque_trace_hash::rig::CHALLENGE_KEY;
+use torque_trace_hash::rig::fix_server_keys;
 use torque_ts_vm::vm::{Native, Vm};
+
+mod common;
+
+use common::{Link, SERVER, client};
 
 const GOLDEN_FILE: &str = "tests/golden/conn_game_sessions.txt";
 const GOLDEN: &str = include_str!("golden/conn_game_sessions.txt");
-/// Datagrams kept verbatim.
-const VERBATIM: usize = 8;
-const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
-const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_001);
 const PROTOCOLS: [(ProtocolKind, &str); 2] =
     [(ProtocolKind::Tge, "tge"), (ProtocolKind::Engine, "engine")];
 
@@ -105,42 +99,11 @@ fn engine(files: &GameFiles, protocol: ProtocolKind) -> Engine {
     engine_with(files, protocol, |_| {})
 }
 
-/// A client of conn game `C` made by `engine`, its scripts run, on an in-memory socket whose two queues are returned.
-fn client<C: ConnGame>(
-    engine: &Engine,
-    files: &GameFiles,
-) -> (GameClient<GameServer, C>, DatagramQueue, DatagramQueue) {
-    let mem = MemoryDatagrams {
-        local_port: CLIENT.port(),
-        ..MemoryDatagrams::default()
-    };
-    let (sent, incoming) = (mem.sent.clone(), mem.incoming.clone());
-    let mut builder = ClientBuilder::<C>::from_engine_with_conn(
-        engine,
-        Some(files.mem_files()),
-        ClientNet::External,
-    )
-    .expect("the client builds");
-    builder.set_socket(Box::new(mem), NetPolicy::Loopback);
-    builder.exec_entry().expect("the client's script");
-    let mut client = builder.build();
-    // The client draws its connect sequence and nonces at random; fixed, the datagrams are a function of the inputs.
-    client
-        .vm_mut()
-        .set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
-    (client, sent, incoming)
-}
-
-/// Every datagram of a session, in the order carried, and which way (true: to the server).
-type Wire = Vec<(bool, Vec<u8>)>;
-
 /// A server of the example game and a client of conn game `C` over the memory link, every datagram between them recorded.
 struct Pair<C: ConnGame> {
     server: GameServer,
     client: GameClient<GameServer, C>,
-    sent: DatagramQueue,
-    incoming: DatagramQueue,
-    wire: Wire,
+    link: Link,
 }
 
 impl<C: ConnGame<Feed = TgeFeed>> Pair<C> {
@@ -148,61 +111,26 @@ impl<C: ConnGame<Feed = TgeFeed>> Pair<C> {
         let files = files().expect("the example game");
         let server =
             server(&engine(&files, protocol), Listen::Memory(SERVER)).expect("the server starts");
-        // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs.
-        server
-            .shared()
-            .expect("the network host")
-            .borrow_mut()
-            .hs
-            .set_key(CHALLENGE_KEY);
-        if let Some(host) = ensure_host(
-            server.vm(),
-            &mut server.shared().expect("the network host").borrow_mut(),
-        ) {
-            host.table.rekey(CHALLENGE_KEY);
-        }
-        let (mut client, sent, incoming) =
-            client::<C>(&engine_with(&files, protocol, extra), &files);
+        fix_server_keys(&server).expect("the network host");
+        let (mut client, link) = client::<C>(&engine_with(&files, protocol, extra), &files);
         client
             .call("connectTo", &[&SERVER.to_string()])
             .expect("connect");
         Pair {
             server,
             client,
-            sent,
-            incoming,
-            wire: Vec::new(),
-        }
-    }
-
-    fn carry(&mut self) {
-        let Some(end) = self.server.memory_end() else {
-            return;
-        };
-        for (to, data) in self.sent.borrow_mut().drain(..) {
-            if SocketAddr::V4(to) == SERVER {
-                self.wire.push((true, data.clone()));
-                end.inject(SocketAddr::V4(CLIENT), &data);
-            }
-        }
-        for (to, data) in end.take_sent() {
-            if to == SocketAddr::V4(CLIENT) {
-                self.wire.push((false, data.clone()));
-                let SocketAddr::V4(from) = SERVER else {
-                    continue;
-                };
-                self.incoming.borrow_mut().push_back((from, data));
-            }
+            link,
         }
     }
 
     /// One tick of the server, then of the client, the link carried around each.
     fn step(&mut self) {
-        self.carry();
-        self.server.tick();
-        self.carry();
-        self.client.step(32);
-        self.carry();
+        let Self {
+            server,
+            client,
+            link,
+        } = self;
+        link.step(server, || client.step(32));
     }
 
     /// Steps until the client holds the mission's ghosts (at most 400 ticks), then 60 ticks more.
@@ -225,35 +153,6 @@ impl<C: ConnGame<Feed = TgeFeed>> Pair<C> {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-fn digest(wire: &Wire, up: bool) -> String {
-    let mut h = Sha256::new();
-    for (_, bytes) in wire.iter().filter(|(d, _)| *d == up) {
-        h.update((bytes.len() as u32).to_le_bytes());
-        h.update(bytes);
-    }
-    hex(&h.finalize())
-}
-
-/// The golden file's lines of the session `name`: the count and a digest each way, and the first datagrams.
-fn render(name: &str, wire: &Wire) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "{name} datagrams {}", wire.len());
-    let _ = writeln!(out, "{name} to-server {}", digest(wire, true));
-    let _ = writeln!(out, "{name} to-client {}", digest(wire, false));
-    for (i, (up, bytes)) in wire.iter().take(VERBATIM).enumerate() {
-        let way = if *up { "to-server" } else { "to-client" };
-        let _ = writeln!(out, "{name} {i} {way} {}", hex(bytes));
-    }
-    out
-}
-
 #[test]
 fn conn_game_client_joins_the_example_server() {
     let mut pair = Pair::<TestConn>::new(ProtocolKind::Tge, |_| {}).session();
@@ -271,18 +170,18 @@ fn conn_game_client_joins_the_example_server() {
 fn conn_game_writes_torques_bytes_in_both_protocols() {
     let mut text = String::new();
     for (protocol, label) in PROTOCOLS {
-        let tge = render(
+        let tge = common::render(
             label,
-            &Pair::<TgeConn>::new(protocol, |_| {}).session().wire,
+            &Pair::<TgeConn>::new(protocol, |_| {}).session().link.wire,
         );
         let test = Pair::<TestConn>::new(protocol, |_| {}).session();
         assert!(
-            test.wire.len() > 60,
+            test.link.wire.len() > 60,
             "{label}: {} datagrams",
-            test.wire.len()
+            test.link.wire.len()
         );
         assert_eq!(
-            render(label, &test.wire),
+            common::render(label, &test.link.wire),
             tge,
             "{label}: the test conn game's session differs from TGE's"
         );
@@ -334,7 +233,7 @@ fn conn_game_natives_are_the_engines_and_its_own() {
 #[test]
 fn conn_game_parts_are_its_own() {
     let files = files().expect("the example game");
-    let (mut client, _, _) = client::<TestConn>(&engine(&files, ProtocolKind::Tge), &files);
+    let (mut client, _) = client::<TestConn>(&engine(&files, ProtocolKind::Tge), &files);
     assert_eq!(client.call("testConnCalls", &[]).as_deref(), Ok("1"));
     assert_eq!(client.call("testConnCalls", &[]).as_deref(), Ok("2"));
     assert_eq!(client.host.client.borrow().parts.calls, 2);
@@ -441,7 +340,7 @@ fn conn_game_gets_the_opt_in_plugins_natives() {
     let engine = engine_with(&files, ProtocolKind::Tge, |b| {
         b.add_plugins((ZoomPlugin, HostingPlugin::default()));
     });
-    let (mut client, _, _) = client::<TestConn>(&engine, &files);
+    let (mut client, _) = client::<TestConn>(&engine, &files);
     assert_eq!(
         client
             .call("checkJoinAddress", &["127.0.0.1:28000"])

@@ -7,7 +7,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 use std::time::Duration;
 
-use torque_engine::{BuildError, Engine, EngineBuilder, Plugin, PluginId, PluginType, ServerStage};
+use torque_engine::testing::ClosurePlugin;
+use torque_engine::{BuildError, Engine, EngineBuilder, ServerStage};
 use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_INFO_RESPONSE, request};
 use torque_server::server::{
     HookList, MissionError, MissionLoader, NoHooks, PassSlice, PassView, ServerHooks,
@@ -23,34 +24,7 @@ use crate::slots::{
 
 type Log = Rc<RefCell<Vec<String>>>;
 
-/// A plugin that runs `build` on the engine builder under its own id.
-struct Setup {
-    id: &'static str,
-    build: Box<dyn Fn(&mut EngineBuilder)>,
-}
-
-impl Plugin for Setup {
-    fn build(&self, engine: &mut EngineBuilder) {
-        (self.build)(engine);
-    }
-
-    fn id(&self) -> Option<&str> {
-        Some(self.id)
-    }
-}
-
-impl PluginType for Setup {
-    const ID: PluginId = PluginId::new("test.slots");
-}
-
-fn plugin(id: &'static str, build: impl Fn(&mut EngineBuilder) + 'static) -> Setup {
-    Setup {
-        id,
-        build: Box::new(build),
-    }
-}
-
-fn builder(plugins: Vec<Setup>) -> EngineBuilder {
+fn builder(plugins: Vec<ClosurePlugin>) -> EngineBuilder {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
     for plugin in plugins {
@@ -59,7 +33,7 @@ fn builder(plugins: Vec<Setup>) -> EngineBuilder {
     builder
 }
 
-fn engine(plugins: Vec<Setup>) -> Engine {
+fn engine(plugins: Vec<ClosurePlugin>) -> Engine {
     builder(plugins).build().expect("the engine builds")
 }
 
@@ -120,9 +94,9 @@ impl ServerHooks for Logging {
     }
 }
 
-fn adding(name: &'static str, log: &Log) -> Setup {
+fn adding(name: &'static str, log: &Log) -> ClosurePlugin {
     let log = Rc::clone(log);
-    plugin(name, move |engine| {
+    ClosurePlugin::new(name, move |engine| {
         let log = Rc::clone(&log);
         engine.server_hooks(move |_| Ok(Logging::new(name, &log, None) as Rc<dyn ServerHooks>));
     })
@@ -211,7 +185,7 @@ fn server_hooks_pass_slice_is_the_first_answer_and_every_hook_hears_the_pass() {
 #[test]
 fn server_hooks_a_slice_from_a_plugin_reaches_the_main_loop() {
     let log = Log::default();
-    let engine = engine(vec![plugin("test.slicer", {
+    let engine = engine(vec![ClosurePlugin::new("test.slicer", {
         let log = Rc::clone(&log);
         move |engine| {
             let log = Rc::clone(&log);
@@ -236,7 +210,7 @@ fn server_hooks_factory_sees_what_a_game_recipe_set() {
     let seen = Rc::new(RefCell::new(None));
     let engine = engine(vec![
         // The factory's plugin is added before the recipe's: the stage, not the add order, decides what it sees.
-        plugin("test.reader", {
+        ClosurePlugin::new("test.reader", {
             let seen = Rc::clone(&seen);
             move |engine| {
                 let seen = Rc::clone(&seen);
@@ -246,7 +220,7 @@ fn server_hooks_factory_sees_what_a_game_recipe_set() {
                 });
             }
         }),
-        plugin("test.writer", |engine| {
+        ClosurePlugin::new("test.writer", |engine| {
             engine.server(ServerStage::Game, |vm, _| {
                 vm.set_global("$FromGame", "set by a recipe");
                 Ok(())
@@ -264,7 +238,7 @@ fn server_hooks_factory_sees_what_a_game_recipe_set() {
 fn server_hooks_factories_ran_before_the_entry_script() {
     type Seen = Rc<RefCell<Vec<(&'static str, Option<Vec<u8>>)>>>;
     let seen = Seen::default();
-    let engine = engine(vec![plugin("test.order", {
+    let engine = engine(vec![ClosurePlugin::new("test.order", {
         let seen = Rc::clone(&seen);
         move |engine| {
             let for_hooks = Rc::clone(&seen);
@@ -291,7 +265,7 @@ fn server_hooks_factories_ran_before_the_entry_script() {
 
 #[test]
 fn server_hooks_factory_error_stops_the_start_with_its_message() {
-    let engine = engine(vec![plugin("test.fails", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.fails", |engine| {
         engine.server_hooks(|_| Err("the map table is missing".to_string()));
     })]);
     let Err(error) = start(&engine, files()) else {
@@ -303,7 +277,7 @@ fn server_hooks_factory_error_stops_the_start_with_its_message() {
 
 #[test]
 fn mission_loader_slot_replaces_the_exec_of_the_mis() {
-    let engine = engine(vec![plugin("test.loader", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.loader", |engine| {
         engine.mission_loader(|_| fixed(7));
     })]);
     let files = files();
@@ -339,10 +313,10 @@ fn mission_loader_an_engine_without_one_execs_the_mis_as_before() {
 #[test]
 fn mission_loader_a_second_setter_fails_the_build_naming_both() {
     let mut builder = builder(vec![
-        plugin("test.first", |engine| {
+        ClosurePlugin::new("test.first", |engine| {
             engine.mission_loader(|_| fixed(1));
         }),
-        plugin("test.second", |engine| {
+        ClosurePlugin::new("test.second", |engine| {
             engine.mission_loader(|_| fixed(2));
         }),
     ]);
@@ -372,7 +346,7 @@ fn server_hooks_make_server_hooks_serves_a_host_of_its_own() {
     hooks.before_events(&mut vm, 32);
     assert_eq!(*log.borrow(), ["a 32", "b 32"]);
     // A factory's error comes back with its message.
-    let failing = self::engine(vec![plugin("test.fails", |engine| {
+    let failing = self::engine(vec![ClosurePlugin::new("test.fails", |engine| {
         engine.server_hooks(|_| Err("no map table".to_string()));
     })]);
     let Err(error) = make_server_hooks(&failing, &mut vm) else {
@@ -389,7 +363,7 @@ fn mission_loader_make_mission_loader_serves_a_host_of_its_own() {
             .unwrap()
             .is_none()
     );
-    let engine = engine(vec![plugin("test.loader", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.loader", |engine| {
         engine.mission_loader(|_| fixed(9));
     })]);
     let loader = make_mission_loader(&engine, &mut vm)
@@ -397,7 +371,7 @@ fn mission_loader_make_mission_loader_serves_a_host_of_its_own() {
         .expect("the engine has a loader");
     let report = loader.load(&mut vm, b"maps/b.mis").expect("loads");
     assert_eq!(report.downcast_ref::<u32>(), Some(&9));
-    let failing = self::engine(vec![plugin("test.fails", |engine| {
+    let failing = self::engine(vec![ClosurePlugin::new("test.fails", |engine| {
         engine.mission_loader(|_| Err("no maps".to_string()));
     })]);
     let Err(error) = make_mission_loader(&failing, &mut vm) else {
@@ -408,7 +382,7 @@ fn mission_loader_make_mission_loader_serves_a_host_of_its_own() {
 
 #[test]
 fn mission_loader_factory_error_stops_the_start_with_its_message() {
-    let engine = engine(vec![plugin("test.fails", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.fails", |engine| {
         engine.mission_loader(|_| Err("the map folder is missing".to_string()));
     })]);
     let Err(error) = start(&engine, files()) else {
@@ -452,7 +426,7 @@ fn marking(made: &Rc<Cell<u32>>) -> impl Fn() -> Vm + 'static {
 fn script_engine_slot_makes_each_servers_engine_before_any_recipe() {
     let made = Rc::new(Cell::new(0));
     let in_classes = Rc::new(RefCell::new(None));
-    let engine = engine(vec![plugin("test.engine", {
+    let engine = engine(vec![ClosurePlugin::new("test.engine", {
         let made = Rc::clone(&made);
         let in_classes = Rc::clone(&in_classes);
         move |engine| {
@@ -486,13 +460,13 @@ fn script_engine_an_engine_without_one_makes_a_plain_vm() {
 fn script_engine_a_second_setter_fails_the_build_naming_both() {
     let made = Rc::new(Cell::new(0));
     assert_names_both(builder(vec![
-        plugin("test.first", {
+        ClosurePlugin::new("test.first", {
             let made = Rc::clone(&made);
             move |engine| {
                 engine.script_engine(marking(&made));
             }
         }),
-        plugin("test.second", |engine| {
+        ClosurePlugin::new("test.second", |engine| {
             engine.script_engine(Vm::new);
         }),
     ]));
@@ -541,7 +515,7 @@ fn script_files_start_engine_with_files_reads_through_the_games_host() {
 #[test]
 fn server_entry_replaces_the_script_the_start_function_and_the_connections() {
     let kept = Rc::new(RefCell::new(None));
-    let engine = engine(vec![plugin("test.entry", {
+    let engine = engine(vec![ClosurePlugin::new("test.entry", {
         let kept = Rc::clone(&kept);
         move |engine| {
             let kept = Rc::clone(&kept);
@@ -593,7 +567,7 @@ fn server_entry_replaces_the_script_the_start_function_and_the_connections() {
 #[test]
 fn server_entry_the_entry_stage_replays_after_it() {
     let log = Log::default();
-    let engine = engine(vec![plugin("test.entry", {
+    let engine = engine(vec![ClosurePlugin::new("test.entry", {
         let log = Rc::clone(&log);
         move |engine| {
             let for_entry = Rc::clone(&log);
@@ -614,7 +588,7 @@ fn server_entry_the_entry_stage_replays_after_it() {
 
 #[test]
 fn server_entry_an_error_stops_the_start_with_its_message() {
-    let engine = engine(vec![plugin("test.entry", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.entry", |engine| {
         engine.server_entry(|_| Err("the entry script is not in the program".to_string()));
     })]);
     let Err(error) = start(&engine, files()) else {
@@ -629,10 +603,10 @@ fn server_entry_an_error_stops_the_start_with_its_message() {
 #[test]
 fn server_entry_a_second_setter_fails_the_build_naming_both() {
     assert_names_both(builder(vec![
-        plugin("test.first", |engine| {
+        ClosurePlugin::new("test.first", |engine| {
             engine.server_entry(|_| Ok(()));
         }),
-        plugin("test.second", |engine| {
+        ClosurePlugin::new("test.second", |engine| {
             engine.server_entry(|_| Ok(()));
         }),
     ]));
@@ -654,7 +628,7 @@ fn answers_info_query(server: &mut GameServer) -> bool {
 #[test]
 fn server_entry_a_lan_query_is_dropped_until_the_game_allows_connections() {
     let kept = Rc::new(RefCell::new(None));
-    let engine = engine(vec![plugin("test.entry", {
+    let engine = engine(vec![ClosurePlugin::new("test.entry", {
         let kept = Rc::clone(&kept);
         move |engine| {
             let kept = Rc::clone(&kept);
@@ -682,7 +656,7 @@ fn server_entry_a_plain_server_answers_a_lan_query_from_the_start() {
 #[test]
 fn server_entry_connections_do_nothing_once_the_server_is_gone() {
     let kept = Rc::new(RefCell::new(None));
-    let engine = engine(vec![plugin("test.entry", {
+    let engine = engine(vec![ClosurePlugin::new("test.entry", {
         let kept = Rc::clone(&kept);
         move |engine| {
             let kept = Rc::clone(&kept);

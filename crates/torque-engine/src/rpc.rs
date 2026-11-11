@@ -101,7 +101,7 @@
 //!   (`rpc_the_default_size_is_256_and_a_reply_is_held_to_the_rpcs_own_size`,
 //!   `rpc_a_reply_past_the_clients_size_for_the_rpc_is_a_protocol_error`).
 //! - `RpcLink::set_send_limits` exists only with the `testing` feature (or in this crate's tests): a host cannot turn its link's
-//!   sending limits off.
+//!   sending limits off. The same feature holds `testing::ClosurePlugin`, the plugin other crates' tests build with a closure.
 //!
 //! **Extension points.** A protocol brings its own `RpcCarrier` (`send` may refuse, `capacity` bounds the queue) and gives batches
 //! to `RpcLink::receive`; the reserved channel is the TGE-mode carrier. `PermissionProvider` (in `permissions.rs`) is the slot for

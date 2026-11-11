@@ -122,6 +122,9 @@ mod run;
 pub mod scope;
 pub mod script;
 mod slots;
+#[cfg(feature = "testing")]
+#[doc(hidden)]
+pub mod testing;
 pub mod upload;
 
 #[cfg(test)]

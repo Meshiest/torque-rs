@@ -27,6 +27,9 @@
 //!
 //! # Maintaining
 //!
+//! **Test support** lives in `testing` (feature `testing`, dev-dependencies only): `TestNet` and `TestConn`, the net game and
+//! conn game the tests here and torque-trace-hash's wire goldens run on.
+//!
 //! **The main-loop seams hold factories, run once per server** ([`slots`]). `GameServer::start_prepared` calls
 //! `slots::make_server_hooks` and `slots::make_mission_loader` (public, so a host of its own applies the same slots) after the
 //! `Net` stage and the engine's tick hooks and before the entry script, so what a factory makes can
@@ -111,6 +114,9 @@ pub mod serve;
 pub mod server;
 pub mod slots;
 pub mod terrain;
+#[cfg(any(test, feature = "testing"))]
+#[doc(hidden)]
+pub mod testing;
 pub mod transports;
 pub mod uploads;
 pub mod water;

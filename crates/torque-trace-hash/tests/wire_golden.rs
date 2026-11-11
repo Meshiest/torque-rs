@@ -15,60 +15,36 @@
 //! held to the same goldens (`net_game_*`).
 
 use std::cell::Cell;
-use std::fmt::Write as _;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use sha2::{Digest, Sha256};
-use torque::app::client::{ClientBuilder, ClientNet, GameClient};
+use torque::app::client::GameClient;
 use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
 use torque::app::net_game::{NetCodecsPlugin, NetGameParts, NetGamePlugin, WrapPayload};
 use torque::app::plugins::{DefaultPlugins, ModsPlugin};
 use torque::app::server::{GameServer, Listen, ServerStart};
-use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
 use torque::mods::CacheChoice;
 use torque::net::connect::SharedSecret;
 use torque_app_server::plugins::set_protocol;
-use torque_client::conn::engine_wire::EngineNonceKey;
+use torque_app_server::testing::TestNet;
 use torque_engine::ProtocolKind;
 use torque_example_minimal_engine::{ExamplePlugin, MISSION, START, files, server};
 use torque_plugin_rope::RopePlugin;
 use torque_server::net::NetGame;
 use torque_server::net::codecs::{NetCodecs, TorqueCodecs};
-use torque_server::net::engine::ensure_host;
 use torque_server::net::payload::{ConnCtx, PacketOutcome, PayloadLayer};
-use torque_server::net::torque::{NoGameEvents, TgeGhostGame, TorqueNet};
-use torque_trace_hash::rig::{CHALLENGE_KEY, Control, Mode, Rig};
+use torque_server::net::torque::{TgeGhostGame, TorqueNet};
+use torque_trace_hash::rig::{Control, Mode, Rig, fix_server_keys};
 use torque_trace_hash::scenarios::Baseline;
+
+mod common;
+
+use common::{Link, SERVER, Wire, client};
 
 const GOLDEN_FILE: &str = "tests/golden/wire_sessions.txt";
 const GOLDEN: &str = include_str!("golden/wire_sessions.txt");
-/// Datagrams kept verbatim.
-const VERBATIM: usize = 8;
-const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
-const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_001);
-
-/// Every datagram of a session, in the order carried, and which way (true: to the server).
-type Wire = Vec<(bool, Vec<u8>)>;
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-fn digest(wire: &Wire, up: bool) -> String {
-    let mut h = Sha256::new();
-    for (_, bytes) in wire.iter().filter(|(d, _)| *d == up) {
-        h.update((bytes.len() as u32).to_le_bytes());
-        h.update(bytes);
-    }
-    hex(&h.finalize())
-}
 
 /// A plugin that signs a client in, and has a server check the sign-in, under `secret`.
 #[derive(PluginId)]
@@ -167,9 +143,7 @@ fn client_mods() -> ModsPlugin {
 struct Pair<G: NetGame = TorqueNet> {
     server: GameServer<G>,
     client: GameClient,
-    sent: DatagramQueue,
-    incoming: DatagramQueue,
-    wire: Wire,
+    link: Link,
 }
 
 impl Pair {
@@ -193,20 +167,7 @@ impl<G: NetGame> Pair<G> {
         client_files: &GameFiles,
         client_extra: &Extra,
     ) -> Pair<G> {
-        // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs.
-        server
-            .shared()
-            .expect("the network host")
-            .borrow_mut()
-            .hs
-            .set_key(CHALLENGE_KEY);
-        // Likewise the engine host's session table, if the server speaks the engine's protocol.
-        if let Some(host) = ensure_host(
-            server.vm(),
-            &mut server.shared().expect("the network host").borrow_mut(),
-        ) {
-            host.table.rekey(CHALLENGE_KEY);
-        }
+        fix_server_keys(&server).expect("the network host");
         if matches!(server_extra, Extra::Rope) {
             server
                 .vm_mut()
@@ -215,65 +176,25 @@ impl<G: NetGame> Pair<G> {
                 )
                 .expect("the rope's datablock");
         }
-        let client_engine = engine(client_files, client_extra);
-        let mem = MemoryDatagrams {
-            local_port: CLIENT.port(),
-            ..MemoryDatagrams::default()
-        };
-        let (sent, incoming) = (mem.sent.clone(), mem.incoming.clone());
-        let mut builder = ClientBuilder::from_engine(
-            &client_engine,
-            Some(client_files.mem_files()),
-            ClientNet::External,
-        )
-        .expect("the client builds");
-        builder.set_socket(Box::new(mem), NetPolicy::Loopback);
-        builder.exec_entry().expect("the client's script");
-        let mut client = builder.build();
-        // The client draws its connect sequence and nonces at random; fixed, the datagrams are a function of the inputs.
-        client
-            .vm_mut()
-            .set_extension(std::rc::Rc::new(EngineNonceKey(CHALLENGE_KEY)));
+        let (mut client, link) = client(&engine(client_files, client_extra), client_files);
         client
             .call("connectTo", &[&SERVER.to_string()])
             .expect("connect");
         Pair {
             server,
             client,
-            sent,
-            incoming,
-            wire: Vec::new(),
-        }
-    }
-
-    fn carry(&mut self) {
-        let Some(end) = self.server.memory_end() else {
-            return;
-        };
-        for (to, data) in self.sent.borrow_mut().drain(..) {
-            if SocketAddr::V4(to) == SERVER {
-                self.wire.push((true, data.clone()));
-                end.inject(SocketAddr::V4(CLIENT), &data);
-            }
-        }
-        for (to, data) in end.take_sent() {
-            if to == SocketAddr::V4(CLIENT) {
-                self.wire.push((false, data.clone()));
-                let SocketAddr::V4(from) = SERVER else {
-                    continue;
-                };
-                self.incoming.borrow_mut().push_back((from, data));
-            }
+            link,
         }
     }
 
     /// One tick of the server, then of the client, the link carried around each.
     fn step(&mut self) {
-        self.carry();
-        self.server.tick();
-        self.carry();
-        self.client.step(32);
-        self.carry();
+        let Self {
+            server,
+            client,
+            link,
+        } = self;
+        link.step(server, || client.step(32));
     }
 
     fn run(&mut self, ticks: u32) {
@@ -341,7 +262,7 @@ fn gated_on<G: NetGame>(mut pair: Pair<G>) -> Session {
     Session {
         ghosts: pair.client.ghost_count(),
         why: pair.client.global("$Why"),
-        wire: pair.wire,
+        wire: pair.link.wire,
     }
 }
 
@@ -363,7 +284,7 @@ fn held_download() -> Session {
     Session {
         ghosts: pair.client.ghost_count(),
         why: pair.client.global("$Why"),
-        wire: pair.wire,
+        wire: pair.link.wire,
     }
 }
 
@@ -374,7 +295,7 @@ fn manifest_reject() -> Session {
     Session {
         ghosts: pair.client.ghost_count(),
         why: pair.client.global("$Why"),
-        wire: pair.wire,
+        wire: pair.link.wire,
     }
 }
 
@@ -390,7 +311,7 @@ fn ticket_reject() -> Session {
     Session {
         ghosts: pair.client.ghost_count(),
         why: pair.client.global("$Why"),
-        wire: pair.wire,
+        wire: pair.link.wire,
     }
 }
 
@@ -408,14 +329,7 @@ fn sessions() -> Vec<(&'static str, Session)> {
 fn render(sessions: &[(&str, Session)]) -> String {
     let mut out = String::new();
     for (name, session) in sessions {
-        let wire = &session.wire;
-        let _ = writeln!(out, "{name} datagrams {}", wire.len());
-        let _ = writeln!(out, "{name} to-server {}", digest(wire, true));
-        let _ = writeln!(out, "{name} to-client {}", digest(wire, false));
-        for (i, (up, bytes)) in wire.iter().take(VERBATIM).enumerate() {
-            let way = if *up { "to-server" } else { "to-client" };
-            let _ = writeln!(out, "{name} {i} {way} {}", hex(bytes));
-        }
+        out.push_str(&common::render(name, &session.wire));
     }
     out
 }
@@ -500,34 +414,6 @@ fn the_sessions_do_what_they_say() {
 }
 
 // ---- a net game of its own, made of Torque's parts
-
-/// A net game of its own: Torque's string table and TGE's ghosts, a connection part of its own.
-#[derive(Debug, Default)]
-struct TestNet(TorqueNet);
-
-/// The game's part of a connection: the extra bytes its connect request carried.
-#[derive(Debug, Default, Clone)]
-struct TestConn {
-    #[expect(
-        dead_code,
-        reason = "a connection part of the game's own type; nothing reads it"
-    )]
-    extra: usize,
-}
-
-impl NetGame for TestNet {
-    type Events = NoGameEvents;
-    type Ghosts = TgeGhostGame;
-    type Conn = TestConn;
-
-    fn string_table(&self) -> Rc<torque::net::huffman::Table> {
-        self.0.string_table()
-    }
-
-    fn conn_part(&self, extra: &[u8]) -> TestConn {
-        TestConn { extra: extra.len() }
-    }
-}
 
 /// Torque's event layer behind a layer that counts the packets it writes and reads, passing every call on.
 struct Counting {

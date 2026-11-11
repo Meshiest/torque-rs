@@ -29,7 +29,8 @@ torque-permissions = { path = "../torque-permissions" }
 torque-transfer = { path = "../torque-transfer" }
 
 [features]
-# `RpcLink::set_send_limits`: turns off the limits on what a link sends, for the tests of a receiving side. Never a host's.
+# Test support, never a host's: `RpcLink::set_send_limits` (turns off the limits on what a link sends, for the tests of a
+# receiving side) and `testing::ClosurePlugin` (a plugin whose build is a closure).
 testing = []
 
 [dev-dependencies]

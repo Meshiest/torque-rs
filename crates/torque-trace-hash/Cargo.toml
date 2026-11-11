@@ -46,6 +46,8 @@ torque-example-assets = { path = "../../examples/assets" }
 # The dev-dependencies are for tests only, so the wasm32 build of the binary never sees them.
 [dev-dependencies]
 sha2 = "0.10"
+# `TestNet`, a net game of Torque's parts.
+torque-app-server = { path = "../torque-app-server", features = ["testing"] }
 torque = { path = "../torque", default-features = false, features = ["app", "mods"] }
 torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
 torque-plugin-rope = { path = "../torque-plugin-rope" }

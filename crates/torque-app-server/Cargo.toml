@@ -56,8 +56,12 @@ webrtc = ["web", "torque-server/webrtc"]
 p2p = ["webrtc", "torque-server/p2p"]
 # Desktop players over QUIC: a server listening on the QUIC link (`Listen::Quic`), with its identity key.
 quic = ["dep:torque-net-quic"]
+# `testing`: doubles for the tests of crates that run a server (a net game of Torque's parts). Only dev-dependencies enable it.
+testing = []
 
 [dev-dependencies]
+# `ClosurePlugin`, the plugin of a test.
+torque-engine = { path = "../torque-engine", features = ["testing"] }
 # The AIPlayer test's floor and figure.
 torque-example-assets = { path = "../../examples/assets" }
 torque-shapes = { path = "../torque-shapes" }

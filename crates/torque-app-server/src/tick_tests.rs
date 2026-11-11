@@ -5,9 +5,8 @@ use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
-use torque_engine::{
-    Engine, EngineBuilder, Plugin, PluginId, PluginType, ServerTick, TickInfo, VmMut,
-};
+use torque_engine::testing::ClosurePlugin;
+use torque_engine::{Engine, EngineBuilder, ServerTick, TickInfo, VmMut};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
@@ -16,37 +15,10 @@ use crate::server::{GameServer, Listen, ServerStart};
 
 type Log = Rc<RefCell<Vec<String>>>;
 
-/// A plugin that pushes the hooks `push` makes.
-struct Hooks {
-    id: &'static str,
-    push: Box<dyn Fn(&mut EngineBuilder)>,
-}
-
-impl Plugin for Hooks {
-    fn build(&self, engine: &mut EngineBuilder) {
-        (self.push)(engine);
-    }
-
-    fn id(&self) -> Option<&str> {
-        Some(self.id)
-    }
-}
-
-impl PluginType for Hooks {
-    const ID: PluginId = PluginId::new("test.hooks");
-}
-
-fn plugin(id: &'static str, push: impl Fn(&mut EngineBuilder) + 'static) -> Hooks {
-    Hooks {
-        id,
-        push: Box::new(push),
-    }
-}
-
 /// Hooks that log `name.before n` and `name.after n` with the script's `$Count` they see.
-fn logging(name: &'static str, log: &Log) -> Hooks {
+fn logging(name: &'static str, log: &Log) -> ClosurePlugin {
     let log = Rc::clone(log);
-    plugin(name, move |engine| {
+    ClosurePlugin::new(name, move |engine| {
         let before = Rc::clone(&log);
         engine.push(ServerTick::before(
             move |vm: &mut Vm, _: &Engine, tick: TickInfo| -> Result<(), String> {
@@ -80,7 +52,7 @@ fn count(vm: &Vm) -> String {
         .unwrap_or_default()
 }
 
-fn engine(plugins: Vec<Hooks>) -> Engine {
+fn engine(plugins: Vec<ClosurePlugin>) -> Engine {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
     for plugin in plugins {
@@ -186,7 +158,7 @@ fn hooks_run_once_a_tick_in_order_over_600_passes_and_see_the_ticks_time() {
 fn a_plugin_ticks_with_no_script_function_to_call() {
     // A hook that owns its state in the script engine's globals and counts ticks itself: the game's script defines nothing
     // for it.
-    let engine = engine(vec![plugin("test.counter", |engine| {
+    let engine = engine(vec![ClosurePlugin::new("test.counter", |engine| {
         engine.push(ServerTick::after(|mut vm: VmMut, tick: TickInfo| {
             vm.set_global("$Plugin::Ticks", &tick.number.to_string());
         }));
@@ -214,7 +186,7 @@ fn the_same_engine_makes_servers_with_the_same_ticks() {
 
 #[test]
 fn a_server_with_hooks_runs_its_script_as_one_without() {
-    let plain = engine(vec![plugin("test.none", |_| {})]);
+    let plain = engine(vec![ClosurePlugin::new("test.none", |_| {})]);
     let log: Log = Log::default();
     let hooked = engine(vec![logging("a", &log)]);
     let (mut plain, mut hooked) = (start(&plain), start(&hooked));
@@ -229,7 +201,7 @@ fn a_server_with_hooks_runs_its_script_as_one_without() {
 fn a_failing_hook_says_so_once_and_the_others_go_on() {
     let log: Log = Log::default();
     let engine = engine(vec![
-        plugin("test.fails", |engine| {
+        ClosurePlugin::new("test.fails", |engine| {
             engine.push(ServerTick::before(|_: &mut Vm, _: &Engine, _: TickInfo| {
                 Err::<(), String>("no good".to_string())
             }));

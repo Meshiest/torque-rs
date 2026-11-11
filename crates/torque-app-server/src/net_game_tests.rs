@@ -5,7 +5,8 @@ use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
-use torque_engine::{BuildError, Engine, EngineBuilder, Plugin, PluginId, PluginType};
+use torque_engine::testing::ClosurePlugin;
+use torque_engine::{BuildError, Engine, EngineBuilder};
 use torque_net::handshake::ServerConfig;
 use torque_net::huffman::Table;
 use torque_server::game::GameParts;
@@ -22,29 +23,7 @@ use crate::plugins::MinimalPlugins;
 use crate::run::{Dedicated, EngineDedicated};
 use crate::server::{GameServer, Listen, ServerStart};
 use crate::slots::ServerSlots;
-
-/// A net game of its own: Torque's table and ghosts, a connection part of its own.
-#[derive(Debug, Default)]
-struct TestNet(TorqueNet);
-
-#[derive(Debug, Default, Clone)]
-struct TestConn {
-    #[expect(
-        dead_code,
-        reason = "a connection part of the game's own type; nothing reads it"
-    )]
-    joined: u32,
-}
-
-impl NetGame for TestNet {
-    type Events = NoGameEvents;
-    type Ghosts = TgeGhostGame;
-    type Conn = TestConn;
-
-    fn string_table(&self) -> Rc<Table> {
-        self.0.string_table()
-    }
-}
+use crate::testing::TestNet;
 
 /// Another net game, for the refusals.
 #[derive(Debug, Default)]
@@ -66,33 +45,6 @@ fn test_parts() -> NetGameParts<TestNet> {
         ghosts: TgeGhostGame,
         static_writes: None,
         payload: None,
-    }
-}
-
-/// A plugin that runs `build` under its own id.
-struct Setup {
-    id: &'static str,
-    build: Box<dyn Fn(&mut EngineBuilder)>,
-}
-
-impl Plugin for Setup {
-    fn build(&self, engine: &mut EngineBuilder) {
-        (self.build)(engine);
-    }
-
-    fn id(&self) -> Option<&str> {
-        Some(self.id)
-    }
-}
-
-impl PluginType for Setup {
-    const ID: PluginId = PluginId::new("test.net-game");
-}
-
-fn plugin(id: &'static str, build: impl Fn(&mut EngineBuilder) + 'static) -> Setup {
-    Setup {
-        id,
-        build: Box::new(build),
     }
 }
 
@@ -203,7 +155,7 @@ fn net_game_an_engine_with_no_slot_starts_only_torques_net_game() {
 fn net_game_a_second_net_game_fails_the_build_naming_both() {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
-    builder.add_plugins(plugin("test.first", |engine| {
+    builder.add_plugins(ClosurePlugin::new("test.first", |engine| {
         let factory: Rc<dyn NetGameFactory<TestNet>> = Rc::new(|_: &mut _, _: &_| Ok(test_parts()));
         engine.net_game(factory);
     }));
@@ -223,7 +175,7 @@ fn net_game_a_second_net_game_fails_the_build_naming_both() {
 fn net_game_a_second_codecs_setter_fails_the_build_naming_both() {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
-    builder.add_plugins(plugin("test.first", |engine| {
+    builder.add_plugins(ClosurePlugin::new("test.first", |engine| {
         engine.net_codecs(|_| Rc::new(Named) as Rc<dyn NetCodecs>);
     }));
     builder.add_plugins(NetCodecsPlugin::new(|_| Rc::new(Named)));
@@ -329,7 +281,7 @@ fn net_game_the_server_game_slot_gives_every_server_its_own_parts() {
     let container = Rc::new(RefCell::new(None));
     let engine = engine_with(|builder| {
         let container = Rc::clone(&container);
-        builder.add_plugins(plugin("test.game", move |engine| {
+        builder.add_plugins(ClosurePlugin::new("test.game", move |engine| {
             let container = Rc::clone(&container);
             engine.server_game(move |vm, wiring| {
                 // The state is the server's net game's; another type is refused.
@@ -355,7 +307,7 @@ fn net_game_a_second_server_game_setter_fails_the_build_naming_both() {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
     for id in ["test.first", "test.second"] {
-        builder.add_plugins(plugin(id, |engine| {
+        builder.add_plugins(ClosurePlugin::new(id, |engine| {
             engine.server_game(|vm, wiring| Ok(wiring.tge_game(vm)));
         }));
     }
