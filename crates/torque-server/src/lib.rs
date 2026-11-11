@@ -41,6 +41,12 @@
 //! the source's `scope_stamp`, so a settled query never misses a relative that was just linked
 //! (torque-test-app's `hierarchy_net`).
 //!
+//! **The plugins' net classes go only where a net game carries them**: `TgeGhostGame` answers
+//! `GhostGame::carries_plugin_classes` with true, every other ghost game false unless it says so (one that wraps
+//! `TgeGhostGame` and delegates its sources does). torque-app-server warns at a server's start when the engine has plugin
+//! classes and the ghost game or the codecs do not carry them (`net_game_codecs_that_do_not_carry_the_plugin_classes_are_warned_about`
+//! in torque-trace-hash's `tests/wire_golden.rs`); a peer that is not the engine's own never sees them either way.
+//!
 //! **A command in the engine's protocol costs what a packet's costs** (`net::command_rpc`): the RPC's bucket bounds what a body costs to
 //! read, a body that is not one ends the connection, every command goes through the same gates and limits as a packet's
 //! (`run_followups`), and a command no plugin declared shares the default limits

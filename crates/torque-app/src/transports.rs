@@ -34,6 +34,7 @@ use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, U
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder};
 
 use crate::server::GameServer;
+use torque_server::net::NetGame;
 
 /// What a transport opened for a client: the socket, the policy it runs under, and what else it has to say.
 pub struct ClientLink {
@@ -287,7 +288,7 @@ impl MemoryLink {
         (link, socket)
     }
 
-    pub(crate) fn carry(&self, server: &GameServer) {
+    pub(crate) fn carry<G: NetGame>(&self, server: &GameServer<G>) {
         let Some(end) = server.memory_end() else {
             return;
         };
@@ -310,7 +311,7 @@ impl MemoryLink {
 
     /// Carries the datagrams of several clients that share `server`: each client's go in, and what the server sent goes to the client
     /// it is addressed to (`carry` of one link would take and drop the datagrams of the others).
-    pub(crate) fn carry_all(links: &[&MemoryLink], server: &GameServer) {
+    pub(crate) fn carry_all<G: NetGame>(links: &[&MemoryLink], server: &GameServer<G>) {
         let Some(end) = server.memory_end() else {
             return;
         };

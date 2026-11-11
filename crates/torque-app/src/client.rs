@@ -35,6 +35,7 @@ use torque_client::net::{Datagrams, NetPolicy};
 use torque_client::state::ClientState;
 use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup};
 use torque_gui::Gui;
+use torque_server::net::NetGame;
 use torque_server::net::channels::ClientChannels;
 use torque_server::net::rpc::{ClientRpc, ClientRpcHost, register_client_natives};
 use torque_server::server::{GameServer as _, Server, TICK_MS};
@@ -501,8 +502,12 @@ impl<S, C: ConnGame> Connect for GameClient<S, C> {
 
 /// Carries the datagrams between `server` (a [`GameServer`] ticked by hand, on [`super::server::Listen::Memory`]) and several
 /// clients made with [`ClientNet::Memory`] that have no server of their own: what each sent goes in, and what the server sent goes
-/// to the client it is addressed to. Call it around each tick of the server and each step of the clients.
-pub fn carry_between<S, C: ConnGame>(server: &GameServer, clients: &[&GameClient<S, C>]) {
+/// to the client it is addressed to. Call it around each tick of the server and each step of the clients. The server may speak any
+/// net game, and the clients any conn game.
+pub fn carry_between<S, G: NetGame, C: ConnGame>(
+    server: &GameServer<G>,
+    clients: &[&GameClient<S, C>],
+) {
     let links: Vec<&MemoryLink> = clients.iter().filter_map(|c| c.link.as_ref()).collect();
     MemoryLink::carry_all(&links, server);
 }

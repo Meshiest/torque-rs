@@ -7,6 +7,8 @@
 //! - [`manifest::Manifest`]: the list of a web build's files (`files.json`: paths, sizes, hashes) and its caps.
 //! - [`server::GameServer`]: the server's main loop with TGE's game classes and a network host, on a UDP socket or an in-memory
 //!   link: started, ticked, called, its console drained; [`server::GameServer::run_dedicated`] paces a dedicated one.
+//! - [`net_game`]: the net game a server's network host speaks (`GameServer<G>`, Torque's by default), the codecs, and
+//!   [`net_game::RunServer`], what a runner drives of a server of any net game.
 //! - [`terrain::Terrain`]: a `TerrainBlock` over a legacy `.ter`: its collision on the server.
 //! - [`water::Water`]: a `WaterBlock` as water the Players swim in.
 //! - [`plugins`]: the plugins that wire a server's script engine, replayed by [`server::GameServer::start_engine`], and
@@ -19,9 +21,9 @@
 //!   a room) and its start-up lines.
 //! - [`config`]: `game.toml`, the config a game's folder carries: entry scripts, plugins on and off, the runner.
 //! - [`cli`]: the command line's flags and their values.
-//! - [`slots`]: [`slots::ServerSlots`], the engine builder's calls for a server's main-loop seams: hooks (a list) and the
-//!   mission loader (exclusive); and [`slots::HostSlots`], what every server and client is made of and how it starts: the
-//!   script engine, the server's entry and the client's (each exclusive).
+//! - [`slots`]: [`slots::ServerSlots`], the engine builder's calls for a server's seams: hooks (a list), the mission loader,
+//!   the server game, the net game and the codecs (each exclusive); and [`slots::HostSlots`], what every server and client is
+//!   made of and how it starts: the script engine, the server's entry and the client's (each exclusive).
 //!
 //! # Maintaining
 //!
@@ -46,11 +48,30 @@
 //! entry slot replaces only the entry script in `exec_entry`. An engine with none of them builds the same server and client as
 //! before, which the wire goldens and native snapshots check. Tests are `script_engine_*`, `script_files_*` and `server_entry_*` in
 //! `slots_tests.rs`, and the client's in torque-app's `host_slots_tests.rs`.
+//!
+//! **A net game is a type parameter, erased only where it is crossed once** ([`net_game`]). `GameServer<G>`,
+//! `ServerWiring::new::<G>` and `net_game::attach::<G>` are the typed side; the engine's slot keeps the factory as
+//! `Box<dyn Any>` with the type's name and a `fn` that starts `GameServer<G>` as a `Box<dyn RunServer>` (what the dedicated
+//! runner calls), so nothing per packet or object is dynamic and Torque's server is the same code as before. The flow:
+//! `start_prepared` resolves the factory first (`factory_for`: a wrong type is refused before a socket opens), builds the
+//! untyped wiring with two closures over the typed state (`tge_game`, `attach_net`), runs the stages as before, sets the
+//! codecs slot's codecs just before the `Net` stage (`apply_codecs`), and takes what `NetHostPlugin`'s recipe attached from a
+//! cell it shares with the wiring. `ServerGamePlugin`'s recipe calls the server game slot's factory, else TGE's install, so
+//! the recipes keep their stages and order (the native snapshots and the wire goldens check that). Invariants and tests
+//! (`net_game_tests.rs`, `cargo test -p torque-app-server --lib -- net_game_`): a server of another net game than the slot's
+//! is refused naming both, and an engine with no slot starts only `TorqueNet`; a second net game, codecs or server game setter
+//! fails the build naming both; the factory runs once per server over the server game's parts and its payload wrapper gets
+//! Torque's event layer; the dedicated runner starts the slot's net game; plugin net classes that the ghost game or codecs do
+//! not carry are warned about at start. torque-trace-hash's `net_game_*` wire tests hold a net game made of Torque's parts to
+//! the same goldens. Extension points: a new per-server part of the host goes on `NetGameParts` (a field with Torque's value
+//! as `TorqueNetFactory`'s); a runner that must start any net game calls `net_game::start_net_game`; a method a runner needs goes
+//! on `RunServer`.
 
 pub mod cli;
 pub mod config;
 pub mod files;
 pub mod manifest;
+pub mod net_game;
 pub mod plugins;
 pub mod run;
 #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
@@ -66,6 +87,8 @@ pub mod water;
 mod config_tests;
 #[cfg(test)]
 mod engine_tickets_tests;
+#[cfg(test)]
+mod net_game_tests;
 #[cfg(test)]
 mod plugins_tests;
 #[cfg(test)]

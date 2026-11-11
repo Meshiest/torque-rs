@@ -17,9 +17,11 @@ use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_client::predict::FileReader;
 use torque_client::state::ClientState;
 use torque_engine::{Engine, EngineBuilder, Plugins, ProtocolKind};
+use torque_server::net::NetGame;
 use torque_server::net::channels::ClientChannels;
 use torque_server::net::engine::ensure_host;
 use torque_server::net::rpc::{ClientRpc, RpcLanes, register_client_natives};
+use torque_server::net::torque::TorqueNet;
 use torque_ts_vm::host::{FileHost, FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
@@ -212,13 +214,14 @@ impl Peer {
     }
 }
 
-/// A server of `MinimalPlugins` and the plugin under test, a client connected to it, and the link between them.
-pub struct Rig {
+/// A server of `MinimalPlugins` and the plugin under test, a client connected to it, and the link between them. The server's
+/// network host speaks net game `G` (Torque's by default).
+pub struct Rig<G: NetGame = TorqueNet> {
     /// The protocol the server and the client speak.
     pub mode: Mode,
     /// The server's engine (a plugin's server resources are its).
     pub engine: Engine,
-    pub server: GameServer,
+    pub server: GameServer<G>,
     pub client_vm: Vm,
     pub client: Rc<RefCell<ClientState<TgeConn>>>,
     sent: DatagramQueue,
@@ -260,13 +263,25 @@ impl Rig {
         control: Control,
         setup: impl FnOnce(&mut Vm) -> Result<(), String>,
     ) -> Result<Rig, String> {
+        Rig::with_net_game(mode, plugins, control, setup)
+    }
+}
+
+impl<G: NetGame> Rig<G> {
+    /// [`Rig::with_client`] with a server of net game `G`, which `plugins` set ([`NetGamePlugin`](torque_app_server::net_game::NetGamePlugin)).
+    pub fn with_net_game<M>(
+        mode: Mode,
+        plugins: impl Plugins<M>,
+        control: Control,
+        setup: impl FnOnce(&mut Vm) -> Result<(), String>,
+    ) -> Result<Rig<G>, String> {
         // The run's protocol whatever `TORQUE_NET_PROTOCOL` says: each line is pinned for its own mode.
         let mut builder = EngineBuilder::new();
         builder.add_plugins(MinimalPlugins).add_plugins(plugins);
         set_protocol(&mut builder, mode.protocol());
         let engine = builder.build().map_err(|e| e.to_string())?;
         let files = files();
-        let server = GameServer::start_engine(
+        let server = GameServer::<G>::start_with_net(
             &engine,
             files.clone(),
             &ServerStart {
@@ -419,7 +434,7 @@ impl Rig {
     /// after each (it reads what arrived at every step and ticks when a tick is due, as a window's frames do), `frame` called
     /// after each step with where the frame falls between the client's last two ticks (`back`, as a window sets it: 1 right
     /// after a tick, nearer 0 as the next one comes).
-    pub fn step_frames(&mut self, frames: u32, mut frame: impl FnMut(&Rig, f32)) {
+    pub fn step_frames(&mut self, frames: u32, mut frame: impl FnMut(&Self, f32)) {
         let frames = frames.clamp(1, TICK_MS);
         self.carry();
         self.server.tick();

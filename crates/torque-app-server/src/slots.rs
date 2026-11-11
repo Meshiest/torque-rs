@@ -5,6 +5,9 @@
 //! |------|--------|-------|
 //! | hooks ([`ServerHooks`]) | [`ServerSlots::server_hooks`] | a list: every plugin may add, in add order |
 //! | mission loader ([`MissionLoader`]) | [`ServerSlots::mission_loader`] | exclusive: a second setter fails the build, naming both plugins |
+//! | server game ([`GameParts`]) | [`ServerSlots::server_game`] | exclusive: the game's own container and shapes in place of TGE's |
+//! | net game ([`NetGameFactory`]) | [`ServerSlots::net_game`] | exclusive ([`net_game`](crate::net_game)) |
+//! | codecs ([`NetCodecs`]) | [`ServerSlots::net_codecs`] | exclusive ([`net_game`](crate::net_game)) |
 //! | script engine ([`Vm`]) | [`HostSlots::script_engine`] | exclusive |
 //! | server entry ([`ServerEntry`]) | [`HostSlots::server_entry`] | exclusive |
 //! | client entry | [`HostSlots::client_entry`] | exclusive |
@@ -13,6 +16,9 @@
 //! one once per server, after the `Net` stage and before the entry script, so what it makes can read what the server's recipes
 //! left on the script engine (its extensions, its state). An error from a factory stops that server's start with the error's
 //! message. A server whose engine has no entry keeps the plain engine's hooks and loader.
+//!
+//! The server game's factory runs in place of TGE's install in the `Game` stage (`ServerGamePlugin`'s recipe, which still adds
+//! the plugins' collision after it); the terrain, the water and the network host then build on the parts it returned.
 //!
 //! The hooks of one server are run together: `before_events` and `pass_sliced` in add order, `pass_slice` answered by the first
 //! hook that gives a slice ([`HookList`]). The `ServerTick` list is separate and unchanged (work per 32 ms tick); hooks are
@@ -33,11 +39,16 @@ use std::fmt;
 use std::rc::Rc;
 
 use torque_engine::{Engine, EngineBuilder, PluginId};
+use torque_server::game::GameParts;
+use torque_server::net::NetGame;
+use torque_server::net::codecs::NetCodecs;
 use torque_server::server::{HookList, MakeHooks, MakeMissionLoader, MissionLoader, ServerHooks};
 use torque_server::state::{NetParts, ServerState};
 use torque_ts_vm::host::FileHost;
 use torque_ts_vm::vm::Vm;
 
+use crate::net_game::{CodecsSlot, NetGameFactory, NetGameSlot};
+use crate::plugins::ServerWiring;
 use crate::server::ServerStart;
 
 /// A plugin's hooks factory, as the engine's list holds it, with the plugin that registered it.
@@ -48,6 +59,12 @@ struct HooksEntry {
 
 /// The engine's mission loader factory (the exclusive slot's value).
 struct LoaderSlot(Rc<MakeMissionLoader>);
+
+/// Makes a server's game parts over the server's wiring (its engine state: [`ServerWiring::state`]).
+pub type MakeServerGame = dyn Fn(&mut Vm, &ServerWiring) -> Result<GameParts, String>;
+
+/// The engine's server game factory (the exclusive slot's value).
+pub(crate) struct ServerGameSlot(pub(crate) Rc<MakeServerGame>);
 
 /// The engine builder's calls that set a server's main-loop seams.
 pub trait ServerSlots {
@@ -62,6 +79,23 @@ pub trait ServerSlots {
     fn mission_loader(
         &mut self,
         make: impl Fn(&mut Vm) -> Result<Rc<dyn MissionLoader>, String> + 'static,
+    ) -> &mut EngineBuilder;
+
+    /// Sets every server's game parts: `make` runs in the `Game` stage in place of TGE's install
+    /// ([`torque_server::game::install`]), over the server's state, and its container and shapes are what the terrain, the
+    /// water and the network host build on. Exclusive.
+    fn server_game(
+        &mut self,
+        make: impl Fn(&mut Vm, &ServerWiring) -> Result<GameParts, String> + 'static,
+    ) -> &mut EngineBuilder;
+
+    /// Sets the engine's net game: `factory` makes each server's host parts ([`crate::net_game`]). Exclusive.
+    fn net_game<G: NetGame>(&mut self, factory: Rc<dyn NetGameFactory<G>>) -> &mut EngineBuilder;
+
+    /// Sets the codecs every server's network host speaks: `make` runs per server just before the `Net` stage. Exclusive.
+    fn net_codecs(
+        &mut self,
+        make: impl Fn(&Vm) -> Rc<dyn NetCodecs> + 'static,
     ) -> &mut EngineBuilder;
 }
 
@@ -82,6 +116,24 @@ impl ServerSlots for EngineBuilder {
         make: impl Fn(&mut Vm) -> Result<Rc<dyn MissionLoader>, String> + 'static,
     ) -> &mut EngineBuilder {
         self.set_slot(Rc::new(LoaderSlot(Rc::new(make))))
+    }
+
+    fn server_game(
+        &mut self,
+        make: impl Fn(&mut Vm, &ServerWiring) -> Result<GameParts, String> + 'static,
+    ) -> &mut EngineBuilder {
+        self.set_slot(Rc::new(ServerGameSlot(Rc::new(make))))
+    }
+
+    fn net_game<G: NetGame>(&mut self, factory: Rc<dyn NetGameFactory<G>>) -> &mut EngineBuilder {
+        self.set_slot(Rc::new(NetGameSlot::new(factory)))
+    }
+
+    fn net_codecs(
+        &mut self,
+        make: impl Fn(&Vm) -> Rc<dyn NetCodecs> + 'static,
+    ) -> &mut EngineBuilder {
+        self.set_slot(Rc::new(CodecsSlot(Rc::new(make))))
     }
 }
 

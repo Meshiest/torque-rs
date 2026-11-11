@@ -114,6 +114,54 @@ drops plain datagrams and warns once. An encrypted native link (QUIC) comes late
 A plain link starts with a stateless cookie round trip: the client's `Hello` is padded to 1,200 bytes, the server answers with a
 cookie and keeps nothing, and every opening packet carries the cookie. A validated link starts with the connect itself.
 
+## A game's own net game
+
+Above either protocol's framing, a server's network host is made of a net game (`torque_server::net::NetGame`): its events,
+its ghost sources (`GhostGame`), its part of each connection, its string table and its rules at a few points of the passes.
+The engine's servers speak Torque's (`TorqueNet`) unless a plugin sets the engine's net game slot:
+
+```rust,ignore
+use torque_app::net_game::{NetGameParts, NetGamePlugin};
+
+builder.add_plugins(NetGamePlugin::<MyNet>::new(|vm: &mut Vm, game: &GameParts| {
+    Ok(NetGameParts {
+        game: MyNet::new(vm)?,
+        ghosts: MyGhosts::over(&game.container),
+        static_writes: None,
+        // Wraps (or replaces) Torque's event layer before the bulk channels wrap it.
+        payload: None,
+    })
+}));
+let server = GameServer::<MyNet>::start_with_net(&engine, files, &start)?;
+```
+
+The factory runs once per server, in the `Net` stage, after the server game. A net game is a type, not a trait object, so the
+server is `GameServer<MyNet>` and the code that knows the type starts it; the engine keeps a start for it too, which the
+dedicated runner uses (`net_game::start_net_game`). `GameServer::start_engine` is the server of `TorqueNet` and is refused,
+naming both types, on an engine set for another net game. One plugin sets each of these slots; a second fails the build
+naming both:
+
+| Slot | Plugin | Builder call (`ServerSlots`) |
+|---|---|---|
+| net game | `NetGamePlugin<G>` (`torque.net-game`) | `net_game(factory)` |
+| codecs (`NetCodecs`, and with them the handshake's form) | `NetCodecsPlugin` (`torque.net-codecs`) | `net_codecs(make)`, run per server before the `Net` stage |
+| server game (the container and shapes the world and the host build on) | the game's own | `server_game(make)`, run in the `Game` stage in place of TGE's install |
+
+The payload wrapper is handed Torque's event layer and returns the layer the bulk channels wrap. **Its contract:** it forwards
+every call to that layer (`on_game_packet`, `on_notify`, `write`, `busy`, `on_accept`, `mark_peer`, `mark_channels`,
+`take_calls`, `take_work`, `on_drop`), which keeps TGE's event caps and the ghost layer's accounting. There is no separate
+replacement: a wrapper that ignores the layer it is handed replaces it, and must then drive the host's event layer
+(`NetShared::events`) itself and enforce caps of its own.
+
+Some limits stay with the engine whatever the net game: the ghost hub's budgets, the connect, request and reject rates and
+the handshake's per-source caps, and the pump's script budgets. The net game sets its own player default
+(`NetGame::DEFAULT_MAX_PLAYERS`) and, through its codecs, `NetCodecs::server_config`: the max players and the handshake's form.
+
+The plugins' net classes reach only the engine's own peers, and only through a net game that carries them: its ghost game
+(`GhostGame::carries_plugin_classes`; `TgeGhostGame` does, and so does a game that wraps it) and its codecs
+(`NetCodecs::plugin_classes`, as the engine's own `EngineCodecs` answer). A server whose engine has plugin classes warns at
+start, naming them, when either does not.
+
 ## Not changed
 
 A local connection (the listen server's own client, `connectLocal`) stays in process and is the same in both protocols. The LAN
@@ -142,8 +190,9 @@ lines. The `tge` lines never move.
   `command_to_server_rpc`, `receive_commands`.
 - `torque-client/src/conn/engine_wire.rs`: the client's session under `TgeFeed` (`tge.rs`: `over_engine`, `engine_pump`,
   `engine_send`); `net.rs`: `Datagrams::link_kind`.
-- `torque-app-server/src/plugins.rs`: `EngineProtocolPlugin`, `ProtocolPlugins`, `set_protocol`; `server.rs`: the gate, the
-  digests, the RPC lanes and the public-bind refusal at start.
+- `torque-app-server/src/plugins.rs`: `EngineProtocolPlugin`, `ProtocolPlugins`, `set_protocol`, `ServerWiring` (untyped,
+  with the typed attach of the server's net game); `server.rs`: the gate, the digests, the RPC lanes and the public-bind
+  refusal at start; `net_game.rs`: the net game and codecs slots, `NetGameParts`, `RunServer`, the plugin-class warning.
 
 **Data flow.** Server: transport, `pump::receive`, `engine::receive`, `SessionTable::receive`, the session's events: a connect
 becomes a `PendingRequest` for `handle_request`, the move lane goes to `handle_game`, the RPC lane to `RpcLanes`, notifies through
@@ -179,10 +228,14 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
 - The command RPCs' tag tables are the connection's own, apart from the ghost records' (`EventLayer`'s `command_send` and `command_remote`):
   a command re-keying a slot never changes what a ghost record's string means.
 - TGE mode's bytes do not move (`cargo test -p torque-net --test tge_golden`, `cargo test -p torque-trace-hash --test wire_golden`).
+- A net game of Torque's parts with its own connection part and a payload layer over Torque's writes the goldens' bytes
+  (`net_game_a_net_game_of_torques_parts_writes_the_goldens_bytes` in `wire_golden`); the slots' rules are `net_game_*` in
+  `torque-app-server`.
 
 - Speed is measured, not guessed: `cargo bench -p torque-net --bench ghost_section|bits|engine_session`, `-p torque-server --bench ghost_tick`, `-p torque-client --bench ghost_read` (what each guards is in the crates' Maintaining sections); the speed-ups change no byte, so the goldens and `just trace-hash` stay as they are.
 
-**Extension points.** A transport says what its links are with `Transport::link_kind` (server) and `Datagrams::link_kind`
+**Extension points.** A game's own host is a `NetGamePlugin<G>`; a new per-server part of the host is a field of
+`NetGameParts`. A transport says what its links are with `Transport::link_kind` (server) and `Datagrams::link_kind`
 (client); both ends must agree. A new link (QUIC) is a transport and a `LinkKind`. A new lane is a framing version.
 
 **Checks.** `cargo test -p torque-net --lib engine`, `cargo test -p torque-server --lib net::engine`, the `net-matrix` recipe,

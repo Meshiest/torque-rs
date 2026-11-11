@@ -14,14 +14,17 @@
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
 //! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`TgeProtocolPlugin`] sets Torque's own protocol, [`EngineProtocolPlugin`] the engine's; one of them is on ([`protocol_from_env`]) |
-//! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
+//! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` of the engine's net game and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web and p2p ones |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
 //! | [`HierarchyPlugin`] | `torque.hierarchy` | server, `Game`, a `Resolve` tick hook; only in engine mode | the scene hierarchy: parent and child transforms ([`torque_plugin_hierarchy`]) |
 //! | [`DedicatedRunnerPlugin`] | `torque.dedicated-runner` | the engine's runner slot | [`run`](crate::run): a dedicated server |
 //!
-//! `SimClassesPlugin` sets the slot of the game's own simulated classes; it is in no group.
+//! `SimClassesPlugin` sets the slot of the game's own simulated classes, and
+//! [`NetGamePlugin`](crate::net_game::NetGamePlugin) and [`NetCodecsPlugin`](crate::net_game::NetCodecsPlugin) the slots of the
+//! net game and the codecs; they are in no group.
 
+use std::any::{Any, type_name};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,14 +34,14 @@ use torque_engine::{
 };
 use torque_game::sim_classes::SimClasses;
 use torque_server::game::GameParts;
-use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
 use torque_server::net::transport::SharedTransport;
-use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use torque_server::server::NetHost;
+use torque_server::net::{HostParts, NetGame};
 use torque_server::state::ServerState;
 use torque_ts_vm::vm::Vm;
 
+use crate::net_game::{AttachedCell, NetGameFactory};
 use crate::run::DedicatedRunnerPlugin;
+use crate::slots::ServerGameSlot;
 pub use crate::transports::ServerTransportPlugins;
 pub use torque_content::ContentFormatPlugins;
 pub use torque_mods::ModsPlugin;
@@ -82,37 +85,68 @@ impl PluginGroup for MinimalPlugins {
     }
 }
 
-/// What a server's recipes share while the server is made: the engine state and the transport it was given, and the parts
-/// the server game and the network host hand on. The host sets it as the script engine's extension before the first stage.
+/// What a server's recipes share while the server is made: the engine state and the transport it was given, the parts the
+/// server game hands on, and the network host's attach made for the server's net game. The host sets it as the script
+/// engine's extension before the first stage.
 pub struct ServerWiring {
-    state: Rc<RefCell<ServerState<HostParts<TorqueNet>>>>,
+    /// The `Rc<RefCell<ServerState<HostParts<G>>>>` of the server's net game `G`.
+    state: Box<dyn Any>,
+    net_game: &'static str,
     transport: SharedTransport,
     game: RefCell<Option<GameParts>>,
-    net: RefCell<Option<NetAttached>>,
+    /// TGE's server game over the state.
+    tge_game: Box<dyn Fn(&mut Vm) -> GameParts>,
+    /// The network host of the net game over the state and the server game's parts.
+    attach_net: Box<AttachNet>,
 }
 
-/// What the network host's recipe made, for the host to attach to the server's main loop.
-pub(crate) struct NetAttached {
-    pub(crate) shared: Rc<RefCell<NetShared<TorqueNet>>>,
-    pub(crate) passes: Rc<dyn NetHost>,
-}
+/// Attaches a server's network host over its server game's parts.
+type AttachNet = dyn Fn(&mut Vm, &GameParts) -> Result<(), String>;
 
 impl ServerWiring {
-    pub(crate) fn new(
-        state: Rc<RefCell<ServerState<HostParts<TorqueNet>>>>,
+    /// The wiring of a server of net game `G`: its network host is made by `factory` and left in `attached`.
+    pub(crate) fn new<G: NetGame>(
+        state: Rc<RefCell<ServerState<HostParts<G>>>>,
         transport: SharedTransport,
+        factory: Rc<dyn NetGameFactory<G>>,
+        attached: AttachedCell<G>,
     ) -> ServerWiring {
+        let tge_state = Rc::clone(&state);
+        let net_state = Rc::clone(&state);
+        let net_transport = Rc::clone(&transport);
         ServerWiring {
-            state,
+            state: Box::new(state),
+            net_game: type_name::<G>(),
             transport,
             game: RefCell::new(None),
-            net: RefCell::new(None),
+            tge_game: Box::new(move |vm| torque_server::game::install(vm, &tge_state)),
+            attach_net: Box::new(move |vm, game| {
+                let net = crate::net_game::attach(vm, &net_state, &net_transport, &*factory, game)?;
+                *attached.borrow_mut() = Some(net);
+                Ok(())
+            }),
         }
     }
 
-    /// The engine state the server's natives share.
-    pub fn state(&self) -> &Rc<RefCell<ServerState<HostParts<TorqueNet>>>> {
-        &self.state
+    /// The engine state the server's natives share, for the server's net game `G`.
+    ///
+    /// # Errors
+    /// The server's net game is not `G`; the message names both.
+    pub fn state<G: NetGame>(&self) -> Result<&Rc<RefCell<ServerState<HostParts<G>>>>, String> {
+        self.state
+            .downcast_ref::<Rc<RefCell<ServerState<HostParts<G>>>>>()
+            .ok_or_else(|| {
+                format!(
+                    "the server's net game is `{}`, not `{}`",
+                    self.net_game,
+                    type_name::<G>()
+                )
+            })
+    }
+
+    /// The type name of the server's net game.
+    pub fn net_game(&self) -> &'static str {
+        self.net_game
     }
 
     /// The transport the server listens on.
@@ -125,8 +159,15 @@ impl ServerWiring {
         self.game.borrow().clone()
     }
 
-    pub(crate) fn take_net(&self) -> Option<NetAttached> {
-        self.net.borrow_mut().take()
+    /// Installs TGE's server game on `vm` over this server's state ([`torque_server::game::install`]): what
+    /// [`ServerGamePlugin`] does when no plugin set the server game slot, for a slot's factory that builds on it.
+    pub fn tge_game(&self, vm: &mut Vm) -> GameParts {
+        (self.tge_game)(vm)
+    }
+
+    /// Makes the network host of the server's net game over the server game's parts.
+    fn attach_net(&self, vm: &mut Vm, game: &GameParts) -> Result<(), String> {
+        (self.attach_net)(vm, game)
     }
 }
 
@@ -170,7 +211,10 @@ impl Plugin for ServerGamePlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.server(ServerStage::Game, |vm, engine| {
             let wiring = server_wiring(vm, "the server game")?;
-            let game = torque_server::game::install(vm, wiring.state());
+            let game = match engine.slot::<ServerGameSlot>() {
+                Some(slot) => (slot.0)(vm, &wiring).map_err(|e| format!("the server game: {e}"))?,
+                None => wiring.tge_game(vm),
+            };
             *wiring.game.borrow_mut() = Some(game);
             // The plugins' collision the container's queries include.
             let entries = engine.list::<torque_collide::source::PluginCollision>();
@@ -327,7 +371,8 @@ pub fn set_protocol(builder: &mut EngineBuilder, kind: ProtocolKind) -> &mut Eng
     builder.disable_id(off.as_str()).enable_id(on.as_str())
 }
 
-/// The server's network host of Torque's net game and the passes that drive it from the main loop.
+/// The server's network host and the passes that drive it from the main loop: of the engine's net game
+/// ([`NetGamePlugin`](crate::net_game::NetGamePlugin)), Torque's when no plugin set one.
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.net-host")]
 pub struct NetHostPlugin;
@@ -341,21 +386,7 @@ impl Plugin for NetHostPlugin {
         engine.server(ServerStage::Net, |vm, _| {
             let wiring = server_wiring(vm, "the network host")?;
             let game = server_game(&wiring, "the network host")?;
-            let shared = attach_host(
-                vm,
-                Host {
-                    transport: Rc::clone(wiring.transport()),
-                    game: TorqueNet::default(),
-                    engine: Rc::clone(wiring.state()),
-                    clock: NetClock::Sim,
-                    ghosts: TgeGhostGame,
-                    container: Rc::clone(&game.container),
-                    static_writes: None,
-                },
-            );
-            let passes: Rc<dyn NetHost> = Rc::new(NetPasses(Rc::clone(&shared)));
-            *wiring.net.borrow_mut() = Some(NetAttached { shared, passes });
-            Ok(())
+            wiring.attach_net(vm, &game)
         });
     }
 }

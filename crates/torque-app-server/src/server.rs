@@ -1,5 +1,6 @@
-//! A game's server: torque-server's main loop with TGE's game classes ([`torque_server::game`]) and a network host of Torque's
-//! net game ([`TorqueNet`]), running the game's `server.cs` and the function that starts its map.
+//! A game's server: torque-server's main loop with TGE's game classes ([`torque_server::game`]) and a network host of a net game
+//! (`GameServer<G>`; Torque's, [`TorqueNet`], by default and with no [`NetGamePlugin`](crate::net_game::NetGamePlugin)), running
+//! the game's `server.cs` and the function that starts its map.
 //!
 //! **The socket** ([`Listen`]). On UDP the server binds one socket on the address it is given: `127.0.0.1` keeps the game on
 //! this computer (tests, a game for one), a private LAN address opens it to the local network, and `0.0.0.0` (every interface,
@@ -31,6 +32,7 @@ use torque_game::sim_classes::SimClasses;
 use torque_net::connect::ManifestGate;
 use torque_net::engine::bridge::table_digests;
 use torque_server::game::GameParts;
+use torque_server::net::NetGame;
 use torque_server::net::channels;
 use torque_server::net::cmdlimit::{CommandTable, register_command_drops};
 use torque_server::net::peer::ProtocolMode;
@@ -45,6 +47,7 @@ use torque_server::state::ServerState;
 use torque_ts_vm::host::{FileHost, MemFiles};
 use torque_ts_vm::vm::Vm;
 
+use crate::net_game::{AttachedCell, apply_codecs, factory_for};
 use crate::plugins::{MinimalPlugins, ServerWiring};
 use crate::slots::{Connections, FileSetter, ServerEntry, file_setter};
 pub use crate::transports::{BoundTransport, CustomListen};
@@ -56,8 +59,8 @@ pub const DEFAULT_PORT: u16 = 28_000;
 /// How often a dedicated server's wait services its transport ([`GameServer::run_dedicated`]).
 const SERVICE_EVERY: Duration = Duration::from_millis(2);
 
-/// The server's main loop over a network host of Torque's net game.
-pub type NetServer = Server<HostParts<TorqueNet>>;
+/// The server's main loop over a network host of net game `G` (Torque's by default).
+pub type NetServer<G = TorqueNet> = Server<HostParts<G>>;
 
 /// The web side of a server that browsers join (`Listen::Web`).
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
@@ -147,10 +150,10 @@ pub fn lan_addresses() -> Vec<Ipv4Addr> {
     found
 }
 
-/// A game's server.
-pub struct GameServer {
-    pub server: NetServer,
-    pub shared: Rc<RefCell<NetShared<TorqueNet>>>,
+/// A game's server, whose network host speaks net game `G` (Torque's by default).
+pub struct GameServer<G: NetGame = TorqueNet> {
+    pub server: NetServer<G>,
+    pub shared: Rc<RefCell<NetShared<G>>>,
     pub game: GameParts,
     transport: SharedTransport,
     end: Option<MemoryEnd>,
@@ -223,7 +226,7 @@ impl GameServer {
             .build()
             .map_err(|e| e.to_string())?;
         let mut prepare = Some(prepare);
-        GameServer::start_prepared(&engine, file_setter(files), start, &mut |vm| {
+        Self::start_prepared(&engine, file_setter(files), start, &mut |vm| {
             if let Some(prepare) = prepare.take() {
                 prepare(vm);
             }
@@ -238,13 +241,15 @@ impl GameServer {
     /// The script engine is the engine's ([`HostSlots::script_engine`](crate::slots::HostSlots::script_engine), else
     /// [`Vm::new`]). Once the stages ran, the server sets `start`'s globals and runs its entry: the engine's
     /// ([`HostSlots::server_entry`](crate::slots::HostSlots::server_entry)), then the `Entry` stage, leaving connections as that
-    /// entry left them; else the entry script, the `Entry` stage and `start`'s function, and it takes connections.
+    /// entry left them; else the entry script, the `Entry` stage and `start`'s function, and it takes connections. Refused on an engine
+    /// whose net game slot holds another net game ([`GameServer::start_with_net`] of that type, or
+    /// [`start_net_game`](crate::net_game::start_net_game), starts it).
     pub fn start_engine(
         engine: &Engine,
         files: MemFiles,
         start: &ServerStart,
     ) -> Result<GameServer, String> {
-        GameServer::start_prepared(engine, file_setter(files), start, &mut |_| {})
+        Self::start_prepared(engine, file_setter(files), start, &mut |_| {})
     }
 
     /// [`GameServer::start_engine`] over a file host of the game's own (a folder read in place, archives mounted over it, an
@@ -254,17 +259,35 @@ impl GameServer {
         files: impl FileHost + 'static,
         start: &ServerStart,
     ) -> Result<GameServer, String> {
-        GameServer::start_prepared(engine, file_setter(files), start, &mut |_| {})
+        Self::start_prepared(engine, file_setter(files), start, &mut |_| {})
+    }
+}
+
+impl<G: NetGame> GameServer<G> {
+    /// A server of net game `G` made by `engine`'s plugins, as [`GameServer::start_engine`] makes one of Torque's. Its network
+    /// host is made by the engine's net game slot ([`NetGamePlugin`](crate::net_game::NetGamePlugin)).
+    ///
+    /// # Errors
+    /// The engine's slot holds another net game (or none, and `G` is not [`TorqueNet`]); the message names both. Otherwise,
+    /// what the start returned.
+    pub fn start_with_net(
+        engine: &Engine,
+        files: MemFiles,
+        start: &ServerStart,
+    ) -> Result<GameServer<G>, String> {
+        Self::start_prepared(engine, file_setter(files), start, &mut |_| {})
     }
 
-    /// [`GameServer::start_engine`] with `prepare` run on the script engine after the `Prepare` stage (not generic, so a
-    /// game's own closure does not copy this body into its crate).
+    /// [`GameServer::start_with_net`] with `prepare` run on the script engine after the `Prepare` stage. Generic over the net
+    /// game `G` (one copy per net game); only `prepare` is a `dyn` closure, so a game's own closure does not copy this body
+    /// into its crate.
     fn start_prepared(
         engine: &Engine,
         files: FileSetter,
         start: &ServerStart,
         prepare: &mut dyn FnMut(&mut Vm),
-    ) -> Result<GameServer, String> {
+    ) -> Result<GameServer<G>, String> {
+        let factory = factory_for::<G>(engine)?;
         if engine.protocol() == ProtocolKind::Engine
             && let Some(refusal) = plain_engine_refusal(&start.listen)
         {
@@ -279,8 +302,14 @@ impl GameServer {
         for warning in server_transport_warnings(engine) {
             vm.warn(warning);
         }
-        let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
-        let wiring = Rc::new(ServerWiring::new(Rc::clone(&state), Rc::clone(&transport)));
+        let state = Rc::new(RefCell::new(ServerState::<HostParts<G>>::default()));
+        let attached = AttachedCell::<G>::default();
+        let wiring = Rc::new(ServerWiring::new(
+            Rc::clone(&state),
+            Rc::clone(&transport),
+            factory,
+            Rc::clone(&attached),
+        ));
         vm.set_extension(Rc::clone(&wiring));
         replay(engine, ServerStage::Classes, &mut vm)?;
         files(&mut vm);
@@ -305,9 +334,11 @@ impl GameServer {
         {
             claim_staging(&mut server.vm);
         }
+        apply_codecs(engine, &mut server.vm);
         replay(engine, ServerStage::Net, &mut server.vm)?;
-        let net = wiring
-            .take_net()
+        let net = attached
+            .borrow_mut()
+            .take()
             .ok_or("the engine has no network host (NetHostPlugin)")?;
         let shared = net.shared;
         // An engine with networked plugins or an auth provider holds every client to its manifest and tickets, before

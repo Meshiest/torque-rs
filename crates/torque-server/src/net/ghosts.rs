@@ -468,6 +468,13 @@ pub trait GhostGame: Sized + 'static {
     /// A new connection's policy.
     fn new_policy(&self) -> Self::Policy;
 
+    /// Whether the game's sources ghost the plugins' net classes (the engine's own peers then receive them). False by default:
+    /// a server whose engine has plugin classes warns at start when its ghost game does not. A game that wraps
+    /// [`TgeGhostGame`](super::torque::TgeGhostGame) and delegates its sources to it answers true.
+    fn carries_plugin_classes() -> bool {
+        false
+    }
+
     /// A ghostable object entered the registry.
     fn ghostable_added(&mut self, obj: ObjId) {
         let _ = obj;

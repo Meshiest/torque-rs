@@ -70,6 +70,7 @@ use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
 use web_time::Duration;
 
+pub use torque_app_server::net_game::{NetCodecsPlugin, NetGamePlugin};
 pub use torque_app_server::plugins::{
     ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, HierarchyPlugin, MinimalPlugins,
     ModsPlugin, NetHostPlugin, PROTOCOL_ENV, ProtocolPlugins, ServerGamePlugin,

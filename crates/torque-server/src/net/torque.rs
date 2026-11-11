@@ -123,6 +123,10 @@ impl GhostGame for TgeGhostGame {
         TorqueGhosts
     }
 
+    fn carries_plugin_classes() -> bool {
+        true
+    }
+
     fn with_source<R>(
         hub: &GhostHub<Self>,
         env: SourceEnv<'_>,

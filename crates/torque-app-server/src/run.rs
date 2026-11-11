@@ -2,8 +2,9 @@
 //! runs it ([`DedicatedRunnerPlugin`], in [`MinimalPlugins`](crate::plugins::MinimalPlugins)).
 //!
 //! The runner takes the [`Dedicated`] the engine was given ([`EngineDedicated::dedicated`]) and runs the server
-//! ([`GameServer::run_dedicated_until`](crate::server::GameServer::run_dedicated_until)) until it is stopped; there is no window and no app. A native-only runner: in a browser
-//! build it returns an error.
+//! ([`GameServer::run_dedicated_until`](crate::server::GameServer::run_dedicated_until)) until it is stopped; there is no window and no app. The server speaks the
+//! engine's net game ([`start_net_game`](crate::net_game::start_net_game)). A native-only runner: in a browser build it returns
+//! an error.
 //!
 //! ```
 //! use std::net::{Ipv4Addr, SocketAddr};
@@ -61,7 +62,7 @@ impl Stop {
 /// Takes a console line of a dedicated server.
 pub type PrintLine = Rc<dyn Fn(&str)>;
 
-/// A dedicated server: [`GameServer::start_engine`](crate::server::GameServer::start_engine)'s arguments, and when to stop.
+/// A dedicated server: [`start_net_game`](crate::net_game::start_net_game)'s arguments, and when to stop.
 #[derive(Clone)]
 pub struct Dedicated {
     /// The game's files, as the server's scripts see them.
@@ -136,10 +137,11 @@ impl Runner for DedicatedRunner {
     }
 }
 
-/// Runs `server` on a game server made from `engine`: until its tick cap or a stop request, with its console lines printed.
+/// Runs `server` on a game server made from `engine`, of the engine's net game: until its tick cap or a stop request, with its
+/// console lines printed.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_dedicated(engine: &Engine, server: &Dedicated) -> Result<(), String> {
-    use crate::server::{GameServer, ServerStart};
+    use crate::server::ServerStart;
 
     let globals: Vec<(&str, &str)> = server
         .globals
@@ -147,7 +149,7 @@ pub fn run_dedicated(engine: &Engine, server: &Dedicated) -> Result<(), String> 
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect();
     let args: Vec<&str> = server.args.iter().map(String::as_str).collect();
-    let mut game = GameServer::start_engine(
+    let mut game = crate::net_game::start_net_game(
         engine,
         server.files.clone(),
         &ServerStart {
@@ -158,8 +160,8 @@ pub fn run_dedicated(engine: &Engine, server: &Dedicated) -> Result<(), String> 
         },
     )?;
     game.run_dedicated_until(
-        |ticks| server.ticks.is_some_and(|t| ticks >= t) || server.stop.is_requested(),
-        |line| match &server.print {
+        &mut |ticks| server.ticks.is_some_and(|t| ticks >= t) || server.stop.is_requested(),
+        &mut |line| match &server.print {
             Some(print) => print(line),
             None => println!("{line}"),
         },
