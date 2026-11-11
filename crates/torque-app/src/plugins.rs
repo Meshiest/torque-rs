@@ -24,7 +24,7 @@
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
 //! | [`HierarchyPlugin`] | `torque.hierarchy` | server, `Game`, a `Resolve` tick hook; only in engine mode | the scene hierarchy: parent and child transforms (`torque_plugin_hierarchy`) |
-//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, the control classes plugins add ([`torque_gui::custom`]) and the GUI extensions ([`torque_gui::fanout`]) |
+//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, the control classes plugins add ([`torque_gui::custom`]) and the GUI extensions ([`torque_gui::fanout`]); a game's own GUI plugin gives the client its GUI with [`ClientParts::set_gui`] instead |
 //! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives, and the input sources plugins add ([`torque_client::input_source`]) |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
@@ -61,9 +61,7 @@ use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
 use torque_client::input_source::InputSourceEntry;
 use torque_client::state::ClientState;
-use torque_engine::{
-    ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, Requires,
-};
+use torque_engine::{ClientStage, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder};
 use torque_gui::client_script::RealmLayoutEntry;
 use torque_gui::custom::ControlEntry;
 use torque_gui::{DrawCache, Gui};
@@ -169,7 +167,7 @@ impl<C: ConnGame> ClientWiring<C> {
         self.parts.net
     }
 
-    /// The GUI ([`GuiPlugin`]), once its stage ran.
+    /// The GUI ([`ClientParts::gui`]), once its stage ran.
     pub fn gui(&self) -> Option<Gui> {
         self.parts.gui()
     }
@@ -191,7 +189,7 @@ impl<C: ConnGame> ClientWiring<C> {
     }
 }
 
-/// What a client's recipes share whatever its conn game: the socket kind, the GUI the GUI plugin makes, and the engine's
+/// What a client's recipes share whatever its conn game: the socket kind, the GUI ([`GuiPlugin`]'s or a game's), and the engine's
 /// installs made for the client's conn game. The host sets it as the script engine's extension beside [`ClientWiring`].
 pub struct ClientParts {
     /// The type name of the client's conn game.
@@ -225,9 +223,23 @@ impl ClientParts {
         self.net
     }
 
-    /// The GUI ([`GuiPlugin`]), once its stage ran.
+    /// The GUI ([`GuiPlugin`], or the one a game's GUI plugin set with [`set_gui`](Self::set_gui)), once its stage ran.
     pub fn gui(&self) -> Option<Gui> {
         self.gui.borrow().clone()
+    }
+
+    /// Gives the client `gui`, the GUI a game's own plugin made at [`ClientStage::Gui`] in place of [`GuiPlugin`]'s (which
+    /// sets its own here): the later stages' recipes and the client find it in [`gui`](Self::gui).
+    ///
+    /// # Errors
+    /// The client has a GUI already: two plugins made one.
+    pub fn set_gui(&self, gui: Gui) -> Result<(), String> {
+        let mut slot = self.gui.borrow_mut();
+        if slot.is_some() {
+            return Err("the client has a GUI already: two GUI plugins made one".to_owned());
+        }
+        *slot = Some(gui);
+        Ok(())
     }
 
     /// The engine's installs over the client's state, made for its conn game.
@@ -294,7 +306,7 @@ pub(crate) fn client_parts(vm: &Vm, plugin: &str) -> Result<Rc<ClientParts>, Str
 fn client_gui(parts: &ClientParts, plugin: &str) -> Result<Gui, String> {
     parts
         .gui()
-        .ok_or_else(|| format!("{plugin} needs the GUI, which has not run"))
+        .ok_or_else(|| format!("{plugin} needs the GUI (GuiPlugin, or a game's GUI plugin: ClientParts::set_gui), which has not run"))
 }
 
 /// The GUI's classes and natives. `layout_fonts`: the GUI's layout measures text with the fonts it is drawn with
@@ -323,8 +335,7 @@ impl Plugin for GuiPlugin {
             }
             // The extensions the plugins added (`gui_primary`, `gui_extension`), made for this client's GUI.
             gui.install_extensions(vm, engine);
-            *parts.gui.borrow_mut() = Some(gui);
-            Ok(())
+            parts.set_gui(gui)
         });
     }
 }
@@ -348,16 +359,13 @@ impl Plugin for ActionMapPlugin {
     }
 }
 
-/// The screen: resolution, full screen and the canvas's natives.
+/// The screen: resolution, full screen and the canvas's natives, over the client's GUI ([`GuiPlugin`]'s or a game's, made at
+/// [`ClientStage::Gui`] before it).
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.screen")]
 pub struct ScreenPlugin;
 
 impl Plugin for ScreenPlugin {
-    fn requires(&self, requires: &mut Requires) {
-        requires.plugin::<GuiPlugin>();
-    }
-
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Screen, |vm, _| {
             let parts = client_parts(vm, "the screen")?;
@@ -369,16 +377,13 @@ impl Plugin for ScreenPlugin {
 }
 
 /// The connection to a server (TGE's connection half and the ghosts' natives), for a client that was given a socket
-/// ([`ClientNet`] other than `None`); the socket itself is an argument of the client's start.
+/// ([`ClientNet`] other than `None`); the socket itself is an argument of the client's start. Like [`ScreenPlugin`], over the
+/// client's GUI, [`GuiPlugin`]'s or a game's.
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.conn")]
 pub struct ConnPlugin;
 
 impl Plugin for ConnPlugin {
-    fn requires(&self, requires: &mut Requires) {
-        requires.plugin::<GuiPlugin>();
-    }
-
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Conn, |vm, engine| {
             let parts = client_parts(vm, "the connection")?;

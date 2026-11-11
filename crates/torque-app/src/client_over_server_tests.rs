@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use torque_client::conn::tge::TgeConn;
 use torque_engine::{
-    Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ProtocolKind,
+    ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ProtocolKind,
 };
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
@@ -21,7 +21,9 @@ use torque_ts_vm::vm::Native;
 
 use crate::client::{ClientBuilder, ClientNet, GameClient, carry_between};
 use crate::orbit::Orbit;
-use crate::plugins::{DefaultPlugins, OffscreenRunnerPlugin, WindowRunnerPlugin, set_protocol};
+use crate::plugins::{
+    ClientParts, DefaultPlugins, GuiPlugin, OffscreenRunnerPlugin, WindowRunnerPlugin, set_protocol,
+};
 use crate::run::EngineRun;
 use crate::server::{GameServer, Listen, ServerStart};
 use crate::shots::FRAME_MS;
@@ -413,6 +415,57 @@ fn the_replaced_methods_answer_for_the_servers_connections_and_players_as_the_se
         );
     }
     assert_eq!(eval(&mut builder, "return methods();"), expected);
+}
+
+/// A plugin that makes the client's GUI at the `Gui` stage itself, as a game's own GUI plugin does.
+fn own_gui(engine: &mut EngineBuilder) {
+    engine.client(ClientStage::Gui, |vm, _| {
+        let parts = vm
+            .extension::<ClientParts>()
+            .ok_or("no client is being made")?;
+        parts.set_gui(torque_gui::register(vm))
+    });
+}
+
+#[test]
+fn a_games_own_gui_plugin_gives_a_client_over_its_server_its_gui_and_none_of_the_engines_prefs() {
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((
+        DefaultPlugins
+            .disable::<WindowRunnerPlugin>()
+            .disable::<GuiPlugin>(),
+        Setup(Box::new(own_gui)),
+    ));
+    set_protocol(&mut builder, ProtocolKind::Tge);
+    let engine = builder.build().expect("the engine builds");
+    let server = start(&engine, files(&[("server.cs", SERVER_CS)]));
+    let mut client = ClientBuilder::<TgeConn>::over_server(&engine, server, ClientNet::None)
+        .expect("the client is made over the server with the game's GUI");
+    assert!(engine.warnings().is_empty(), "{:?}", engine.warnings());
+    assert_eq!(eval(&mut client, "return serverSide();"), "server");
+    // The screen's natives are made over the game's GUI.
+    assert_eq!(eval(&mut client, "return isFunction(setScreenMode);"), "1");
+    // The engine's GUI plugin declares its prefs; the game's declares none.
+    assert_eq!(eval(&mut client, "return $Pref::Gui::SmoothScroll;"), "");
+}
+
+#[test]
+fn the_engines_gui_plugin_declares_its_prefs_on_a_client_over_its_server() {
+    let engine = engine(|_| {});
+    let server = start(&engine, files(&[("server.cs", SERVER_CS)]));
+    let mut client = ClientBuilder::<TgeConn>::over_server(&engine, server, ClientNet::None)
+        .expect("the client is made over the server with the engine's GUI");
+    assert_ne!(eval(&mut client, "return $Pref::Gui::SmoothScroll;"), "");
+}
+
+#[test]
+fn a_second_gui_is_refused() {
+    let engine = engine(own_gui);
+    let server = start(&engine, files(&[("server.cs", SERVER_CS)]));
+    let Err(error) = ClientBuilder::<TgeConn>::over_server(&engine, server, ClientNet::None) else {
+        panic!("two GUI plugins made the client's GUI");
+    };
+    assert!(error.contains("two GUI plugins"), "{error}");
 }
 
 #[test]

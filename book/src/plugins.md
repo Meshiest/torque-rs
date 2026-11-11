@@ -426,8 +426,9 @@ assert_eq!(engine.plugins(), [Gui::ID, Menu::ID]);
 A required plugin always builds first. If the engine has none, `requires.plugin::<P>()` adds `P::default()` (so `P` must
 implement `Default`). A plugin that knows another only by id, such as a loaded extension, uses `requires.id("...")`.
 
-The engine's own plugins use this: `TerrainPlugin`, `WaterPlugin` and `NetHostPlugin` require `ServerGamePlugin`, and
-`ScreenPlugin` and `ConnPlugin` require `GuiPlugin`.
+The engine's own plugins use this: `TerrainPlugin`, `WaterPlugin` and `NetHostPlugin` require `ServerGamePlugin`.
+`ScreenPlugin` and `ConnPlugin` build over the client's GUI whichever plugin made it (`GuiPlugin`, or a game's own that
+calls `ClientParts::set_gui`), so they require none.
 
 ### Plugins that add plugins
 

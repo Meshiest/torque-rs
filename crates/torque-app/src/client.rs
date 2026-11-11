@@ -200,7 +200,8 @@ impl ClientBuilder {
     /// A client made by `engine`'s plugins: the script engine's client recipes run stage by stage ([`ClientStage`]) up to
     /// the game's natives, in the order the engine's plugins were added, with `files` as the scripts' files and a socket as
     /// `net` says. The engine can make any number of clients. It needs the plugins that make the client's parts:
-    /// [`GuiPlugin`] and [`ClientHostPlugin`](crate::plugins::ClientHostPlugin) (with [`DefaultPlugins`], all of them). What the build warned about
+    /// [`GuiPlugin`] (or a game's GUI plugin, [`ClientParts::set_gui`](crate::plugins::ClientParts::set_gui)) and
+    /// [`ClientHostPlugin`](crate::plugins::ClientHostPlugin) (with [`DefaultPlugins`], all of them). What the build warned about
     /// ([`Engine::warnings`]) is printed to the client's console first.
     pub fn from_engine(
         engine: &Engine,
@@ -356,7 +357,9 @@ impl<C: ConnGame> ClientBuilder<C> {
             replay(engine, stage, &mut vm, sharing)?;
         }
         let replaced = servers.map_or_else(Vec::new, |servers| replaced_natives(&vm, &servers));
-        let gui = parts.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
+        let gui = parts.gui().ok_or(
+            "the engine has no GUI (GuiPlugin, or a game's GUI plugin: ClientParts::set_gui)",
+        )?;
         Ok(ClientBuilder {
             vm,
             gui,
