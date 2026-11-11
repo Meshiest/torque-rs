@@ -46,8 +46,9 @@ function rules.pitch()
     end
     for _, goal in ipairs({ { side = -1, team = "Blue" }, { side = 1, team = "Red" } }) do
         local side, team = goal.side, goal.team
-        -- The end wall either side of the mouth, from the post out to the side wall.
-        local corner = (w + t - g - p) / 2
+        -- The end wall either side of the mouth, from the post out to the side wall's inner face: the side walls run the whole
+        -- length, so an end wall that reached into them would share their top and outer faces at the corner and fight them.
+        local corner = (w - g - p) / 2
         for _, x in ipairs({ -1, 1 }) do
             pieces[#pieces + 1] = { "WallData", x * (g + p + corner), side * (l + t / 2), h / 2, 2 * corner, t, h }
         end

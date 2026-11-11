@@ -405,7 +405,7 @@ fn pictures_of_a_match_are_drawn_from_a_client() {
         .iter()
         .map(|p| std::fs::metadata(p).unwrap().len())
         .collect();
-    assert_eq!(paths.len(), 5, "{paths:?}");
+    assert_eq!(paths.len(), 9, "{paths:?}");
     assert!(
         sizes.iter().all(|&n| n > 20_000),
         "pictures with something in them: {sizes:?}"

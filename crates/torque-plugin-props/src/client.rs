@@ -309,14 +309,20 @@ impl ClientProps {
     }
 }
 
-/// A client datablock's field as a number.
-pub(crate) fn number(vm: &Vm, id: u32, field: &[u8], index: usize) -> f32 {
-    let text = vm.read_field_of(torque_ts_vm::vm::FieldTarget::Live(id), field, b"");
+/// Word `index` of `text` (blanks and tabs between words) as a number: NaN when there is no such word. One reading for the
+/// datablock's numbers, the collision hulls' scale and the drawn scale, so they never disagree.
+pub(crate) fn word_number(text: &[u8], index: usize) -> f32 {
     let word = text
         .split(|b| *b == b' ' || *b == b'\t')
         .filter(|w| !w.is_empty())
         .nth(index);
     word.map_or(f32::NAN, |w| torque_ts_text::atof(w) as f32)
+}
+
+/// A client datablock's field as a number.
+pub(crate) fn number(vm: &Vm, id: u32, field: &[u8], index: usize) -> f32 {
+    let text = vm.read_field_of(torque_ts_vm::vm::FieldTarget::Live(id), field, b"");
+    word_number(&text, index)
 }
 
 /// The numbers of the client's datablock `id` (the record's fields, by their names), none when there is no such object.
@@ -506,6 +512,18 @@ impl CollisionSource for ClientSource {
     }
 }
 
+/// Element `k` of datablock `id`'s `drawScale`: a number of its own, or word `k` of the text a script wrote (`"1.5 1.5 1.5"`, how
+/// a datablock's three-number field is kept); NaN when it has neither (the caller holds it to a safe scale).
+fn draw_scale_element(datablocks: &dyn DatablockFields, id: u32, k: u32) -> f32 {
+    if let Some(Value::F32(v)) = datablocks.field(id, "drawScale", k) {
+        return *v;
+    }
+    let Some(Value::Str(text)) = datablocks.field(id, "drawScale", 0) else {
+        return f32::NAN;
+    };
+    word_number(text, k as usize)
+}
+
 /// What a prop is drawn as: its datablock's `shapeFile` at its `drawScale` (none for no shape, or a datablock the client
 /// lacks), resting while it sleeps or is frozen (a client may then draw it with its still geometry).
 pub fn draw(record: &PropGhost, datablocks: &dyn DatablockFields) -> Option<ShapeDraw> {
@@ -514,11 +532,7 @@ pub fn draw(record: &PropGhost, datablocks: &dyn DatablockFields) -> Option<Shap
     if shape.is_empty() || shape.len() > MAX_SHAPE_BYTES {
         return None;
     }
-    let element = |k: u32| match datablocks.field(id, "drawScale", k) {
-        Some(Value::F32(v)) => *v,
-        _ => 1.0,
-    };
-    let scale = draw_scale([element(0), element(1), element(2)]);
+    let scale = draw_scale([0, 1, 2].map(|k| draw_scale_element(datablocks, id, k)));
     let rests = record.flags.is_some_and(|f| f.asleep || f.frozen);
     Some(ShapeDraw::new(shape).scaled(scale).resting(rests))
 }

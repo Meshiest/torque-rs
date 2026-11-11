@@ -132,9 +132,39 @@ pub fn goal_close() -> Eye {
     look_at([3.2, 6.0, 2.4], [0.0, 13.0, 0.9])
 }
 
+/// A view of a corner of the pitch (the one at +x, +y) from inside it, close up.
+pub fn corner_close() -> Eye {
+    look_at([5.0, 9.0, 3.0], [8.2, 12.2, 0.8])
+}
+
+/// A view of a ball at `at`, from the ground's height, close up.
+pub fn ball_close(at: [f32; 3]) -> Eye {
+    let [x, y, z] = at;
+    look_at([x + 1.6, y - 1.6, 0.5], [x, y, z])
+}
+
+/// A view of a ball at `at` along the ground, from its side: where it meets the ground shows against the horizon. The eye is
+/// on the side toward the middle of the pitch, so a wall never stands between it and the ball.
+pub fn ball_side(at: [f32; 3]) -> Eye {
+    let [x, y, _] = at;
+    let eye_x = if x > 0.0 { x - 4.0 } else { x + 4.0 };
+    look_at([eye_x, y, 0.08], [x, y, 0.08])
+}
+
+/// A view of a ball at `at` from straight above.
+pub fn ball_top(at: [f32; 3]) -> Eye {
+    let [x, y, _] = at;
+    look_at([x, y - 0.01, 6.0], [x, y, 0.0])
+}
+
+/// The ball is on the ground and still.
+fn ball_at_rest(seat: &Seat<Viewer>) -> bool {
+    ball(seat).is_some_and(|([_, _, z], v)| z < 0.9 && v.iter().all(|c| c.abs() < 0.05))
+}
+
 /// The pictures of a match, as client 0 draws it, written into `dir`: the kickoff, a shot on goal, the board after a goal,
-/// the end of the round, and one of the goals close up. The session must hold two clients that have joined. Returns the
-/// paths.
+/// the end of the round, one of the goals close up, and a corner and the ball at rest close up. The session must hold two
+/// clients that have joined. Returns the paths.
 pub fn write_shots(
     session: Session,
     dir: &std::path::Path,
@@ -144,6 +174,29 @@ pub fn write_shots(
     let phase = |seat: &Seat<Viewer>| seat.game.session.server_global("$Soccer::Phase");
     seat.run(&gpu, 700)?;
     shots.save(&picture(&mut seat, &gpu)?, "kickoff")?;
+    seat.game.eye = corner_close();
+    shots.save(&picture(&mut seat, &gpu)?, "corner-close")?;
+    seat.game.eye = overview();
+    // A new ball is still before the board has heard of it: look again after a moment, to draw what is on the board.
+    let mut at = None;
+    for _ in 0..20 {
+        if !wait(&mut seat, 60_000, ball_at_rest) {
+            return Err("the ball did not come to rest".into());
+        }
+        seat.run(&gpu, 400)?;
+        if ball_at_rest(&seat) {
+            at = ball(&seat).map(|(at, _)| at);
+            break;
+        }
+    }
+    let at = at.ok_or("the ball did not stay at rest")?;
+    seat.game.eye = ball_close(at);
+    shots.save(&picture(&mut seat, &gpu)?, "ball-close")?;
+    seat.game.eye = ball_side(at);
+    shots.save(&picture(&mut seat, &gpu)?, "ball-side")?;
+    seat.game.eye = ball_top(at);
+    shots.save(&picture(&mut seat, &gpu)?, "ball-top")?;
+    seat.game.eye = overview();
     if !wait(&mut seat, 90_000, shot_on_goal) {
         return Err("no shot on goal".into());
     }

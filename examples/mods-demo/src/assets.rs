@@ -297,18 +297,98 @@ fn figure_png(color: [u8; 3]) -> io::Result<Vec<u8>> {
     })
 }
 
-/// The ball's picture: white with dark patches in rows round it.
-fn ball_png() -> io::Result<Vec<u8>> {
-    png_rgba(64, 32, |x, y| {
-        let row = y / 8;
-        let shift = if row % 2 == 0 { 0.0 } else { 6.5 };
-        let cx = ((x as f32 + shift) % 13.0) - 6.5;
-        let cy = (y % 8) as f32 - 3.5;
-        if (1..3).contains(&row) && cx * cx + cy * cy < 7.0 {
-            [36, 36, 40, 255]
-        } else {
-            [246, 246, 240, 255]
+/// The golden ratio.
+const PHI: f32 = std::f32::consts::GOLDEN_RATIO;
+
+fn unit(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    v.map(|c| c / len)
+}
+
+fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The faces of a ball made as a truncated icosahedron: the directions of the 12 pentagons' centers (the icosahedron's corners)
+/// and of the 20 hexagons' (the dodecahedron's), each with the distance of its face's plane from the middle, the corners' distance being 1. A ray from the middle in direction `n` leaves through the face whose `dot(n, center) / distance` is the largest.
+fn ball_faces() -> (Vec<([f32; 3], f32)>, usize) {
+    let mut pentagons = Vec::new();
+    for a in [-1.0, 1.0] {
+        for b in [-PHI, PHI] {
+            pentagons.extend([[0.0, a, b], [a, b, 0.0], [b, 0.0, a]]);
         }
+    }
+    let mut hexagons = Vec::new();
+    for a in [-1.0, 1.0] {
+        for b in [-1.0, 1.0] {
+            for c in [-1.0, 1.0] {
+                hexagons.push([a, b, c]);
+            }
+            let (inv, phi) = (b / PHI, PHI * a);
+            hexagons.extend([[0.0, phi, inv], [phi, inv, 0.0], [inv, 0.0, phi]]);
+        }
+    }
+    // The truncated icosahedron's corners (edge 2): the even permutations of these.
+    let mut corners = Vec::new();
+    for a in [-1.0, 1.0] {
+        for b in [-1.0, 1.0] {
+            for c in [-1.0, 1.0] {
+                for [x, y, z] in [
+                    [0.0, a, 3.0 * PHI * b],
+                    [a, (2.0 + PHI) * b, 2.0 * PHI * c],
+                    [PHI * a, 2.0 * b, (2.0 * PHI + 1.0) * c],
+                ] {
+                    corners.extend([unit([x, y, z]), unit([y, z, x]), unit([z, x, y])]);
+                }
+            }
+        }
+    }
+    let faces = pentagons.iter().chain(&hexagons).map(|&c| {
+        let c = unit(c);
+        let plane = corners.iter().map(|&v| dot(v, c)).fold(f32::MIN, f32::max);
+        (c, plane)
+    });
+    (faces.collect(), pentagons.len())
+}
+
+/// The ball's picture, wrapped once round the sphere (columns are longitude, rows run pole to pole): the faces of a truncated
+/// icosahedron, black pentagons among white hexagons, with a thin dark seam along every edge. Each texel takes its color from the
+/// direction it covers on the sphere, so the pattern is even all over and does not pinch at the poles.
+fn ball_png() -> io::Result<Vec<u8>> {
+    const W: u32 = 1024;
+    const H: u32 = 512;
+    // The seam's half width and the soft edge of every border, in the faces' `dot / distance` units.
+    const SEAM: f32 = 0.004;
+    const SOFT: f32 = 0.002;
+    let (faces, pentagons) = ball_faces();
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| -> [f32; 3] {
+        std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+    };
+    let smooth = |edge: f32, x: f32| ((x - edge) / SOFT).clamp(0.0, 1.0);
+    png_rgba(W, H, |x, y| {
+        let (u, v) = ((x as f32 + 0.5) / W as f32, (y as f32 + 0.5) / H as f32);
+        let (sin_p, cos_p) = (u * TAU).sin_cos();
+        let (sin_t, cos_t) = (v * PI).sin_cos();
+        let n = [sin_t * cos_p, sin_t * sin_p, cos_t];
+        let (mut best, mut second, mut face) = (f32::MIN, f32::MIN, 0);
+        for (i, &(center, plane)) in faces.iter().enumerate() {
+            let score = dot(n, center) / plane;
+            if score > best {
+                (second, best, face) = (best, score, i);
+            } else if score > second {
+                second = score;
+            }
+        }
+        let base: [f32; 3] = if face < pentagons {
+            [26.0, 26.0, 30.0]
+        } else {
+            [248.0, 248.0, 243.0]
+        };
+        let seam = [96.0, 98.0, 104.0];
+        // 0 on an edge, 1 from the seam's width on.
+        let away = smooth(SEAM, best - second);
+        let c = mix(seam, base, away);
+        [c[0] as u8, c[1] as u8, c[2] as u8, 255]
     })
 }
 
