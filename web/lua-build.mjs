@@ -27,7 +27,7 @@
 // (mlua commit 26c52c6c, which leaves the heap dump empty on Wasm), this puts a copy of mlua's registry sources with that one
 // change into the copy and patches mlua with them. A release with the fix is used as it is.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -91,9 +91,45 @@ const fixed = readFileSync(join(mluaDir, heapDump), 'utf8').includes('target_os 
 // it and by its absolute path when it is outside, so with the extension a workspace of its own and its dependencies beside it,
 // the checkout's folder would be in the module. In this copy every path is relative to the workspace's root and the module is
 // the same wherever the checkout and the build folder are. The repository's own manifests and lockfiles are never touched.
+//
+// The copy is kept between runs and brought up to date: a file is written only when its bytes differ (and files the checkout no
+// longer has are removed), so cargo, which takes a path dependency's file as changed by its time, finds nothing changed after a
+// run with no change and builds nothing.
 const tree = join(work, 'repo');
-rmSync(tree, { recursive: true, force: true });
 mkdirSync(tree, { recursive: true });
+// Every file the copy will hold: its path in the copy to its source file (with a change of its text) or its bytes.
+const files = new Map();
+function addDir(from, to, keep, textOf) {
+  for (const entry of readdirSync(from, { withFileTypes: true })) {
+    const source = join(from, entry.name);
+    const dest = join(to, entry.name);
+    if (!keep(source)) continue;
+    if (statSync(source).isDirectory()) addDir(source, dest, keep, textOf);
+    else files.set(dest, { source, text: textOf?.(dest) ?? null });
+  }
+}
+const put = (path, content) => files.set(path, { content: Buffer.from(content) });
+function sync() {
+  for (const [path, { source, text, content }] of files) {
+    let bytes = content ?? readFileSync(source);
+    if (text) bytes = Buffer.from(text(bytes.toString('utf8')));
+    if (existsSync(path) && Buffer.compare(readFileSync(path), bytes) === 0) continue;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, bytes);
+  }
+  const prune = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        prune(path);
+        if (!readdirSync(path).length) rmSync(path, { recursive: true });
+      } else if (!files.has(path)) {
+        rmSync(path);
+      }
+    }
+  };
+  prune(tree);
+}
 // Every crate of the lockfile, those another platform's dependencies name included: cargo reads their manifests too.
 const everything = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked', '--manifest-path', manifest], { capture: true }));
 const locals = everything.packages.filter((p) => p.source === null);
@@ -118,9 +154,8 @@ const members = locals.map((p) => {
     console.error(`${from}: a crate of the extension outside the checkout`);
     process.exit(1);
   }
-  cpSync(from, join(tree, rel), { recursive: true, filter: skip });
-  const copied = join(tree, rel, 'Cargo.toml');
-  writeFileSync(copied, withoutDevDependencies(read(copied)));
+  const manifestOf = join(tree, rel, 'Cargo.toml');
+  addDir(from, join(tree, rel), skip, (dest) => (dest === manifestOf ? (text) => withoutDevDependencies(text.replaceAll('\r\n', '\n')) : null));
   return rel;
 });
 // Cargo reads the manifest of every path dependency a member names, the optional ones nobody turns on too. Those that are not in the
@@ -134,9 +169,8 @@ for (const p of locals) {
     have.add(dep);
     const name = /^name\s*=\s*"([^"]+)"/m.exec(read(join(dep, 'Cargo.toml')))?.[1];
     const stub = join(tree, slashes(relative(root, dep)));
-    mkdirSync(stub, { recursive: true });
-    writeFileSync(join(stub, 'Cargo.toml'), `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "lib.rs"\n`);
-    writeFileSync(join(stub, 'lib.rs'), '');
+    put(join(stub, 'Cargo.toml'), `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n\n[lib]\npath = "lib.rs"\n`);
+    put(join(stub, 'lib.rs'), '');
   }
 }
 const extension = relative(root, crate).replaceAll('\\', '/');
@@ -163,14 +197,14 @@ toml = toml
   .replace(list, `members = [${members.map((m) => `"${m}"`).join(', ')}]`)
   .replace(skipped, 'exclude = []');
 toml += `\n${lua.slice(profileAt)}`;
-writeFileSync(join(tree, 'Cargo.lock'), readFileSync(join(crate, 'Cargo.lock')));
-writeFileSync(join(tree, extension, 'Cargo.toml'), withoutDevDependencies(lua).replace('\n[workspace]\n', '\n'));
+put(join(tree, 'Cargo.lock'), readFileSync(join(crate, 'Cargo.lock')));
+put(join(tree, extension, 'Cargo.toml'), withoutDevDependencies(lua).replace('\n[workspace]\n', '\n'));
 if (!fixed) {
   // mlua's sources with upstream's change.
   const patched = join(tree, 'vendor', `mlua-${mlua.version}`);
-  cpSync(mluaDir, patched, { recursive: true });
+  addDir(mluaDir, patched, () => true);
   const file = join(patched, heapDump);
-  const source = readFileSync(file, 'utf8').replaceAll('\r\n', '\n');
+  const source = readFileSync(join(mluaDir, heapDump), 'utf8').replaceAll('\r\n', '\n');
   const before = '        let mut buf = Vec::new();\n        unsafe {\n            let file = libc::tmpfile();';
   const after =
     `        let mut buf = Vec::new();\n        #[cfg(${WASM})]\n        let _ = (state, &mut buf, category_name);\n` +
@@ -179,10 +213,11 @@ if (!fixed) {
     console.error(`${file}: the heap dump is not the one mlua ${mlua.version} has; update web/lua-build.mjs`);
     process.exit(1);
   }
-  writeFileSync(file, source.replace(before, after));
+  put(file, source.replace(before, after));
   toml += `\n[patch.crates-io]\nmlua = { path = "vendor/mlua-${mlua.version}" }\n`;
 }
-writeFileSync(join(tree, 'Cargo.toml'), toml);
+put(join(tree, 'Cargo.toml'), toml);
+sync();
 const buildManifest = join(tree, extension, 'Cargo.toml');
 
 // Where the build reads from, named by the same stand-ins wherever it runs: a panic's file name and a C++ assertion's are in

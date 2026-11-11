@@ -21,6 +21,12 @@ web port="8080":
     node ../../web/build.mjs vehicle-demo
     node ../../web/serve.mjs "{{web_target}}/web/vehicle-demo" {{port}}
 
+# `web` for the edit-and-reload loop: the module in the `web-dev` profile (no link-time optimization, no wasm-opt, incremental),
+# the files of the last build kept (`node ../../web/build.mjs vehicle-demo --dev --repack` packs them again after a change to them)
+web-dev port="8080":
+    node ../../web/build.mjs vehicle-demo --dev
+    node ../../web/serve.mjs "{{web_target}}/web/vehicle-demo" {{port}}
+
 # The web vehicle demo's check (build it first with `web`): headless Chrome from the cursor guard (`web/guard.mjs`,
 # its pages never take the pointer lock) loads it, waits for the figure on the hills, walks it with W and takes pictures;
 # fails on any console error

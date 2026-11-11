@@ -184,7 +184,7 @@
   // game takes a lost lock as its Esc. In full screen, Chromium's keyboard lock passes Esc on to the game (held, it still
   // leaves full screen).
   import { fetchFiles, Refused } from './files.js';
-  import { fpsText, later, readStreamed, showBar, stageText } from './loading.js';
+  import { fpsText, later, loadModule, showBar, stageText } from './loading.js';
   import * as settings from './settings.js';
   import { createTorque } from './bridge.js';
   import { replyNote, soloPage, takeFragment } from './invites.js';
@@ -384,11 +384,11 @@
       }
     }
     const module = await import('./game.js');
-    const wasm = await readStreamed(await fetch(new URL('game_bg.wasm', document.baseURI)), (done, total) =>
-      show('module', done, total));
-    show('compile');
-    await new Promise(requestAnimationFrame);
-    const compiled = await WebAssembly.compile(wasm);
+    const compiled = await loadModule(
+      new URL('game_bg.wasm', document.baseURI),
+      (done, total) => show('module', done, total),
+      () => show('compile'),
+    );
     await module.default({ module_or_path: compiled });
     const game = module;
     // `?host=1`: this page hosts a game for others to join by its room code (host.js), its server in a worker. A page

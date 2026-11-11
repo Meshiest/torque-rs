@@ -1,7 +1,7 @@
 // The loading display's stages and streamed reads, without a page: `node --test web/loading.test.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { STAGES, fpsText, later, percent, readStreamed, showBar, stageText } from './loading.js';
+import { STAGES, fpsText, later, loadModule, percent, readStreamed, showBar, stageText } from './loading.js';
 
 test('the stages run in the order the page and the game set them', () => {
   assert.deepEqual(STAGES, ['module', 'compile', 'files', 'start', 'gpu', 'map', 'ready']);
@@ -99,4 +99,61 @@ test('a stage of unknown length shows the moving bar with no value', () => {
   assert.equal(bar.firstElementChild.style.transform, '');
   showBar(bar, 1048576, null);
   assert.ok(bar.classList.contains('busy'), 'bytes with no total have no share to show');
+});
+
+// The smallest module: the header alone.
+const EMPTY_MODULE = [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+function moduleResponse(pieces = [EMPTY_MODULE.slice(0, 3), EMPTY_MODULE.slice(3)]) {
+  const body = new ReadableStream({
+    start(c) {
+      for (const p of pieces) c.enqueue(new Uint8Array(p));
+      c.close();
+    },
+  });
+  return new Response(body, { headers: { 'Content-Type': 'application/wasm', 'Content-Length': '8' } });
+}
+
+test('a module is compiled while it downloads, its progress followed', async () => {
+  const seen = [];
+  let compiling = 0;
+  let fetched = 0;
+  const module = await loadModule(
+    'http://x/game_bg.wasm',
+    (d, t) => seen.push([d, t]),
+    () => compiling++,
+    async () => (fetched++, moduleResponse()),
+  );
+  assert.ok(module instanceof WebAssembly.Module);
+  assert.equal(fetched, 1, 'one download');
+  assert.equal(compiling, 1);
+  assert.deepEqual(seen.at(-1), [8, 8]);
+});
+
+test('a module the stream compiler refuses is downloaded again and compiled from its bytes', async () => {
+  const originalFrame = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = (call) => setTimeout(call, 0);
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    let fetched = 0;
+    // The first response's bytes are no module (a bad copy in a proxy); the second is the file.
+    const module = await loadModule(
+      'http://x/game_bg.wasm',
+      () => {},
+      () => {},
+      async () => (fetched++ === 0 ? moduleResponse([[1, 2, 3, 4, 5, 6, 7, 8]]) : moduleResponse()),
+    );
+    assert.ok(module instanceof WebAssembly.Module);
+    assert.equal(fetched, 2);
+  } finally {
+    globalThis.requestAnimationFrame = originalFrame;
+    console.warn = originalWarn;
+  }
+});
+
+test('a failed module request is an error', async () => {
+  await assert.rejects(
+    loadModule('http://x/game_bg.wasm', () => {}, () => {}, async () => new Response('no', { status: 404 })),
+    /HTTP 404/,
+  );
 });

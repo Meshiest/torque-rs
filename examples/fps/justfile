@@ -71,6 +71,12 @@ web port="28000" *args:
     node ../../web/build.mjs fps
     cargo run -p torque-example-fps --release --bin fps-server -- --transport both --port {{port}} {{args}}
 
+# `web` with the browser build in the `web-dev` profile for the edit-and-reload loop (no link-time optimization, no wasm-opt,
+# incremental; the files of the last build kept, `node ../../web/build.mjs fps --dev --repack` packs them again after a change to them)
+web-dev port="28000" *args:
+    node ../../web/build.mjs fps --dev
+    cargo run -p torque-example-fps --release --bin fps-server -- --transport both --port {{port}} {{args}}
+
 # The arena's cross-play check (build it first with `web` or `node web/build.mjs fps`): fps-server on UDP and the web, a
 # desktop player with no window joined over UDP, and headless Chrome joining from the server's page; both must hold the other's
 # figure, the browser's walks, and no console error. Pictures into the target folder's `web`

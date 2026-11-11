@@ -88,6 +88,13 @@ mem_forget = "warn"
 inherits = "release"
 lto = "thin"
 
+# The web builds' module for the edit-and-reload loop (`web/build.mjs --dev`): the dev profile, so the engine's own crates are
+# built unoptimized and incrementally with no link-time optimization, and the third-party crates and the assets' crates as the dev
+# profile's package settings below have them. No debug info: wasm-bindgen would carry it into the module and the page would fetch it.
+[profile.web-dev]
+inherits = "dev"
+debug = false
+
 # The client-script host's web cases (`client-script-web-check`): optimized, with debug assertions on, the only builds
 # in which tiers may be granted before their review (the host refuses to compile `unreviewed-tiers` without them).
 [profile.client-script-check]

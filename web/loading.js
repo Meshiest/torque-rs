@@ -91,6 +91,50 @@ export async function readStreamed(response, progress) {
   return bytes;
 }
 
+// The compiled module of the WebAssembly file at `url`. Where the browser compiles a stream (`WebAssembly.compileStreaming`) the
+// body is split in two: one branch feeds `progress(done, total)`, the other the compiler, so compiling runs while the rest is
+// still downloading and the bytes are never gathered here. `compiling()` is called when the download is over and only the
+// compile is left. A browser without it, or a stream that fails, downloads the file again and compiles the bytes. `fetcher` is
+// `fetch`, for a test.
+export async function loadModule(url, progress, compiling, fetcher = fetch) {
+  let response = await fetcher(url);
+  if (response.ok && response.body && typeof WebAssembly.compileStreaming === 'function') {
+    try {
+      const [shown, fed] = response.body.tee();
+      const length = Number(response.headers.get('Content-Length'));
+      const total = Number.isFinite(length) && length > 0 ? length : null;
+      const compile = WebAssembly.compileStreaming(new Response(fed, { headers: { 'Content-Type': 'application/wasm' } }));
+      // Whichever branch fails first is the error; the other's outcome is not left unhandled.
+      const results = Promise.allSettled([follow(shown, total, progress), compile]);
+      const [followed, compiled] = await results;
+      if (followed.status === 'rejected') throw followed.reason;
+      compiling();
+      if (compiled.status === 'rejected') throw compiled.reason;
+      return compiled.value;
+    } catch (error) {
+      console.warn(`the module was not compiled while it downloaded, downloading it again: ${error?.message ?? error}`);
+      response = await fetcher(url);
+    }
+  }
+  const bytes = await readStreamed(response, progress);
+  compiling();
+  await new Promise(requestAnimationFrame);
+  return WebAssembly.compile(bytes);
+}
+
+// Counts the bytes of `stream` as they come (`total`: as in `readStreamed`).
+async function follow(stream, total, progress) {
+  progress?.(0, total);
+  const reader = stream.getReader();
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    progress?.(total ? Math.min(size, total) : size, total);
+  }
+}
+
 // The frame-time display's line, from the game's `data-torque-fps` and `data-torque-frame-ms` (`avg max`).
 export function fpsText(fps, frameMs) {
   const [avg, max] = String(frameMs ?? '').split(' ').map(Number);

@@ -9,6 +9,22 @@ the render scale (Auto, the default, draws all of them up to a 1920x1080 screen'
 50%), and lays its GUI out at that size; the browser stretches the drawing over the canvas. The page tells the game the
 scale on its root element's `data-torque-render-scale`, and the game writes the size it draws at on `data-torque-size`.
 
+## Building while you edit
+
+`node web/build.mjs <example> --dev` (or `just examples level-demo web-dev`) is the build for the edit-and-reload loop. It builds
+the module in the `web-dev` profile, the dev profile with the third-party crates optimized: no link-time optimization, incremental
+compiles, and no wasm-opt, so a change to Rust takes a rebuild of the changed crates and one link. The module is larger and runs
+slower than the release one, which stays the default and is what the site is built from. The game's files from the last build
+(`game.pack` and `files.json`, or the embedded pack) are kept, so the native release build that packs them is not run again; give
+`--repack` after a change to the files, or `--keep-pack` to keep the pack in a release build. The first `--dev` build of a folder
+with no pack packs it as the release build does.
+
+The Lua module's build (`web/lua-build.mjs`) keeps its copy of the crates in `<target>/lua-web/repo` between runs and writes a file
+only when its bytes changed, so a run with no change compiles nothing.
+
+The page compiles the module while it downloads (`WebAssembly.compileStreaming` over one branch of the body, the progress bar
+following the other) and compiles the finished download in a browser without it.
+
 ## Storage the game keeps in the browser
 
 A game that downloads mods keeps them in the page's IndexedDB database, so a reload finds them. Its `web_exports!` names a

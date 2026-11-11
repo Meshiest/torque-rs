@@ -23,6 +23,13 @@ web port="8080":
     node ../../web/build.mjs level-demo
     node ../../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
 
+# `web` for the edit-and-reload loop: the module in the `web-dev` profile (no link-time optimization, no wasm-opt, incremental),
+# the files of the last build kept (`node ../../web/build.mjs level-demo --dev --repack` packs them again after a change to them).
+# The first run packs them as `web` does; the module is larger and slower than the release one
+web-dev port="8080":
+    node ../../web/build.mjs level-demo --dev
+    node ../../web/serve.mjs "{{web_target}}/web/level-demo" {{port}}
+
 # The level demo in a browser with its files inside the module (no list, nothing fetched but the page and the module)
 web-embedded port="8080":
     node ../../web/build.mjs level-demo --embed
