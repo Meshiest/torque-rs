@@ -82,6 +82,10 @@
 //!   `every_app_is_a_game_app_over_the_tge_connection`, in `run_tests.rs`). The app slot is one slot for `app` and `app_for`
 //!   (`app_for_is_the_same_exclusive_slot_as_app`). A new method a runner needs from the game goes on [`GameApp`] with a
 //!   default, and on [`App`] with the same default, so existing games keep compiling.
+//! - A client is made on the engine's script engine and runs the engine's client entry in `exec_entry` when a plugin set them
+//!   ([`slots::HostSlots`]), and over a game's own file host with [`ClientBuilder::from_engine_with_files`]; both
+//!   `from_engine` constructors share one body that is not generic over the file host. With none set the client is the same as
+//!   before (`host_slots_tests.rs`; the native snapshots in `tests/natives`).
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 
@@ -131,6 +135,8 @@ use torque_fonts::{Fallback, NoFallback};
 use torque_gui::{DrawCache, GuiDraws};
 use torque_server::server::Server;
 
+#[cfg(test)]
+mod host_slots_tests;
 #[cfg(test)]
 mod plugins_tests;
 #[cfg(all(test, feature = "renderer"))]

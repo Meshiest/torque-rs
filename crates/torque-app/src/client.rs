@@ -32,7 +32,7 @@ use torque_server::net::channels::ClientChannels;
 use torque_server::net::rpc::{ClientRpc, ClientRpcHost, register_client_natives};
 use torque_server::server::{GameServer as _, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
-use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::host::{FileHost, MemFiles};
 use torque_ts_vm::vm::Vm;
 
 use super::Host;
@@ -41,6 +41,7 @@ use super::plugins::{
     ServerQueryPlugin,
 };
 use super::server::GameServer;
+use super::slots::{FileSetter, file_setter};
 use super::transports::{
     Connect, LinkInfo, MemoryLink, MemoryTarget, UdpTarget, client_transport_warnings, open_connect,
 };
@@ -147,13 +148,32 @@ impl ClientBuilder {
         files: Option<MemFiles>,
         net: ClientNet,
     ) -> Result<ClientBuilder, String> {
+        ClientBuilder::from_engine_files(engine, files.map(file_setter), net)
+    }
+
+    /// [`ClientBuilder::from_engine`] over a file host of the game's own (a folder read in place, archives mounted over it, an
+    /// overlay that keeps the writes): the scripts read and write `files` instead of a [`MemFiles`].
+    pub fn from_engine_with_files(
+        engine: &Engine,
+        files: impl FileHost + 'static,
+        net: ClientNet,
+    ) -> Result<ClientBuilder, String> {
+        ClientBuilder::from_engine_files(engine, Some(file_setter(files)), net)
+    }
+
+    /// The body of the `from_engine` constructors (not generic over the file host, so it is built once).
+    fn from_engine_files(
+        engine: &Engine,
+        files: Option<FileSetter>,
+        net: ClientNet,
+    ) -> Result<ClientBuilder, String> {
         let pass = engine
             .slot::<dyn ClientPass<TgeConn>>()
             .ok_or("the engine has no client host (ClientHostPlugin)")?;
         let host = *engine
             .resource::<ClientHostSetup>()
             .ok_or("the engine has no client host (ClientHostPlugin)")?;
-        let mut vm = Vm::new();
+        let mut vm = crate::slots::make_script_engine(engine);
         for warning in engine.warnings() {
             vm.warn(warning.to_string());
         }
@@ -190,7 +210,7 @@ impl ClientBuilder {
         }
         replay(engine, ClientStage::Classes, &mut vm)?;
         if let Some(files) = files {
-            vm.set_file_host(files);
+            files(&mut vm);
         }
         if let Some(game) = engine.slot::<dyn ClientGame>() {
             torque_client::game::set_client_game(&mut vm, game);
@@ -257,11 +277,14 @@ impl ClientBuilder {
     }
 
     /// Runs the client's entry script: the one `game.toml` names (`[game] client`), else `main.cs`
-    /// ([`config`](crate::config)). Then the engine's `Entry` stage
+    /// ([`config`](crate::config)); or, when a plugin set the engine's client entry
+    /// ([`HostSlots::client_entry`](crate::slots::HostSlots::client_entry)), that in its place. Then the engine's `Entry` stage
     /// replays, which is where mods' scripts run (`torque_mods`).
     pub fn exec_entry(&mut self) -> Result<(), String> {
-        let entry = crate::config::client_entry(&self.engine);
-        self.exec(&entry)?;
+        match crate::slots::client_entry_fn(&self.engine) {
+            Some(run) => run(&mut self.vm)?,
+            None => self.exec(&crate::config::client_entry(&self.engine))?,
+        }
         self.engine
             .replay(ClientStage::Entry, &mut self.vm)
             .map_err(|e| e.to_string())

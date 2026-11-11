@@ -1,5 +1,5 @@
 //! The main loop's seams on the engine builder: hooks (a list) and the mission loader (exclusive), made once per server before
-//! its entry script.
+//! its entry script; and the host's: the script engine and the server's entry (both exclusive).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -8,15 +8,18 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use torque_engine::{BuildError, Engine, EngineBuilder, Plugin, PluginId, PluginType, ServerStage};
+use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_INFO_RESPONSE, request};
 use torque_server::server::{
     HookList, MissionError, MissionLoader, NoHooks, PassSlice, PassView, ServerHooks,
 };
-use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::host::{FileHost, FileRead, MemFiles};
 use torque_ts_vm::vm::Vm;
 
 use crate::plugins::MinimalPlugins;
 use crate::server::{GameServer, Listen, ServerStart};
-use crate::slots::{ServerSlots, make_mission_loader, make_server_hooks};
+use crate::slots::{
+    HostSlots, ServerSlots, make_mission_loader, make_script_engine, make_server_hooks,
+};
 
 type Log = Rc<RefCell<Vec<String>>>;
 
@@ -412,4 +415,290 @@ fn mission_loader_factory_error_stops_the_start_with_its_message() {
         panic!("the start fails");
     };
     assert!(error.contains("the map folder is missing"), "{error}");
+}
+
+fn global(server: &GameServer, name: &str) -> Option<Vec<u8>> {
+    server.vm().global(name)
+}
+
+fn allows_connections(server: &GameServer) -> bool {
+    server.server.state.borrow().allow_connections
+}
+
+fn assert_names_both(mut builder: EngineBuilder) {
+    let Err(error) = builder.build() else {
+        panic!("the build fails");
+    };
+    let text = error.to_string();
+    assert!(matches!(error, BuildError::DuplicateSlot { .. }), "{text}");
+    assert!(
+        text.contains("test.first") && text.contains("test.second"),
+        "{text}"
+    );
+}
+
+/// A script engine factory that marks what it makes and counts the calls.
+fn marking(made: &Rc<Cell<u32>>) -> impl Fn() -> Vm + 'static {
+    let made = Rc::clone(made);
+    move || {
+        made.set(made.get() + 1);
+        let mut vm = Vm::new();
+        vm.set_global("$Made", "1");
+        vm
+    }
+}
+
+#[test]
+fn script_engine_slot_makes_each_servers_engine_before_any_recipe() {
+    let made = Rc::new(Cell::new(0));
+    let in_classes = Rc::new(RefCell::new(None));
+    let engine = engine(vec![plugin("test.engine", {
+        let made = Rc::clone(&made);
+        let in_classes = Rc::clone(&in_classes);
+        move |engine| {
+            engine.script_engine(marking(&made));
+            let in_classes = Rc::clone(&in_classes);
+            engine.server(ServerStage::Classes, move |vm, _| {
+                *in_classes.borrow_mut() = vm.global("$Made");
+                Ok(())
+            });
+        }
+    })]);
+    let first = start(&engine, files()).expect("the first server starts");
+    let second = start(&engine, files()).expect("the second server starts");
+    assert_eq!(made.get(), 2, "one script engine a server");
+    assert_eq!(in_classes.borrow().as_deref(), Some(b"1".as_slice()));
+    for server in [&first, &second] {
+        assert_eq!(global(server, "$Made").as_deref(), Some(b"1".as_slice()));
+        assert_eq!(global(server, "$Started").as_deref(), Some(b"1".as_slice()));
+    }
+}
+
+#[test]
+fn script_engine_an_engine_without_one_makes_a_plain_vm() {
+    let engine = engine(vec![]);
+    assert_eq!(make_script_engine(&engine).global("$Made"), None);
+    let server = start(&engine, files()).expect("the server starts");
+    assert_eq!(global(&server, "$Made"), None);
+}
+
+#[test]
+fn script_engine_a_second_setter_fails_the_build_naming_both() {
+    let made = Rc::new(Cell::new(0));
+    assert_names_both(builder(vec![
+        plugin("test.first", {
+            let made = Rc::clone(&made);
+            move |engine| {
+                engine.script_engine(marking(&made));
+            }
+        }),
+        plugin("test.second", |engine| {
+            engine.script_engine(Vm::new);
+        }),
+    ]));
+}
+
+/// A file host of a game's own over `files`, counting its reads.
+struct Counting {
+    files: MemFiles,
+    reads: Rc<Cell<u32>>,
+}
+
+impl FileHost for Counting {
+    fn read(&self, path: &[u8]) -> FileRead {
+        self.reads.set(self.reads.get() + 1);
+        self.files.read(path)
+    }
+}
+
+#[test]
+fn script_files_start_engine_with_files_reads_through_the_games_host() {
+    let reads = Rc::new(Cell::new(0));
+    let host = Counting {
+        files: files(),
+        reads: Rc::clone(&reads),
+    };
+    let server = GameServer::start_engine_with_files(
+        &engine(vec![]),
+        host,
+        &ServerStart {
+            listen: Listen::Memory(SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000))),
+            globals: &[],
+            start: "startIt",
+            args: &[],
+        },
+    )
+    .expect("the server starts");
+    assert!(reads.get() > 0, "server.cs was read through the host");
+    assert_eq!(global(&server, "$Entry").as_deref(), Some(b"1".as_slice()));
+    assert_eq!(
+        global(&server, "$Started").as_deref(),
+        Some(b"1".as_slice())
+    );
+    assert!(allows_connections(&server));
+}
+
+#[test]
+fn server_entry_replaces_the_script_the_start_function_and_the_connections() {
+    let kept = Rc::new(RefCell::new(None));
+    let engine = engine(vec![plugin("test.entry", {
+        let kept = Rc::clone(&kept);
+        move |engine| {
+            let kept = Rc::clone(&kept);
+            engine.server_entry(move |entry| {
+                let given = entry.vm.global("$Given").unwrap_or_default();
+                entry
+                    .vm
+                    .set_global("$Custom", &String::from_utf8_lossy(&given));
+                entry.vm.set_global("$StartName", entry.start.start);
+                *kept.borrow_mut() = Some(entry.connections.clone());
+                Ok(())
+            });
+        }
+    })]);
+    let server = GameServer::start_engine(
+        &engine,
+        files(),
+        &ServerStart {
+            listen: Listen::Memory(SocketAddr::from((Ipv4Addr::LOCALHOST, 28_000))),
+            globals: &[("$Given", "from the start")],
+            start: "startIt",
+            args: &[],
+        },
+    )
+    .expect("the server starts");
+    assert_eq!(global(&server, "$Entry"), None, "server.cs did not run");
+    assert_eq!(
+        global(&server, "$Started"),
+        None,
+        "the start function did not run"
+    );
+    assert_eq!(
+        global(&server, "$Custom").as_deref(),
+        Some(b"from the start".as_slice()),
+        "the start's globals are set before the entry"
+    );
+    assert_eq!(
+        global(&server, "$StartName").as_deref(),
+        Some(b"startIt".as_slice())
+    );
+    assert!(!allows_connections(&server), "connections stay off");
+    let connections = kept.borrow_mut().take().expect("the entry ran");
+    connections.allow(true);
+    assert!(allows_connections(&server));
+    connections.allow(false);
+    assert!(!allows_connections(&server));
+}
+
+#[test]
+fn server_entry_the_entry_stage_replays_after_it() {
+    let log = Log::default();
+    let engine = engine(vec![plugin("test.entry", {
+        let log = Rc::clone(&log);
+        move |engine| {
+            let for_entry = Rc::clone(&log);
+            engine.server_entry(move |_| {
+                for_entry.borrow_mut().push("entry".to_string());
+                Ok(())
+            });
+            let for_stage = Rc::clone(&log);
+            engine.server(ServerStage::Entry, move |_, _| {
+                for_stage.borrow_mut().push("stage".to_string());
+                Ok(())
+            });
+        }
+    })]);
+    start(&engine, files()).expect("the server starts");
+    assert_eq!(*log.borrow(), ["entry", "stage"]);
+}
+
+#[test]
+fn server_entry_an_error_stops_the_start_with_its_message() {
+    let engine = engine(vec![plugin("test.entry", |engine| {
+        engine.server_entry(|_| Err("the entry script is not in the program".to_string()));
+    })]);
+    let Err(error) = start(&engine, files()) else {
+        panic!("the start fails");
+    };
+    assert!(
+        error.contains("the entry script is not in the program"),
+        "{error}"
+    );
+}
+
+#[test]
+fn server_entry_a_second_setter_fails_the_build_naming_both() {
+    assert_names_both(builder(vec![
+        plugin("test.first", |engine| {
+            engine.server_entry(|_| Ok(()));
+        }),
+        plugin("test.second", |engine| {
+            engine.server_entry(|_| Ok(()));
+        }),
+    ]));
+}
+
+/// Asks `server` for its info from a LAN client over the in-memory link; whether it answered.
+fn answers_info_query(server: &mut GameServer) -> bool {
+    let client = SocketAddr::from((Ipv4Addr::LOCALHOST, 40_000));
+    let end = server.memory_end().expect("an in-memory server");
+    end.take_sent();
+    assert!(end.inject(client, &request(GAME_INFO_REQUEST, 0, 0, 7)));
+    server.tick();
+    let end = server.memory_end().expect("an in-memory server");
+    end.take_sent()
+        .iter()
+        .any(|(to, data)| *to == client && data.first() == Some(&GAME_INFO_RESPONSE))
+}
+
+#[test]
+fn server_entry_a_lan_query_is_dropped_until_the_game_allows_connections() {
+    let kept = Rc::new(RefCell::new(None));
+    let engine = engine(vec![plugin("test.entry", {
+        let kept = Rc::clone(&kept);
+        move |engine| {
+            let kept = Rc::clone(&kept);
+            engine.server_entry(move |entry| {
+                *kept.borrow_mut() = Some(entry.connections.clone());
+                Ok(())
+            });
+        }
+    })]);
+    let mut server = start(&engine, files()).expect("the server starts");
+    assert!(!answers_info_query(&mut server), "no answer while off");
+    let connections = kept.borrow_mut().take().expect("the entry ran");
+    connections.allow(true);
+    assert!(answers_info_query(&mut server), "an answer once allowed");
+    connections.allow(false);
+    assert!(!answers_info_query(&mut server), "no answer once off again");
+}
+
+#[test]
+fn server_entry_a_plain_server_answers_a_lan_query_from_the_start() {
+    let mut server = start(&engine(vec![]), files()).expect("the server starts");
+    assert!(answers_info_query(&mut server));
+}
+
+#[test]
+fn server_entry_connections_do_nothing_once_the_server_is_gone() {
+    let kept = Rc::new(RefCell::new(None));
+    let engine = engine(vec![plugin("test.entry", {
+        let kept = Rc::clone(&kept);
+        move |engine| {
+            let kept = Rc::clone(&kept);
+            engine.server_entry(move |entry| {
+                *kept.borrow_mut() = Some(entry.connections.clone());
+                Ok(())
+            });
+        }
+    })]);
+    let server = start(&engine, files()).expect("the server starts");
+    let connections = kept.borrow_mut().take().expect("the entry ran");
+    let state = Rc::downgrade(&server.server.state);
+    drop(server);
+    assert!(
+        state.upgrade().is_none(),
+        "the handle keeps no server alive"
+    );
+    connections.allow(true);
 }

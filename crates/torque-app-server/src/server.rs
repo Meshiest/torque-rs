@@ -42,10 +42,11 @@ use torque_server::net::transport::{
 use torque_server::net::{HostParts, NetShared};
 use torque_server::server::{MissionError, Server, TICK_MS, TickHooks};
 use torque_server::state::ServerState;
-use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::host::{FileHost, MemFiles};
 use torque_ts_vm::vm::Vm;
 
 use crate::plugins::{MinimalPlugins, ServerWiring};
+use crate::slots::{Connections, FileSetter, ServerEntry, file_setter};
 pub use crate::transports::{BoundTransport, CustomListen};
 use crate::transports::{ServerLink, open_listen, server_transport_warnings};
 
@@ -222,7 +223,7 @@ impl GameServer {
             .build()
             .map_err(|e| e.to_string())?;
         let mut prepare = Some(prepare);
-        GameServer::start_prepared(&engine, files, start, &mut |vm| {
+        GameServer::start_prepared(&engine, file_setter(files), start, &mut |vm| {
             if let Some(prepare) = prepare.take() {
                 prepare(vm);
             }
@@ -233,19 +234,34 @@ impl GameServer {
     /// ([`ServerStage`]), in the order the engine's plugins were added. The engine can make any number of servers. It needs
     /// the plugins that make the server's parts: [`ServerGamePlugin`](crate::plugins::ServerGamePlugin) and [`NetHostPlugin`](crate::plugins::NetHostPlugin) (with [`MinimalPlugins`], all of
     /// them). What the build warned about ([`Engine::warnings`]) is printed to the server's console first.
+    ///
+    /// The script engine is the engine's ([`HostSlots::script_engine`](crate::slots::HostSlots::script_engine), else
+    /// [`Vm::new`]). Once the stages ran, the server sets `start`'s globals and runs its entry: the engine's
+    /// ([`HostSlots::server_entry`](crate::slots::HostSlots::server_entry)), then the `Entry` stage, leaving connections as that
+    /// entry left them; else the entry script, the `Entry` stage and `start`'s function, and it takes connections.
     pub fn start_engine(
         engine: &Engine,
         files: MemFiles,
         start: &ServerStart,
     ) -> Result<GameServer, String> {
-        GameServer::start_prepared(engine, files, start, &mut |_| {})
+        GameServer::start_prepared(engine, file_setter(files), start, &mut |_| {})
+    }
+
+    /// [`GameServer::start_engine`] over a file host of the game's own (a folder read in place, archives mounted over it, an
+    /// overlay that keeps the writes): the scripts read and write `files` instead of a [`MemFiles`].
+    pub fn start_engine_with_files(
+        engine: &Engine,
+        files: impl FileHost + 'static,
+        start: &ServerStart,
+    ) -> Result<GameServer, String> {
+        GameServer::start_prepared(engine, file_setter(files), start, &mut |_| {})
     }
 
     /// [`GameServer::start_engine`] with `prepare` run on the script engine after the `Prepare` stage (not generic, so a
     /// game's own closure does not copy this body into its crate).
     fn start_prepared(
         engine: &Engine,
-        files: MemFiles,
+        files: FileSetter,
         start: &ServerStart,
         prepare: &mut dyn FnMut(&mut Vm),
     ) -> Result<GameServer, String> {
@@ -256,7 +272,7 @@ impl GameServer {
         }
         let ServerLink { transport, end } = open_listen(engine, &start.listen)?;
 
-        let mut vm = Vm::new();
+        let mut vm = crate::slots::make_script_engine(engine);
         for warning in engine.warnings() {
             vm.warn(warning.to_string());
         }
@@ -267,7 +283,7 @@ impl GameServer {
         let wiring = Rc::new(ServerWiring::new(Rc::clone(&state), Rc::clone(&transport)));
         vm.set_extension(Rc::clone(&wiring));
         replay(engine, ServerStage::Classes, &mut vm)?;
-        vm.set_file_host(files);
+        files(&mut vm);
         replay(engine, ServerStage::Prepare, &mut vm)?;
         if let Some(classes) = engine.slot::<dyn SimClasses>() {
             torque_game::sim_classes::set_sim_classes(&mut vm, classes);
@@ -405,21 +421,19 @@ impl GameServer {
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
         }
-        let entry = crate::config::server_entry(engine);
-        if !server
-            .vm
-            .exec_file(entry.as_bytes(), false)
-            .map_err(|e| format!("{entry}: {e}"))?
-        {
-            return Err(format!("{entry} is not in the game folder"));
+        match crate::slots::server_entry_fn(engine) {
+            Some(run) => {
+                // Off until the game's entry turns them on, whatever the network host's attach left.
+                state.borrow_mut().allow_connections = false;
+                let connections = Connections::over(&state);
+                run(&mut ServerEntry::new(&mut server.vm, start, connections))?;
+                replay(engine, ServerStage::Entry, &mut server.vm)?;
+            }
+            None => {
+                run_entry_script(engine, &mut server.vm, start)?;
+                state.borrow_mut().allow_connections = true;
+            }
         }
-        replay(engine, ServerStage::Entry, &mut server.vm)?;
-        let args: Vec<Vec<u8>> = start.args.iter().map(|a| a.as_bytes().to_vec()).collect();
-        server
-            .vm
-            .invoke(None, start.start.as_bytes(), &args)
-            .map_err(|e| format!("{}: {e}", start.start))?;
-        state.borrow_mut().allow_connections = true;
         Ok(GameServer {
             server,
             shared,
@@ -567,6 +581,22 @@ impl GameServer {
     pub fn service(&mut self) {
         self.transport.borrow_mut().service();
     }
+}
+
+/// A server's plain entry: the entry script, the `Entry` stage, then the start function.
+fn run_entry_script(engine: &Engine, vm: &mut Vm, start: &ServerStart) -> Result<(), String> {
+    let entry = crate::config::server_entry(engine);
+    if !vm
+        .exec_file(entry.as_bytes(), false)
+        .map_err(|e| format!("{entry}: {e}"))?
+    {
+        return Err(format!("{entry} is not in the game folder"));
+    }
+    replay(engine, ServerStage::Entry, vm)?;
+    let args: Vec<Vec<u8>> = start.args.iter().map(|a| a.as_bytes().to_vec()).collect();
+    vm.invoke(None, start.start.as_bytes(), &args)
+        .map_err(|e| format!("{}: {e}", start.start))?;
+    Ok(())
 }
 
 /// Replays `stage` of `engine`'s server recipes on `vm`.

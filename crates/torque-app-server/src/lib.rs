@@ -20,7 +20,8 @@
 //! - [`config`]: `game.toml`, the config a game's folder carries: entry scripts, plugins on and off, the runner.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`slots`]: [`slots::ServerSlots`], the engine builder's calls for a server's main-loop seams: hooks (a list) and the
-//!   mission loader (exclusive).
+//!   mission loader (exclusive); and [`slots::HostSlots`], what every server and client is made of and how it starts: the
+//!   script engine, the server's entry and the client's (each exclusive).
 //!
 //! # Maintaining
 //!
@@ -33,6 +34,18 @@
 //! no entry builds a server with the plain engine's `NoHooks` and `ExecMission`, so the wire goldens and native snapshots do
 //! not move. Tests are `server_hooks_*` and `mission_loader_*` in `slots_tests.rs`
 //! (`cargo test -p torque-app-server --lib -- server_hooks_ mission_loader_`).
+//!
+//! **The host slots are exclusive and default to what a TGE game does** ([`slots::HostSlots`]). The script engine comes from
+//! `slots::make_script_engine` (the slot's factory, else `Vm::new`) first thing in `GameServer::start_prepared` and in torque-app's
+//! `ClientBuilder::from_engine_files`, so every recipe runs on it. The files reach both bodies as one `slots::FileSetter`, so the
+//! constructors over any `FileHost` (`start_engine_with_files`, `from_engine_with_files`) do not copy either body per file
+//! host; the `MemFiles` constructors are unchanged. The server's entry slot replaces `run_entry_script` (the entry script, the
+//! `Entry` stage, the start function) and the turning on of connections; the `Entry` stage then replays after the game's entry,
+//! and connections stay as the game left them: the server turns them off just before the game's entry, and
+//! `slots::Connections` (a weak handle on the server's state, a no-op once it is gone or borrowed) turns them on. The client's
+//! entry slot replaces only the entry script in `exec_entry`. An engine with none of them builds the same server and client as
+//! before, which the wire goldens and native snapshots check. Tests are `script_engine_*`, `script_files_*` and `server_entry_*` in
+//! `slots_tests.rs`, and the client's in torque-app's `host_slots_tests.rs`.
 
 pub mod cli;
 pub mod config;

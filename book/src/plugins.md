@@ -835,7 +835,8 @@ let engine = EngineBuilder::new()
   `engine.warnings()`, and a server or a client prints them first on its console.
 - **Entry scripts.** A server runs `server` (`GameServer::start_engine`) and `ClientBuilder::exec_entry` runs `client`, in
   place of the fixed `server.cs`. The engine keeps the config as a resource; `server_entry(&engine)` and
-  `client_entry(&engine)` read it. A script is a path inside the game's files (no leading `/`, no `..`).
+  `client_entry(&engine)` read it. A script is a path inside the game's files (no leading `/`, no `..`). A plugin can
+  replace the entry script with a function of its own ([below](#the-script-engine-the-files-and-the-entry)).
 - **Runner.** `[runner] id` names one of the runner plugins in the build. The others the engine ships are turned off,
   as the runner slot holds one. Naming a runner the build does not have is a warning, and the one already set stays.
 - **Protocol.** A game speaks one network protocol, and one plugin sets it (`engine.net().protocol(..)`): `DefaultPlugins` and
@@ -854,6 +855,45 @@ Neither case panics, and a parser test throws damaged and random files at it to 
 The minimal example does this: `examples/minimal-engine/game/game.toml` turns off the plugins that game never uses
 (sound, water, terrain, the game list) and names the client's script, and its `builder` function applies the file for
 the server, the client and the window alike.
+
+## The script engine, the files and the entry
+
+A game that is not a TGE game in every respect can change how the engine makes its servers and clients: the script engine
+they run on and what each side runs to start are exclusive slots (a second plugin that sets one fails the build and names
+both), and the scripts' files can come from any file host. With none of it a server and a client are made exactly as
+above.
+
+```rust,ignore
+use torque_app::slots::HostSlots;
+
+fn build(engine: &mut EngineBuilder) {
+    // Every server and client runs on a script engine this makes, before any recipe runs.
+    engine.script_engine(|| my_script_engine::new_vm());
+    // What a server does once its stages ran, in place of the entry script and the start function.
+    engine.server_entry(|entry| {
+        entry.vm.eval(MAIN_CS).map_err(|e| e.to_string())?;
+        keep_for_later(entry.connections.clone());
+        Ok(())
+    });
+    // What a client's `exec_entry` does in place of its entry script.
+    engine.client_entry(|vm| vm.eval(MAIN_CS).map(drop).map_err(|e| e.to_string()));
+}
+```
+
+- **The script engine.** A `Vm`'s executor and object tables are fixed when it is made, so a recipe cannot turn TGE's
+  into another. A game that needs a script engine other than TGE's gives its own: `script_engine` sets the factory every
+  `GameServer::start*` and `ClientBuilder::from_engine*` calls, once per server or client, before the first stage; with
+  none it is `Vm::new`. A host of a game's own makes its engine the same way with `slots::make_script_engine(&engine)`.
+- **The files.** `GameServer::start_engine_with_files` and `ClientBuilder::from_engine_with_files` take any `FileHost`: a
+  folder read in place, archives mounted over it, an overlay that keeps what the scripts write. The `MemFiles`
+  constructors stay as they are.
+- **The server's entry.** A plain server sets the start's globals, runs its entry script, the `Entry` stage and the start
+  function, then takes connections. With `server_entry`, the server sets the globals and calls the game's function in place
+  of the rest, then replays the `Entry` stage. The function gets the script engine, the `ServerStart` it was asked for and
+  the server's `Connections`, which are off: the server takes none until the game calls `connections.allow(true)`, now or
+  later from a script function of its own. An error stops the server's start with its message.
+- **The client's entry.** With `client_entry`, `exec_entry` calls the game's function in place of the entry script, then
+  replays the `Entry` stage, as it does after the script.
 
 ## The two minimal examples
 
