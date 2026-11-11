@@ -253,6 +253,13 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
 /// the browser's storage there, which answers later than a call is made); it cannot fail the start. The program depends on
 /// `wasm-bindgen` (and `wasm-bindgen-futures` with `prepare`).
 ///
+/// A game that runs the Lua a server sends (`torque-plugin-client-script`) adds `client_guests:`, a function returning the
+/// build's accepted realm guests as hexadecimal hashes (`torque_client_script_host::accepted_hex`): the module then exports
+/// `acceptedClientGuests`, and a page built with `web/build.mjs --client-scripts` checks its copy of the guest against that
+/// list before it starts the page's runner (`web/client-script.js`). A module without it never gets the runner.
+///
+/// `prepare:` and `client_guests:` may come in either order, after `start_fetched:`.
+///
 /// ```ignore
 /// #[cfg(target_arch = "wasm32")]
 /// torque::app::web_exports! {
@@ -260,13 +267,45 @@ pub fn mark_play(frames: u64, map: &str, figure: Option<[f32; 3]>) {
 ///     start_embedded: my_game::web::start_embedded,
 ///     start_fetched: my_game::web::start_fetched,
 ///     prepare: my_game::web::prepare, // optional
+///     // Only for a game with server scripts:
+///     client_guests: torque_client_script_host::accepted_hex,
 /// }
 /// ```
 #[macro_export]
 macro_rules! web_exports {
-    (embedded: $embedded:expr, start_embedded: $start_embedded:path, start_fetched: $start_fetched:path $(, prepare: $prepare:path)? $(,)?) => {
+    (
+        embedded: $embedded:expr,
+        start_embedded: $start_embedded:path,
+        start_fetched: $start_fetched:path,
+        client_guests: $client_guests:path,
+        prepare: $prepare:path $(,)?
+    ) => {
+        $crate::web_exports! {
+            embedded: $embedded,
+            start_embedded: $start_embedded,
+            start_fetched: $start_fetched,
+            prepare: $prepare,
+            client_guests: $client_guests,
+        }
+    };
+    (
+        embedded: $embedded:expr,
+        start_embedded: $start_embedded:path,
+        start_fetched: $start_fetched:path
+        $(, prepare: $prepare:path)?
+        $(, client_guests: $client_guests:path)? $(,)?
+    ) => {
         mod page {
             use wasm_bindgen::prelude::wasm_bindgen;
+
+            $(
+                /// The realm guests this build runs, as SHA-256 hashes in lower-case hexadecimal: the page runs its copy of
+                /// the guest only if its hash is one of them.
+                #[wasm_bindgen(js_name = acceptedClientGuests)]
+                pub fn accepted_client_guests() -> Vec<String> {
+                    $client_guests()
+                }
+            )?
 
             /// Whether the module carries its files; if not, the page fetches them by `files.json`.
             #[wasm_bindgen]

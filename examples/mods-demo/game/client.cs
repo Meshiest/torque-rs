@@ -1,6 +1,6 @@
-// The demo's client: the main menu (host a match here, join one from the network's list of games or by address), the screen
-// that shows the server's mods downloading, the match as the server sends it with a small board over the world, the keys and
-// the Esc menu. The client has none of the game mode's rules: it is told its team, the score and the clock, and shows them.
+// The demo's client: the main menu (host a match here, join one from the network's list of games or by address: the examples'
+// common/matches.cs, with the screen that shows the server's mods downloading), the match as the server sends it with a small
+// board over the world, the keys and the Esc menu. The client has none of the game mode's rules: it is told its team, the score and the clock, and shows them.
 // Its player is steered with the move globals ($mvForwardAction and the others), set by the keys or, headless, by a bot.
 //
 // The host watches the globals the scripts set: $Game::HostAsked (start a server here and join it; $Game::HostScope is
@@ -22,29 +22,14 @@ $firstPerson = 0;
 if ($Pref::Player::Name $= "")
    $Pref::Player::Name = "Player";
 
-// ---- joining
+// ---- joining (the screens are common/matches.cs's)
 
-// Joins the server at %address; the join screen names it %shown when given (a page names the server it came from, not the
-// address its game socket stands for).
+// Joins the server at %address; the join screen names it %shown when given.
 function connectTo(%address, %shown)
 {
-   disconnect();
-   $Join::Address = %address;
-   $Join::Shown = %shown $= "" ? %address : %shown;
-   $Join::Mods = "";
-   $Join::Versions = "";
-   $Join::Files = 0;
-   $Join::Bytes = 0;
-   $Join::Received = 0;
    $Match::Team = "";
    $Match::Updates = "";
-   $Join::Seen = "";
-   setJoinState("connecting");
-   %conn = new GameConnection(ServerConnection);
-   if ($Pref::Player::Name !$= "")
-      %conn.setConnectArgs($Pref::Player::Name);
-   %conn.connect(%address);
-   showJoinScreen();
+   joinServer(%address, %shown);
 }
 
 function disconnect()
@@ -55,175 +40,57 @@ function disconnect()
 
 function GameConnection::onConnectionAccepted(%this)
 {
-   setJoinState("accepted");
+   joinAccepted();
 }
 
 function GameConnection::onConnectRequestRejected(%this, %why)
 {
    $Why = %why;
-   joinFailed("The server turned you away: " @ %why);
+   joinRejected(%why);
 }
 
 function GameConnection::onConnectRequestTimedOut(%this)
 {
-   joinFailed("No server answered at " @ $Join::Shown @ ".");
+   joinTimedOut();
 }
 
 function GameConnection::onConnectionDropped(%this, %reason)
 {
-   leftMatch("The server closed the connection: " @ %reason);
+   joinDropped("The server closed the connection: " @ %reason);
 }
 
 function GameConnection::onConnectionTimedOut(%this)
 {
-   leftMatch("Lost the connection to the server.");
+   joinDropped("Lost the connection to the server.");
 }
 
-// The mods the server needs (their names and versions, each list tab separated: a name has no tab) and their files, from the offer it sent.
-function readOffer()
-{
-   %list = getRequiredModList();
-   $Join::Mods = "";
-   $Join::Versions = "";
-   $Join::Files = 0;
-   for (%i = 0; %i < getWordCount(%list); %i++)
-   {
-      %id = getWord(%list, %i);
-      %name = getRequiredModField(%id, "name");
-      %version = getRequiredModField(%id, "version");
-      $Join::Mods = $Join::Mods $= "" ? %name : $Join::Mods @ "\t" @ %name;
-      $Join::Versions = $Join::Versions $= "" ? %version : $Join::Versions @ "\t" @ %version;
-      $Join::Files += getRequiredModField(%id, "files");
-   }
-}
-
-function onModDownloadStarted(%mods, %bytes)
-{
-   $Download::Started = %mods SPC %bytes;
-   readOffer();
-   $Join::Bytes = %bytes;
-   $Join::Received = 0;
-   setJoinState(%mods > 0 ? "downloading" : "cached");
-}
-
-function onModDownloadProgress(%id, %received, %total, %index, %count)
-{
-   $Join::Received = %received;
-   $Join::Bytes = %total;
-   updateJoinScreen();
-}
-
-function onModDownloadDone()
-{
-   $Download::Done++;
-   $Join::Received = $Join::Bytes;
-   if ($Join::State !$= "cached")
-      setJoinState("joining");
-}
-
-function onModDownloadFailed(%why)
-{
-   $Download::Failed = %why;
-   joinFailed("The download stopped: " @ %why);
-}
-
-function joinFailed(%why)
-{
-   $Join::Why = %why;
-   setJoinState("failed");
-}
-
-// The connection ended: in the match, back to the menu with why; while joining, on the join screen.
-function leftMatch(%why)
-{
-   if ($Join::State $= "playing")
-   {
-      leaveMatch();
-      MainStatus.setText(%why);
-      return;
-   }
-   joinFailed(%why);
-}
-
-// The join screen's Back, and the Esc menu's Leave: out of the server, back to the menu.
+// The Esc menu's Leave: out of the server, back to the menu.
 function leaveMatch()
 {
-   disconnect();
-   releaseKeys();
-   closePause();
-   $Join::State = "";
-   $Game::LeaveAsked = 1;
-   showMainMenu();
+   leaveJoin("");
 }
 
-// A size in bytes as a player reads it.
-function sizeText(%bytes)
-{
-   if (%bytes < 1024)
-      return %bytes @ " bytes";
-   if (%bytes < 1048576)
-      return mFloor(%bytes / 102.4) / 10 @ " KB";
-   return mFloor(%bytes / 104857.6) / 10 @ " MB";
-}
-
-// $Join::Seen keeps every state this join went through, in order, for a check that looks only now and then.
-function setJoinState(%state)
-{
-   if (%state !$= $Join::State || $Join::Seen $= "")
-      $Join::Seen = trim($Join::Seen SPC %state);
-   $Join::State = %state;
-   updateJoinScreen();
-}
-
-// The join screen as the join stands now.
-function updateJoinScreen()
-{
-   %state = $Join::State;
-   JoinScreenTitle.setText("Joining " @ $Join::Shown);
-   %offer = %state $= "downloading" || %state $= "cached" || %state $= "joining";
-   JoinScreenMod.setText(%offer ? strreplace($Join::Mods, "\t", ", ") : "");
-   JoinScreenVersion.setText(%offer ? strreplace($Join::Versions, "\t", ", ") : "");
-   %files = $Join::Files == 1 ? "1 file" : $Join::Files @ " files";
-   if (%state $= "cached")
-      JoinScreenDetail.setText("The server's game mode, already on this computer.");
-   else if (%offer)
-      JoinScreenDetail.setText("The server's game mode: " @ %files @ ", " @ sizeText($Join::Bytes) @ " to download.");
-   else
-      JoinScreenDetail.setText("");
-   JoinBarTrack.setVisible(%offer);
-   %done = $Join::Bytes > 0 ? $Join::Received / $Join::Bytes : 1;
-   JoinBar.setValue(%state $= "downloading" ? %done : 1);
-   if (%state $= "connecting")
-      %status = "Connecting...";
-   else if (%state $= "accepted")
-      %status = "Connected. Asking the server which mods it plays...";
-   else if (%state $= "downloading")
-      %status = "Downloading: " @ sizeText($Join::Received) @ " of " @ sizeText($Join::Bytes);
-   else if (%state $= "cached")
-      %status = "Nothing to download. Joining the match...";
-   else if (%state $= "joining")
-      %status = "Downloaded. Joining the match...";
-   else if (%state $= "failed")
-      %status = $Join::Why;
-   else
-      %status = "";
-   JoinScreenStatus.setText(%status);
-   JoinScreenBack.setText(%state $= "failed" ? "Back" : "Cancel");
-}
-
-function showJoinScreen()
+// The join screen's hooks (common/matches.cs).
+function joinScreenShown()
 {
    PlayMap.pop();
    closePause();
-   Canvas.setContent(JoinScreenGui);
-   Canvas.cursorOn();
-   updateJoinScreen();
+}
+
+function joinLeft(%why)
+{
+   releaseKeys();
+   closePause();
+   $Game::LeaveAsked = 1;
+   showMainMenu();
+   if (%why !$= "")
+      MainStatus.setText(%why);
 }
 
 // The match is on: the board over the world, the keys steer.
 function showMatch()
 {
-   setJoinState("playing");
+   joinPlaying();
    Canvas.setContent(MatchGui);
    PlayMap.push();
 }
@@ -410,6 +277,10 @@ new GuiControlProfile(MenuButtonProfile)
 
 createCanvas("torque-example-mods-demo");
 
+// Hosting and joining (the list of matches, the address box, the download screen); the join screen calls the mod the game mode.
+$Join::ModsLabel = "The server's game mode";
+exec("common/matches.cs");
+
 // ---- the main menu
 
 new GuiControl(MainMenuGui)
@@ -496,220 +367,6 @@ function quitGame()
    $Game::QuitAsked = 1;
    quit();
 }
-
-// ---- who may join a match hosted here
-
-new GuiControl(HostGui)
-{
-   profile = MenuBackProfile; visible = true; enabled = true; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiControl(HostPanel)
-   {
-      profile = ClearProfile; visible = true; enabled = true; position = "40 50"; extent = "720 500"; horizSizing = "center"; vertSizing = "center";
-      new GuiTextCtrl(HostTitle) { profile = MenuTitleProfile; visible = true; enabled = true; position = "20 20"; extent = "660 56"; text = "Host a match"; };
-      new GuiTextCtrl(HostLine) { profile = MenuDimProfile; visible = true; enabled = true; position = "22 80"; extent = "660 20"; text = "Who can join the match you start?"; };
-      new GuiButtonCtrl(HostLanButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "20 140"; extent = "280 56"; text = "LAN only"; command = "hostGame(\"lan\");";
-      };
-      new GuiTextCtrl(HostLanNote) { profile = MenuDimProfile; visible = true; enabled = true; position = "322 158"; extent = "380 20"; text = "Players on your own network can join."; };
-      new GuiButtonCtrl(HostPublicButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "20 212"; extent = "280 56"; text = "Public"; command = "hostGame(\"public\");";
-      };
-      new GuiTextCtrl(HostPublicNote)
-      {
-         profile = MenuDimProfile; visible = true; enabled = true; position = "322 222"; extent = "380 20"; text = "Anyone who can reach this computer can join.";
-      };
-      new GuiTextCtrl(HostPublicNote2)
-      {
-         profile = MenuDimProfile; visible = true; enabled = true; position = "322 244"; extent = "380 20"; text = "Needs UDP 28000 forwarded to this computer.";
-      };
-      new GuiButtonCtrl(HostBackButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "20 284"; extent = "280 56"; text = "Back"; command = "showMainMenu();";
-      };
-      new GuiTextCtrl(HostStatus) { profile = MenuNoteProfile; visible = true; enabled = true; position = "20 450"; extent = "680 28"; text = ""; };
-   };
-};
-
-function showHost()
-{
-   saveName();
-   HostStatus.setText("");
-   Canvas.setContent(HostGui);
-}
-
-// %scope is "lan" or "public".
-function hostGame(%scope)
-{
-   $Game::HostScope = %scope $= "public" ? "public" : "lan";
-   saveName();
-   HostStatus.setText("Starting a match...");
-   $Game::HostAsked = 1;
-}
-
-// ---- the network's matches
-
-new GuiControl(JoinGui)
-{
-   profile = MenuBackProfile; visible = true; enabled = true; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiControl(JoinPanel)
-   {
-      profile = ClearProfile; visible = true; enabled = true; position = "20 30"; extent = "760 540"; horizSizing = "center"; vertSizing = "center";
-      new GuiTextCtrl(JoinTitle) { profile = MenuTitleProfile; visible = true; enabled = true; position = "0 0"; extent = "700 56"; text = "Join a match"; };
-      new GuiTextCtrl(JoinHeaderGame) { profile = MenuDimProfile; visible = true; enabled = true; position = "4 74"; extent = "200 20"; text = "Server"; };
-      new GuiTextCtrl(JoinHeaderPlayers) { profile = MenuDimProfile; visible = true; enabled = true; position = "404 74"; extent = "90 20"; text = "Players"; };
-      new GuiTextCtrl(JoinHeaderBots) { profile = MenuDimProfile; visible = true; enabled = true; position = "504 74"; extent = "90 20"; text = "Bots"; };
-      new GuiTextCtrl(JoinHeaderPing) { profile = MenuDimProfile; visible = true; enabled = true; position = "604 74"; extent = "80 20"; text = "Ping"; };
-      new GuiScrollCtrl(ServerScroll)
-      {
-         profile = MenuScrollProfile; visible = true; enabled = true; position = "0 98"; extent = "760 252"; hScrollBar = "alwaysOff"; vScrollBar = "dynamic";
-         new GuiTextListCtrl(ServerList)
-         {
-            profile = MenuListProfile; visible = true; enabled = true; position = "2 2"; extent = "740 20"; columns = "0 400 500 600";
-         };
-      };
-      new GuiTextCtrl(AddressLabel) { profile = MenuTextProfile; visible = true; enabled = true; position = "4 372"; extent = "76 24"; text = "Address"; };
-      new GuiTextEditCtrl(AddressEdit)
-      {
-         profile = MenuEditProfile; visible = true; enabled = true; position = "82 368"; extent = "498 32"; maxLength = 260; text = "";
-         placeholderText = "127.0.0.1:28000"; altCommand = "connectAddress();";
-      };
-      new GuiButtonCtrl(ConnectButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "590 364"; extent = "170 40"; text = "Connect"; command = "connectAddress();";
-      };
-      new GuiButtonCtrl(RefreshButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "0 440"; extent = "200 50"; text = "Refresh"; command = "refreshServers();";
-      };
-      new GuiButtonCtrl(JoinSelectedButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "280 440"; extent = "200 50"; text = "Join"; command = "joinSelected();";
-      };
-      new GuiButtonCtrl(BackButton)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "560 440"; extent = "200 50"; text = "Back"; command = "showMainMenu();";
-      };
-      new GuiTextCtrl(JoinStatus) { profile = MenuNoteProfile; visible = true; enabled = true; position = "0 506"; extent = "760 28"; text = ""; };
-   };
-};
-
-function showJoin()
-{
-   saveName();
-   AddressEdit.setValue($Pref::Client::LastAddress);
-   Canvas.setContent(JoinGui);
-   refreshServers();
-}
-
-function refreshServers()
-{
-   ServerList.clear();
-   $Game::ServerRows = 0;
-   JoinStatus.setText("Looking for matches...");
-   queryLanServers($Game::Port, 0, "", "", 0, 100, 0, 2, 0, 100, 0);
-}
-
-function onServerQueryStatus(%status, %message, %value)
-{
-   if (%status !$= "done")
-      return;
-   fillServerList();
-   JoinStatus.setText(getServerCount() == 0 ? "No matches found. Host one, or refresh." : "Pick a match and press Join.");
-}
-
-function fillServerList()
-{
-   ServerList.clear();
-   for (%i = 0; %i < getServerCount(); %i++)
-   {
-      if (!setServerInfo(%i))
-         continue;
-      %players = $ServerInfo::PlayerCount @ " / " @ $ServerInfo::MaxPlayers;
-      ServerList.addRow(%i, $ServerInfo::Name TAB %players TAB $ServerInfo::BotCount TAB $ServerInfo::Ping);
-   }
-   $Game::ServerRows = ServerList.rowCount();
-   if ($Game::ServerRows > 0)
-      ServerList.setSelectedRow(0);
-}
-
-function joinSelected()
-{
-   %row = ServerList.getSelectedId();
-   if (%row $= "" || %row < 0 || !setServerInfo(%row))
-   {
-      JoinStatus.setText("Pick a match first.");
-      return;
-   }
-   cancelJoinLookup();
-   connectTo($ServerInfo::Address);
-}
-
-// Connects to the address or name typed in the box (with :port, or without: port 28000); a name is looked up first.
-function connectAddress()
-{
-   saveName();
-   %typed = trim(AddressEdit.getValue());
-   %address = checkJoinAddress(%typed);
-   if (getSubStr(%address, 0, 1) $= "!")
-   {
-      JoinStatus.setText(getSubStr(%address, 1, 200));
-      return;
-   }
-   $Pref::Client::LastAddress = %typed;
-   if (getSubStr(%address, 0, 1) $= "?")
-   {
-      JoinStatus.setText("Looking up " @ getSubStr(%address, 1, 260) @ "...");
-      schedule(50, 0, pollJoinLookup);
-      return;
-   }
-   armPublicJoin(%address);
-   connectTo(%address);
-}
-
-// Connects once the typed name's lookup ends; leaving the screen drops it.
-function pollJoinLookup()
-{
-   if (Canvas.getContent() != JoinGui.getId())
-   {
-      cancelJoinLookup();
-      return;
-   }
-   %address = joinLookupResult();
-   if (%address $= "?")
-      schedule(50, 0, pollJoinLookup);
-   else if (getSubStr(%address, 0, 1) $= "!")
-      JoinStatus.setText(getSubStr(%address, 1, 200));
-   else if (%address !$= "")
-      connectTo(%address);
-}
-
-// ---- joining a server: its mods' download, then the match
-
-new GuiControl(JoinScreenGui)
-{
-   profile = MenuBackProfile; visible = true; enabled = true; position = "0 0"; extent = "800 600"; horizSizing = "width"; vertSizing = "height";
-   new GuiControl(JoinScreenPanel)
-   {
-      profile = MenuPanelProfile; visible = true; enabled = true; position = "120 160"; extent = "560 280"; horizSizing = "center"; vertSizing = "center";
-      new GuiTextCtrl(JoinScreenTitle) { profile = MenuHeadProfile; visible = true; enabled = true; position = "20 22"; extent = "520 38"; text = ""; };
-      // The mod's name ends at the middle and its version, smaller, starts beside it.
-      new GuiTextCtrl(JoinScreenMod) { profile = MenuModProfile; visible = true; enabled = true; position = "20 76"; extent = "256 30"; text = ""; };
-      new GuiTextCtrl(JoinScreenVersion) { profile = MenuDimProfile; visible = true; enabled = true; position = "286 84"; extent = "254 22"; text = ""; };
-      new GuiTextCtrl(JoinScreenDetail) { profile = MenuDimCenterProfile; visible = true; enabled = true; position = "20 110"; extent = "520 22"; text = ""; };
-      new GuiControl(JoinBarTrack)
-      {
-         profile = MenuTrackProfile; visible = true; enabled = true; position = "40 146"; extent = "480 24";
-         new GuiProgressCtrl(JoinBar) { profile = MenuBarProfile; visible = true; enabled = true; position = "2 2"; extent = "476 20"; };
-      };
-      new GuiTextCtrl(JoinScreenStatus) { profile = MenuCenterProfile; visible = true; enabled = true; position = "20 182"; extent = "520 24"; text = ""; };
-      new GuiButtonCtrl(JoinScreenBack)
-      {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "190 220"; extent = "180 44"; text = "Cancel"; command = "leaveMatch();";
-      };
-   };
-};
 
 // ---- the match
 

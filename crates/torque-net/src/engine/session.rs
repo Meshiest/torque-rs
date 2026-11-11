@@ -30,6 +30,14 @@
 //! [`NET_MAX_DATAGRAM`](crate::cap::NET_MAX_DATAGRAM), whatever the accept says), and always at most the link's
 //! [`Link::max_datagram`] of that tick; a received datagram past the limit is dropped unread.
 //!
+//! **Fates of stream packets are the peer's.** The layers above a stream lane (ghosts, events, channels) send again what a lost
+//! packet carried, so a packet with stream data is counted lost only when the peer can no longer read it: its ack mask lacks
+//! the packet and acknowledges one [`REORDER_THRESHOLD`](super::REORDER_THRESHOLD) or more after it (the receiver reads no
+//! packet that far behind its newest), or the peer's newest packet acknowledges none of it though it was sent a loss timeout
+//! earlier (an outage). Never by the clock alone: a peer that stops reading for a long frame reads every packet that waited.
+//! The sender keeps those packets within the ack mask ([`ACK_BITS`](super::ACK_BITS)) of what it sends, and at its edge sends
+//! nothing until the peer's acks come.
+//!
 //! **Memory.** What a peer can make a session hold is bounded: reassembly by [`LaneLimits`], events between two drains by
 //! [`MAX_EVENTS`] and [`LaneLimits::event_bytes`]. A peer that passes a cap closes the session with
 //! [`CloseReason::Protocol`].
@@ -315,6 +323,8 @@ pub struct Session {
     unreliable_credit: usize,
     received: Received,
     flight: Flight,
+    /// While the stream window is full: the packet that blocks it and when this side first saw it block (see `poll_packet`).
+    window_stall: Option<(u16, u32)>,
     /// The packets one ack or expiry resolved, kept between calls so resolving allocates nothing once warm.
     resolved: Vec<(Record, bool)>,
     ack_owed: bool,
@@ -365,6 +375,7 @@ impl Session {
             unreliable_credit: 0,
             received: Received::default(),
             flight: Flight::default(),
+            window_stall: None,
             resolved: Vec::new(),
             ack_owed: false,
             srtt_ms: INITIAL_RTT_MS,
@@ -746,14 +757,19 @@ impl Session {
                 cap: cap as u64,
             });
         }
+        let newest = self.received.is_newest(seq);
         self.received.note(seq);
         self.last_recv_ms = now;
         self.ack_owed |= body.has_sections();
-        let rtt = self
-            .flight
-            .on_ack(body.header.ack, body.header.mask, now, &mut self.resolved);
+        let (ack, mask) = (body.header.ack, body.header.mask);
+        let rtt = self.flight.on_ack(ack, mask, now, &mut self.resolved);
         if let Some(rtt) = rtt {
             self.srtt_ms = (self.srtt_ms * 7 + rtt.min(10_000)) / 8;
+        }
+        // Only the newest packet the peer sent says what it had read when it sent it: an older one may have waited on the way.
+        if newest && mask != 0 {
+            self.flight
+                .expire_unread(ack, now, self.loss_timeout(), &mut self.resolved);
         }
         self.apply_resolved()?;
         for f in &control {
@@ -1029,6 +1045,23 @@ impl Session {
         streams: &mut dyn StreamSource,
         now: u32,
     ) -> Polled {
+        // A peer that keeps the session alive with packets that never ack the stream would hold the window shut for ever:
+        // when one packet has blocked it for the idle timeout, the session closes.
+        match self.flight.stream_window_blocker() {
+            Some(blocker) => {
+                let since = match self.window_stall {
+                    Some((seq, since)) if seq == blocker => since,
+                    _ => now,
+                };
+                self.window_stall = Some((blocker, since));
+                if now.wrapping_sub(since) >= IDLE_TIMEOUT_MS {
+                    self.close_with(CloseReason::TimedOut);
+                    return Polled::Closed;
+                }
+                return Polled::Idle;
+            }
+            None => self.window_stall = None,
+        }
         let mut max = link.max_datagram().min(self.send_limit());
         if let Some(answer) = self.answer_limit() {
             max = max.min(answer);

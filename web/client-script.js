@@ -1,7 +1,9 @@
 // The page's runner of client scripts: each realm's guest (`torque_lua_client.wasm`, `just lua-client-web`) in a Worker of
 // its own (client-script-worker.js), so a script never blocks the game's frame. The game's module reaches it as
 // `globalThis.torqueClientScript` (torque-client-script-host's `WebRunner`), which a page that allows server scripts sets to
-// `await clientScripts({ guest, accepted })` before the game starts. Runs in a browser and under Node (worker_threads).
+// `await clientScripts({ guest, accepted })` before the game starts (`startPageRunner`: the guest fetched and checked against
+// the game module's own list, as web/index.html does for `build.mjs --client-scripts`). Runs in a browser and under Node
+// (worker_threads).
 //
 // `open(wasm, deadlineMs, memoryBytes)` makes a realm's Worker over `wasm` (empty: the page's guest): the module's memory
 // maximum is first set to `memoryBytes` (a module that imports its memory, shares it or has more than one is refused), so a
@@ -280,4 +282,30 @@ export async function clientScripts({
     live: () => live,
     settled: () => (inFlight === 0 ? Promise.resolve() : new Promise((resolve) => waiters.push(resolve))),
   };
+}
+
+/**
+ * Starts the page's runner for `game`, the game's module, as `target.torqueClientScript` (`globalThis` by default): the guest
+ * at `guestUrl` is fetched and run only if its hash is on the module's own list (`acceptedClientGuests`, which a game that
+ * runs server scripts exports: torque-app's `web_exports!` `client_guests`). Resolves to '' once the runner is set, else to
+ * why server scripts are unavailable (the module has no list, the guest could not be fetched, or it is not on the list); the
+ * runner is then left unset and the game plays without them. `get` (for tests) fetches in place of `fetch`, `spawn` makes the
+ * Workers as `clientScripts` takes it.
+ */
+export async function startPageRunner(game, guestUrl, { get = (url) => fetch(url), target = globalThis, spawn } = {}) {
+  if (typeof game?.acceptedClientGuests !== 'function') return 'the game lists no realm guest it accepts';
+  let guest;
+  try {
+    const response = await get(guestUrl);
+    if (!response.ok) return `the realm guest could not be fetched (HTTP ${response.status})`;
+    guest = new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    return `the realm guest could not be fetched: ${error?.message ?? error}`;
+  }
+  try {
+    target.torqueClientScript = await clientScripts({ guest, accepted: [...game.acceptedClientGuests()], spawn });
+  } catch (error) {
+    return String(error?.message ?? error);
+  }
+  return '';
 }

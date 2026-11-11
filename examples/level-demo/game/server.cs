@@ -6,6 +6,8 @@
 $Server::EngineClasses = 1;
 // A packet to each client every tick (it sends at the slower of this and the client's rate).
 $pref::Net::PacketRateToClient = 32;
+// The most players the office takes when others join it (the list of matches shows it).
+$Pref::Server::MaxPlayers = 8;
 
 // ---- datablocks
 
@@ -192,13 +194,20 @@ function startWorld(%file)
 function GameConnection::onClientConnect(%client, %name)
 {
    if (%name !$= "")
-      %client.name = %name;
+      %client.name = cleanName(%name, %client);
    echo("Client" SPC %client SPC "connected");
 }
 
+// Players start side by side, 1.5 apart along the map's x in the order they joined, so nobody starts inside another (the first
+// at the map's spawn point).
 function GameConnection::spawnFigure(%client)
 {
-   $World::Figure = %client.createFigure(WorldFigureData, MapInfo.spawn SPC "0 0 1" SPC MapInfo.spawnYaw);
+   %place = 0;
+   for (%i = 0; %i < ClientGroup.getCount(); %i++)
+      if (ClientGroup.getObject(%i) == %client)
+         %place = %i;
+   %spawn = getWord(MapInfo.spawn, 0) + (%place % 8) * 1.5 SPC getWords(MapInfo.spawn, 1, 2);
+   $World::Figure = %client.createFigure(WorldFigureData, %spawn SPC "0 0 1" SPC MapInfo.spawnYaw);
 }
 
 function GameConnection::onClientEnterGame(%client)

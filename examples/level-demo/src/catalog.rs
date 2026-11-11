@@ -9,19 +9,17 @@
 //! recent spawns.
 //!
 //! [`Catalog`] is the example's session: the office played by a client that hosts its server (the level demo's own client) and a
-//! second client that joins it, each with a realm. Both engines are made by [`catalog_engine`], which adds the plugins server
-//! scripts need and has the server require its mods. Nothing of the menu is read or run before the player allows it.
+//! second client that joins it, each with a realm. Both engines are made by [`catalog_engine`] (the office's multiplayer engine,
+//! [`office_engine`]), which adds the plugins server scripts need and has the server require its mods. Nothing of the menu is read or run before the player allows it.
 
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use torque::app::client::{ClientBuilder, ClientNet, GameClient, carry_between};
-use torque::app::plugins::{DefaultPlugins, GuiPlugin, ModsPlugin, ServerQueryPlugin};
 use torque::app::view::WorldView;
 use torque::app::{App, Host};
-use torque::engine::command::CommandSpec;
-use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup as _, PluginId};
+use torque::engine::{Engine, EngineBuilder};
 use torque::gui::GuiDraws;
 use torque::gui::client_script::{PromptSpot, ShownControl, prompt_spots};
 use torque::gui::input::InputEvent;
@@ -31,26 +29,20 @@ use torque::gui::keys::{
 use torque::mods::CacheChoice;
 use torque_client_script_format::ui::Kind;
 use torque_client_script_host::{GuestEngine, InstanceLimits, RealmGuest, Runner, Trap};
-use torque_plugin_client_script::{
-    Choices, ClientScriptsPlugin, RealmState, Realms, RunnerFactory,
-};
-use torque_plugin_gui_layout::GuiLayoutPlugin;
+use torque_plugin_client_script::{Choices, RealmState, Realms, RunnerFactory};
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
 use crate::client::LevelDemo;
 use crate::files::GameFiles;
-use crate::plugin::{Level, LevelPlugin, engine_of};
+use crate::office::card_controls;
+pub use crate::office::{ABILITIES, SCREEN, cards_of, center, recent_of, shown_of, status_of};
+use crate::office::{ServerScripts, office_engine};
+use crate::plugin::Level;
 use crate::server::{SERVER_ADDR, WorldServer};
 
 /// The size of a client's screen (pixels).
 pub const SIZE: (u32, u32) = (1280, 720);
-
-/// The screen that shows a map's world, which the game marks as one that shows server controls.
-pub const SCREEN: &str = "PlayGui";
-
-/// The abilities the menu asks for, as lines of the consent prompt: `ui` and `net`.
-pub const ABILITIES: usize = 2;
 
 /// The second client's address on the link.
 const OTHER_ADDR: std::net::SocketAddrV4 =
@@ -84,36 +76,14 @@ fn read_folder(dir: &Path, prefix: &str, out: &mut Vec<(String, Vec<u8>)>) -> io
     Ok(())
 }
 
-/// The control classes a menu is made of.
-#[derive(PluginId)]
-#[plugin(crate = torque::engine)]
-struct MenuControls;
-
-impl Plugin for MenuControls {
-    fn build(&self, engine: &mut EngineBuilder) {
-        torque::gui::client_script::add_controls(engine);
-    }
-}
-
-/// The level demo's engine over `files`, with what the catalog needs: the server requires the catalog mod of its clients (which
-/// keep what they download in `cache`) and the plugins that carry the menu's messages, make its controls and lay its containers
-/// out. The prediction and the props are [`level_engine`](crate::plugin::level_engine)'s.
+/// The level demo's engine over `files`, with what the catalog needs ([`office_engine`]): the server requires the catalog mod of
+/// its clients, which keep what they download in `cache`.
 pub fn catalog_engine(files: GameFiles, cache: PathBuf) -> Result<EngineBuilder, String> {
-    let level = LevelPlugin::with_mods(files, mod_files().map_err(|e| e.to_string())?)?;
-    let mods = ModsPlugin::new()
-        .required_mods()
-        .cache(CacheChoice::Folder(cache));
-    let mut engine = engine_of(
-        level,
-        DefaultPlugins
-            .set(GuiPlugin { layout_fonts: true })
-            .set(mods)
-            .disable::<ServerQueryPlugin>(),
-    )?;
-    engine.add_plugins((ClientScriptsPlugin::new(), MenuControls, GuiLayoutPlugin));
-    // The key for the menu (Q) reaches the server as the command `Catalog`: a couple a second is plenty.
-    engine.server_command_limits("Catalog", CommandSpec::new().rate(2, 4));
-    Ok(engine)
+    office_engine(
+        files,
+        mod_files().map_err(|e| e.to_string())?,
+        CacheChoice::Folder(cache),
+    )
 }
 
 /// The realm guest the clients run: the file `TORQUE_CLIENT_GUEST` names, else the one `just lua-client-web` leaves in the build
@@ -142,12 +112,27 @@ pub fn load_guest(path: &Path) -> Result<RealmGuest, String> {
 }
 
 /// Starts a guest instance for each realm.
-struct Instances(RealmGuest);
+pub struct Instances(pub RealmGuest);
 
 impl RunnerFactory for Instances {
     fn open(&self, limits: InstanceLimits) -> Result<Box<dyn Runner>, Trap> {
         Ok(Box::new(self.0.open(limits)?))
     }
+}
+
+/// The server scripts of a player's client in a window: the player's answers kept in the engine's per-user file, the guest at
+/// [`guest_path`]. Without the guest the client cannot run them, and tells servers so.
+pub fn player_scripts() -> ServerScripts {
+    let choices = torque_plugin_client_script::choices::default_path()
+        .map_or_else(Choices::in_memory, Choices::open);
+    let runner = match load_guest(&guest_path()) {
+        Ok(guest) => Some(Box::new(Instances(guest)) as Box<dyn RunnerFactory>),
+        Err(e) => {
+            eprintln!("example-level-demo: server scripts are unavailable: {e}");
+            None
+        }
+    };
+    ServerScripts::new(choices, runner)
 }
 
 /// A client's realm: nothing is remembered between runs, and the player is asked about every server (the settings and the prompt
@@ -332,20 +317,19 @@ impl Catalog {
         flag("$World::InWorld")
     }
 
-    /// The controls of the realm that client `n` shows, in tree order.
-    pub fn shown(&self, n: usize) -> Vec<ShownControl> {
-        let client = if n == 0 {
+    /// Client `n` (0 is the demo's own).
+    pub fn client_ref(&self, n: usize) -> &GameClient<WorldServer> {
+        if n == 0 {
             &self.demo.client
         } else {
             &self.other
-        };
-        client.host.gui.client_script_controls(client.vm())
+        }
     }
-}
 
-/// The center of a control's rectangle.
-pub fn center(rect: [i32; 4]) -> (i32, i32) {
-    (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
+    /// The controls of the realm that client `n` shows, in tree order.
+    pub fn shown(&self, n: usize) -> Vec<ShownControl> {
+        shown_of(self.client_ref(n))
+    }
 }
 
 /// The player presses and releases the left button at `at`: whether the GUI took both.
@@ -410,9 +394,49 @@ pub fn press_prompt(client: &mut GameClient<WorldServer>, rows: usize, spot: Pro
     click(client, center(rect))
 }
 
-// Sizes the menu's Lua gives its controls (`catalog/client/main.lua`), by which a test tells them apart: a card's name, the status
-// line, a line of the recent list, a card's picture.
-const WIDE: i32 = 734;
+/// The control of `kind` that `client` shows and `wanted` picks.
+fn find_on(
+    client: &GameClient<WorldServer>,
+    kind: Kind,
+    wanted: impl Fn(&ShownControl) -> bool,
+) -> Result<ShownControl, String> {
+    shown_of(client)
+        .into_iter()
+        .find(|c| c.kind == kind && wanted(c))
+        .ok_or_else(|| format!("the client shows no such {kind:?}"))
+}
+
+/// The player at `client` types `label` into the label field, after clearing it.
+pub fn type_label_on(client: &mut GameClient<WorldServer>, label: &str) -> Result<(), String> {
+    let field = find_on(client, Kind::TextField, |_| true)?;
+    click(client, center(field.rect));
+    for _ in 0..field.text.chars().count() {
+        key(client, KEY_BACKSPACE, 0);
+    }
+    type_text(client, label)
+}
+
+/// The player at `client` types `label` into the form (what was there is cleared first) and clicks the card named `card`
+/// ("Chair"), which is a button as a whole.
+pub fn spawn_on(
+    client: &mut GameClient<WorldServer>,
+    card: &str,
+    label: &str,
+) -> Result<(), String> {
+    type_label_on(client, label)?;
+    let button = card_controls(client)
+        .find(|c| c.text == card)
+        .ok_or_else(|| format!("the client shows no card {card:?}"))?;
+    click(client, center(button.rect));
+    Ok(())
+}
+
+/// The player at `client` presses the button whose text is `text`.
+pub fn press_on(client: &mut GameClient<WorldServer>, text: &str) -> Result<(), String> {
+    let button = find_on(client, Kind::Button, |c| c.text == text)?;
+    click(client, center(button.rect));
+    Ok(())
+}
 
 impl Catalog {
     /// Whether client `n` shows anything of a realm at all.
@@ -422,51 +446,22 @@ impl Catalog {
 
     /// The names on the cards of the catalog as client `n` shows them, in the order of the grid.
     pub fn cards(&self, n: usize) -> Vec<String> {
-        self.shown(n)
-            .into_iter()
-            .filter(|c| c.kind == Kind::Button && !c.image.is_empty())
-            .map(|c| c.text)
-            .collect()
+        cards_of(self.client_ref(n))
     }
 
     /// The pictures on the cards (content paths), in the order of the grid.
     pub fn pictures(&self, n: usize) -> Vec<String> {
-        self.shown(n)
-            .into_iter()
-            .filter(|c| c.kind == Kind::Button && !c.image.is_empty())
-            .map(|c| c.image)
-            .collect()
+        card_controls(self.client_ref(n)).map(|c| c.image).collect()
     }
 
     /// The status line, as client `n` shows it.
     pub fn status(&self, n: usize) -> String {
-        self.shown(n)
-            .into_iter()
-            .find(|c| c.kind == Kind::Text && c.rect[2] == WIDE && c.rect[3] == 20)
-            .map(|c| c.text)
-            .unwrap_or_default()
+        status_of(self.client_ref(n))
     }
 
     /// The lines of the recent list as client `n` shows them, newest first (the empty ones left out).
     pub fn recent(&self, n: usize) -> Vec<String> {
-        self.shown(n)
-            .into_iter()
-            .filter(|c| c.kind == Kind::Text && c.rect[2] == WIDE && c.rect[3] == 16)
-            .map(|c| c.text)
-            .filter(|t| !t.is_empty())
-            .collect()
-    }
-
-    fn find(
-        &self,
-        n: usize,
-        kind: Kind,
-        wanted: impl Fn(&ShownControl) -> bool,
-    ) -> Result<ShownControl, String> {
-        self.shown(n)
-            .into_iter()
-            .find(|c| c.kind == kind && wanted(c))
-            .ok_or_else(|| format!("client {n} shows no such {kind:?}"))
+        recent_of(self.client_ref(n))
     }
 
     /// The player at client `n` answers the consent prompt with Allow: they wait out the prompt's half second of ignoring the
@@ -495,25 +490,12 @@ impl Catalog {
     /// The player at client `n` types `label` into the form (what was there is cleared first) and clicks the card named `card`
     /// ("Chair"), which is a button as a whole.
     pub fn spawn(&mut self, n: usize, card: &str, label: &str) -> Result<(), String> {
-        self.type_label(n, label)?;
-        let button = self
-            .shown(n)
-            .into_iter()
-            .find(|c| c.kind == Kind::Button && !c.image.is_empty() && c.text == card)
-            .ok_or_else(|| format!("client {n} shows no card {card:?}"))?;
-        click(self.client(n), center(button.rect));
-        Ok(())
+        spawn_on(self.client(n), card, label)
     }
 
     /// The player at client `n` types `label` into the label field, after clearing it.
     pub fn type_label(&mut self, n: usize, label: &str) -> Result<(), String> {
-        let field = self.find(n, Kind::TextField, |_| true)?;
-        let client = self.client(n);
-        click(client, center(field.rect));
-        for _ in 0..field.text.chars().count() {
-            key(client, KEY_BACKSPACE, 0);
-        }
-        type_text(client, label)
+        type_label_on(self.client(n), label)
     }
 
     /// The player at client `n` presses and releases `key` (a key of the game's: the action maps and the GUI see it as they do a
@@ -526,9 +508,7 @@ impl Catalog {
 
     /// The player at client `n` presses the button whose text is `text`.
     pub fn press(&mut self, n: usize, text: &str) -> Result<(), String> {
-        let button = self.find(n, Kind::Button, |c| c.text == text)?;
-        click(self.client(n), center(button.rect));
-        Ok(())
+        press_on(self.client(n), text)
     }
 }
 

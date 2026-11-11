@@ -3,6 +3,8 @@
 
 mod engine_common;
 
+use std::collections::BTreeSet;
+
 use engine_common::{GAME, KEY, Pair, Pipe, Rng, TICK_MS, client_addr, connect, kind};
 use torque_net::NetError;
 use torque_net::engine::gate::{COOKIE_PERIOD_MS, cookie};
@@ -1208,4 +1210,151 @@ fn a_host_that_drops_evicted_sessions_matches_the_gate() {
         now += 40;
     }
     assert!(evictions > 0, "the table filled");
+}
+
+/// What a run of a pair with ghost data from the server said: the stream packets the client read, and the fates the server was
+/// given.
+#[derive(Default)]
+struct StreamFates {
+    read: BTreeSet<u16>,
+    arrived: BTreeSet<u16>,
+    lost: BTreeSet<u16>,
+    /// Stream packets the client read after the trouble was over.
+    read_after: usize,
+}
+
+/// Runs a connected pair, the server writing ghost data into every packet, for `ticks`: while `stalled(tick)` the client neither
+/// reads nor sends (a long frame), while `dropped(tick)` every datagram to it is lost (an outage).
+fn ghost_run(
+    ticks: u32,
+    stalled: impl Fn(u32) -> bool,
+    dropped: impl Fn(u32) -> bool,
+) -> StreamFates {
+    let mut p = Pair::connected(LinkFacts::MEMORY);
+    p.server_streams.lanes = vec![StreamLane::Ghosts];
+    let mut server = p.server.take().expect("a server");
+    let mut f = StreamFates::default();
+    let last_trouble = (0..ticks)
+        .rev()
+        .find(|&t| stalled(t) || dropped(t))
+        .unwrap_or(0);
+    for tick in 0..ticks {
+        while let Some(d) = p.up.queue.pop_front() {
+            server.receive(&d, p.now);
+        }
+        while let Some(e) = server.next_event() {
+            if let Event::Notify { seq, delivered } = e {
+                let fates = if delivered {
+                    &mut f.arrived
+                } else {
+                    &mut f.lost
+                };
+                assert!(fates.insert(seq), "one fate per packet: {seq}");
+            }
+        }
+        if dropped(tick) {
+            p.down.queue.clear();
+        }
+        if !stalled(tick) {
+            while let Some(d) = p.down.queue.pop_front() {
+                p.client.receive(&d, p.now);
+            }
+            while let Some(e) = p.client.next_event() {
+                if let Event::Stream { seq, .. } = e {
+                    f.read.insert(seq);
+                    if tick > last_trouble {
+                        f.read_after += 1;
+                    }
+                }
+            }
+            p.client.poll(&mut p.up, &mut p.client_streams, p.now);
+        }
+        server.poll(&mut p.down, &mut p.server_streams, p.now);
+        p.now += TICK_MS;
+    }
+    assert_eq!(p.client.state(), State::Established);
+    assert_eq!(server.state(), State::Established);
+    f
+}
+
+/// The fates the sender is given are the peer's: every stream packet the peer read is one its sender was told arrived, and
+/// none it was told was lost was read.
+fn assert_exact(f: &StreamFates, what: &str) {
+    let both: Vec<_> = f.read.intersection(&f.lost).collect();
+    assert!(both.is_empty(), "{what}: read, yet counted lost: {both:?}");
+    let unread: Vec<_> = f.arrived.difference(&f.read).collect();
+    assert!(
+        unread.is_empty(),
+        "{what}: counted arrived, yet never read: {unread:?}"
+    );
+    assert!(
+        f.read_after > 50,
+        "{what}: the stream goes on after it ({} read)",
+        f.read_after
+    );
+}
+
+/// A peer that stops reading for a while (a long frame) and then reads every packet that waited: none of them is counted lost,
+/// however long it stopped, so the layers above never send again as new what the peer already read.
+#[test]
+fn a_peer_that_stalls_reads_no_packet_its_sender_counted_lost() {
+    for stall in [3u32, 5, 10, 20, 40, 80, 200] {
+        let f = ghost_run(stall + 200, |t| (10..10 + stall).contains(&t), |_| false);
+        assert_exact(&f, &format!("a stall of {stall} ticks"));
+        assert!(
+            f.lost.is_empty(),
+            "nothing is lost on a lossless link: {:?}",
+            f.lost
+        );
+    }
+}
+
+/// An outage of the server's datagrams while the client goes on sending: the packets lost in it are counted lost, the others
+/// arrived, and the stream goes on after it (the server waits at the edge of its window and starts again from the client's acks).
+#[test]
+fn an_outage_is_counted_lost_and_the_stream_goes_on() {
+    for outage in [3u32, 10, 40, 200] {
+        let f = ghost_run(outage + 200, |_| false, |t| (10..10 + outage).contains(&t));
+        assert_exact(&f, &format!("an outage of {outage} ticks"));
+        assert!(!f.lost.is_empty(), "the outage lost packets");
+    }
+}
+
+/// A peer that keeps sending new packets that acknowledge nothing keeps the session from idling out, but the stream window it
+/// leaves shut (32 packets with ghost data unresolved) does not stay shut: the session closes as timed out.
+#[test]
+fn a_peer_that_never_acks_the_stream_cannot_hold_the_window_shut() {
+    let mut p = Pair::connected(LinkFacts::MEMORY);
+    p.server_streams.lanes = vec![StreamLane::Ghosts];
+    let mut server = p.server.take().expect("a server");
+    for tick in 0..(25_000 / TICK_MS) {
+        let seq = 5_000 + u16::try_from(tick).expect("a short run");
+        server.receive(&packet(None, seq, [&[]; 6]), p.now);
+        while server.next_event().is_some() {}
+        p.down.queue.clear();
+        server.poll(&mut p.down, &mut p.server_streams, p.now);
+        p.now += TICK_MS;
+    }
+    assert_eq!(server.close_reason(), Some(&CloseReason::TimedOut));
+}
+
+/// A packet that comes three or more behind the newest one read is not read: an ack of the newest makes its sender count it
+/// lost. One or two behind is still read.
+#[test]
+fn a_packet_three_behind_the_newest_is_not_read() {
+    let mut p = Pair::connected(LinkFacts::MEMORY);
+    let ghosts = [0x47; 8];
+    for seq in [3_000u16, 3_004, 3_002, 3_001, 3_000] {
+        p.client.receive(
+            &packet(None, seq, [&[], &[], &[], &ghosts, &[], &[]]),
+            p.now,
+        );
+    }
+    let mut read = Vec::new();
+    while let Some(e) = p.client.next_event() {
+        if let Event::Stream { seq, .. } = e {
+            read.push(seq);
+        }
+    }
+    assert_eq!(read, [3_000, 3_004, 3_002]);
 }

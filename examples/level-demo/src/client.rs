@@ -7,7 +7,14 @@
 //!
 //! **A step** ([`LevelDemo::step`]): the engine's client step ([`GameClient::step`]: the client's ticks and as many server
 //! ticks as the time covers, the link carried around each); then what the scripts asked of the host: a map picked
-//! (`$World::Pick`: the map's server starts and the client joins it) or the world left (`$World::Leave`: the server stops).
+//! (`$World::Pick`: the map's server starts and the client joins it), the world left (`$World::Leave`: the server stops), a
+//! match hosted (`$Game::HostAsked`) or the office joined (`$World::Joining`); and a frame of the connection's server scripts
+//! when the client runs them ([`ServerScripts`]).
+//!
+//! **Playing with others** ([`LevelDemo::for_matches`], [`MatchOptions`]): the client has a socket of its own (UDP, or a
+//! browser's game socket) and plays the maps alone on its own servers over the memory link ([`GameClient::start_local`]); its
+//! menu hosts the office here (its server on UDP, [`crate::office::start_office`]) or joins one from the list of matches or by
+//! address, through the join screen that shows the catalog mod coming in (the examples' `common/matches.cs`).
 //!
 //! **A frame** ([`LevelDemo::frame`]): the own figure where the client predicts it, the ghosts as the world view's objects
 //! ([`crate::scene`]) and the map's spot lights, the canvas drawn, and the eye: behind the client's own figure (or at its eyes,
@@ -22,7 +29,7 @@
 //! the own figure's ground in the prediction ([`CubeClient::set_terrain`]) and the camera kept above it; its day (a
 //! `TimeOfDay` under a `ScatterSky`) lights the view and the sky's clouds are sunlit cumulus ([`WorldLights`]).
 
-use std::net::SocketAddrV4;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
@@ -31,9 +38,11 @@ use torque::app::camera_modes::{
     CameraCx, CameraModes, CameraWorld, FIRST_PERSON, Rig, THIRD_PERSON,
 };
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
+pub use torque::app::hosting::NetMode;
 use torque::app::lights::WorldLights;
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
+use torque::client::net::{Datagrams, NetPolicy};
 use torque::engine::Engine;
 use torque::gui::GuiDraws;
 use torque_render_core::Gpu;
@@ -43,6 +52,7 @@ use torque_render_scene::source::{Eye, SceneSource as _};
 
 use crate::files::{GameFiles, MapEntry};
 use crate::ground::MapGround;
+use crate::office::{DEFAULT_PORT, OFFICE_MAP, SCREEN, ServerScripts};
 use crate::plugin::{Level, level_engine};
 use crate::scene::WorldScene;
 use crate::server::{SERVER_ADDR, WorldServer};
@@ -74,10 +84,40 @@ pub fn camera_rig() -> Rig {
     }
 }
 
+/// How a client plays with others (module docs).
+#[derive(Debug, Clone)]
+pub struct MatchOptions {
+    pub net: NetMode,
+    /// The player's name, which the others see in the catalog's list of spawns.
+    pub name: String,
+    /// The UDP port number the list of matches asks on and a hosted match binds.
+    pub port: u16,
+    /// The address a hosted match binds (loopback: this computer's LAN address is found).
+    pub host_address: Ipv4Addr,
+    /// A browser's page: it joins the server it was opened for and hosts nothing.
+    pub join_only: bool,
+}
+
+impl Default for MatchOptions {
+    fn default() -> MatchOptions {
+        MatchOptions {
+            net: NetMode::Lan,
+            name: "Player".to_string(),
+            port: DEFAULT_PORT,
+            host_address: Ipv4Addr::LOCALHOST,
+            join_only: false,
+        }
+    }
+}
+
 /// The example's client (the engine's [`GameClient`], which it derefs to: its host, its globals, the map's server and their
 /// logs) and the level demo's own parts.
 pub struct LevelDemo {
     pub client: GameClient<WorldServer>,
+    /// How it plays with others; none: it plays only the maps of its own servers, over the memory link.
+    matches: Option<MatchOptions>,
+    /// The server scripts of its connection (the office's catalog), when it runs them.
+    pub scripts: Option<ServerScripts>,
     pub files: Rc<GameFiles>,
     /// Files only the map's server has (the mods it requires of its clients).
     server_mods: Vec<(String, Vec<u8>)>,
@@ -129,23 +169,57 @@ impl LevelDemo {
     /// The client `engine` makes (over the files its [`LevelPlugin`](crate::plugin::LevelPlugin) holds): `client.cs` run, the menu built from the maps
     /// found.
     pub fn from_engine(engine: &Engine) -> Result<LevelDemo, String> {
+        LevelDemo::make(engine, None, None, None)
+    }
+
+    /// The client `engine` makes ([`crate::office::office_engine`]) for playing with others as `options` say, on `socket` if
+    /// it has one (a browser's game socket) and else on a UDP socket as `options.net` says, running servers' scripts with
+    /// `scripts`: its menu offers hosting and joining the office beside the maps.
+    pub fn for_matches(
+        engine: &Engine,
+        options: MatchOptions,
+        socket: Option<Box<dyn Datagrams>>,
+        scripts: ServerScripts,
+    ) -> Result<LevelDemo, String> {
+        LevelDemo::make(engine, Some(options), socket, Some(scripts))
+    }
+
+    fn make(
+        engine: &Engine,
+        matches: Option<MatchOptions>,
+        socket: Option<Box<dyn Datagrams>>,
+        scripts: Option<ServerScripts>,
+    ) -> Result<LevelDemo, String> {
         // The shared level, not the resource's borrow, which would be held across the client's recipes.
         let level = Rc::clone(
             &*engine
                 .resource::<Rc<Level>>()
                 .ok_or("the engine has no level demo (LevelPlugin)")?,
         );
-        let mut b = ClientBuilder::from_engine(
-            engine,
-            Some(level.files.mem_files()),
-            ClientNet::Memory {
+        let net = match (&matches, &socket) {
+            (None, _) => ClientNet::Memory {
                 client: CLIENT_ADDR,
                 server: SERVER_ADDR,
             },
-        )?;
+            (Some(_), Some(_)) => ClientNet::External,
+            (Some(m), None) => m.net.client_net(),
+        };
+        let mut b = ClientBuilder::from_engine(engine, Some(level.files.mem_files()), net)?;
+        if let Some(socket) = socket {
+            b.set_socket(socket, NetPolicy::Loopback);
+        }
+        if let Some(m) = &matches {
+            b.vm.set_global("$Game::Matches", "1");
+            b.vm.set_global("$Game::JoinOnly", if m.join_only { "1" } else { "0" });
+            b.vm.set_global("$Game::Port", &m.port.to_string());
+            b.vm.set_global("$Pref::Player::Name", &m.name);
+        }
         b.exec("client.cs")?;
         b.invoke("buildMenu")?;
         let client = b.build();
+        if scripts.is_some() {
+            client.host.gui.set_client_script_screens(&[SCREEN]);
+        }
         let modes = client
             .camera_modes()
             .ok_or("the engine has no camera modes (CameraModesPlugin)")?;
@@ -153,6 +227,8 @@ impl LevelDemo {
         modes.set_now(THIRD_PERSON);
         Ok(LevelDemo {
             client,
+            matches,
+            scripts,
             engine: engine.clone(),
             files: Rc::clone(&level.files),
             server_mods: level.server_mods.clone(),
@@ -189,13 +265,110 @@ impl LevelDemo {
         view
     }
 
-    /// Starts map `index`: its server, and the client joins it.
+    /// Starts map `index`: its server, and the client joins it. A client that plays with others plays it alone, over the
+    /// memory link with its socket set aside, and its server requires no mods.
     pub fn start_map(&mut self, index: usize) -> Result<(), String> {
         let map = self.prepare_map(index)?;
-        let server =
-            WorldServer::start_with(&self.engine, &self.files, &self.server_mods, &map.path)?;
-        self.client.start_hosting(server);
+        let mods: &[(String, Vec<u8>)] = if self.matches.is_some() {
+            &[]
+        } else {
+            &self.server_mods
+        };
+        let server = WorldServer::start_with(&self.engine, &self.files, mods, &map.path)?;
+        if self.matches.is_some() {
+            self.client.start_local(server, CLIENT_ADDR, SERVER_ADDR)?;
+        } else {
+            self.client.start_hosting(server);
+        }
         self.enter_map(index, &map)
+    }
+
+    /// Replaces the client's socket (a browser's client opens a new game socket to join again).
+    pub fn set_socket(&mut self, socket: Box<dyn Datagrams>) {
+        let st = self.client.host.client.borrow();
+        let mut n = st.net.borrow_mut();
+        n.socket = Some(socket);
+        n.policy = NetPolicy::Loopback;
+    }
+
+    /// How the client plays with others, if it does.
+    pub fn matches(&self) -> Option<&MatchOptions> {
+        self.matches.as_ref()
+    }
+
+    /// The office's index in [`LevelDemo::maps`].
+    pub fn office_index(&self) -> Result<usize, String> {
+        self.maps
+            .iter()
+            .position(|m| m.path.eq_ignore_ascii_case(OFFICE_MAP))
+            .ok_or_else(|| format!("no map {OFFICE_MAP}"))
+    }
+
+    /// Hosts the office here, as `$Game::HostScope` says (`public`: every interface; else the LAN), and joins it through the
+    /// join screen: its server on UDP, the catalog required of everyone who joins, this client too.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn host_match(&mut self) -> Result<(), String> {
+        use torque::app::hosting::{join_address, lan_bind_address};
+        use torque::app::server::Listen;
+
+        use crate::office::{OfficeStart, start_office};
+
+        let options = self
+            .matches
+            .clone()
+            .ok_or("this client does not play with others")?;
+        let office = self.office_index()?;
+        self.prepare_map(office)?;
+        let public = self.client.global("$Game::HostScope") == "public";
+        let address = if public && options.net == NetMode::Lan {
+            Ipv4Addr::UNSPECIFIED
+        } else {
+            lan_bind_address(options.net, options.host_address)
+        };
+        // A harness never takes a fixed port.
+        let port = if options.net == NetMode::Loopback {
+            0
+        } else {
+            options.port
+        };
+        let name = format!("{}'s office", self.client.global("$Pref::Player::Name"));
+        let start = OfficeStart {
+            name: &name,
+            dedicated: false,
+        };
+        let listen = Listen::Udp {
+            address,
+            port,
+            public,
+        };
+        let server = start_office(&self.engine, listen, &start)?;
+        let bound = server.address().ok_or("the server has no socket")?;
+        self.client.start_hosting(server);
+        self.playing = Some(office);
+        self.client
+            .call("joinServer", &[&join_address(bound).to_string()])
+            .map(drop)
+    }
+
+    /// The join screen came up for a server of the office: the client plays the office's map on it.
+    fn join_office(&mut self) -> Result<(), String> {
+        let office = self.office_index()?;
+        if self.playing != Some(office) {
+            let map = self.maps[office].clone();
+            self.load_ground(&map)?;
+            self.playing = Some(office);
+        }
+        Ok(())
+    }
+
+    /// Shows `text` on the menus' status lines, handed to `setText` as an argument (never built into script source).
+    pub fn status(&mut self, text: &str) {
+        let vm = self.client.vm_mut();
+        for name in [&b"MenuStatus"[..], b"HostStatus"] {
+            if let Some(line) = vm.objects().find(name) {
+                let _ = vm.call_method(line, b"setText", &[text.as_bytes().to_vec()]);
+            }
+        }
     }
 
     /// Joins map `index` as served by a server another part of the process runs (at [`SERVER_ADDR`], started over a copy of this
@@ -209,6 +382,12 @@ impl LevelDemo {
     fn prepare_map(&mut self, index: usize) -> Result<MapEntry, String> {
         let map = self.maps.get(index).ok_or("no such map")?.clone();
         self.leave();
+        self.load_ground(&map)?;
+        Ok(map)
+    }
+
+    /// The ground of `map` (its terrain and water) for the view, the prediction and the scene.
+    fn load_ground(&mut self, map: &MapEntry) -> Result<(), String> {
         let text =
             String::from_utf8_lossy(self.files.file(&map.path).unwrap_or_default()).into_owned();
         self.ground = MapGround::read(&self.files, &text)?;
@@ -216,7 +395,7 @@ impl LevelDemo {
         self.cube.set_water(&self.ground.waters);
         self.scene.set_water(&self.ground.waters);
         self.ground_changed = true;
-        Ok(map)
+        Ok(())
     }
 
     // The map's name hangs the plaza's rope (the `rope` feature).
@@ -236,6 +415,9 @@ impl LevelDemo {
     pub fn leave(&mut self) {
         #[cfg(feature = "rope")]
         crate::ropes::take_down(self);
+        if let Some(scripts) = self.scripts.as_mut() {
+            scripts.disconnect(&mut self.client);
+        }
         self.client.stop_hosting();
         self.scene.clear();
         self.playing = None;
@@ -254,6 +436,13 @@ impl LevelDemo {
     /// `ms` of the clock (see the module docs).
     pub fn step(&mut self, ms: u32) {
         self.client.step(ms);
+        // The realm starts once the player is in the world, so the server's menu opens over it rather than over the join
+        // screen, which shows no server controls (a menu that started there would lose the cursor and close at once).
+        if let Some(scripts) = self.scripts.as_mut()
+            && self.client.flag("$World::InWorld")
+        {
+            scripts.frame(&mut self.client, ms);
+        }
         // The scripts swim with the keys while the figure swims as the client predicts it (`$World::Swimming`).
         let swimming = self.swimming();
         if swimming != self.flag("$World::Swimming") {
@@ -270,6 +459,17 @@ impl LevelDemo {
         }
         if self.take_number("$World::Leave").is_some() {
             self.leave();
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.take_flag("$Game::HostAsked")
+            && let Err(e) = self.host_match()
+        {
+            self.status(&format!("Could not start the match: {e}"));
+        }
+        if self.take_flag("$World::Joining")
+            && let Err(e) = self.join_office()
+        {
+            eprintln!("example-level-demo: {e}");
         }
     }
 

@@ -1,8 +1,8 @@
 // Builds an example for the web into <target>/web/<name>/: the module for wasm32-unknown-unknown, wasm-bindgen's JavaScript
 // glue, the page and its file loader, and the example's files, packed by the native build.
 //
-// Usage: node build.mjs <example> [--embed] [--solo] [--lua] [--dev] [--keep-pack] [--repack]      (level-demo, fps, vehicle-demo,
-// mods-demo; vehicle-demo and mods-demo fetch their files only)
+// Usage: node build.mjs <example> [--embed] [--solo] [--lua] [--dev] [--keep-pack] [--repack] [--client-scripts]
+// (level-demo, fps, vehicle-demo, mods-demo; vehicle-demo and mods-demo fetch their files only)
 // By default the files are fetched by the page: the folder holds `files.json` (each file's path, size and SHA-256) and
 // `game.pack`, which the native build writes (`--web-files`), and the module carries none of them. With `--embed` the module
 // carries the pack (the example's `embed-pack` feature; `--web-pack` writes it to <target>/web/<name>.pack) and the folder is
@@ -13,6 +13,11 @@
 // With `--lua` the page loads the Lua module before the game starts (its root element's `data-torque-lua`, web/lua.js): the
 // folder also holds lua.js and torque_lua.wasm, which `just lua-web` builds into <target>/lua-web/. Without it the page never
 // fetches either, and a Lua file of the game prints that it cannot run.
+// With `--client-scripts` the page runs the Lua a server sends its players (torque-plugin-client-script), if the player allows
+// it: the folder also holds client-script.js, client-script-worker.js and the realm guest torque_lua_client.wasm, which `just
+// lua-client-web` builds into <target>/lua-web/, and the page (its root element's `data-torque-client-scripts`) starts the
+// runner before the game, the guest checked against the list the game's module carries (`acceptedClientGuests`). Without it
+// the page fetches none of them and the game tells servers it cannot run their scripts.
 //
 // With `--dev` the module is built in the `web-dev` profile (the dev profile: incremental, no link-time optimization, the
 // third-party crates optimized) and wasm-opt is skipped, for the edit-and-reload loop: the folder is the same, the module is
@@ -48,7 +53,8 @@ const solo = flags.includes('--solo');
 const lua = flags.includes('--lua');
 const dev = flags.includes('--dev');
 const keepPack = flags.includes('--keep-pack') || (dev && !flags.includes('--repack'));
-const FLAGS = ['--embed', '--solo', '--lua', '--dev', '--keep-pack', '--repack'];
+const clientScripts = flags.includes('--client-scripts');
+const FLAGS = ['--embed', '--solo', '--lua', '--dev', '--keep-pack', '--repack', '--client-scripts'];
 if (!example || flags.some((a) => !FLAGS.includes(a))) {
   console.error(`usage: node build.mjs <${Object.keys(EXAMPLES).join('|')}> [${FLAGS.join('] [')}]`);
   process.exit(2);
@@ -67,6 +73,11 @@ const out = join(target, 'web', `${name}${embed ? '-embedded' : ''}${solo ? '-so
 const luaModule = join(target, 'lua-web', 'torque_lua.wasm');
 if (lua && !existsSync(luaModule)) {
   console.error(`${luaModule} is not there: build it with \`just lua-web\` first`);
+  process.exit(2);
+}
+const clientGuest = join(target, 'lua-web', 'torque_lua_client.wasm');
+if (clientScripts && !existsSync(clientGuest)) {
+  console.error(`${clientGuest} is not there: build it with \`just lua-client-web\` first`);
   process.exit(2);
 }
 const pack = embed ? join(target, 'web', `${name}.pack`) : join(out, 'game.pack');
@@ -164,12 +175,19 @@ if (lua) {
   copyFileSync(luaModule, join(out, 'torque_lua.wasm'));
 }
 
+// A game that runs servers' scripts: the page's runner, its Worker and the guest.
+if (clientScripts) {
+  for (const file of ['client-script.js', 'client-script-worker.js']) copyFileSync(join(root, 'web', file), join(out, file));
+  copyFileSync(clientGuest, join(out, 'torque_lua_client.wasm'));
+}
+
 if (solo && marked === html) {
   console.error('web/index.html has no <html lang="en"> to mark');
   process.exit(1);
 }
-const page = lua ? marked.replace('<html lang="en"', '<html lang="en" data-torque-lua="1"') : marked;
+const withLua = lua ? marked.replace('<html lang="en"', '<html lang="en" data-torque-lua="1"') : marked;
+const page = clientScripts ? withLua.replace('<html lang="en"', '<html lang="en" data-torque-client-scripts="1"') : withLua;
 writeFileSync(join(out, 'index.html'), page);
 const mib = (file) => (statSync(file).size / 1048576).toFixed(1);
 const module = `game_bg.wasm ${mib(moduleFile)} MiB`;
-console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)${solo ? ', played alone' : ''}${lua ? ', with Lua' : ''}${dev ? ', dev profile, not optimized' : ''}`);
+console.log(`${out}: ${module}, ${embed ? 'carrying' : 'fetching'} the pack (${mib(pack)} MiB)${solo ? ', played alone' : ''}${lua ? ', with Lua' : ''}${clientScripts ? ', with server scripts' : ''}${dev ? ', dev profile, not optimized' : ''}`);

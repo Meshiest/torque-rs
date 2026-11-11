@@ -133,4 +133,4 @@ pub use guest::{Counters, GuestEngine, GuestLimits, LuaGuest, WasmtimeLuaModule,
 #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 pub use native::{NativeRealm, RealmGuest};
 #[cfg(all(feature = "web", target_arch = "wasm32"))]
-pub use web::{WebRunner, web_live};
+pub use web::{WebRunner, page_runner_ready, web_live};

@@ -1,6 +1,6 @@
 [package]
 name = "torque-example-level-demo"
-description = "A singleplayer world in a window: a menu of cube maps, the box figure walking and jumping on them, a server and a client joined in one process"
+description = "A world in a window: a menu of maps, the box figure walking and jumping on them, and the office played with others"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,7 +15,9 @@ categories = ["game-development"]
 # in `game/`; the maps are the `.mis` files in `game/missions/`, read when the example starts.
 
 [dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps"] }
+# `mods`: the office's server requires the catalog mod of its clients; `web`, `webrtc` and `p2p`: the office server's web
+# transport, data channels and rooms natively, and in a browser the game socket a page joins it on.
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "mods", "web", "webrtc", "p2p"] }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-import = { path = "../../crates/torque-import" }
@@ -28,6 +30,10 @@ torque-plugin-props = { path = "../../crates/torque-plugin-props" }
 torque-plugin-rope = { path = "../../crates/torque-plugin-rope", optional = true }
 # The smoothed predictor beside TGE's (the `smooth-prediction` feature).
 torque-plugin-smooth-prediction = { path = "../../crates/torque-plugin-smooth-prediction", optional = true }
+# The prop catalog (`catalog`): a server-offered mod whose menu runs in the realm of each client, and lays its containers out.
+torque-client-script-format = { path = "../../crates/torque-client-script-format" }
+torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script" }
+torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
 
 [features]
 # A rope the plaza has hung between its front pillars, simulated and drawn by `torque-plugin-rope` (`--rope-shots` draws it; with the
@@ -40,18 +46,14 @@ smooth-prediction = ["dep:torque-plugin-smooth-prediction"]
 # fetching them by the list beside the page (`files.json`).
 embed-pack = []
 
-# The prop catalog (`catalog`, native builds only): a server-offered mod whose menu runs in the realm of each client. Not built for the web.
+# Natively the catalog's realm runs its guest under Wasmtime.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The mods the catalog's server requires of its clients.
-torque = { path = "../../crates/torque", default-features = false, features = ["mods"] }
 torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["wasmtime"] }
-torque-client-script-format = { path = "../../crates/torque-client-script-format" }
-torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script" }
-torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
 
-# Built for the web: the functions the page calls (`torque::app::web_exports!`).
+# Built for the web: the functions the page calls (`torque::app::web_exports!`), and the catalog's realm in the page's Worker.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
+torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["web"] }
 
 [dev-dependencies]
 torque-maps = { path = "../../crates/torque-maps" }
@@ -60,6 +62,11 @@ torque-interior-builder = { path = "../../crates/torque-interior-builder", featu
 [[bin]]
 name = "example-level-demo"
 path = "src/main.rs"
+
+# The office server people join (console only): the office with its props, the catalog mod required of its players.
+[[bin]]
+name = "office-server"
+path = "src/bin/office-server.rs"
 
 [lints]
 workspace = true

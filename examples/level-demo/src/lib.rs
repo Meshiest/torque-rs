@@ -10,6 +10,10 @@
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on an in-memory transport.
 //! - `catalog` (native builds): the office's prop catalog, a mod the server requires of its clients whose menu runs in a client-script realm
 //!   on each (see `catalog/` and the book's server scripts chapter).
+//! - [`office`]: the office played with others: its server on UDP and the web, the engine its clients are made by, and a client's
+//!   server scripts.
+//! - `session` (native builds): the office played with others on this computer, stepped by hand (the multiplayer tests and
+//!   pictures).
 //! - [`client`]: the client host, the server of the map being played, the link between them, and a frame for the world view.
 //! - [`scene`]: the client's ghosts as the world view's objects (the cubes and the figures).
 //! - [`showcase`]: pictures of the world alone at the highest quality: the valley's views and the front page's pictures.
@@ -24,6 +28,13 @@
 //! model cut into its props and its building, [`props::split`]; the props' shapes and datablocks, [`props::build`]; the
 //! building's interiors) and the valley. [`plugin::level_engine`] adds the engine's plugins, the engine's own protocol, the
 //! props and their prediction; [`client::LevelDemo`] starts a map's server and joins it over the memory link.
+//!
+//! **With others.** [`office::office_engine`] adds the list of matches, the mods (the catalog required of a server's players)
+//! and server scripts; the window's client is [`client::LevelDemo::for_matches`] over it, on a UDP socket (a page's game socket
+//! in a browser), and plays the maps alone with [`torque::app::client::GameClient::start_local`]. Hosting and joining are the
+//! examples' `common/matches.cs` screens; the host's side is `$Game::HostAsked` and `$World::Joining`. A client's realm
+//! ([`office::ServerScripts`]) is framed only while the player is in the world, so the catalog opens over the office and not
+//! over the join screen, which shows no server controls.
 //!
 //! **Invariants**, each with the test that guards it (`tests/office.rs` unless named):
 //! - The office's building is one interior that passes the builder's verification:
@@ -43,6 +54,12 @@
 //! - The props are drawn as the interior is (nearest texels, `_glow` unlit):
 //!   `the_props_shapes_are_drawn_nearest_and_their_glow_unlit`, and the look in `--office-shots`.
 //! - What the scripts can call: `tests/natives.rs` against `tests/natives/` (`TORQUE_BLESS=1` rewrites them).
+//! - Played with others (`tests/multiplayer.rs`, with the realm guest): a dedicated office server on UDP is found in the list
+//!   of matches, its catalog downloads on the join screen, the player allows it, puts a prop down that another player's client
+//!   gets and picks up (`a_player_finds_the_office_downloads_the_catalog_allows_it_and_puts_down_a_prop_another_picks_up`); a
+//!   second join downloads nothing, the answer is remembered, and a map played alone after it offers no server scripts
+//!   (`leaving_and_joining_again_downloads_nothing_and_the_answer_is_remembered`). The browser's join over WebSocket, a data
+//!   channel and a room is `web/office-check.mjs` (`just examples level-demo office-web-check`).
 //!
 //! **Extension points.** A level is `game/levels/<name>.bbmodel` beside `game/levels/<name>.mis` (its `%interiors%` line,
 //! and a `%props%` line when the model has prop groups); a kind of prop is a [`props::PropKind`] and its mass. The office is
@@ -61,12 +78,15 @@ pub mod ground;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod icons;
 pub mod levels;
+pub mod office;
 pub mod plugin;
 pub mod props;
 #[cfg(feature = "rope")]
 pub mod ropes;
 pub mod scene;
 pub mod server;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod session;
 pub mod shots;
 pub mod showcase;
 #[cfg(target_arch = "wasm32")]

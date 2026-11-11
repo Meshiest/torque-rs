@@ -171,8 +171,8 @@ fn the_corner_readout_holds_the_frame_rate_and_esc_lists_the_keys() {
             &["return ControlsPanel.isVisible() SPC ControlsList.getCount();"],
         )
         .unwrap();
-    // Three headings, and a key and its action for each of the 10 rows.
-    assert_eq!(shown, format!("1 {}", 3 + 2 * 10));
+    // Three headings, and a key and its action for each of the 11 rows.
+    assert_eq!(shown, format!("1 {}", 3 + 2 * 11));
     // A small window: the groups in one column, scrolled with the wheel.
     game.host.window_resized((640, 480));
     game.step(64);

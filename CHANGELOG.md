@@ -263,6 +263,9 @@ different.
   their own lanes, and per-address and per-network caps on a server's sessions. Plain engine UDP refuses a public bind. A
   server with an auth provider challenges each connect and takes only a ticket made for that challenge, once; the mods
   download asks for blocks with the `torque.mods.get` RPC.
+- In the engine's protocol a packet with ghost or move data is counted lost only by the peer's acks (a packet it read is never
+  counted lost, however long its frame), a receiver reads none 3 or more behind its newest, and a sender with 32 unresolved
+  sends nothing until acks come, closing the session as timed out when none does. TGE's rule and bytes are unchanged.
 - Server tick hooks and server commands for plugins. `engine.push(ServerTick::before(..))` and `ServerTick::after(..)` run a
   function of injected parameters once per 32 ms server tick around the process list's pass, in the order pushed, with the tick's
   number and time (`TickInfo`); a server with none ticks as before. `engine.server_command(name, CommandSpec, handler)` declares a
@@ -418,6 +421,9 @@ different.
   the mount that server offered, verified against its hash and not found through cache sharing. The guest is run only if its hash
   is listed in `ACCEPTED_CLIENT_GUESTS`: the guest built with WASI SDK 34.0 is listed, and `just lua-client-web` gives the same bytes
   whatever the folders it is built in (the build names them by fixed stand-ins). The justfile's `client-script-check` is the hardening suite. In no default plugin set. TGE has none.
+- Web builds run server scripts: `web/build.mjs --client-scripts` adds the page's runner and the realm guest, and the page starts
+  the runner before the game only if the guest's hash is on the module's own list (`web_exports!`'s `client_guests`, exported as
+  `acceptedClientGuests`); `page_runner_ready` tells a game whether to offer `WebRunner`.
 - `torque-bundle` (`just bundle <game crate>`): packages a game for the computer it runs on: its binaries built in release
   with only the plugin features its `game.toml` keeps (debug gizmos left out), its game folder without dev files, its native
   extensions in `plugins/`, the license texts of every crate it links, and a manifest of every file's SHA-256. Local folders

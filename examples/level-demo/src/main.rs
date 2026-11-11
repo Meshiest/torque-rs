@@ -15,6 +15,13 @@
 //! (`files.json`, `torque::app::manifest`) naming it.
 //! `example-level-demo --web-pack <file>` writes the pack alone, for a build that carries it (the `embed-pack` feature).
 //!
+//! The window's menu also hosts the office for others and joins theirs (Host a match, Join a match): `--name <name>` is the
+//! player's name, `--port <port>` the UDP port number the list of matches asks on and a hosted match binds (28000), `--bind
+//! <address>` the address a hosted match binds (this computer's LAN address), and `--cache <dir>` where the servers' mods are
+//! kept (the per-user cache). The catalog's menu needs the realm guest (`just lua-client-web`, or `TORQUE_CLIENT_GUEST`); without
+//! it the office is played without the catalog. `--match-shots <dir>` draws that path offscreen into `dir` instead: the menu,
+//! the list of matches, the download, the consent prompt and the catalog with another player.
+//!
 //! Built for the web, it is the page's game (the library's `web` module): the page calls the functions of `page`.
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -25,8 +32,6 @@ use torque::app::run::EngineRun as _;
 use torque_example_level_demo::client::LevelDemo;
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_level_demo::files::{self, GameFiles};
-#[cfg(not(target_arch = "wasm32"))]
-use torque_example_level_demo::plugin::level_engine;
 #[cfg(not(target_arch = "wasm32"))]
 use torque_example_level_demo::shots;
 
@@ -47,6 +52,7 @@ torque::app::web_exports! {
     embedded: torque_example_level_demo::web::EMBEDDED,
     start_embedded: torque_example_level_demo::web::start_embedded,
     start_fetched: torque_example_level_demo::web::start_fetched,
+    client_guests: torque_client_script_host::accepted_hex,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -64,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut correction_dir = None;
     let mut pack_file = None;
     let mut web_dir = None;
+    let mut match_dir = None;
+    let mut options = torque_example_level_demo::client::MatchOptions::default();
+    let mut cache = torque::mods::CacheChoice::PerUser;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--shots" => shots_dir = Some(args.dir(&arg)?),
@@ -91,6 +100,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--web-pack" => pack_file = Some(args.dir(&arg)?),
             "--web-files" => web_dir = Some(args.dir(&arg)?),
+            "--match-shots" => match_dir = Some(args.dir(&arg)?),
+            "--name" => options.name = args.value(&arg, "a name")?,
+            "--port" => options.port = args.number(&arg)?,
+            "--bind" => options.host_address = args.ipv4(&arg)?,
+            "--cache" => cache = torque::mods::CacheChoice::Folder(args.dir(&arg)?),
             _ => return Err(unknown(&arg).into()),
         }
     }
@@ -169,6 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(not(feature = "smooth-prediction"))]
     let _: Option<std::path::PathBuf> = correction_dir;
+    if let Some(dir) = match_dir {
+        use torque_example_level_demo::catalog::{guest_path, load_guest};
+        let guest = load_guest(&guest_path())?;
+        let work = std::path::PathBuf::from("target/level-demo-match-shots");
+        for path in torque_example_level_demo::session::write_shots(&guest, &work, &dir)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     if let Some(dir) = office_dir {
         for path in shots::write_office(files, &dir, SHOT_SIZE)? {
             println!("{}", path.display());
@@ -181,7 +204,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", path.display());
             }
         }
-        None => level_engine(files)?.app(LevelDemo::from_engine).run()?,
+        None => {
+            use torque_example_level_demo::catalog::{mod_files, player_scripts};
+            use torque_example_level_demo::office::office_engine;
+            office_engine(files, mod_files()?, cache)?
+                .app(move |engine| {
+                    LevelDemo::for_matches(engine, options.clone(), None, player_scripts())
+                })
+                .run()?;
+        }
     }
+
     Ok(())
 }

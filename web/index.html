@@ -162,6 +162,11 @@
   // `data-torque-lua="1"` on the root element (`build.mjs --lua`): the page loads the Lua module (lua.js, torque_lua.wasm)
   // before the game's; without it the page fetches neither.
   //
+  // `data-torque-client-scripts="1"` on the root element (`build.mjs --client-scripts`): the page runs the Lua a server sends
+  // its players, once the player allows it. Before the game starts, the page fetches the realm guest (torque_lua_client.wasm)
+  // and starts its runner (client-script.js, each realm in a Worker) only if the guest's hash is on the game module's own
+  // list (`acceptedClientGuests`); otherwise the game plays and tells servers it cannot run their scripts.
+  //
   // `torque` (bridge.js, also `window.torque`): the page calls the game's scripts (`torque.call`, `eval`, `getVar`,
   // `setVar`) and registers handlers the scripts call (`torque.on`, `callPage` in script).
   //
@@ -418,6 +423,11 @@
       });
     }
     torque.attach(game);
+    if (document.documentElement.dataset.torqueClientScripts === '1') {
+      const { startPageRunner } = await import('./client-script.js');
+      const why = await startPageRunner(game, new URL('torque_lua_client.wasm', document.baseURI));
+      if (why) console.warn(`server scripts are unavailable: ${why}`);
+    }
     // The game's first frame is drawn at the quality chosen.
     applyQuality();
     if (!game.embedded()) {

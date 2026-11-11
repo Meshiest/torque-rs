@@ -106,11 +106,20 @@ pub fn bundle_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// The server's files: the game folder (its scripts and its three mods) and the content the mods ship, made from code.
+/// The examples' shared script of hosting and joining (`examples/common/game/matches.cs`: the list of matches, the address box
+/// and the download screen), built in so a packaged game carries it too.
+pub const MATCHES_SCRIPT: (&str, &[u8]) = (
+    "common/matches.cs",
+    include_bytes!("../../common/game/matches.cs"),
+);
+
+/// The server's files: the game folder (its scripts and its three mods), the shared [`MATCHES_SCRIPT`] and the content the mods
+/// ship, made from code.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn server_files() -> io::Result<GameFiles> {
     let mut files = GameFiles::default();
     files.add_dir(&game_dir(), "")?;
+    files.insert(MATCHES_SCRIPT.0, MATCHES_SCRIPT.1);
     for (id, content) in [
         ("soccer", assets::soccer()?),
         ("confetti", assets::confetti()?),

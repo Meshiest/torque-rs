@@ -10,9 +10,56 @@ default:
     @just --list
 
 # The level demo in a window: a menu of maps, then the box figure on them (W A S D walk, Shift sprint, Ctrl or C crouch, Z prone,
-# Space jump, mouse look, Tab camera, R restart, Esc menu)
-run:
-    cargo run -p torque-example-level-demo --release
+# Space jump, mouse look, Tab camera, R restart, Esc menu). Its menu also hosts the office for others and joins theirs (Host a
+# match, Join a match: the list of matches or an address), the prop catalog downloaded on joining (Q in the office). `--name`,
+# `--port`, `--bind`, `--cache` after the recipe. The catalog's menu runs only with the realm guest (`just lua-client-web`, which
+# needs the WASI SDK named by WASI_SDK_PATH, or TORQUE_CLIENT_GUEST); without it the office is played without the catalog
+run *args:
+    cargo run -p torque-example-level-demo --release -- {{args}}
+
+# The office server people join (console only): the office with its props, the catalog mod sent to players who lack it, on UDP
+# 127.0.0.1:28000, answering the list of matches. `--bind <your LAN address>` lets others on the network join; `--port`,
+# `--name`, `--ticks N`, and the web's switches (`--transport both`, `--webrtc`, `--room`)
+office-server *args:
+    cargo run -p torque-example-level-demo --release --bin office-server -- {{args}}
+
+# The office server open to the internet: every interface (0.0.0.0) on UDP 28000 (`--port` changes it); players outside the
+# network need that port forwarded to this computer and the firewall to allow it
+office-server-public *args:
+    cargo run -p torque-example-level-demo --release --bin office-server -- --bind 0.0.0.0 --port 28000 {{args}}
+
+# The office for browsers and desktops in one match: the browser build with the server-scripts runner and the realm guest, then
+# the office server on UDP and the web on 127.0.0.1:{{port}}, serving that build; a browser joins at
+# http://127.0.0.1:{{port}}/?join and a desktop's Join a match finds it. More of the server's switches after the port number
+# (`--bind`, `--webrtc`, `--tls-cert`/`--tls-key`)
+office-web port="28000" *args:
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    node ../../web/build.mjs level-demo --client-scripts
+    cargo run -p torque-example-level-demo --release --bin office-server -- --transport both --port {{port}} {{args}}
+
+# A room service for an office hosted on a desktop, on 127.0.0.1:{{port}}, serving the browser build: the desktop runs
+# `office-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at http://127.0.0.1:{{port}}/?room=<code>
+office-web-rooms port="28100" *args:
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    node ../../web/build.mjs level-demo --client-scripts
+    cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/level-demo" {{args}}
+
+# The office's browser checks (build first with `office-web`, or `node web/build.mjs level-demo --client-scripts`): the office
+# server, and headless Chrome from the cursor guard joining it over its game socket, over a WebRTC data channel, and by a
+# room's code: the join screen with the catalog part way, the consent prompt, Allow, the catalog run in the page's Worker and a
+# chair put down from it; no console error. Pictures into the target folder's `web`
+office-web-check:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-join.png" 120 join
+    node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-rtc.png" 120 rtc
+    node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-room.png" 120 room
+
+# The office played with others, drawn offscreen into `dir` (no window): the menu, the list of matches, the join screen with
+# the catalog part way down, the consent prompt, the catalog with a second player's plant, and the office
+match-shots dir="../../target/level-demo-match-shots":
+    just --justfile ../../justfile --working-directory ../.. lua-client-web
+    cargo run -p torque-example-level-demo --release -- --match-shots {{dir}}
 
 # The level demo in a browser (WebGPU): built for the web, then served on http://127.0.0.1:{{port}}/ (`?map=office` starts a map
 # at once). The page shows each loading stage, fetches the files by their list (`files.json`) and keeps them in the browser's
@@ -104,10 +151,12 @@ catalog-shots dir="../../target/level-catalog-shots":
     just --justfile ../../justfile --working-directory ../.. lua-client-web
     cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
 
-# The catalog's end-to-end tests (level-demo's tests/catalog.rs), with the guest `lua-client-web` builds
+# The catalog's end-to-end tests (level-demo's tests/catalog.rs, and tests/multiplayer.rs: the office server on UDP, the list
+# of matches, the download, Allow, a prop another player picks up, a second join from the cache), with the guest
+# `lua-client-web` builds
 catalog-test:
     just --justfile ../../justfile --working-directory ../.. lua-client-web
-    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog -- --include-ignored
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog --test multiplayer -- --include-ignored
 
 # The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
 # offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)

@@ -427,7 +427,8 @@ pub(crate) struct Received {
 }
 
 impl Received {
-    /// The packet was not seen before and is recent enough to be acknowledged.
+    /// The packet was not seen before and its sender cannot have counted it lost: it is newer than the newest seen, or less
+    /// than [`REORDER_THRESHOLD`] behind it (an ack of the newest makes the sender count a packet that far behind lost).
     pub(crate) fn is_new(&self, seq: u16) -> bool {
         let Some(latest) = self.latest else {
             return true;
@@ -436,7 +437,12 @@ impl Received {
             return true;
         }
         let back = latest.wrapping_sub(seq);
-        back < ACK_BITS && self.mask & (1 << back) == 0
+        back < REORDER_THRESHOLD && self.mask & (1 << back) == 0
+    }
+
+    /// Whether `seq` is newer than every packet seen.
+    pub(crate) fn is_newest(&self, seq: u16) -> bool {
+        self.latest.is_none_or(|latest| newer(seq, latest))
     }
 
     pub(crate) fn note(&mut self, seq: u16) {
@@ -527,17 +533,54 @@ impl Flight {
         rtt
     }
 
-    /// Counts lost every packet older than `timeout`. Records are kept in the order they were sent, so the old ones are at
-    /// the front.
+    /// Counts lost every packet without stream data older than `timeout`. A packet with stream data is never counted lost by
+    /// the clock alone: a peer that stops reading for longer (a long frame) still reads it later, and the layers above it would
+    /// then send again, as new, what the peer already has (a ghost created twice is read as an update, and the stream is lost).
     pub(crate) fn expire(&mut self, now: u32, timeout: u32, out: &mut Vec<(Record, bool)>) {
-        while let Some(r) = self.records.front()
-            && now.wrapping_sub(r.sent_ms) >= timeout
-        {
-            out.push((
-                self.records.pop_front().expect("the front was just seen"),
-                false,
-            ));
+        self.count_lost(out, |r| {
+            !r.streams && now.wrapping_sub(r.sent_ms) >= timeout
+        });
+    }
+
+    /// Counts lost the packets with stream data that the peer has had time to read and has not: newer than `ack`, the newest
+    /// packet the peer had read when it sent the packet that came at `now` (the newest it sent), and sent at least `timeout`
+    /// before `now`. The peer reads what came before it sends, and those had come by then.
+    pub(crate) fn expire_unread(
+        &mut self,
+        ack: u16,
+        now: u32,
+        timeout: u32,
+        out: &mut Vec<(Record, bool)>,
+    ) {
+        self.count_lost(out, |r| {
+            r.streams && newer(r.seq, ack) && now.wrapping_sub(r.sent_ms) >= timeout
+        });
+    }
+
+    /// Moves the records `lost` picks into `out`, counted lost, keeping the others in order.
+    fn count_lost(&mut self, out: &mut Vec<(Record, bool)>, lost: impl Fn(&Record) -> bool) {
+        if !self.records.iter().any(&lost) {
+            return;
         }
+        std::mem::swap(&mut self.records, &mut self.spare);
+        for r in self.spare.drain(..) {
+            if lost(&r) {
+                out.push((r, false));
+            } else {
+                self.records.push_back(r);
+            }
+        }
+    }
+
+    /// The number of the oldest packet with stream data whose fate is not known, when the next packet would be [`ACK_BITS`] or
+    /// more ahead of it: an ack of the next could no longer say whether that one arrived, so nothing is sent until the peer's
+    /// acks come.
+    pub(crate) fn stream_window_blocker(&self) -> Option<u16> {
+        self.records
+            .iter()
+            .find(|r| r.streams)
+            .filter(|r| self.next_seq.wrapping_sub(r.seq) >= ACK_BITS)
+            .map(|r| r.seq)
     }
 
     /// Counts lost the oldest packets the next one would pass by the window.

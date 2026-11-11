@@ -7,8 +7,8 @@
 //!
 //! **The page.** `?server=<ws or wss URL>` names a server elsewhere, `?name=<name>` the player's name. The page's root element
 //! carries the game's state for a check to wait on, every frame: `data-torque-frames`, `data-torque-join` (`$Join::State`),
-//! `data-torque-joins` (every state the join went through, `$Join::Seen`),
-//! `data-torque-download` (`received total`, bytes), `data-torque-mods` (the mods the server plays, `id version`),
+//! `data-torque-joins` (every state the join went through, `$Join::Seen`), `data-torque-download` (`received total`, bytes),
+//! `data-torque-mods` (the mods the server plays: their names, then their versions),
 //! `data-torque-team`, `data-torque-figure` (`1` once the client holds its own player), `data-torque-position` (where,
 //! `x y z`), `data-torque-attack` (the way its team attacks along y, `1` or `-1`) and `data-torque-status` (the menu's
 //! status line), and the link's (`data-torque-link` and the rest, [`torque::app::web_join::mark_link`]).

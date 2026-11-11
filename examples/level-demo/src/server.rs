@@ -38,6 +38,26 @@ impl WorldServer {
         extra: &[(String, Vec<u8>)],
         mission: &str,
     ) -> Result<WorldServer, String> {
+        WorldServer::start_on(
+            engine,
+            files,
+            extra,
+            mission,
+            Listen::Memory(SERVER_ADDR),
+            &[],
+        )
+    }
+
+    /// [`WorldServer::start_with`] on `listen` (a UDP socket, the web, a room) with `globals` set before `server.cs` runs (the name
+    /// the list of matches shows, `$Pref::Server::Name`): a server other players join.
+    pub fn start_on(
+        engine: &Engine,
+        files: &GameFiles,
+        extra: &[(String, Vec<u8>)],
+        mission: &str,
+        listen: Listen,
+        globals: &[(&str, &str)],
+    ) -> Result<WorldServer, String> {
         let mem = files.mem_files();
         for (path, bytes) in extra {
             mem.insert(path, bytes);
@@ -46,8 +66,8 @@ impl WorldServer {
             engine,
             mem,
             &ServerStart {
-                listen: Listen::Memory(SERVER_ADDR),
-                globals: &[],
+                listen,
+                globals,
                 start: "startWorld",
                 args: &[mission],
             },

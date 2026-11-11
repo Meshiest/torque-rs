@@ -3,8 +3,20 @@
 //
 // The host fills $World::MapCount, $World::MapTitle[i] and $World::MapAbout[i], then calls buildMenu(). A map picked sets
 // $World::Pick; the host starts that map's server and calls connectTo(%address). Leaving sets $World::Leave.
+//
+// A client that plays with others ($Game::Matches, set by the host) also has Host a match and Join a match on its menu: the
+// screens of common/matches.cs (who may join, the list of matches with an address box, the join screen with the server's mods
+// coming in). Hosting sets $Game::HostAsked; the host starts the office's server and calls joinServer(%address). The join
+// screen sets $World::Joining for the host, which then plays the office. A browser's page ($Game::JoinOnly) only joins the
+// server it was opened for: its menu's Join the office sets $Game::JoinAsked.
 
 exec("common/client.cs");
+
+// The global map, first of the maps (TGE's routing: the global map, then the canvas, then the other maps from the top): it binds
+// nothing, so a click reaches the canvas first whenever the cursor is on (a server's menu, its consent prompt) and the play
+// map's bindings only when the canvas leaves it.
+new ActionMap(GlobalActionMap);
+GlobalActionMap.push();
 
 // Ask the server for a packet every tick, as large as the wire's rate record allows: the link is in memory, and a map of many
 // objects (the valley's trees) is ghosted in a few seconds instead of a minute.
@@ -38,6 +50,73 @@ new GuiControlProfile(WorldButtonProfile)
 
 createCanvas("torque-rs level demo");
 exec("common/pause.cs");
+// The game goes on while the menu is up, for every player: it continues, or leaves.
+ResumeButton.setText("Continue");
+LeaveButton.setText("Leave");
+
+// ---- playing with others (common/matches.cs): its screens' profiles, in the menu's colors
+
+new GuiControlProfile(ClearProfile) { opaque = false; };
+new GuiControlProfile(MenuBackProfile) { opaque = true; fillColor = "18 22 30 255"; };
+new GuiControlProfile(MenuPanelProfile) { opaque = true; border = true; fillColor = "28 34 46 240"; borderColor = "96 116 150 255"; };
+new GuiControlProfile(MenuTitleProfile) { fontType = "Arial"; fontSize = 40; fontColors[0] = "240 242 248 255"; };
+new GuiControlProfile(MenuHeadProfile) { fontType = "Arial"; fontSize = 30; fontColors[0] = "240 242 248 255"; justify = "center"; };
+new GuiControlProfile(MenuModProfile) { fontType = "Arial"; fontSize = 24; fontColors[0] = "255 214 110 255"; justify = "right"; };
+new GuiControlProfile(MenuTextProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "222 226 236 255"; };
+new GuiControlProfile(MenuCenterProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "222 226 236 255"; justify = "center"; };
+new GuiControlProfile(MenuDimProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "150 160 178 255"; };
+new GuiControlProfile(MenuDimCenterProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "150 160 178 255"; justify = "center"; };
+new GuiControlProfile(MenuNoteProfile) { fontType = "Arial"; fontSize = 20; fontColors[0] = "255 214 110 255"; justify = "center"; };
+new GuiControlProfile(MenuTrackProfile) { opaque = true; border = true; fillColor = "12 16 24 255"; borderColor = "96 116 150 255"; };
+new GuiControlProfile(MenuBarProfile) { fillColor = "110 160 230 255"; };
+new GuiControlProfile(MenuListProfile)
+{
+   fontType = "Arial";
+   fontSize = 18;
+   fontColors[0] = "222 226 236 255";
+   fontColors[1] = "255 214 110 255";
+   fontColorHL = "255 214 110 255";
+   fillColorHL = "54 72 104 255";
+   opaque = false;
+   canKeyFocus = true;
+};
+new GuiControlProfile(MenuScrollProfile) { opaque = true; border = true; fillColor = "14 18 26 255"; borderColor = "96 116 150 255"; };
+new GuiControlProfile(MenuEditProfile)
+{
+   opaque = true;
+   border = true;
+   fillColor = "14 18 26 230";
+   fillColorHL = "70 92 128 255";
+   borderColor = "150 176 220 255";
+   fontType = "Arial";
+   fontSize = 18;
+   fontColors[0] = "236 240 248 255";
+   fontColorHL = "255 255 255 255";
+   cursorColor = "255 214 110 255";
+   canKeyFocus = true;
+   autoSizeHeight = false;
+};
+new GuiControlProfile(MenuButtonProfile)
+{
+   opaque = true;
+   border = true;
+   fillColor = "44 54 72 255";
+   fillColorHL = "70 92 128 255";
+   fillColorNA = "30 34 42 255";
+   borderColor = "96 116 150 255";
+   fontType = "Arial";
+   fontSize = 22;
+   fontColors[0] = "236 240 248 255";
+   fontColors[1] = "255 255 255 255";
+   fontColors[2] = "120 126 138 255";
+   justify = "center";
+   canKeyFocus = true;
+};
+
+// The office's servers have no bots; the list leaves that column out.
+$Join::NoBots = 1;
+$Join::ModsLabel = "The server's mods";
+exec("common/matches.cs");
 
 // ---- the menu
 
@@ -50,8 +129,19 @@ new GuiControl(MenuGui)
       position = "60 42"; extent = "680 516"; horizSizing = "center"; vertSizing = "center";
       new GuiTextCtrl(MenuTitle)
       {
-         profile = WorldTitleProfile; position = "0 0"; extent = "680 48"; visible = true; enabled = true;
+         profile = WorldTitleProfile; position = "0 0"; extent = "300 48"; visible = true; enabled = true;
          text = "Level Demo";
+      };
+      // Playing the office with others: shown only to a client that can ($Game::Matches).
+      new GuiButtonCtrl(MenuHostButton)
+      {
+         profile = WorldButtonProfile; position = "320 2"; extent = "170 44"; visible = false; enabled = true;
+         text = "Host a match"; command = "menuHost();";
+      };
+      new GuiButtonCtrl(MenuJoinButton)
+      {
+         profile = WorldButtonProfile; position = "510 2"; extent = "170 44"; visible = false; enabled = true;
+         text = "Join a match"; command = "menuJoin();";
       };
       new GuiTextCtrl(MenuLine)
       {
@@ -104,6 +194,54 @@ function buildMenu()
          enabled = true; text = $World::MapAbout[%i];
       });
    }
+}
+
+// The menu's buttons for playing with others: hosting and the list of matches on this computer's own menu; on a browser's
+// page, joining the server it came from again.
+function showMatchButtons()
+{
+   MenuHostButton.setVisible($Game::Matches && !$Game::JoinOnly);
+   MenuJoinButton.setVisible($Game::Matches);
+   MenuJoinButton.setText($Game::JoinOnly ? "Join the office" : "Join a match");
+   MenuJoinButton.command = $Game::JoinOnly ? "joinPage();" : "menuJoin();";
+}
+
+function menuHost()
+{
+   MenuMap.pop();
+   showHost();
+}
+
+function menuJoin()
+{
+   MenuMap.pop();
+   showJoin();
+}
+
+// A browser's Join the office: the host opens a new link to the page's server and joins it.
+function joinPage()
+{
+   MenuStatus.setText("");
+   $Game::JoinAsked = 1;
+}
+
+// The hooks of common/matches.cs.
+function showMainMenu() { showMenu(); }
+
+function joinScreenShown()
+{
+   closePause();
+   MenuMap.pop();
+   PlayMap.pop();
+   $World::InWorld = 0;
+   $World::Joining = 1;
+}
+
+function joinLeft(%why)
+{
+   leaveWorld();
+   if (%why !$= "")
+      MenuStatus.setText(%why);
 }
 
 function pickMap(%i)
@@ -259,7 +397,10 @@ function onResume() { PlayMap.push(); }
 function leaveGame()
 {
    closePause();
-   leaveWorld();
+   if ($Join::State !$= "")
+      leaveJoin("");
+   else
+      leaveWorld();
 }
 function quitGame() { quit(); }
 
@@ -275,6 +416,7 @@ addControl("Mouse", "Look around");
 addControl("Tab", "Switch camera");
 addControls(1, "Game");
 addControl("R", "Back to the start");
+addControl("Q", "Prop catalog, in a match");
 addControl("Esc", "This menu");
 
 // ---- in and out
@@ -290,6 +432,7 @@ function showMenu()
    $World::Pace = $World::WalkPace;
    updateMove();
    MenuMap.push();
+   showMatchButtons();
    Canvas.setContent(MenuGui);
    Canvas.cursorOn();
 }
@@ -314,20 +457,39 @@ function onGhostAlwaysStarted(%count)
    MenuStatus.setText("Loading the world...");
 }
 
+// A server joined through the join screen ($Join::State set) tells it; a map played alone, the menu's status line.
 function GameConnection::onConnectionAccepted(%this)
 {
+   if ($Join::State !$= "")
+      return joinAccepted();
    MenuStatus.setText("Joined. Waiting for the world...");
 }
 
 function GameConnection::onConnectRequestRejected(%this, %reason)
 {
+   if ($Join::State !$= "")
+      return joinRejected(%reason);
    MenuStatus.setText("The world turned us away: " @ %reason);
+}
+
+function GameConnection::onConnectRequestTimedOut(%this)
+{
+   if ($Join::State !$= "")
+      joinTimedOut();
 }
 
 function GameConnection::onConnectionDropped(%this, %reason)
 {
+   if ($Join::State !$= "")
+      return joinDropped("The server closed the connection: " @ %reason);
    leaveWorld();
    MenuStatus.setText("Left the world: " @ %reason);
+}
+
+function GameConnection::onConnectionTimedOut(%this)
+{
+   if ($Join::State !$= "")
+      joinDropped("Lost the connection to the server.");
 }
 
 // An event for the page of a web build (`torque.on(name, ...)` there; the page bridge's `callPage`), with a fixed name: what the
@@ -340,7 +502,10 @@ function pageEvent(%name, %arg)
 
 function clientCmdWorldStarted(%title)
 {
+   if ($Join::State !$= "")
+      joinPlaying();
    pageEvent("mapLoaded", %title);
+
    PlayTitle.setText(%title);
    MenuMap.pop();
    PlayMap.push();

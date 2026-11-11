@@ -47,6 +47,7 @@ is compiled.
   `$Pref::Server::MaxClientBytesPerSecond` (256 KiB/s by default) is a ceiling on every link. Where a link has congestion control
   of its own, its "no room" skips a packet. Only plain UDP uses the engine's own backoff: halved when more than a tenth of a
   second's packets were lost, raised by a tenth otherwise, never under 16 KiB/s.
+- **Stream packets.** A stream packet is counted lost only by the peer's acks (or an outage), never by the clock alone; a receiver reads no stream packet 3 or more behind its newest, so its sender's count of it lost is true, and the layers above resend what it held. A sender with 32 stream packets unresolved sends nothing until acks come, and the session times out if they do not.
 - **Caps.** A server holds at most 16 sessions from one address and 64 from one network (an IPv4 /24, an IPv6 /64); of those not
   yet established, at most 4 from one address and 16 from one network on a validated link (2 and 4 on plain UDP), and the
   oldest of all is evicted past 64. They count the peer's own address: a browser's game socket and its data channel to a
@@ -204,6 +205,10 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
   `WireLink::max_datagram`, and the server drops a longer datagram as it is read (`commands_modes::a_datagram_over_the_limit_is_dropped_as_it_is_read_and_counted`).
 - Fates reach the layers above in send order, and a packet not sent is lost at once
   (`engine::order::tests::fates_come_back_in_send_order_whatever_order_they_resolve_in`, `a_packet_built_again_after_no_room_gets_a_new_number`).
+- A stream packet's fate is the peer's: never counted lost by the clock alone, so a peer that stops reading for a long frame
+  reads no packet its sender counted lost; an outage is counted lost and the stream goes on; a packet three behind the newest
+  is not read (`engine_link`: `a_peer_that_stalls_reads_no_packet_its_sender_counted_lost`,
+  `an_outage_is_counted_lost_and_the_stream_goes_on`, `a_packet_three_behind_the_newest_is_not_read`).
 - Sessions per address, per network and pending are capped; an evicted one is dropped by the host
   (`engine::table::tests::established_sessions_are_capped_per_address_and_per_network`,
   `pending_sessions_from_one_address_are_capped_and_the_oldest_of_all_is_evicted`).

@@ -37,6 +37,18 @@ pub fn web_live() -> usize {
     live() as usize
 }
 
+/// Whether the page started its runner (`globalThis.torqueClientScript`, with its `open`): a page built with `web/build.mjs
+/// --client-scripts` whose guest passed the build's list. Without it [`WebRunner`] cannot open a realm, so a game offers no
+/// runner and its client tells servers it cannot run their scripts.
+pub fn page_runner_ready() -> bool {
+    let key = |name: &str| JsValue::from_str(name);
+    Reflect::get(&js_sys::global(), &key("torqueClientScript"))
+        .ok()
+        .filter(JsValue::is_object)
+        .and_then(|runner| Reflect::get(&runner, &key("open")).ok())
+        .is_some_and(|open| open.is_function())
+}
+
 /// One realm's instance in a Worker.
 pub struct WebRunner {
     realm: Option<JsRealm>,

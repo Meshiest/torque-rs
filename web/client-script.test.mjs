@@ -2,7 +2,7 @@
 // web/client-script.test.mjs`. The guest's own cases run in real Workers in `client-script-check.mjs`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { clientScripts, withMemoryMax } from './client-script.js';
+import { clientScripts, startPageRunner, withMemoryMax } from './client-script.js';
 
 // A module of one memory of one page and nothing else.
 const MODULE = Uint8Array.from([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 5, 3, 1, 0, 1]);
@@ -91,4 +91,48 @@ test('a call with no list and no explicit opt-out is refused', async () => {
   await assert.rejects(clientScripts({ guest: MODULE, spawn }), /needs the list of accepted guest hashes/);
   await assert.rejects(clientScripts({ guest: MODULE, accepted: 'abc', spawn }), /needs the list of accepted guest hashes/);
   await assert.rejects(clientScripts({ guest: MODULE, accepted: undefined, unchecked: false, spawn }), /needs the list of accepted guest hashes/);
+});
+
+/** A response of `bytes`, or of `status` alone. */
+const answer = (bytes, status = 200) => ({ ok: status === 200, status, arrayBuffer: async () => bytes.buffer });
+
+test('the page runner starts only for a game with a list, on a guest the list holds', async () => {
+  const { spawn } = standIn();
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', MODULE));
+  const hash = Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
+  const listing = (list) => ({ acceptedClientGuests: () => list });
+  const run = async (game, response) => {
+    const target = {};
+    const why = await startPageRunner(game, 'guest.wasm', { get: async () => response, target, spawn });
+    return { why, runner: target.torqueClientScript };
+  };
+
+  let { why, runner } = await run({}, answer(MODULE));
+  assert.match(why, /lists no realm guest/);
+  assert.equal(runner, undefined, 'a module with no list never gets the runner');
+
+  ({ why, runner } = await run(listing([hash]), answer(new Uint8Array(0), 404)));
+  assert.match(why, /could not be fetched \(HTTP 404\)/);
+  assert.equal(runner, undefined);
+
+  ({ why, runner } = await run(listing(['0'.repeat(64)]), answer(MODULE)));
+  assert.match(why, /is not one this build accepts/);
+  assert.equal(runner, undefined, 'a guest off the list is never run');
+
+  ({ why, runner } = await run(listing([hash]), answer(MODULE)));
+  assert.equal(why, '');
+  assert.equal(typeof runner.open, 'function', 'the runner the module opens realms with');
+  assert.equal(runner.live(), 0);
+
+  const failing = { acceptedClientGuests: () => [hash] };
+  const target = {};
+  why = await startPageRunner(failing, 'guest.wasm', {
+    get: async () => {
+      throw new Error('offline');
+    },
+    target,
+    spawn,
+  });
+  assert.match(why, /could not be fetched: offline/);
+  assert.equal(target.torqueClientScript, undefined);
 });

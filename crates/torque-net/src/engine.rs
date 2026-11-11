@@ -48,7 +48,7 @@ pub use framing::{
     RejectCode, STR_BYTES, StreamLane, TableDigests, Unreliable, Versions, Widths, one_line, parse,
 };
 pub use gate::{Gate, GateConfig, GateOutcome};
-pub use lanes::{ACK_BITS, MESSAGE_WINDOW, PACKET_WINDOW, SendError};
+pub use lanes::{ACK_BITS, MESSAGE_WINDOW, PACKET_WINDOW, REORDER_THRESHOLD, SendError};
 pub use link::{Link, LinkFacts, LinkKind, NoRoom, ServerIdentity};
 pub use order::PacketOrder;
 pub use session::{

@@ -22,14 +22,16 @@ Small games made with the engine. Run each from the repository root with `just e
 ![The level demo's plaza from above](screenshots/level-demo-plaza.webp)
 ![The level demo's office: desks under their ceiling lights](screenshots/level-demo-office.webp)
 
-A single-player game: pick a map from the menu, then walk and jump around it as the box figure. The office has props you can push, pick up and carry.
+Pick a map from the menu, then walk and jump around it as the box figure. The office has props you can push, pick up and carry, and others can join you there: Host a match or Join a match from the menu, or open it in a browser.
 
 ```text
 just examples level-demo run
-just examples level-demo web      # http://127.0.0.1:8080/?map=office
+just examples level-demo web           # http://127.0.0.1:8080/?map=office
+just examples level-demo office-server # host the office for others
+just examples level-demo office-web    # browsers join at http://127.0.0.1:28000/?join
 ```
 
-**Controls:** 1 to 9 pick a map; W A S D walk, Shift sprint, C crouch, Z lie down, Space jump, mouse look, left click pick up or drop a prop, Tab first or third person, R restart, Esc menu.
+**Controls:** 1 to 9 pick a map; W A S D walk, Shift sprint, C crouch, Z lie down, Space jump, mouse look, left click pick up or drop a prop, Q the prop catalog, Tab first or third person, R restart, Esc menu.
 
 ### The valley
 

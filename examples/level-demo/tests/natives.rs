@@ -51,3 +51,41 @@ fn the_server_has_these_natives() {
         WorldServer::start(game.engine(), &game.files, &map.path).expect("the server starts");
     check_listing(&server_listing(), &server.vm().native_listing());
 }
+
+/// The office played with others (`office_engine`, the window's engine): the client's and the server's lists, with the mods,
+/// the list of matches, the join screen's and the server scripts' natives. Checked in the default build only (the rope
+/// feature's natives are the other lists').
+#[test]
+fn the_office_engines_client_and_server_have_these_natives() {
+    use torque::mods::CacheChoice;
+    use torque_example_level_demo::client::MatchOptions;
+    use torque_example_level_demo::office::{ServerScripts, office_engine, start_office};
+    use torque_plugin_client_script::Choices;
+
+    if cfg!(feature = "rope") || torque_plugin_props::ROPE {
+        return;
+    }
+    let engine = office_engine(
+        GameFiles::bundled().unwrap(),
+        Vec::new(),
+        CacheChoice::Memory,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    let options = MatchOptions {
+        net: torque_example_level_demo::client::NetMode::Loopback,
+        ..MatchOptions::default()
+    };
+    let scripts = ServerScripts::new(Choices::in_memory(), None);
+    let game = LevelDemo::for_matches(&engine, options, None, scripts).unwrap();
+    check_listing(&listing("office-client.txt"), &game.vm().native_listing());
+    let listen =
+        torque::app::server::Listen::Memory(torque_example_level_demo::server::SERVER_ADDR);
+    let start = torque_example_level_demo::office::OfficeStart {
+        name: "Office",
+        dedicated: true,
+    };
+    let server = start_office(&engine, listen, &start).expect("the server starts");
+    check_listing(&listing("office-server.txt"), &server.vm().native_listing());
+}
