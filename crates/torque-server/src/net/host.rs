@@ -84,11 +84,12 @@ use torque_net::serverquery::InfoLimiter;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
-use super::codecs::{NetCodecs, net_codecs};
+use super::codecs::{NetCodecs, engine_event_registry, net_codecs};
 use super::events::EventLayer;
 use super::ghosts::{GhostGame, GhostHub};
 use super::hostevent::GameEvents;
 use super::payload::PayloadLayer;
+use super::peer::ProtocolMode;
 use super::transport::SharedTransport;
 use super::{commands, conn, datablocks};
 use crate::state::{NetParts, START_GHOST_BITS, ServerState};
@@ -768,5 +769,29 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
     shared.borrow().engine.borrow_mut().commands = commands::CommandHost::new(&shared, layer);
     let engine = Rc::clone(&shared.borrow().engine);
     commands::register_always(vm, &engine);
+    if ProtocolMode::of(vm) == torque_engine::ProtocolKind::Engine {
+        install_engine_removal(vm, &shared.borrow().events, &*codecs);
+    }
     shared
+}
+
+/// In the engine's protocol the event table has the datablock removal ([`engine_event_registry`]) and the game's removal hook
+/// posts one to every connection that was sent the datablock ([`EventLayer::remove_datablock`]): a server of Torque's protocol
+/// keeps Torque's table and tells its clients nothing. A game that sets a removal hook of its own after the host is attached
+/// replaces this one and must post the event itself.
+fn install_engine_removal<H: GameEvents, S: GhostGame>(
+    vm: &mut Vm,
+    events: &EventLayer<H, S>,
+    codecs: &dyn NetCodecs,
+) {
+    if let Ok(ids) = engine_event_registry(codecs).ids() {
+        events.set_ids(ids);
+    }
+    let layer = events.clone();
+    torque_game::scene::remove::set_removal_hook(
+        vm,
+        Some(Rc::new(move |_vm, id| {
+            layer.remove_datablock(id);
+        })),
+    );
 }

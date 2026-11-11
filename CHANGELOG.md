@@ -52,6 +52,12 @@ different.
   `%db.getUserCount()`, `%db.getUsers([%max])` and `getDataBlockUsers(%db [, %max])` are bounded queries. Datablock ids are
   never reused inside a mission, a Player keeps its last products when its datablock is gone, and a ghost never carries a dead
   datablock id.
+- In the engine's protocol a removed datablock leaves the clients too: the event table has a `DataBlockRemoveEvent`
+  (engine framing 2), posted on the ordered queue to every connection that was sent the datablock when the server deletes it
+  (a retiring datablock's when its last user is gone), and the client retires the datablock and purges its record and script
+  object once no ghost, mounted image or predictor names it, at most 256 retired at once (past that the connection ends), an
+  unknown id ignored and counted, a body for a retired id refused. Torque's protocol stays byte for byte: a stock client keeps
+  a removed datablock until the mission reloads.
 
 #### Mods
 

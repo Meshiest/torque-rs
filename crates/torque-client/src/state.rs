@@ -72,6 +72,8 @@ pub struct ClientState<G: ConnGame> {
     pub mouse_locked: bool,
     /// The server's datablocks the client could not make ([`crate::datablocks::Received::Refused`]).
     pub datablocks_refused: u64,
+    /// Datablock removals of ids the connection did not hold, or held retired already (a server of the engine's sends none).
+    pub datablock_removes_ignored: u64,
     /// The named-shape list ([`crate::hud::NameList`]).
     pub names: crate::hud::NameList,
     /// The camera the names are placed and tested from when the game draws the world from its own camera (none: the

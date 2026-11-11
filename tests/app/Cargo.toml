@@ -74,6 +74,11 @@ path = "tests/server/commands_modes.rs"
 name = "server_datablock_live"
 path = "tests/server/datablock_live.rs"
 
+# torque-server: datablock removal reaching a real client in the engine's protocol (retire, purge, the caps), nothing in Torque's.
+[[test]]
+name = "server_datablock_remove_wire"
+path = "tests/server/datablock_remove_wire.rs"
+
 # torque-plugin-tcp: both sides tick their own sockets.
 [[test]]
 name = "tcp_sides"

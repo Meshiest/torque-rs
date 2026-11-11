@@ -477,6 +477,17 @@ pub const DATABLOCKS_DOWNLOAD_DONE: u8 = 7;
 /// moves up with the rest).
 const STATIC_POSITION: u32 = 0x0100_0000;
 
+/// The event classes of a server that speaks the engine's protocol: the codecs' ([`NetCodecs::event_registry`]) and the
+/// engine's own datablock removal ([`torque_net::events::DATABLOCK_REMOVE_EVENT`]), which Torque's table never has.
+pub fn engine_event_registry(codecs: &dyn NetCodecs) -> EventRegistry {
+    let mut registry = codecs.event_registry();
+    registry.register(
+        torque_net::events::DATABLOCK_REMOVE_EVENT,
+        Direction::ServerToClient,
+    );
+    registry
+}
+
 /// Torque's codecs.
 #[derive(Debug, Default)]
 pub struct TorqueCodecs;

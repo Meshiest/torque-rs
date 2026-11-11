@@ -302,6 +302,8 @@ but is not watched. A reload asked for inside a reload (a reloaded file calling 
 |---|---|---|
 | Edit in place and resend | yes, no wire change | yes, the same events |
 | Add a datablock mid-game | yes, within the 1,021 ids of a mission | yes, within the id range |
+| Remove a datablock | server only; a stock client keeps it until the mission reloads | `DataBlockRemoveEvent` on the ordered queue; the client retires and purges |
+| Remove one with ghosts using it | refused, or repointed first | the same, and the client purges after the last ghost leaves |
 | Who takes it | a stock Torque client and the engine's | the engine's clients |
 
 ## Removal
@@ -340,10 +342,40 @@ one; nothing depends on positions. A datablock deleted behind the count's back (
 under live objects) no longer breaks what is left: a Player keeps the last products it had and a ghost never carries the id of
 a datablock that is gone.
 
-**The wire.** Removal posts nothing to a connection in TGE mode: a connected client keeps a datablock no object uses until the
-mission reloads, a client that joins later never gets it. A host that tells its clients sets a hook
-(`torque_game::scene::remove::set_removal_hook`), run once per datablock with the id at the moment it stops resolving. The
-natives exist only in the server's script engine. Tests: `crates/torque-server/tests/datablock_remove.rs`.
+**The wire, in Torque's protocol.** Removal posts nothing: a connected stock client keeps a datablock no object uses until the
+mission reloads, a client that joins later never gets it (the chain walks the live group), and not a byte of the protocol
+changes. This is harmless because a datablock is only removed once no object uses it. The natives exist only in the server's
+script engine. Tests: `crates/torque-server/tests/datablock_remove.rs`.
+
+**The wire, in the engine's protocol.** The event table has one class Torque's lacks, `DataBlockRemoveEvent {id}` (the id
+`ranged` over the datablock-id range, as a `SimDataBlockEvent`'s), which made the engine framing version 2. The server posts it
+on the **ordered event queue**, behind the chain's events, so a removal can never overtake the add or an update of the same id,
+and only to the connections that were sent a body of the datablock (a connection still downloading its chain never had it, and
+the chain renders a deleted datablock as the empty event). It is posted when the datablock is **deleted**, never when it
+retires: a retiring datablock still travels to a client that joins, and the ghost of one of its users can leave and come back
+naming it, so the one moment a client can let it go is the deletion, after which no object names the id. The game's removal
+hook (`torque_game::scene::remove::set_removal_hook`) runs there, once per datablock, for the checked removal and the
+unchecked `delete()` alike; `deleteDataBlocks()` runs it not (a mission's end replaces every datablock).
+
+The client that gets the event marks the datablock **retired**: it stays in the record store and the script group, since a
+ghost update naming it may still be on its way and a ghost that names it must keep drawing from it, but no datablock event
+adds one at its id (such a body is refused and counted in `datablocks_refused`; a host that sets the id counter back under a
+retired record a ghost still names, `set_next_datablock_id`, has that one body refused until the purge lets the id go). Once a
+tick, when anything is retired, the connection scans its ghost records and mounted images once and asks the prediction
+(`Predictor::uses_datablock`), and every retired datablock nothing names loses its record, its generation and the script object
+the client made of it (an object the client did not make, the server's own on a shared engine or a script's, is left). A ghost
+that names a retired datablock keeps it until the ghost leaves; the purge follows within a tick or two. A ghost reset (a mission
+change) lets every retired datablock go at once, so the next mission's chain may reuse any id.
+
+Limits on the client: a connection keeps at most 256 datablocks retired at once (`MAX_RETIRED_DATABLOCKS`); a server that
+removes more than that under the client's ghosts ends the connection with `too many retired datablocks`. A removal of an id
+the client does not hold, or holds retired already, is ignored and counted in `datablock_removes_ignored`; a server of the
+engine's sends neither. Tests: `crates/torque-server/tests/datablock_remove_wire.rs` (an engine-protocol client over the
+memory link at 20% loss with reordering, 100 seeded orders of repoint, delete over users and removal: the client's set equals
+the server's, no ghost ever names a datablock the client let go, each removed id is told once after its body, and a retired
+datablock is purged within two ticks of its last ghost leaving) and torque-test-app's `server_datablock_remove_wire` (a real
+client: record and object purged, a hostile remove of an unknown id counted, one in use kept retired with its body refused,
+257 retired datablocks dropping the connection, and a stock client of Torque's protocol keeping its datablock).
 
 ## Client refresh
 

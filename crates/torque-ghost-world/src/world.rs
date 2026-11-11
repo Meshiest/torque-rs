@@ -437,6 +437,24 @@ impl<S: ClientSet> GhostIndex<S> {
 /// shape): the rest wait for the next one, so an edit under thousands of users spreads over frames.
 pub const MAX_REFRESHES_PER_FRAME: usize = 64;
 
+/// The most datablocks a world keeps retired at once ([`ClientWorld::retire_datablock`]): a server that removes more than this
+/// many datablocks its ghosts still name is not one of the engine's, and the connection ends.
+pub const MAX_RETIRED_DATABLOCKS: usize = 256;
+
+/// What [`ClientWorld::retire_datablock`] did with a removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatablockRetire {
+    /// The datablock is retired: no event may add one at its id, and a purge drops it once nothing names it.
+    Retired,
+    /// The world holds no datablock at the id: nothing to retire (counted by the host, a server of the engine's never does it).
+    Unknown,
+    /// The datablock was retired already (a repeat).
+    Already,
+    /// The world holds [`MAX_RETIRED_DATABLOCKS`] retired datablocks and this one is not among them: the host drops the
+    /// connection.
+    OverCap,
+}
+
 /// The most ghosts a client's world follows, whatever ghost table the connection's accept allows (an engine server's 24-bit
 /// table names 16.7 million): a ghost created past it is left out (counted in [`ClientWorld::over_cap`]) until room is made.
 pub const MAX_WORLD_GHOSTS: usize = 1 << 18;
@@ -455,6 +473,14 @@ pub struct ClientWorld<S: ClientSet> {
 
     /// How many events changed a datablock's record. A value other than the one a consumer last saw means some datablock changed.
     pub datablock_epoch: u64,
+
+    /// The datablocks the server removed that the world still holds ([`ClientWorld::retire_datablock`]): kept while a ghost or a
+    /// mounted image names them, dropped by [`ClientWorld::purge_retired_datablocks`]. At most [`MAX_RETIRED_DATABLOCKS`].
+    pub datablock_retired: BTreeSet<u32>,
+
+    /// The ids whose records a purge dropped since the last [`ClientWorld::take_purged_datablocks`]: the host deletes the
+    /// script objects it made of them. Bounded by the retired set a purge empties.
+    pub datablocks_purged: Vec<u32>,
 
     /// The server-to-client net strings by slot.
     pub strings: BTreeMap<u8, Vec<u8>>,
@@ -691,6 +717,8 @@ impl<S: ClientSet> Default for ClientWorld<S> {
             datablocks: Default::default(),
             datablock_gen: Default::default(),
             datablock_epoch: Default::default(),
+            datablock_retired: Default::default(),
+            datablocks_purged: Default::default(),
             strings: Default::default(),
             ghosts: Default::default(),
             control: Default::default(),
@@ -1561,6 +1589,87 @@ impl<S: ClientSet> ClientWorld<S> {
     #[must_use]
     pub fn datablock_generation(&self, id: u32) -> u64 {
         self.datablock_gen.get(&id).copied().unwrap_or(0)
+    }
+
+    /// The server removed datablock `id`. The record stays while a ghost or a mounted image names it (a ghost update naming it
+    /// may still be on its way, and a record a ghost reads must be there), and goes with the next purge once nothing does; no
+    /// event adds a datablock at the id until then ([`ClientWorld::is_datablock_retired`]).
+    pub fn retire_datablock(&mut self, id: u32) -> DatablockRetire {
+        if self.datablock_retired.contains(&id) {
+            return DatablockRetire::Already;
+        }
+        if !self.datablocks.contains_key(&id) {
+            return DatablockRetire::Unknown;
+        }
+        if self.datablock_retired.len() >= MAX_RETIRED_DATABLOCKS {
+            return DatablockRetire::OverCap;
+        }
+        self.datablock_retired.insert(id);
+        DatablockRetire::Retired
+    }
+
+    /// Whether datablock `id` is retired: removed by the server and kept only for what still names it.
+    #[must_use]
+    pub fn is_datablock_retired(&self, id: u32) -> bool {
+        self.datablock_retired.contains(&id)
+    }
+
+    /// Drops the retired datablocks nothing names any more: one pass over the ghosts (the datablock each names) and the mounted
+    /// images, then `in_use` for what the world does not see (a predictor's datablock). The records go, the ids wait in
+    /// [`ClientWorld::datablocks_purged`] for the host; a retired datablock something still names stays until a later purge.
+    /// Nothing is read when nothing is retired. Returns how many were dropped.
+    pub fn purge_retired_datablocks(&mut self, in_use: impl Fn(u32) -> bool) -> usize {
+        if self.datablock_retired.is_empty() {
+            return 0;
+        }
+        let retired = &self.datablock_retired;
+        let mut named: BTreeSet<u32> = self
+            .ghosts
+            .values()
+            .filter_map(Ghost::datablock)
+            .filter(|id| retired.contains(id))
+            .collect();
+        named.extend(
+            self.images
+                .values()
+                .flat_map(|slots| slots.iter().flatten().map(|m| m.datablock))
+                .filter(|id| retired.contains(id)),
+        );
+        let gone: Vec<u32> = self
+            .datablock_retired
+            .iter()
+            .copied()
+            .filter(|&id| !named.contains(&id) && !in_use(id))
+            .collect();
+        self.drop_datablocks(&gone);
+        gone.len()
+    }
+
+    /// Drops every retired datablock, whatever names it: for the ghost reset (connection message 2), after which no ghost is
+    /// left and the next mission's chain may send a datablock at any id.
+    pub fn purge_all_retired_datablocks(&mut self) -> usize {
+        let gone: Vec<u32> = self.datablock_retired.iter().copied().collect();
+        self.drop_datablocks(&gone);
+        gone.len()
+    }
+
+    fn drop_datablocks(&mut self, ids: &[u32]) {
+        if ids.is_empty() {
+            return;
+        }
+        for &id in ids {
+            self.datablock_retired.remove(&id);
+            self.datablocks.remove(&id);
+            self.datablock_gen.remove(&id);
+            self.image_states_cache.remove(&id);
+            self.datablocks_purged.push(id);
+        }
+        self.datablocks_changed();
+    }
+
+    /// The ids whose records a purge dropped since the last take.
+    pub fn take_purged_datablocks(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.datablocks_purged)
     }
 
     /// A ghost-always event for ghost `index`.

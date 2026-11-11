@@ -86,6 +86,8 @@ pub struct EventIds {
     pub sim_2d_audio: u32,
     pub sim_3d_audio: u32,
     pub lightning_strike: u32,
+    /// The engine protocol's datablock removal ([`DATABLOCK_REMOVE_EVENT`]); `None` in a table without it (Torque's).
+    datablock_remove: Option<u32>,
 }
 
 /// Torque's event classes with their directions (TGE 1.4's `IMPLEMENT_CO_NETEVENT_V1` / `IMPLEMENT_CO_CLIENTEVENT_V1` set, the
@@ -105,6 +107,11 @@ pub const TORQUE_EVENTS: [(&str, Direction); 13] = [
     ("SimDataBlockEvent", Direction::ServerToClient),
     ("SimpleMessageEvent", Direction::Any),
 ];
+
+/// The engine protocol's own event class beside Torque's ([`EventRegistry::engine`]): a datablock the server removed, by id
+/// (server to client, ordered behind the add and the updates of the same id). Its body is the id, `ranged` over the datablock-id
+/// range as a `SimDataBlockEvent`'s. Never in Torque's table: a stock peer has no class for it.
+pub const DATABLOCK_REMOVE_EVENT: &str = "DataBlockRemoveEvent";
 
 /// The event classes a connection knows: Torque's own ([`TORQUE_EVENTS`]) unless a game says otherwise, and a game's own beside
 /// them. Both sides must hold the same set (an id is a position in the sorted list).
@@ -127,6 +134,15 @@ impl EventRegistry {
         for (name, direction) in TORQUE_EVENTS {
             r.register(name, direction);
         }
+        r
+    }
+
+    /// The engine protocol's classes: Torque's and [`DATABLOCK_REMOVE_EVENT`]. The sort rule puts the new class among Torque's,
+    /// so the ids of the classes after it differ from Torque's table: a connection of the engine's protocol derives both sides
+    /// from this one.
+    pub fn engine() -> EventRegistry {
+        let mut r = EventRegistry::torque();
+        r.register(DATABLOCK_REMOVE_EVENT, Direction::ServerToClient);
         r
     }
 
@@ -215,7 +231,13 @@ impl EventIds {
             sim_2d_audio: id("Sim2DAudioEvent")?,
             sim_3d_audio: id("Sim3DAudioEvent")?,
             lightning_strike: id("LightningStrikeEvent")?,
+            datablock_remove: classes.id_of(Kind::Event, DATABLOCK_REMOVE_EVENT),
         })
+    }
+
+    /// The id of [`DATABLOCK_REMOVE_EVENT`], when the table has it.
+    pub fn datablock_remove(&self) -> Option<u32> {
+        self.datablock_remove
     }
 
     /// The ids of Torque's own event classes ([`EventRegistry::torque`]); `None` only if the derivation refused the fixed list (it

@@ -905,6 +905,23 @@ impl<W: PredictWorld> Predictor<W> {
         }
     }
 
+    /// Whether the prediction reads datablock `id`: the predicted Player's, a driven or ghost vehicle's, or a wheel's tire or
+    /// spring. A removed datablock's record stays in the world while this holds (the connection's purge of retired datablocks).
+    #[must_use]
+    pub fn uses_datablock(&self, id: u32) -> bool {
+        let vehicle_uses = |v: &drive::DrivenVehicle| {
+            v.datablock == id
+                || v.v.k.wheels.iter().any(|w| {
+                    w.tire.is_some_and(|t| t.0 == ObjectId(id))
+                        || w.spring.is_some_and(|s| s.0 == ObjectId(id))
+                })
+        };
+        self.predicted
+            .as_ref()
+            .is_some_and(|p| p.datablock == id || p.vehicle.as_ref().is_some_and(vehicle_uses))
+            || self.ghost_vehicles.values().any(|g| vehicle_uses(&g.body))
+    }
+
     /// Brings the ghost vehicles' tuning up to the datablocks the world holds now, once the world's datablock epoch has moved:
     /// at most [`MAX_REFRESHES_PER_FRAME`] vehicles a call (the epoch is taken as seen when all were
     /// looked at, so the rest are done by the next calls). Each is changed in place: its pose and momenta stay.

@@ -20,8 +20,10 @@
 //! own, the lists are one scan of the process list, at most [`MAX_LISTED_USERS`] ids (a script's `%max` is held under it).
 //!
 //! **The wire.** Nothing here posts anything to a connection. A host that tells its clients about a removal sets a
-//! [`RemovalHook`]: it runs once per datablock, with the id, at the moment the id stops resolving (the retire or the delete),
-//! while the object is still registered.
+//! [`RemovalHook`]: it runs once per datablock, with the id, at the moment the datablock is deleted (a retiring one's when its
+//! last user is gone, [`free_retired`]), while the object is still registered. A retire runs it not: a client that joins while
+//! the datablock retires still receives it, and a ghost of a user that leaves and comes back names it again, so the one moment
+//! a client can let it go is the deletion, after which no object names the id.
 //!
 //! The natives are the server's: a client's script engine never gets them.
 //!
@@ -59,17 +61,15 @@ pub type RemovalHook = Rc<dyn Fn(&mut Vm, ObjId)>;
 
 struct HookSlot(RefCell<Option<RemovalHook>>);
 
-/// Gives the server `hook`, run once with each datablock's id when the datablock is retired or deleted through the natives here
-/// (a plain `delete()`, `removeDataBlock`), before the deletion, while the object is still registered. None removes it.
+/// Gives the server `hook`, run once with each datablock's id when the datablock is deleted through the natives here (a plain
+/// `delete()`, `removeDataBlock`) or by the drain that frees a retiring one ([`free_retired`]), before the deletion, while the
+/// object is still registered. `deleteDataBlocks()` runs it not. None removes it.
 pub fn set_removal_hook(vm: &mut Vm, hook: Option<RemovalHook>) {
     vm.set_extension(Rc::new(HookSlot(RefCell::new(hook))));
 }
 
-/// The hook, once per datablock: a datablock that is already retiring stopped resolving when it retired.
+/// The hook, right before `db` is deleted.
 fn removed(vm: &mut Vm, db: ObjId) {
-    if vm.objects().is_retiring(db) {
-        return;
-    }
     let hook = vm
         .extension::<HookSlot>()
         .and_then(|slot| slot.0.borrow().clone());
@@ -103,8 +103,8 @@ fn shown(vm: &Vm, id: ObjId) -> String {
     }
 }
 
-/// A script's `%db.delete()`: gone at once without users, retired with them ([`Objects::retire_datablock`]). The hook runs once
-/// either way.
+/// A script's `%db.delete()`: gone at once without users (the hook runs), retired with them ([`Objects::retire_datablock`];
+/// the hook waits for [`free_retired`]).
 ///
 /// # Errors
 /// The deletion's (`onRemove`) ran past the script engine's limits.
@@ -115,12 +115,20 @@ pub fn delete_datablock(vm: &mut Vm, db: ObjId) -> Result<(), VmError> {
         return vm.delete_object(db);
     }
     if refresh::users(vm, db) == 0 {
-        removed(vm, db);
-        return vm.delete_object(db);
+        return free_retired(vm, db);
     }
-    removed(vm, db);
     vm.objects_mut().retire_datablock(db);
     Ok(())
+}
+
+/// Deletes datablock `db` now, the hook first: what frees a retiring datablock whose last user is gone (the tick's drain), and
+/// what a `delete()` of one without users does.
+///
+/// # Errors
+/// The deletion's (`onRemove`) ran past the script engine's limits.
+pub fn free_retired(vm: &mut Vm, db: ObjId) -> Result<(), VmError> {
+    removed(vm, db);
+    vm.delete_object(db)
 }
 
 /// A datablock field of a datablock that holds `db`: the datablock, the field and the element.

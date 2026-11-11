@@ -1195,6 +1195,11 @@ impl<S: GhostStyle> GhostScene<S> {
     /// [`MAX_REFRESHES_PER_FRAME`](torque_ghost_world::world::MAX_REFRESHES_PER_FRAME) datablocks a frame; the rest wait for
     /// the next frame (the epoch is taken as seen only once none waits).
     fn preload(&mut self, assets: &dyn Assets, world: &World) {
+        if world.datablocks.len() != self.preloaded.len() {
+            // A datablock the server removed leaves the table.
+            self.preloaded
+                .retain(|id, _| world.datablocks.contains_key(id));
+        }
         if world.datablocks.len() == self.preloaded.len()
             && world.datablock_epoch == self.preloaded_epoch
         {

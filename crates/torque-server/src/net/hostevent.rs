@@ -1,7 +1,8 @@
 //! The events of the host's connections in one type that the connection's [`EventQueue`](torque_net::events::EventQueue) and
 //! receiver carry: `net`'s [`NetEvent`] (NetString, remote commands, `ConnectionMessage`), Torque's small events
-//! ([`TorqueEvent`]: the audio events, `PathManagerEvent`, `LightningStrikeEvent`), the datablock events a chain posts, the
-//! ghost-always events, and the game's own events ([`HostEvent::Game`]).
+//! ([`TorqueEvent`]: the audio events, `PathManagerEvent`, `LightningStrikeEvent`), the datablock events a chain posts and the
+//! engine protocol's removal of one ([`HostEvent::DataBlockRemove`]), the ghost-always events, and the game's own events
+//! ([`HostEvent::Game`]).
 //!
 //! A game says what its events are and what the layer does with them through [`GameEvents`]: how they are read, what a client's
 //! event does on the server, what posting one or its settling sets off on the connection's game state, and what a dropped
@@ -25,12 +26,16 @@ use torque_ts_vm::sim::ObjId;
 
 pub use torque_net::gameevents::GameEvent as TorqueEvent;
 
+use super::datablock::{DATABLOCK_ID_FIRST, id_mask};
 use super::datablocks::DbEvent;
 use super::ghosts::{GhostGame, GhostHub};
 use super::payload::Followup;
 
 /// `SimDataBlockEvent`'s engine class name.
 pub const DATABLOCK_CLASS: &str = "SimDataBlockEvent";
+
+/// The engine protocol's datablock removal, by id ([`torque_net::events::DATABLOCK_REMOVE_EVENT`]).
+pub const DATABLOCK_REMOVE_CLASS: &str = torque_net::events::DATABLOCK_REMOVE_EVENT;
 
 /// An event of a host connection; `G` is the game's events.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +46,10 @@ pub enum HostEvent<G> {
     /// A datablock event a chain posted (server to client): rendered from the live datablock when its packet is built
     /// ([`super::datablocks`]).
     DataBlock(DbEvent),
+    /// A datablock the server deleted (server to client, the engine's protocol only: Torque's table has no class for it).
+    /// Ordered behind the add and the updates of the same id, so a client never takes a removal before the datablock. The body
+    /// is the id, `ranged` over the datablock-id range as a `SimDataBlockEvent`'s.
+    DataBlockRemove(ObjId),
     /// A ghost-always event the ghost layer posted (server to client): its record is packed from the live object when the event
     /// is written.
     Ghost(GhostEvent),
@@ -69,6 +78,7 @@ impl<G: WireEvent> WireEvent for HostEvent<G> {
             HostEvent::Net(e) => e.class(ids),
             HostEvent::Torque(e) => e.class(ids),
             HostEvent::DataBlock(_) => class_id(ids, DATABLOCK_CLASS).unwrap_or(0),
+            HostEvent::DataBlockRemove(_) => ids.datablock_remove().unwrap_or(0),
             HostEvent::Ghost(e) => e.class(ids),
             HostEvent::Game(e) => e.class(ids),
         }
@@ -89,6 +99,11 @@ impl<G: WireEvent> WireEvent for HostEvent<G> {
             HostEvent::Net(e) => e.pack(w, ctx),
             HostEvent::Torque(e) => e.pack(w, ctx),
             HostEvent::DataBlock(cell) => cell.0.pack(w, ctx.table),
+            HostEvent::DataBlockRemove(id) => w.write_ranged_u32(
+                *id,
+                DATABLOCK_ID_FIRST,
+                DATABLOCK_ID_FIRST + id_mask(ctx.datablock_bits),
+            ),
             HostEvent::Ghost(e) => e.pack(w, ctx),
             HostEvent::Game(e) => e.pack(w, ctx),
         }

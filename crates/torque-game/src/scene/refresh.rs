@@ -244,13 +244,13 @@ pub fn users_of(vm: &Vm, db: ObjId, max: usize) -> Vec<ObjId> {
     found
 }
 
-/// Deletes every retiring datablock ([`Vm::objects`]' `retire_datablock`) whose last user is gone: the tick's drain runs it
-/// first. The errors are the deletions' (a datablock's `onRemove`).
+/// Deletes every retiring datablock ([`Vm::objects`]' `retire_datablock`) whose last user is gone ([`super::remove::free_retired`]:
+/// the host's removal hook runs first): the tick's drain runs it first. The errors are the deletions' (a datablock's `onRemove`).
 fn purge_retiring(vm: &mut Vm) -> Vec<VmError> {
     let mut errors = Vec::new();
     for db in vm.objects().retiring_datablocks() {
         if users(vm, db) == 0
-            && let Err(error) = vm.delete_object(db)
+            && let Err(error) = super::remove::free_retired(vm, db)
         {
             errors.push(error);
         }

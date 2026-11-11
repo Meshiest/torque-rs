@@ -341,12 +341,13 @@ impl PartialEq for DbEvent {
 
 impl Eq for DbEvent {}
 
-/// An event the datablock chain posts: a cell's `SimDataBlockEvent`, or the datablocks-done `ConnectionMessage` that ends the
-/// chain.
+/// An event the datablock chain posts: a cell's `SimDataBlockEvent`, the datablocks-done `ConnectionMessage` that ends the
+/// chain, or the engine protocol's removal of a datablock the connection was sent ([`ConnDatablocks::remove`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DbPost {
     Cell(DbEvent),
     Message(ConnectionMessage),
+    Remove(ObjId),
 }
 
 impl<G> From<DbPost> for HostEvent<G> {
@@ -354,6 +355,7 @@ impl<G> From<DbPost> for HostEvent<G> {
         match post {
             DbPost::Cell(cell) => HostEvent::DataBlock(cell),
             DbPost::Message(m) => HostEvent::Net(NetEvent::ConnectionMessage(m)),
+            DbPost::Remove(id) => HostEvent::DataBlockRemove(id),
         }
     }
 }
@@ -626,6 +628,14 @@ impl ConnDatablocks {
     /// The key `id` carried when a body of it was last rendered for this connection.
     pub fn sent_key(&self, id: ObjId) -> Option<i32> {
         self.sent.get(&id).copied()
+    }
+
+    /// The server deleted datablock `id`: the removal to post when this connection was sent a body of it (the id leaves the
+    /// `sent` table, so a datablock made at the id later travels as new), none otherwise (a connection that never had it has
+    /// nothing to let go; a chain cell for it that is not rendered yet renders as the one 0 bit). Posted through
+    /// [`post_or_hold`](Self::post_or_hold), behind the chain's events, so it never overtakes the body of the same id.
+    pub fn remove(&mut self, id: ObjId) -> Option<DbPost> {
+        self.sent.remove(&id).map(|_| DbPost::Remove(id))
     }
 
     /// The count a live round's done message with sequence `seq` reports, once: the client's answer with that sequence runs

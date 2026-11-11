@@ -93,13 +93,13 @@
 //!   a new path that resolves a datablock for a new user must check it too;
 //! - a script's user list is bounded by [`scene::remove::MAX_LISTED_USERS`]; the removal's own user and referrer scans are
 //!   bounded by the process list and DataBlockGroup and charged per object (`a_fallback_moves_sixty_four_users...`);
-//! - the removal hook runs once per datablock, never again for one already retiring
-//!   (`the_removal_hook_runs_once_per_datablock`);
+//! - the removal hook runs once per datablock, at its deletion and never at its retire (a retiring datablock still travels to
+//!   a joining client and a user's ghost can name it again) (`the_removal_hook_runs_once_per_datablock`);
 //! - a removal that leaves a user (a fallback a user's class cannot take) leaves the datablock (`remove_datablock`'s last check);
 //! - a Player whose datablock is gone keeps its last products ([`sim::player::refresh_info`]) and the ghost view hands the codecs
 //!   no dead id (torque-server's `GameView::datablock`) (`a_datablock_deleted_under_its_players...`).
 //!
-//! Extension point: [`scene::remove::set_removal_hook`], run once per datablock when its id stops resolving (a host's wire
+//! Extension point: [`scene::remove::set_removal_hook`], run once per datablock right before it is deleted (a host's wire
 //! message). Check: `cargo test -p torque-server --test main datablock_remove`.
 
 pub mod behaviour;

@@ -84,9 +84,17 @@
 //! renders it as any other (its key, forgotten by `KeyedClass::on_remove` only when it is finally deleted); a removed one's
 //! key is forgotten and the others' keys do not move (`a_client_that_joins_after_a_removal_gets_the_rest_with_their_keys`).
 //! `net/torque.rs`'s `GameView::datablock` hands the codecs no id of a deleted datablock
-//! (`a_datablock_deleted_under_its_players_leaves_them_their_info_and_no_dead_id_on_the_wire`). Nothing is posted to a
-//! connection on a removal; a protocol that tells its clients hooks `torque_game::scene::remove::set_removal_hook`
-//! (`tests/datablock_remove.rs`).
+//! (`a_datablock_deleted_under_its_players_leaves_them_their_info_and_no_dead_id_on_the_wire`). In Torque's protocol nothing
+//! is posted to a connection on a removal (`tests/datablock_remove.rs`).
+//!
+//! **In the engine's protocol a deleted datablock is told to the clients that had it** (`net/host.rs`: a host attached under
+//! `ProtocolMode::Engine` derives the engine's event table, `codecs::engine_event_registry`, and sets the game's removal hook to
+//! `EventLayer::remove_datablock`): the hook runs at the deletion, never at the retire (a retiring datablock still travels to a
+//! joining client and a user's ghost can name it again), and `ConnDatablocks::remove` posts a `DataBlockRemoveEvent` through the
+//! chain's hold queue (`post_or_hold`), on the ordered queue behind the body of the same id, to the connections whose `sent`
+//! table holds the id and to no other (`tests/datablock_remove_wire.rs`: an engine client over the memory link at 20% loss with
+//! reordering, 100 seeded orders; a server of Torque's protocol posts nothing and keeps the 13-class table). A game that sets a
+//! removal hook of its own after the host is attached must post the event itself.
 //!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one

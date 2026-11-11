@@ -36,6 +36,13 @@
 //!   number every cache built from a record is keyed on (torque-client's `tests/datablock_refresh.rs`: 100 resends move no
 //!   generation). The generations table holds only ids the datablock table holds, and
 //!   [`world::MAX_REFRESHES_PER_FRAME`] is the budget every consumer spreads its refreshes by.
+//! - A datablock the server removed is retired ([`world::ClientWorld::retire_datablock`]), not dropped: its record stays while a
+//!   ghost or a mounted image names it (a ghost that names a datablock the world lacks is never drawn from it) and goes with the
+//!   next [`world::ClientWorld::purge_retired_datablocks`], one pass over the ghosts and images plus the host's own answer for
+//!   what the world cannot see (a predictor); the purged ids wait in [`world::ClientWorld::take_purged_datablocks`] for the host
+//!   to delete its script objects. The retired set is capped at [`world::MAX_RETIRED_DATABLOCKS`] (the 257th is
+//!   [`world::DatablockRetire::OverCap`]: the host ends the connection), an unknown or repeated removal is reported and changes
+//!   nothing, and a ghost reset lets every retired datablock go (`tests/retired_datablocks.rs`).
 
 pub mod effects;
 pub mod images;

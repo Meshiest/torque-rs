@@ -391,9 +391,12 @@ pub enum FeedEvent<E> {
         total: u32,
         body: Box<dyn Any>,
     },
-    /// A datablock event the feed refused: the table is at its cap ([`tge::max_datablocks`]) or bodies came faster than the
-    /// live rate ([`tge::LiveBucket`]). Counted in `datablocks_refused`, nothing else.
+    /// A datablock event the feed refused: the table is at its cap ([`tge::max_datablocks`]), bodies came faster than the
+    /// live rate ([`tge::LiveBucket`]), or the id is a removed datablock's. Counted in `datablocks_refused`, nothing else.
     DataBlockRefused,
+    /// A `DataBlockRemoveEvent` for a datablock the connection does not hold, or holds retired already. Counted in
+    /// `datablock_removes_ignored`, nothing else.
+    DataBlockRemoveIgnored,
     /// A datablocks-done message after the connection's first: a live round of the server's is in (`onDataBlocksChanged()`,
     /// when a script defines it).
     DataBlocksChanged,
@@ -840,6 +843,7 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
     if vm.objects().contains(obj) {
         crate::net::ghost_objects::sync(vm, client, obj);
     }
+    purge_retired_datablocks(vm, client);
     let t_predict = web_time::Instant::now();
     send_tick(vm, client, now);
     let load = {
@@ -897,6 +901,38 @@ pub fn tick<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
     let t_sounds = web_time::Instant::now();
     G::ticked(vm, client);
     client.borrow_mut().live_perf.sounds += t_sounds.elapsed();
+}
+
+/// The tick's purge of the datablocks the server removed ([`ghost_world::ClientWorld::purge_retired_datablocks`]): one the
+/// world's ghosts and images no longer name and the prediction no longer reads ([`Predictor::uses_datablock`]) loses its record,
+/// and the script object the connection made of it is deleted (an object the client did not make, the server's own on a shared
+/// engine or a script's, is left; [`crate::datablocks::DatablockObjects::made`]). Nothing is read while nothing is retired.
+fn purge_retired_datablocks<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) {
+    let purged = {
+        let mut st = client.borrow_mut();
+        let Some(c) = st.conn.conn.as_mut() else {
+            return;
+        };
+        let c = &mut **c;
+        let predict = &c.predict;
+        c.world
+            .purge_retired_datablocks(|id| predict.uses_datablock(id));
+        c.world.take_purged_datablocks()
+    };
+    if purged.is_empty() {
+        return;
+    }
+    let objects = crate::datablocks::DatablockObjects::of(vm);
+    for id in purged {
+        let made = objects.as_ref().is_some_and(|o| {
+            let made = o.made(vm, id);
+            o.forget(id);
+            made
+        });
+        if made && let Err(e) = vm.delete_object(id) {
+            vm.error(format!("ERROR: deleting removed datablock {id}: {e}"));
+        }
+    }
 }
 
 /// Whether the connection gives GameTSCtrl a camera (`processCameraQuery`: a control object with an eye).
@@ -1222,6 +1258,10 @@ fn event_steps<G: ConnGame>(
         }
         FeedEvent::DataBlockRefused => {
             client.borrow_mut().datablocks_refused += 1;
+            Vec::new()
+        }
+        FeedEvent::DataBlockRemoveIgnored => {
+            client.borrow_mut().datablock_removes_ignored += 1;
             Vec::new()
         }
         FeedEvent::DataBlocksChanged => {

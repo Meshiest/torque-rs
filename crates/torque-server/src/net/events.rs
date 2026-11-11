@@ -43,6 +43,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::rc::Rc;
 
 use super::codecs::NetCodecs;
@@ -64,7 +65,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 use super::datablocks::{
-    ConnDatablocks, DatablockKeys, Transmit, net_classes_of, packet_room_bits_with,
+    ConnDatablocks, DatablockKeys, DbPost, Transmit, net_classes_of, packet_room_bits_with,
 };
 use super::ghosts::{GhostCall, GhostGame, GhostHub, PackStrings, SourceEnv};
 use super::hostevent::{GameEvents, HostEvent, HostUnpacker, ReceiveCx};
@@ -688,6 +689,53 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
         released
     }
 
+    /// The server deleted datablock `id` (the engine's protocol: Torque's table has no class for the event): every connection
+    /// that was sent a body of it is posted a `DataBlockRemoveEvent`, on its ordered queue behind the chain's events
+    /// ([`ConnDatablocks::remove`]). Returns how many connections were told.
+    pub fn remove_datablock(&self, id: ObjId) -> usize {
+        let mut guard = self.state.borrow_mut();
+        let st = &mut *guard;
+        let mut told = 0;
+        for c in st.conns.values_mut() {
+            if c.queue.is_closed() {
+                continue;
+            }
+            if let Some(post) = c.datablocks.remove(id) {
+                c.datablocks.post_or_hold(&mut c.queue, vec![post]);
+                told += 1;
+            }
+        }
+        told
+    }
+
+    /// Posts a `DataBlockRemoveEvent` for each of `ids` to `conn`, whether or not it was sent them: the test harness's way to
+    /// play a server that removes what it never sent. Held when the queue is full, as the chain's events are. Nothing is posted
+    /// when the layer's event table has no class for the event (Torque's table: [`RemovePostError::NoClass`]), since a packed
+    /// event of a class the client's table lacks would corrupt its event stream.
+    #[doc(hidden)]
+    pub fn post_datablock_removes(
+        &self,
+        conn: ConnId,
+        ids: &[ObjId],
+    ) -> Result<(), RemovePostError> {
+        let mut guard = self.state.borrow_mut();
+        let st = &mut *guard;
+        if st
+            .ids
+            .as_ref()
+            .is_none_or(|ids| ids.datablock_remove().is_none())
+        {
+            return Err(RemovePostError::NoClass);
+        }
+        let c = st.conns.get_mut(&conn).ok_or(RemovePostError::Closed)?;
+        if c.queue.is_closed() {
+            return Err(RemovePostError::Closed);
+        }
+        let posts = ids.iter().map(|&id| DbPost::Remove(id)).collect();
+        c.datablocks.post_or_hold(&mut c.queue, posts);
+        Ok(())
+    }
+
     /// The key `id` was last sent with to `conn`, when a body of it was ([`ConnDatablocks::sent_key`]).
     pub fn datablock_sent_key(&self, conn: ConnId, id: ObjId) -> Option<i32> {
         self.state
@@ -698,6 +746,26 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
             .sent_key(id)
     }
 }
+
+/// Why [`EventLayer::post_datablock_removes`] posted nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovePostError {
+    /// The layer's event table has no `DataBlockRemoveEvent` (Torque's table): the event cannot be packed.
+    NoClass,
+    /// The connection no longer sends events.
+    Closed,
+}
+
+impl fmt::Display for RemovePostError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RemovePostError::NoClass => f.write_str("the event table has no DataBlockRemoveEvent"),
+            RemovePostError::Closed => f.write_str("the connection no longer sends events"),
+        }
+    }
+}
+
+impl std::error::Error for RemovePostError {}
 
 /// `removeString(id, false)`: the engine reference a table entry held. A message from the table is the console's.
 fn release(vm: &mut Vm, id: u32) {
@@ -914,9 +982,10 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
                 ),
                 // The other events go from the server to the client: the section reader refuses them by direction before they
                 // get here.
-                HostEvent::Torque(_) | HostEvent::DataBlock(_) | HostEvent::Ghost(_) => {
-                    Some(NetError::Invalid("event direction"))
-                }
+                HostEvent::Torque(_)
+                | HostEvent::DataBlock(_)
+                | HostEvent::DataBlockRemove(_)
+                | HostEvent::Ghost(_) => Some(NetError::Invalid("event direction")),
             };
             if let Some(e) = event_error {
                 out.error.get_or_insert(e);

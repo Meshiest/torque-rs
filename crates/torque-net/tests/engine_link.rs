@@ -8,7 +8,9 @@ use std::collections::BTreeSet;
 use engine_common::{GAME, KEY, Pair, Pipe, Rng, TICK_MS, client_addr, connect, kind};
 use torque_net::NetError;
 use torque_net::engine::gate::{COOKIE_PERIOD_MS, cookie};
-use torque_net::engine::{self as framing, Body, Datagram, Fragment, Hello, Kind, Versions};
+use torque_net::engine::{
+    self as framing, Body, Datagram, ENGINE_FRAMING, Fragment, Hello, Kind, Versions,
+};
 use torque_net::engine::{
     CloseReason, Connect, Delivery, Event, Gate, GateConfig, GateOutcome, HELLO_BYTES, Lane,
     LinkFacts, NoStreams, Polled, RejectCode, Session, SessionConfig, State, StreamLane,
@@ -124,11 +126,11 @@ fn the_server_refuses_another_game_or_version_with_one_line() {
         ),
         (
             Connect {
-                versions: Versions { min: 2, max: 3 },
+                versions: Versions { min: 3, max: 4 },
                 ..connect()
             },
             RejectCode::Version,
-            "server speaks network version 1, you have 3",
+            "server speaks network version 2, you have 4",
         ),
     ];
     for facts in [LinkFacts::MEMORY, LinkFacts::PLAIN] {
@@ -382,7 +384,7 @@ fn no_answer_is_larger_than_its_request() {
         (
             "cookie",
             framing::Cookie {
-                version: 1,
+                version: ENGINE_FRAMING,
                 nonce: 42,
                 cookie: good_cookie,
             }
@@ -412,7 +414,7 @@ fn no_answer_is_larger_than_its_request() {
     // Openings: without a cookie, with a wrong one, and with the right one carrying the connect, at sizes down to tiny.
     client.receive(
         &framing::Cookie {
-            version: 1,
+            version: ENGINE_FRAMING,
             nonce: 42,
             cookie: good_cookie,
         }

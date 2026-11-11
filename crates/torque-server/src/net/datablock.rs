@@ -116,7 +116,8 @@ impl DatablockBody {
     }
 }
 
-fn id_mask(id_bits: u8) -> u32 {
+/// The mask of a datablock id `id_bits` wide (the ids a `SimDataBlockEvent` can carry, less [`DATABLOCK_ID_FIRST`]).
+pub fn id_mask(id_bits: u8) -> u32 {
     if id_bits >= 32 {
         u32::MAX
     } else {

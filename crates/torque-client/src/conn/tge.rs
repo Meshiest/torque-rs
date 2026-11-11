@@ -37,7 +37,7 @@ use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock, shape_part};
-use ghost_world::world::TouchedGhosts;
+use ghost_world::world::{DatablockRetire, TouchedGhosts};
 use ghost_world::{ClientWorld, Ghost};
 use ghosts::block::BlockSections;
 use ghosts::datablocks::DatablockCodecSet;
@@ -108,6 +108,9 @@ pub const LIVE_DATABLOCK_BURST: u32 = 1 << DEFAULT_DATABLOCK_BITS;
 pub const LIVE_DATABLOCK_FLOOD_MS: u32 = 2_000;
 /// The reason the connection ends with.
 pub const LIVE_DATABLOCK_FLOOD_REASON: &str = "datablock flood";
+/// The reason a connection ends with when the server removed more datablocks than the world keeps retired at once
+/// ([`ghost_world::world::MAX_RETIRED_DATABLOCKS`]).
+pub const RETIRED_DATABLOCKS_REASON: &str = "too many retired datablocks";
 
 /// The datablocks a connection keeps at most: [`MAX_DATABLOCKS_PREF`] (its mode's default when unset or not a number), at
 /// least 1 and never more than the wire's id range (the ids a `SimDataBlockEvent` can carry).
@@ -331,10 +334,13 @@ pub fn client_rates(vm: &Vm) -> RateConfig {
 /// mission's download may send only the ones that changed), the net strings both ways, the commands' state, the clock and the
 /// counters that number births, effects and moves (a ghost born at a reused index is still a new birth).
 fn end_ghosting(world: &mut ClientWorld<TgeClientSet>) {
-    let old = std::mem::take(world);
+    let mut old = std::mem::take(world);
+    // No ghost is left to name a retired datablock, and the next mission's chain may send a datablock at any id.
+    old.purge_all_retired_datablocks();
     world.datablocks = old.datablocks;
     world.datablock_gen = old.datablock_gen;
     world.datablock_epoch = old.datablock_epoch;
+    world.datablocks_purged = old.datablocks_purged;
     world.strings = old.strings;
     world.client_strings = old.client_strings;
     world.commands = old.commands;
@@ -438,11 +444,20 @@ pub fn stream_point(r: &net::bits::BitReader) -> Result<[f32; 3], NetError> {
 impl TgeTables {
     /// TGE's tables (Torque's derive: neither fails).
     pub fn tge() -> Result<TgeTables, String> {
-        let events = EventRegistry::torque();
+        TgeTables::with_events(&EventRegistry::torque())
+    }
+
+    /// The engine protocol's tables: Torque's with the engine's own event classes ([`EventRegistry::engine`]), as a server of
+    /// that protocol derives them.
+    pub fn engine() -> Result<TgeTables, String> {
+        TgeTables::with_events(&EventRegistry::engine())
+    }
+
+    fn with_events(events: &EventRegistry) -> Result<TgeTables, String> {
         Ok(TgeTables {
             table: Table::torque(),
             ids: events.ids().map_err(|e| e.to_string())?,
-            classes: NetClasses::derive(&tge_reps(&events)).map_err(|e| format!("{e:?}"))?,
+            classes: NetClasses::derive(&tge_reps(events)).map_err(|e| format!("{e:?}"))?,
         })
     }
 
@@ -466,6 +481,8 @@ enum Incoming {
     Always(Option<u32>),
     /// A datablock (`None`: the one-bit event of a datablock the client already has), its position and the group's size.
     DataBlock(Option<(TgeDatablockEvent, u32, u32)>),
+    /// The server removed this datablock (the engine's protocol).
+    DataBlockRemove(u32),
 }
 
 struct Unpacker<'a> {
@@ -537,6 +554,9 @@ impl EventUnpacker for Unpacker<'_> {
             // A datablock event draws on its datagram's budget, as the ghost records do.
             let mut charge = self.ghosts.codec().charge();
             read_datablock(r, ctx, self.classes, self.plugins, &mut charge).map(Incoming::DataBlock)
+        } else if ctx.ids.datablock_remove() == Some(class) {
+            let (lo, hi) = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits).datablock_range();
+            r.read_ranged_u32(lo, hi).map(Incoming::DataBlockRemove)
         } else {
             NetEvent::unpack(class, r, ctx).map(Incoming::Net)
         }
@@ -684,9 +704,17 @@ impl TgeFeed {
         rates: RateConfig,
     ) -> Result<TgeFeed, String> {
         let mut feed = TgeFeed::made(link, &start.password, start.args.clone(), 0, None, rates)?;
+        feed.tables = TgeTables::engine()?;
         feed.engine = Some(EngineWire::new(start));
         feed.rpc_lanes = lanes;
         Ok(feed)
+    }
+
+    /// Reads and writes the engine protocol's event table ([`TgeTables::engine`]): for a local connection whose server half
+    /// speaks the engine's protocol (its event layer derives that table), before the first packet.
+    pub fn use_engine_tables(&mut self) -> Result<(), String> {
+        self.tables = TgeTables::engine()?;
+        Ok(())
     }
 
     fn made(
@@ -733,10 +761,33 @@ impl TgeFeed {
         })
     }
 
-    /// Whether a datablock event with a body for `id` is taken: a new id is refused when the table is at its cap, and after
-    /// the first datablocks-done message every body spends a token of the live rate; a refusal is counted and refusals that
-    /// last [`LIVE_DATABLOCK_FLOOD_MS`] end the connection with [`LIVE_DATABLOCK_FLOOD_REASON`].
+    /// A `DataBlockRemoveEvent` for `id`: the world retires the datablock ([`ClientWorld::retire_datablock`]) and the host's
+    /// purge drops it once nothing names it. An id the world does not hold, or holds retired already, is ignored and counted
+    /// ([`FeedEvent::DataBlockRemoveIgnored`]); one past the retired cap ends the connection with [`RETIRED_DATABLOCKS_REASON`].
+    fn remove_datablock(&mut self, world: &mut TgeWorld, id: u32) {
+        match world.records.retire_datablock(id) {
+            DatablockRetire::Retired => {}
+            DatablockRetire::Unknown | DatablockRetire::Already => {
+                self.events.push_back(FeedEvent::DataBlockRemoveIgnored);
+            }
+            DatablockRetire::OverCap => {
+                self.disconnect(RETIRED_DATABLOCKS_REASON);
+                self.end(FeedEvent::Dropped(
+                    RETIRED_DATABLOCKS_REASON.as_bytes().to_vec(),
+                ));
+            }
+        }
+    }
+
+    /// Whether a datablock event with a body for `id` is taken: a retired id and a new id when the table is at its cap are
+    /// refused, and after the first datablocks-done message every body spends a token of the live rate; a refusal is counted
+    /// and refusals that last [`LIVE_DATABLOCK_FLOOD_MS`] end the connection with [`LIVE_DATABLOCK_FLOOD_REASON`].
     fn takes_datablock(&mut self, world: &TgeWorld, id: u32) -> bool {
+        // A removed datablock's id takes nothing until the purge let it go: the server never sends one.
+        if world.records.is_datablock_retired(id) {
+            self.events.push_back(FeedEvent::DataBlockRefused);
+            return false;
+        }
         let known = world.records.datablocks.contains_key(&id);
         if !known && world.records.datablocks.len() >= self.max_datablocks {
             self.events.push_back(FeedEvent::DataBlockRefused);
@@ -1140,6 +1191,7 @@ impl TgeFeed {
                     });
                 }
                 Incoming::DataBlock(None) => {}
+                Incoming::DataBlockRemove(id) => self.remove_datablock(world, id),
                 Incoming::Always(index) => {
                     if let Some(i) = index {
                         world.apply_ghost_always(i);
@@ -1406,6 +1458,15 @@ pub fn start_feed<G: ConnGame<Feed = TgeFeed>>(
             client_rates(vm),
         )?,
     };
+    // A local connection's server half speaks the engine's protocol when the engine does: its event layer derives the
+    // engine's event table, so the feed reads and writes the same one.
+    if local.is_some()
+        && vm
+            .extension::<ConnectHello>()
+            .is_some_and(|h| h.engine_mode())
+    {
+        feed.use_engine_tables()?;
+    }
     if local.is_none()
         && feed.engine.is_none()
         && let Some(hello) = vm.extension::<ConnectHello>()

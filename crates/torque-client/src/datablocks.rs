@@ -82,6 +82,11 @@ impl DatablockObjects {
                 .is_some_and(|o| o.name().is_none_or(|n| n.is_empty()))
     }
 
+    /// Forgets `id`: its object is being deleted (a removed datablock's purge). A later event at the id makes a new one.
+    pub fn forget(&self, id: u32) {
+        self.0.borrow_mut().objects.remove(&id);
+    }
+
     /// Notes the event for `id`: its object made (or, on an update, written) by the client when `made`.
     fn changed(&self, id: u32, made: bool) {
         let mut g = self.0.borrow_mut();

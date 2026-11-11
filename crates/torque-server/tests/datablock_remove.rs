@@ -615,7 +615,8 @@ fn the_removal_hook_runs_once_per_datablock() {
     );
     players(&mut s, "Soldier", 2);
     tick(&mut s);
-    // A retire: once. A removal of the retiring one by id, and a delete after its last user left: nothing more.
+    // A retire: nothing yet (the datablock stays for its users). A removal of the retiring one by id: nothing (it does not
+    // resolve). A delete after its last user left: once.
     eval(&mut s, "Soldier.delete();");
     assert_eq!(
         answer(&mut s, &format!("return removeDataBlock({soldier});")),
@@ -628,7 +629,7 @@ fn the_removal_hook_runs_once_per_datablock() {
     eval(&mut s, "First.delete();");
     assert_eq!(answer(&mut s, "return removeDataBlock(Second);"), "1");
     assert_eq!(*removed.borrow(), [soldier, first, second]);
-    // A retiring datablock forced to its end by id: the hook ran at the retire.
+    // A retiring datablock forced to its end by id: the hook runs at the deletion, once.
     eval(
         &mut s,
         "datablock PlayerData(Again) { shapeFile = \"a.dts\"; }; new Player(Q) { dataBlock = Again; position = \"0 0 5\"; };",

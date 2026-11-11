@@ -118,6 +118,16 @@
 //!   `server_datablock_live`). A datablocks-done message after the first runs `onDataBlocksChanged()` only when a script
 //!   defines it, and a connection over a script engine shared with its server never writes the server's own datablock from an
 //!   event ([`datablocks::Sharing`]).
+//! - A datablock the server removed (`DataBlockRemoveEvent`, the engine's protocol: a feed over the engine's framing and a
+//!   local connection of an engine in that mode read and write [`conn::tge::TgeTables::engine`]) is retired in the world
+//!   (`ghost_world::ClientWorld::retire_datablock`), never deleted on the spot: a ghost naming it may still be on its way. The
+//!   connection's tick purges what no ghost record, mounted image or predictor names (`conn::purge_retired_datablocks`,
+//!   [`predict::Predictor::uses_datablock`]) and deletes only the script objects the client made
+//!   ([`datablocks::DatablockObjects::made`]); a body for a retired id is refused and counted in `datablocks_refused`, a
+//!   removal of an unknown or already retired id is counted in `ClientState::datablock_removes_ignored`, and more than
+//!   `ghost_world::world::MAX_RETIRED_DATABLOCKS` retired at once end the connection with
+//!   [`conn::tge::RETIRED_DATABLOCKS_REASON`] (torque-test-app's `server_datablock_remove_wire`; torque-server's
+//!   `tests/datablock_remove_wire.rs` for the wire). Torque's protocol carries no removal: a stock client keeps the datablock.
 
 pub mod actionmap;
 pub mod conn;

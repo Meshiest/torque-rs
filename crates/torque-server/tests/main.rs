@@ -8,6 +8,7 @@ mod control_index;
 mod datablock_live;
 mod datablock_reload;
 mod datablock_remove;
+mod datablock_remove_wire;
 mod datablock_watch;
 mod ghost_pass;
 mod ghosting;
