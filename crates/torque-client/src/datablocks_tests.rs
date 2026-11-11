@@ -138,3 +138,34 @@ fn a_scripts_datablock_at_an_id_the_clients_own_had_is_not_written() {
     );
     assert_eq!(objects.generation(id), 2);
 }
+
+#[test]
+fn over_a_script_engine_shared_with_the_server_the_servers_own_datablock_is_left_as_it_is() {
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    let id = vm
+        .eval(
+            b"datablock AudioDescription(ServerDesc) { volume = 0.5; }; return ServerDesc.getId();",
+        )
+        .unwrap();
+    let id: u32 = String::from_utf8_lossy(&id).parse().unwrap();
+    let event = Unpacked {
+        id,
+        class: "AudioDescription".to_string(),
+        fields: vec![field("volume", "1")],
+        error: None,
+        emitter_ids: None,
+    };
+    assert_eq!(
+        receive_from(&mut vm, &event, None, Sharing::WithServer).unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(vm.eval(b"return ServerDesc.volume;").unwrap(), b"0.5");
+    // A datablock a script made is never written by an event, whatever the sharing: only an object the client made from an
+    // earlier event takes the fields (`DatablockObjects::made`); the event still runs the preload.
+    assert_eq!(
+        receive_from(&mut vm, &event, None, Sharing::Own).unwrap(),
+        Received::Updated(id)
+    );
+    assert_eq!(vm.eval(b"return ServerDesc.volume;").unwrap(), b"0.5");
+}

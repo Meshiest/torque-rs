@@ -870,3 +870,76 @@ fn a_mission_ending_keeps_the_plugin_classes_the_world_draws_as_shapes() {
     assert_eq!(world.plugin_shapes, kept);
     assert_ne!(world.plugin_shapes, DrawnShapes::default());
 }
+
+#[test]
+fn the_datablock_cap_is_the_pref_under_the_wire_range_and_the_modes_default_when_unset() {
+    let mut vm = Vm::new();
+    let widths = NetWidths::new(10, DEFAULT_DATABLOCK_BITS);
+    let range = 1usize << DEFAULT_DATABLOCK_BITS;
+    assert_eq!(
+        max_datablocks(&vm, false, widths),
+        DEFAULT_MAX_DATABLOCKS_TGE.min(range)
+    );
+    assert_eq!(
+        max_datablocks(&vm, true, widths),
+        DEFAULT_MAX_DATABLOCKS_ENGINE.min(range)
+    );
+    vm.set_global(MAX_DATABLOCKS_PREF, "64");
+    assert_eq!(max_datablocks(&vm, false, widths), 64);
+    assert_eq!(max_datablocks(&vm, true, widths), 64);
+    // Over the wire's range, zero, negative and junk never widen or empty the table.
+    for (text, want) in [
+        ("1000000", range),
+        ("0", 1),
+        ("-5", 1),
+        ("lots", 1),
+        ("", DEFAULT_MAX_DATABLOCKS_TGE.min(range)),
+    ] {
+        vm.set_global(MAX_DATABLOCKS_PREF, text);
+        assert_eq!(max_datablocks(&vm, false, widths), want, "{text:?}");
+    }
+}
+
+#[test]
+fn the_live_bucket_allows_a_burst_then_the_rate_and_two_seconds_of_refusals_are_a_flood() {
+    let mut bucket = LiveBucket::new(1_000);
+    let burst = LIVE_DATABLOCK_BURST as usize;
+    assert_eq!((0..burst).filter(|_| bucket.take(1_000)).count(), burst);
+    assert!(!bucket.take(1_000), "the burst is spent");
+    assert!(!bucket.flooded(1_000));
+    // A second later a second's worth is back, and the refusals are forgotten.
+    assert_eq!(
+        (0..burst).filter(|_| bucket.take(2_000)).count(),
+        LIVE_DATABLOCKS_PER_S as usize
+    );
+    assert!(!bucket.flooded(2_000));
+    // A sender that keeps going past the rate: a token every 1000 / 256 ms, never a second's worth, and after two seconds a flood.
+    let mut now = 2_000;
+    let mut taken = 0;
+    while now < 4_000 {
+        now += 4;
+        if bucket.take(now) {
+            taken += 1;
+        }
+        assert!(
+            !bucket.flooded(now - 1) || now >= 4_000,
+            "not before two seconds"
+        );
+    }
+    assert!(bucket.flooded(now));
+    assert!(
+        taken <= 2 * LIVE_DATABLOCKS_PER_S as usize + 1,
+        "{taken} in two seconds"
+    );
+}
+
+#[test]
+fn the_live_bucket_forgets_the_refusals_once_it_fills_back() {
+    let mut bucket = LiveBucket::new(0);
+    for _ in 0..LIVE_DATABLOCK_BURST {
+        assert!(bucket.take(0));
+    }
+    assert!(!bucket.take(0));
+    assert!(bucket.take(1_000), "a second's refill");
+    assert!(!bucket.flooded(2_000), "the sender backed off: no flood");
+}

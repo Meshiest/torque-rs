@@ -198,13 +198,34 @@ fn pointer_name(vm: &Vm, class: &str, name: &[u8], id: u32) -> Option<Vec<u8>> {
     datablock_pointer_name(vm, expected, id)
 }
 
-/// The datablock of one event made in the client (see the module docs), after its `onDataBlockObjectReceived`, from the game's
-/// unpack `d`. `values` are the side tables: a new `ParticleEmitterData` keeps the particle ids its record carries there before its
-/// add (a client emitter has no `particles` string, only the unpacked id list).
+/// Whose script engine the connection's datablocks are made in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sharing {
+    /// The client's own: every datablock is the client's copy.
+    Own,
+    /// One shared with the server (a local connection): the server's own datablocks are already there under their ids.
+    WithServer,
+}
+
+/// [`receive_from`] for a client's own script engine.
 pub fn receive(
     vm: &mut Vm,
     d: &Unpacked,
     values: Option<&torque_game::dbvalues::DbValues>,
+) -> Result<Received, VmError> {
+    receive_from(vm, d, values, Sharing::Own)
+}
+
+/// The datablock of one event made in the client (see the module docs), after its `onDataBlockObjectReceived`, from the game's
+/// unpack `d`. `values` are the side tables: a new `ParticleEmitterData` keeps the particle ids its record carries there before its
+/// add (a client emitter has no `particles` string, only the unpacked id list). In a script engine shared with the server
+/// (`sharing`), the server's own datablock at the id (a named one; the client's are unnamed) is left as it is: it is what the
+/// event carries, and writing it again or preloading it twice would be the server's work done over.
+pub fn receive_from(
+    vm: &mut Vm,
+    d: &Unpacked,
+    values: Option<&torque_game::dbvalues::DbValues>,
+    sharing: Sharing,
 ) -> Result<Received, VmError> {
     if let Some(error) = &d.error {
         vm.error(error.clone());
@@ -240,6 +261,9 @@ pub fn receive(
             && classes.find(class) == Some(o.class());
         if !same {
             return Ok(Received::Refused);
+        }
+        if sharing == Sharing::WithServer && o.name().is_some_and(|n| !n.is_empty()) {
+            return Ok(Received::Updated(id));
         }
         // The other branch (`packData` of the new one, `unpackData` into the one there, `preload(false)`) resolves a pointer by its
         // id. The fields are written only into an object the client made from an earlier event (a second mission's datablock):

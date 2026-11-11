@@ -69,6 +69,11 @@ torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script
 name = "server_commands_modes"
 path = "tests/server/commands_modes.rs"
 
+# torque-server: live datablock rounds to a real client, in both network protocols, and the client's caps.
+[[test]]
+name = "server_datablock_live"
+path = "tests/server/datablock_live.rs"
+
 # torque-plugin-tcp: both sides tick their own sockets.
 [[test]]
 name = "tcp_sides"

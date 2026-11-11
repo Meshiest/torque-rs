@@ -30,8 +30,8 @@
 //! **The host's limits.** A command that cannot be queued because the connection's ordered queue is full is a protocol error of
 //! the connection ([`NET_QUEUE_FULL_REASON`]: the queues are bounded here). An event no packet could ever carry drops the peer
 //! with `Packet Error.`; before the client's first packet such an event stalls instead. The datablocks-download-done message
-//! ([`NetCodecs::datablocks_download_done_message`]: Torque's 7) runs `onDataBlocksDone` (the datablock chain,
-//! [`super::datablocks`]) and message 1 is the ghost layer's ([`super::ghosts`]; the manager checks its sequence and the
+//! ([`NetCodecs::datablocks_download_done_message`]: Torque's 7) runs `onDataBlocksDone`, or `onDataBlocksUpdated(count)`
+//! when its sequence is a live round's (the datablock chain, [`super::datablocks`]), and message 1 is the ghost layer's ([`super::ghosts`]; the manager checks its sequence and the
 //! script `onGhostAlwaysObjectsReceived` runs as a followup after the packet's events); every message the codecs do not reject
 //! goes to a [`MessageHook`] too (tests); the ones they reject from a client ([`NetCodecs::rejects_client_message`]: Torque's
 //! 0, 2, 3, 4 and 5, only a ghosting side sends them) are a `Packet Error.`.
@@ -630,6 +630,40 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
         c.datablocks.post_or_hold(&mut c.queue, events);
         Ok((what, scanned))
     }
+
+    /// A live round on every connection past its mission chain ([`ConnDatablocks::request_live`]): the datablocks each was
+    /// not yet sent in their current state. Returns the connections reached (asked, queued or with nothing to send) and the
+    /// group positions looked at (the caller charges them). A queue with no room holds the round's events until acks free
+    /// room.
+    pub fn update_datablocks(&self, vm: &Vm) -> (usize, usize) {
+        let mut guard = self.state.borrow_mut();
+        let st = &mut *guard;
+        let (mut reached, mut scanned) = (0, 0);
+        for c in st.conns.values_mut() {
+            if c.queue.is_closed() {
+                continue;
+            }
+            let (what, events, looked) =
+                c.datablocks
+                    .request_live(vm.objects(), &st.keys, &st.classes, &*st.codecs);
+            scanned += looked;
+            if what.reached() {
+                reached += 1;
+            }
+            c.datablocks.post_or_hold(&mut c.queue, events);
+        }
+        (reached, scanned)
+    }
+
+    /// The key `id` was last sent with to `conn`, when a body of it was ([`ConnDatablocks::sent_key`]).
+    pub fn datablock_sent_key(&self, conn: ConnId, id: ObjId) -> Option<i32> {
+        self.state
+            .borrow()
+            .conns
+            .get(&conn)?
+            .datablocks
+            .sent_key(id)
+    }
 }
 
 /// `removeString(id, false)`: the engine reference a table entry held. A message from the table is the console's.
@@ -795,15 +829,22 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
                     }
                     _ => {
                         // Server branch: the download-done message runs the script when it carries the sequence of the
-                        // last `transmitDataBlocks`; the base handler then has nothing more to do with it.
-                        if m.message == st.codecs.datablocks_download_done_message()
-                            && m.seq as i32 == c.datablocks.seq
-                        {
-                            out.followups.push(Followup::Call {
-                                object: Some(c.obj),
-                                name: b"onDataBlocksDone".to_vec(),
-                                args: vec![(m.seq as i32).to_string().into_bytes()],
-                            });
+                        // last `transmitDataBlocks`, or `onDataBlocksUpdated(count)` when it carries a live round's (each
+                        // round's sequence answers once); the base handler then has nothing more to do with it.
+                        if m.message == st.codecs.datablocks_download_done_message() {
+                            if let Some(count) = c.datablocks.take_live_answer(m.seq as i32) {
+                                out.followups.push(Followup::Call {
+                                    object: Some(c.obj),
+                                    name: b"onDataBlocksUpdated".to_vec(),
+                                    args: vec![count.to_string().into_bytes()],
+                                });
+                            } else if m.seq as i32 == c.datablocks.seq {
+                                out.followups.push(Followup::Call {
+                                    object: Some(c.obj),
+                                    name: b"onDataBlocksDone".to_vec(),
+                                    args: vec![(m.seq as i32).to_string().into_bytes()],
+                                });
+                            }
                         }
                         // Message 1 is the ghost layer's: the client got the ghost-always objects. The script runs after the
                         // packet's events.
@@ -877,9 +918,9 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
             .collect();
         Self::settle(c, settled);
         for cell in cells {
-            let posts = c
-                .datablocks
-                .settled(ctx.vm.objects(), &st.keys, &st.classes, &cell);
+            let posts =
+                c.datablocks
+                    .settled(ctx.vm.objects(), &st.keys, &st.classes, &*st.codecs, &cell);
             // A pull into a full queue is held, not dropped: the chain would never end.
             c.datablocks.post_or_hold(&mut c.queue, posts);
         }

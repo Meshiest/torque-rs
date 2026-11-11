@@ -308,6 +308,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("strupr", text)` *1; server and client*
 - `ts.call("toggleFullScreen")` *none; client*
 - `ts.call("trim", text)` *1; server and client*
+- `ts.call("updateDataBlocks")` *none; server*
 - `ts.call("VectorAdd", a, b)` *2; server and client*
 - `ts.call("VectorCross", a, b)` *2; server and client*
 - `ts.call("VectorDist", a, b)` *2; server and client*

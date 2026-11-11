@@ -110,6 +110,14 @@
 //!   is [`datablocks::DatablockObjects`]: an event writes the fields only of an object the client made from an earlier event
 //!   (on a shared engine the object is the server's own: preloaded, not written) and moves the object's generation when
 //!   something changed, which a plugin's copy of the fields is keyed on (torque-plugin-props' `tests/datablock_refresh.rs`).
+//! - A server cannot grow or busy a connection's datablocks without bound: the world's table and the script group take at most
+//!   [`conn::tge::max_datablocks`] (`$Pref::Client::MaxDataBlocks` under the wire's id range; 1,024 in Torque's protocol,
+//!   4,096 in the engine's when unset), and after the first datablocks-done message bodies spend a token of
+//!   [`conn::tge::LiveBucket`] (256 a second, a burst of one id range; two seconds of refusals end the connection). Refusals
+//!   count in `ClientState::datablocks_refused` and run no script (`conn::tge::tests`; torque-test-app's
+//!   `server_datablock_live`). A datablocks-done message after the first runs `onDataBlocksChanged()` only when a script
+//!   defines it, and a connection over a script engine shared with its server never writes the server's own datablock from an
+//!   event ([`datablocks::Sharing`]).
 
 pub mod actionmap;
 pub mod conn;

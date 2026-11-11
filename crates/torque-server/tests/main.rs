@@ -5,6 +5,7 @@ mod net_client;
 
 mod channels;
 mod control_index;
+mod datablock_live;
 mod datablock_reload;
 mod ghost_pass;
 mod ghosting;

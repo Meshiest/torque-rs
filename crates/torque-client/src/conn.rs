@@ -76,6 +76,7 @@ use ts_vm::sim::ObjId;
 use ts_vm::text::until_nul;
 use ts_vm::vm::{CommandSource, Native, NativeCall, Vm, VmError};
 
+use crate::datablocks::Sharing;
 use crate::game::{GhostWidths, client_game};
 use crate::hud::HudWorld;
 use crate::net::ClientNet;
@@ -390,6 +391,12 @@ pub enum FeedEvent<E> {
         total: u32,
         body: Box<dyn Any>,
     },
+    /// A datablock event the feed refused: the table is at its cap ([`tge::max_datablocks`]) or bodies came faster than the
+    /// live rate ([`tge::LiveBucket`]). Counted in `datablocks_refused`, nothing else.
+    DataBlockRefused,
+    /// A datablocks-done message after the connection's first: a live round of the server's is in (`onDataBlocksChanged()`,
+    /// when a script defines it).
+    DataBlocksChanged,
     /// `onGhostAlwaysStarted(count)`.
     GhostAlwaysStarted(u32),
     /// `onGhostAlwaysObjectReceived()`.
@@ -1003,10 +1010,19 @@ fn run_events<G: ConnGame>(
                     Ok(())
                 }
                 Step::Datablock(body) => {
-                    let values = G::db_values(&client.borrow());
+                    let (values, sharing) = {
+                        let st = client.borrow();
+                        let local = st.conn.conn.as_ref().is_some_and(|c| c.local.is_some());
+                        let sharing = if local {
+                            Sharing::WithServer
+                        } else {
+                            Sharing::Own
+                        };
+                        (G::db_values(&st), sharing)
+                    };
                     let unpacked = client_game(vm).unpack_datablock(body.as_ref());
                     let received = match &unpacked {
-                        Some(d) => crate::datablocks::receive(vm, d, values.as_ref()),
+                        Some(d) => crate::datablocks::receive_from(vm, d, values.as_ref(), sharing),
                         None => Ok(crate::datablocks::Received::Refused),
                     };
                     received.map(|r| match r {
@@ -1203,6 +1219,17 @@ fn event_steps<G: ConnGame>(
                 call("onDataBlockObjectReceived", vec![num(index), num(total)]),
                 Step::Datablock(body),
             ]
+        }
+        FeedEvent::DataBlockRefused => {
+            client.borrow_mut().datablocks_refused += 1;
+            Vec::new()
+        }
+        FeedEvent::DataBlocksChanged => {
+            if vm.is_function(None, b"onDataBlocksChanged") {
+                vec![call("onDataBlocksChanged", Vec::new())]
+            } else {
+                Vec::new()
+            }
         }
         FeedEvent::GhostAlwaysStarted(n) => vec![call("onGhostAlwaysStarted", vec![num(n)])],
         FeedEvent::GhostAlwaysObject => vec![call("onGhostAlwaysObjectReceived", Vec::new())],

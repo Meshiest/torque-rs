@@ -4,7 +4,8 @@
 //! (the round trip truncated), `getPacketLoss` (`(int)(loss * 100.0)`; nothing measures a live connection's loss: 0). On
 //! `GameConnection`: `isAIControlled`, `delete` and `transmitDataBlocks` (the chain of [`super::datablocks`]; the connection
 //! stays alive). Called on an object the host did not make (a script's `new GameConnection()`), each answers the neutral
-//! value of its kind and `delete` just deletes. A game registers its own natives on the connections with [`register`] and
+//! value of its kind and `delete` just deletes. The function `updateDataBlocks()` ([`update_datablocks`]) starts a live round
+//! of the chain on every connection past its mission's datablocks. A game registers its own natives on the connections with [`register`] and
 //! posts its events with [`post_events`].
 //!
 //! **`delete(reason)`.** A reason the game keeps the connection for ([`NetGame::keeps_connection`]) does nothing at all. Any
@@ -366,6 +367,38 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             }
         },
     );
+    let s = Rc::clone(shared);
+    vm.register(
+        "updateDataBlocks",
+        1,
+        1,
+        "updateDataBlocks() - sends every client past its mission's datablocks the datablocks added or changed since it last got them, one round per client (a client still being sent its datablocks gets the round after them; each client's GameConnection::onDataBlocksUpdated(%client, %count) runs when its round is in); returns the number of clients reached",
+        move |vm, _| match update_datablocks(vm, &s) {
+            Ok(reached) => Native::Int(i32::try_from(reached).unwrap_or(i32::MAX)),
+            Err(e) => Native::Fail(e),
+        },
+    );
+}
+
+/// `updateDataBlocks()`: a live round on every connection past its mission chain ([`EventLayer::update_datablocks`]). Returns
+/// the connections reached; the group positions looked at are charged as `transmitDataBlocks` charges them.
+///
+/// # Errors
+/// The script's work budget is spent ([`VmError::StepLimit`]).
+///
+/// [`EventLayer::update_datablocks`]: super::events::EventLayer::update_datablocks
+pub fn update_datablocks<G: NetGame>(
+    vm: &mut Vm,
+    shared: &Rc<RefCell<NetShared<G>>>,
+) -> Result<usize, VmError> {
+    let layer = shared.borrow().events.clone();
+    let (reached, scanned) = layer.update_datablocks(vm);
+    let units = 1u64.saturating_add((scanned / NET_DATABLOCK_SCAN_PER_UNIT) as u64);
+    if vm.charge_work(units) {
+        Ok(reached)
+    } else {
+        Err(VmError::StepLimit)
+    }
 }
 
 /// The connection of an object, if the host made it.

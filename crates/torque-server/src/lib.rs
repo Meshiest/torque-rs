@@ -75,6 +75,16 @@
 //! the transport's channel binding; a link without them (UDP, memory, web) gives the context the same bytes as before
 //! (torque-net's `bridge::tests::the_ticket_context_differs_per_challenge_server_identity_and_binding`; torque-app's
 //! `tests/quic_link.rs`, `a_ticket_is_bound_to_its_connections_channel_binding`).
+//! **Datablocks change on the wire only when a round is asked for** (`net::datablocks`): `updateDataBlocks()` starts a live
+//! round on every connection past its mission chain, which sends the networked datablocks whose `modifiedKey` differs from the
+//! one that connection was last sent a body with (`ConnDatablocks::sent_key`, filled by every render, the mission chain's
+//! too), the ones it never had first and then the changed ones by key, so a referrer follows a new datablock it names, as the same events with ordinals for index and
+//! total; a connection still in its mission chain, or with a chain running, gets the round after it (coalesced). Its done
+//! message carries a negative sequence of its own, and the client's answer runs `onDataBlocksUpdated(count)`, never
+//! `onDataBlocksDone` again; a round with nothing to send sends nothing. With no round asked the wire is Torque's
+//! (torque-trace-hash's `wire_golden` in both protocols); `tests/datablock_live.rs` has the chain (one body per edit, the
+//! order, an edit during a download, loss, the callbacks) and torque-test-app's `server_datablock_live` whole clients in
+//! both protocols with their caps.
 
 pub mod game;
 pub mod net;

@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-312 entries in 1 namespace.
+313 entries in 1 namespace.
 
 ## Global
 
@@ -876,6 +876,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client*
 - `trim(text)` - the text without leading and trailing white space
   *arguments: 1; server and client*
+- `updateDataBlocks()` - sends every client past its mission's datablocks the datablocks added or changed since it last got them, one round per client (a client still being sent its datablocks gets the round after them; each client's GameConnection::onDataBlocksUpdated(%client, %count) runs when its round is in); returns the number of clients reached
+  *arguments: none; server*
 - `VectorAdd(a, b)` - a + b
   *arguments: 2; server and client*
 - `VectorCross(a, b)` - the cross product of a and b

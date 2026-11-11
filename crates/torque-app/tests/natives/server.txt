@@ -324,4 +324,5 @@ strreplace 4..4 strreplace(text, from, to) - the text with every from replaced b
 strstr 3..3 strstr(text, needle) - where the needle first occurs, or -1
 strupr 2..2 strupr(text) - the text in upper case
 trim 2..2 trim(text) - the text without leading and trailing white space
+updateDataBlocks 1..1 updateDataBlocks() - sends every client past its mission's datablocks the datablocks added or changed since it last got them, one round per client (a client still being sent its datablocks gets the round after them; each client's GameConnection::onDataBlocksUpdated(%client, %count) runs when its round is in); returns the number of clients reached
 warn 2..* warn(text...) - prints a warning line

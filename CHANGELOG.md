@@ -25,6 +25,12 @@ different.
   the preloaded shapes and a plugin's copies of a datablock object's fields (the props' numbers), each keyed on a per-datablock
   generation that moves only when the record differs, at most 64 refreshes a frame. A local client over its server leaves the
   server's own datablock objects unwritten. TGE rebuilds nothing on a client once a datablock is received.
+- Live datablock rounds: `updateDataBlocks()` sends every connected client the datablocks added or changed since it last got
+  them, mid-game and with no wire change in either protocol (each connection remembers the key it was sent per datablock, the
+  round sends new datablocks before changed ones so a referrer follows what it names, and the client's answer runs
+  `GameConnection::onDataBlocksUpdated(%client, %count)`, never `onDataBlocksDone` again); a client runs `onDataBlocksChanged()`
+  after a round when it defines it, caps its datablocks at `$Pref::Client::MaxDataBlocks` under the wire's id range and
+  rate-limits bodies after its first download. TGE sends datablocks only at a mission's start.
 
 #### Mods
 

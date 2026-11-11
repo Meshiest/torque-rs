@@ -92,6 +92,90 @@ pub const TGE_TIMEOUT_CHECK_MS: u32 = 1500;
 pub const DATAGRAMS_PER_PUMP: usize = 1024;
 /// The most events waiting for the connection before the feed stops reading datagrams.
 pub const MAX_WAITING_EVENTS: usize = 65_536;
+/// The pref that caps the datablocks a connection keeps (the world's table and the script group), held under the wire's id
+/// range ([`max_datablocks`]).
+pub const MAX_DATABLOCKS_PREF: &str = "$Pref::Client::MaxDataBlocks";
+/// The cap when the pref is unset, over Torque's protocol.
+pub const DEFAULT_MAX_DATABLOCKS_TGE: usize = 1_024;
+/// The cap when the pref is unset, over the engine's protocol.
+pub const DEFAULT_MAX_DATABLOCKS_ENGINE: usize = 4_096;
+/// Datablock bodies a connection takes per second once its first datablocks-done message is in (a live round's; a server's
+/// send rate stays well under: a window of events per packet).
+pub const LIVE_DATABLOCKS_PER_S: u32 = 256;
+/// The burst the rate allows: one wire id range, so a round that sends every datablock once is never cut.
+pub const LIVE_DATABLOCK_BURST: u32 = 1 << DEFAULT_DATABLOCK_BITS;
+/// Bodies refused for this long without the bucket filling again end the connection.
+pub const LIVE_DATABLOCK_FLOOD_MS: u32 = 2_000;
+/// The reason the connection ends with.
+pub const LIVE_DATABLOCK_FLOOD_REASON: &str = "datablock flood";
+
+/// The datablocks a connection keeps at most: [`MAX_DATABLOCKS_PREF`] (its mode's default when unset or not a number), at
+/// least 1 and never more than the wire's id range (the ids a `SimDataBlockEvent` can carry).
+pub fn max_datablocks(vm: &Vm, engine: bool, widths: NetWidths) -> usize {
+    let (lo, hi) = widths.datablock_range();
+    let range = hi.wrapping_sub(lo).saturating_add(1).max(1) as usize;
+    let unset = if engine {
+        DEFAULT_MAX_DATABLOCKS_ENGINE
+    } else {
+        DEFAULT_MAX_DATABLOCKS_TGE
+    };
+    let pref = vm
+        .global(MAX_DATABLOCKS_PREF)
+        .filter(|t| !t.trim_ascii().is_empty())
+        .map_or(unset, |t| {
+            usize::try_from(ts_vm::text::atoi(&t)).unwrap_or(0)
+        });
+    pref.clamp(1, range)
+}
+
+/// The rate limit on datablock bodies after the first datablocks-done message: [`LIVE_DATABLOCKS_PER_S`] a second with a burst
+/// of [`LIVE_DATABLOCK_BURST`]. A body with no token is refused; refusals that go on for [`LIVE_DATABLOCK_FLOOD_MS`] without
+/// the bucket filling back to a second's worth are a flood.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveBucket {
+    tokens: u32,
+    /// Milliseconds of refill not yet worth a token.
+    credit_ms: u64,
+    last: u32,
+    /// When the refusals started, until the bucket fills back.
+    excess_since: Option<u32>,
+}
+
+impl LiveBucket {
+    pub fn new(now: u32) -> LiveBucket {
+        LiveBucket {
+            tokens: LIVE_DATABLOCK_BURST,
+            credit_ms: 0,
+            last: now,
+            excess_since: None,
+        }
+    }
+
+    /// Takes a token at `now`: false when there is none.
+    pub fn take(&mut self, now: u32) -> bool {
+        let elapsed = u64::from(now.wrapping_sub(self.last));
+        self.last = now;
+        let credit = self.credit_ms + elapsed * u64::from(LIVE_DATABLOCKS_PER_S);
+        let refill = u32::try_from(credit / 1000).unwrap_or(u32::MAX);
+        self.credit_ms = credit % 1000;
+        self.tokens = self.tokens.saturating_add(refill).min(LIVE_DATABLOCK_BURST);
+        if self.tokens >= LIVE_DATABLOCKS_PER_S {
+            self.excess_since = None;
+        }
+        if self.tokens == 0 {
+            self.excess_since.get_or_insert(now);
+            return false;
+        }
+        self.tokens -= 1;
+        true
+    }
+
+    /// Whether the refusals have gone on for [`LIVE_DATABLOCK_FLOOD_MS`].
+    pub fn flooded(&self, now: u32) -> bool {
+        self.excess_since
+            .is_some_and(|since| now.wrapping_sub(since) >= LIVE_DATABLOCK_FLOOD_MS)
+    }
+}
 /// The view distance without a Sky.
 pub const DEFAULT_VIEW_DISTANCE: f32 = 500.0;
 
@@ -553,6 +637,12 @@ pub struct TgeFeed {
     engine: Option<EngineWire>,
     /// Engine mode's RPC carrier, which the session's RPC lanes fill and empty.
     rpc_lanes: Option<Rc<RpcLanes>>,
+    /// Datablocks-done messages seen: the second and later end live rounds (`onDataBlocksChanged`).
+    dones: u32,
+    /// The datablocks the connection keeps at most ([`max_datablocks`], read at each tick's start).
+    max_datablocks: usize,
+    /// The rate limit on datablock bodies after the first datablocks-done message.
+    live: LiveBucket,
 }
 
 impl TgeFeed {
@@ -637,7 +727,32 @@ impl TgeFeed {
             blocks: BlockSections::default(),
             engine: None,
             rpc_lanes: None,
+            dones: 0,
+            max_datablocks: DEFAULT_MAX_DATABLOCKS_TGE,
+            live: LiveBucket::new(0),
         })
+    }
+
+    /// Whether a datablock event with a body for `id` is taken: a new id is refused when the table is at its cap, and after
+    /// the first datablocks-done message every body spends a token of the live rate; a refusal is counted and refusals that
+    /// last [`LIVE_DATABLOCK_FLOOD_MS`] end the connection with [`LIVE_DATABLOCK_FLOOD_REASON`].
+    fn takes_datablock(&mut self, world: &TgeWorld, id: u32) -> bool {
+        let known = world.records.datablocks.contains_key(&id);
+        if !known && world.records.datablocks.len() >= self.max_datablocks {
+            self.events.push_back(FeedEvent::DataBlockRefused);
+            return false;
+        }
+        if self.dones > 0 && !self.live.take(self.now) {
+            self.events.push_back(FeedEvent::DataBlockRefused);
+            if self.live.flooded(self.now) {
+                self.disconnect(LIVE_DATABLOCK_FLOOD_REASON);
+                self.end(FeedEvent::Dropped(
+                    LIVE_DATABLOCK_FLOOD_REASON.as_bytes().to_vec(),
+                ));
+            }
+            return false;
+        }
+        true
     }
 
     /// The engine's bulk channels this connection reads. They start over for this connection ([`ClientChannels::reset`]) and
@@ -996,6 +1111,9 @@ impl TgeFeed {
         let record = self.packets;
         world.set_clock(self.now);
         for ev in incoming {
+            if self.gone {
+                break;
+            }
             match ev.event {
                 Incoming::Net(NetEvent::ConnectionMessage(m)) => self.message(world, m),
                 Incoming::Net(NetEvent::NetString(s)) => {
@@ -1010,6 +1128,9 @@ impl TgeFeed {
                     self.events.push_back(FeedEvent::Remote(cmd));
                 }
                 Incoming::DataBlock(Some((event, index, total))) => {
+                    if !self.takes_datablock(world, event.id) {
+                        continue;
+                    }
                     world.apply_datablock(event.id, event.datablock.clone());
                     self.count_wheels(world, event.id);
                     self.events.push_back(FeedEvent::DataBlock {
@@ -1045,7 +1166,8 @@ impl TgeFeed {
 
     /// A connection message: 0 (the ghost-always objects are done) is answered with 1 (ready for the rest), 2 (the server ended
     /// its ghosting) clears the table, 3 (the ghost-always objects start) is the scripts' `onGhostAlwaysStarted(count)`, 6
-    /// (`DataBlocksDone`) is answered with 7 (`DataBlocksDownloadDone`) and its sequence.
+    /// (`DataBlocksDone`) is answered with 7 (`DataBlocksDownloadDone`) and its sequence; the second 6 and every later one end a
+    /// live round of the server's (the scripts' `onDataBlocksChanged`, when defined).
     fn message(&mut self, world: &mut TgeWorld, m: ConnectionMessage) {
         match m.message {
             0 => {
@@ -1072,6 +1194,10 @@ impl TgeFeed {
                     count: 0,
                 });
                 let _ = self.out.post(done);
+                self.dones = self.dones.saturating_add(1);
+                if self.dones > 1 {
+                    self.events.push_back(FeedEvent::DataBlocksChanged);
+                }
             }
             _ => {}
         }
@@ -1083,8 +1209,8 @@ impl Feed for TgeFeed {
     type Event = ();
 
     fn tick_start(&mut self, vm: &Vm, now: u32) {
-        let _ = vm;
         self.now = now;
+        self.max_datablocks = max_datablocks(vm, self.engine.is_some(), self.widths);
     }
 
     /// The challenge again when the time-out check finds it due (the connect gives up once the sends outnumber the tries),

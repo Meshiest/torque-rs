@@ -18,6 +18,21 @@
 //! `index == size - 1` sets `key = max_key` and posts the datablocks-done message. The client's download-done message
 //! ([`datablocks_download_done_message`]: Torque's 7) with the connection's sequence runs the script's `onDataBlocksDone`.
 //!
+//! **Live rounds** ([`ConnDatablocks::request_live`]). A connection past its mission chain can be sent the datablocks that
+//! changed since: every body a chain renders records the key it carried (`sent`, per connection; the mission chain fills it
+//! too), and a live round sends the networked datablocks whose key differs from the recorded one: first the ones the connection
+//! was never sent, in group order, then the changed ones in ascending key order (a referrer that names a datablock the client
+//! has resolves whatever the order; one that names a new datablock follows it, whatever their keys: a new target written again
+//! after the referrer carries the larger key), as the same events with ordinals within the round for `index` and `total`; the same window,
+//! acks and render-again rules, one chain per connection (a round asked while a chain runs waits and is coalesced; a queued
+//! `transmitDataBlocks` starts first). The round's done message carries a sequence of its own (negative, so a script's mission
+//! sequence never collides), and the client's answer with it runs `GameConnection::onDataBlocksUpdated(%client, %count)`, never
+//! `onDataBlocksDone`. A connection still in its mission chain is not sent a round: the round waits for the chain, which
+//! carries what it has not rendered yet, and then sends what the chain rendered before the change; one that never started a
+//! mission chain is not reached (that chain sends everything). A round with nothing to send sends nothing. The connection's key and
+//! `max_key` are the mission chain's and a round leaves them alone. Nothing of this is on the wire unless a round is asked for
+//! (`updateDataBlocks()`), so a stock client takes adds and updates mid-game.
+//!
 //! **The host's choices.** One chain per connection: a call while a chain is active is queued, only the newest, and starts when
 //! the chain ends; an event is rendered, not packed at the exact write: [`EventLayer::write`](super::events::EventLayer) has
 //! the `Vm` and [`torque_net::events::WireEvent::pack`] has not, so the first packet build after events are posted renders
@@ -252,6 +267,8 @@ pub struct DbCell {
     pub index: u32,
     pub total: u32,
     pub seq: i32,
+    /// A live round's cell: rendered with a body whatever the connection's key says.
+    live: bool,
     classes: Rc<NetClasses>,
     state: RefCell<CellState>,
 }
@@ -263,15 +280,28 @@ struct CellState {
 }
 
 impl DbCell {
-    fn new(id: ObjId, index: u32, total: u32, seq: i32, classes: &Rc<NetClasses>) -> Rc<DbCell> {
+    fn new(
+        id: ObjId,
+        index: u32,
+        total: u32,
+        seq: i32,
+        live: bool,
+        classes: &Rc<NetClasses>,
+    ) -> Rc<DbCell> {
         Rc::new(DbCell {
             id,
             index,
             total,
             seq,
+            live,
             classes: Rc::clone(classes),
             state: RefCell::new(CellState::default()),
         })
+    }
+
+    /// Whether the cell belongs to a live round.
+    pub fn is_live(&self) -> bool {
+        self.live
     }
 
     fn needs_render(&self) -> bool {
@@ -338,14 +368,49 @@ fn message_event(seq: i32, message: u8) -> DbPost {
 
 // ---- the connection's chain
 
+/// What a chain walks: the mission chain reads the datablock group by position; a live round its own list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Walk {
+    Mission,
+    /// The round's datablocks in the order they go (the new ones in group order, then the changed ones by key).
+    Live(Vec<ObjId>),
+}
+
 #[derive(Debug)]
 struct Chain {
     seq: i32,
+    walk: Walk,
     /// Made and not yet settled (posted, or held in [`ConnDatablocks::unposted`]).
     cells: Vec<Rc<DbCell>>,
 }
 
-/// One connection's datablock state: its key, its max key, its sequence, and the chain.
+impl Chain {
+    /// The positions the chain has: the group's size now, or the round's.
+    fn size(&self, objects: &Objects) -> usize {
+        match &self.walk {
+            Walk::Mission => group_len(objects),
+            Walk::Live(list) => list.len(),
+        }
+    }
+
+    /// The datablock at position `at`.
+    fn at(&self, objects: &Objects, at: usize) -> Option<ObjId> {
+        match &self.walk {
+            Walk::Mission => group_at(objects, at),
+            Walk::Live(list) => list.get(at).copied(),
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        matches!(self.walk, Walk::Live(_))
+    }
+}
+
+/// Live rounds whose done message went out and whose answer has not come yet (one per round; a client that never answers
+/// cannot grow the list past this: the oldest is forgotten).
+pub const MAX_LIVE_ANSWERS: usize = 8;
+
+/// One connection's datablock state: its key, its max key, its sequence, the keys it was sent, and the chain.
 #[derive(Debug, Default)]
 pub struct ConnDatablocks {
     /// The most bits one of its events may take ([`packet_room_bits_with`] of the codecs' head; none: Torque's head).
@@ -355,6 +420,18 @@ pub struct ConnDatablocks {
     pub seq: i32,
     chain: Option<Chain>,
     queued: Option<i32>,
+    /// The key each datablock carried when a body of it was last rendered for this connection (a live round sends the ones
+    /// whose key differs). Bounded by the ids the connection was ever sent: the datablock id range.
+    sent: HashMap<ObjId, i32>,
+    /// A mission chain has ended (its done message was posted): live rounds may start.
+    mission_done: bool,
+    /// A live round was asked for while a chain ran: it starts when the chain ends (every ask until then is this one).
+    live_pending: bool,
+    /// The sequence the next live round's done message carries: -1, then down, so a script's mission sequence (0 and up)
+    /// never matches it.
+    live_seq: i32,
+    /// The live rounds whose done message went out, with the count their answer reports ([`MAX_LIVE_ANSWERS`]).
+    live_answers: VecDeque<(i32, u32)>,
     /// Events the chain made that the connection's ordered queue had no room for yet, in the order they go
     /// ([`post_or_hold`](Self::post_or_hold)). Their cells are in the chain, so the chain does not end while one is held:
     /// nothing is ever lost.
@@ -377,6 +454,26 @@ pub enum Transmit {
     Started(usize),
     /// A chain is active: the call waits for its end.
     Queued,
+}
+
+/// What asking a connection for a live round did ([`ConnDatablocks::request_live`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveRound {
+    /// A round started: the datablocks it sends.
+    Started(usize),
+    /// A chain is active (the mission's, or a round): the round starts when it ends.
+    Queued,
+    /// Nothing changed since the connection was last sent its datablocks: nothing goes out.
+    Nothing,
+    /// The connection has not started a mission chain: that chain sends everything.
+    NotReady,
+}
+
+impl LiveRound {
+    /// Whether the connection was reached: it is past its mission chain and the round was asked of it.
+    pub fn reached(self) -> bool {
+        !matches!(self, LiveRound::NotReady)
+    }
 }
 
 fn group(objects: &Objects) -> Vec<ObjId> {
@@ -477,6 +574,129 @@ impl ConnDatablocks {
         self.chain.as_ref().map_or(0, |c| c.cells.len())
     }
 
+    /// Whether the active chain is a live round.
+    pub fn live_active(&self) -> bool {
+        self.chain.as_ref().is_some_and(Chain::is_live)
+    }
+
+    /// A live round waits for the chain's end.
+    pub fn live_pending(&self) -> bool {
+        self.live_pending
+    }
+
+    /// Whether a mission chain has ended on this connection (live rounds may start).
+    pub fn mission_done(&self) -> bool {
+        self.mission_done
+    }
+
+    /// The key `id` carried when a body of it was last rendered for this connection.
+    pub fn sent_key(&self, id: ObjId) -> Option<i32> {
+        self.sent.get(&id).copied()
+    }
+
+    /// The count a live round's done message with sequence `seq` reports, once: the client's answer with that sequence runs
+    /// `onDataBlocksUpdated(count)`. None for any other sequence (a mission chain's, an answer already taken, a made-up one).
+    pub fn take_live_answer(&mut self, seq: i32) -> Option<u32> {
+        let at = self.live_answers.iter().position(|(s, _)| *s == seq)?;
+        self.live_answers.remove(at).map(|(_, count)| count)
+    }
+
+    /// Asks the connection for a live round: the datablocks it was never sent, then the ones whose key moved by key. The
+    /// events to post, and the group positions looked at (for the work charge). `codecs` say which classes travel: a datablock
+    /// of a class the connection is never sent (not networked, or a plugin's and the peer cannot read it) is left out rather
+    /// than sent as the one 0 bit every round.
+    pub fn request_live(
+        &mut self,
+        objects: &Objects,
+        keys: &DatablockKeys,
+        classes: &Rc<NetClasses>,
+        codecs: &dyn NetCodecs,
+    ) -> (LiveRound, Vec<DbPost>, usize) {
+        // A chain that runs (the mission's too: an edit to a datablock it already sent is only this round's to carry) is
+        // followed by the round; a connection that has not started its mission chain gets everything from it.
+        if self.chain.is_some() {
+            self.live_pending = true;
+            return (LiveRound::Queued, Vec::new(), 0);
+        }
+        if !self.mission_done {
+            return (LiveRound::NotReady, Vec::new(), 0);
+        }
+        self.start_live(objects, keys, classes, codecs)
+    }
+
+    fn start_live(
+        &mut self,
+        objects: &Objects,
+        keys: &DatablockKeys,
+        classes: &Rc<NetClasses>,
+        codecs: &dyn NetCodecs,
+    ) -> (LiveRound, Vec<DbPost>, usize) {
+        self.live_pending = false;
+        let members = group(objects);
+        let scanned = members.len();
+        // Ids whose object is gone stay out of the table (a datablock deleted and another at its id is sent as new).
+        self.sent.retain(|id, _| objects.contains(*id));
+        // The datablocks the connection never had go first, in group order, then the changed ones by key: a referrer that
+        // names a datablock the connection has resolves whatever the order, and one that names a new datablock follows it
+        // (a new target may carry a larger key than the referrer when it was written again after the referrer was).
+        let (mut new, mut changed): (Vec<ObjId>, Vec<(i32, ObjId)>) = (Vec::new(), Vec::new());
+        for id in members
+            .into_iter()
+            .filter(|&id| self.travels(objects, id, codecs))
+        {
+            let key = keys.key_of(id);
+            match self.sent.get(&id) {
+                None => new.push(id),
+                Some(sent) if *sent != key => changed.push((key, id)),
+                Some(_) => {}
+            }
+        }
+        if new.is_empty() && changed.is_empty() {
+            return (LiveRound::Nothing, Vec::new(), scanned);
+        }
+        changed.sort_unstable();
+        new.extend(changed.into_iter().map(|(_, id)| id));
+        let list = new;
+        let total = list.len();
+        let seq = self.live_seq.min(-1);
+        self.live_seq = seq.checked_sub(1).unwrap_or(-1);
+        let end = total.min(self.window());
+        let cells: Vec<Rc<DbCell>> = list
+            .iter()
+            .take(end)
+            .enumerate()
+            .map(|(index, &id)| DbCell::new(id, index as u32, total as u32, seq, true, classes))
+            .collect();
+        let events = cells
+            .iter()
+            .map(|c| DbPost::Cell(DbEvent(Rc::clone(c))))
+            .collect::<Vec<_>>();
+        self.chain = Some(Chain {
+            seq,
+            walk: Walk::Live(list),
+            cells,
+        });
+        (LiveRound::Started(total), events, scanned)
+    }
+
+    /// Whether a body of `id` can ever go to this connection: a datablock of a class the codecs send, and not a plugin's
+    /// unless the peer reads them.
+    fn travels(&self, objects: &Objects, id: ObjId, codecs: &dyn NetCodecs) -> bool {
+        let Some(object) = objects.get(id) else {
+            return false;
+        };
+        if !objects.classes.is_a(object.class(), SIM_DATA_BLOCK) {
+            return false;
+        }
+        let Some(class) = datablock_class(objects, object, codecs) else {
+            return false;
+        };
+        let plugin = codecs
+            .plugin_classes()
+            .is_some_and(|p| p.datablock(class).is_some());
+        !plugin || self.plugin_classes
+    }
+
     /// `transmitDataBlocks(seq)`: the events to post, and the group positions looked at (for the work charge).
     pub fn call(
         &mut self,
@@ -505,6 +725,7 @@ impl ConnDatablocks {
         let first = members.iter().position(|&id| keys.key_of(id) > self.key);
         let scanned = first.map_or(total, |s| s + 1);
         let Some(first) = first else {
+            self.mission_done = true;
             return (
                 Transmit::Started(1),
                 vec![message_event(seq, self.done_message())],
@@ -515,27 +736,40 @@ impl ConnDatablocks {
         let end = total.min(first + self.window());
         let mut cells = Vec::with_capacity(end - first);
         for (index, &id) in members.iter().enumerate().take(end).skip(first) {
-            cells.push(DbCell::new(id, index as u32, total as u32, seq, classes));
+            cells.push(DbCell::new(
+                id,
+                index as u32,
+                total as u32,
+                seq,
+                false,
+                classes,
+            ));
         }
         let events = cells
             .iter()
             .map(|c| DbPost::Cell(DbEvent(Rc::clone(c))))
             .collect::<Vec<_>>();
         let n = events.len();
-        self.chain = Some(Chain { seq, cells });
+        self.chain = Some(Chain {
+            seq,
+            walk: Walk::Mission,
+            cells,
+        });
         (Transmit::Started(n), events, scanned)
     }
 
     /// `SimDataBlockEvent::notifyDelivered` for `cell`: the events it posts. Ends the chain when its last cell has settled and
-    /// starts the call that waited, if any.
+    /// starts what waited, if anything: the queued `transmitDataBlocks` first, else the live round asked for.
     pub fn settled(
         &mut self,
         objects: &Objects,
         keys: &DatablockKeys,
         classes: &Rc<NetClasses>,
+        codecs: &dyn NetCodecs,
         cell: &Rc<DbCell>,
     ) -> Vec<DbPost> {
         let mut out = Vec::new();
+        let (window, done_message) = (self.window(), self.done_message());
         let Some(chain) = self.chain.as_mut() else {
             return out;
         };
@@ -545,25 +779,38 @@ impl ConnDatablocks {
         chain.cells.remove(at);
         // A connection whose sequence moved on is ignored; the host never moves it under a chain, so this is the chain's own.
         let seq = chain.seq;
-        let size = group_len(objects);
+        let live = chain.is_live();
+        let size = chain.size(objects);
         if size > 0 && cell.index as usize == size - 1 {
-            self.key = self.max_key;
-            out.push(message_event(seq, self.done_message()));
-        }
-        let next = (cell.index as usize).saturating_add(self.window());
-        if next < size
-            && let Some(id) = group_at(objects, next)
-        {
-            let pulled = DbCell::new(id, next as u32, size as u32, seq, classes);
-            out.push(DbPost::Cell(DbEvent(Rc::clone(&pulled))));
-            if let Some(chain) = self.chain.as_mut() {
-                chain.cells.push(pulled);
+            if live {
+                if self.live_answers.len() >= MAX_LIVE_ANSWERS {
+                    self.live_answers.pop_front();
+                }
+                self.live_answers.push_back((seq, size as u32));
+            } else {
+                self.key = self.max_key;
+                self.mission_done = true;
             }
+            out.push(message_event(seq, done_message));
         }
-        if self.chain.as_ref().is_some_and(|c| c.cells.is_empty()) {
+        let next = (cell.index as usize).saturating_add(window);
+        if next < size
+            && let Some(id) = chain.at(objects, next)
+        {
+            let pulled = DbCell::new(id, next as u32, size as u32, seq, live, classes);
+            out.push(DbPost::Cell(DbEvent(Rc::clone(&pulled))));
+            chain.cells.push(pulled);
+        }
+        if chain.cells.is_empty() {
             self.chain = None;
             if let Some(queued) = self.queued.take() {
                 let (_, events, scanned) = self.start(objects, keys, classes, queued);
+                self.scan_owed = self.scan_owed.saturating_add(scanned);
+                out.extend(events);
+            }
+            // The round that waited, unless the queued call made a chain (it follows that one).
+            if self.chain.is_none() && self.live_pending {
+                let (_, events, scanned) = self.start_live(objects, keys, classes, codecs);
                 self.scan_owed = self.scan_owed.saturating_add(scanned);
                 out.extend(events);
             }
@@ -617,7 +864,7 @@ impl ConnDatablocks {
             .filter(|c| {
                 objects.get(c.id).is_some_and(|o| {
                     objects.classes.is_a(o.class(), SIM_DATA_BLOCK)
-                        && self.key < keys.key_of(c.id)
+                        && (c.live || self.key < keys.key_of(c.id))
                         && datablock_class(objects, o, codecs).is_some()
                 })
             })
@@ -652,7 +899,10 @@ impl ConnDatablocks {
                 packed.push((cell.id, Rc::clone(&body.record)));
             }
             if let Some(key) = flagged {
-                self.max_key = self.max_key.max(key);
+                self.sent.insert(cell.id, key);
+                if !cell.live {
+                    self.max_key = self.max_key.max(key);
+                }
             }
             let room = self
                 .room_bits
@@ -700,7 +950,9 @@ impl ConnDatablocks {
             return none;
         }
         let key = keys.key_of(cell.id);
-        if self.key >= key {
+        // A live round's cell was chosen because its key moved: the body goes whatever the connection's key is, and again
+        // after a lost packet whatever the table recorded at the first render.
+        if !cell.live && self.key >= key {
             return none;
         }
         let Some(class) = datablock_class(objects, object, codecs) else {
