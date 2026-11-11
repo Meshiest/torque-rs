@@ -634,6 +634,11 @@ mod keys {
     }
 
     impl Fallback for Tunable {
+        // Makes one generic face for any name: none is a system face a registration could replace.
+        fn resolves(&self, _face: &str) -> bool {
+            false
+        }
+
         fn make(&self, _face: &str, _size: i32) -> Option<Font> {
             if !self.made.load(Ordering::Relaxed) {
                 return None;

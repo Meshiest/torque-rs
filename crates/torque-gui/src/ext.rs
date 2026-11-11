@@ -35,6 +35,13 @@ pub trait FontSource {
     /// The cache under it (its counts, the faces it could not find).
     fn cache(&self) -> &torque_fonts::FontCache;
 
+    /// Registers `ttf` as the TrueType face `face`, looked up before the cache files from now on (`registerFont`); false when the
+    /// source takes no registered faces or refuses this one ([`torque_fonts::faces::FaceCache::register`]).
+    fn register_face(&mut self, face: &str, ttf: torque_fonts::ttf::SharedFace) -> bool {
+        let _ = (face, ttf);
+        false
+    }
+
     fn as_any(&self) -> &dyn Any;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
@@ -68,11 +75,45 @@ impl FontSource for torque_fonts::FontCache {
     }
 }
 
-/// The default font source: the `torque-fonts` cache over [`DEFAULT_FONT_DIR`], no fallback.
+impl FontSource for torque_fonts::faces::FaceCache {
+    fn font(
+        &mut self,
+        face: &str,
+        size: i32,
+        user: FontUse,
+        read: &dyn Fn(&str) -> Option<Vec<u8>>,
+    ) -> Option<Arc<Font>> {
+        self.get_for(face, size, user, read).map(|(f, _)| f)
+    }
+
+    fn next_frame(&mut self) {
+        torque_fonts::faces::FaceCache::next_frame(self);
+    }
+
+    fn cache(&self) -> &torque_fonts::FontCache {
+        self
+    }
+
+    fn register_face(&mut self, face: &str, ttf: torque_fonts::ttf::SharedFace) -> bool {
+        self.register(face, ttf)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// The default font source: the `torque-fonts` cache over [`DEFAULT_FONT_DIR`], no fallback, taking registered faces.
 pub fn default_fonts() -> Box<dyn FontSource> {
-    Box::new(torque_fonts::FontCache::new(
+    Box::new(torque_fonts::faces::FaceCache::new(
         DEFAULT_FONT_DIR,
         Box::new(torque_fonts::NoFallback),
+        Box::new(torque_fonts::uft::Uft::default()),
+        std::convert::identity,
     ))
 }
 

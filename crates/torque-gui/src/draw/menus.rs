@@ -35,7 +35,7 @@ use torque_fonts::{FontUse, TextColors};
 use torque_ts_vm::host::FileRead;
 use torque_ts_vm::sim::ObjId;
 
-use super::rounded::{BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
+use super::rounded::{BOX_RADIUS, BOX_TEXT_PAD, BoxState, box_colors, box_text_color};
 use super::{Walk, color_field, int_field, intersect, profile_of, text_field};
 use crate::control::{bounds, flag, point};
 
@@ -174,7 +174,7 @@ impl Walk<'_> {
         let na = color_field(vm, p, b"borderColorNA");
         let fill = color_field(vm, p, b"fillColor");
         match style {
-            1 => self.outline((l, t), (rt, b), border),
+            1 => self.border_corners(r, border, self.profile_radius(p)),
             2 => {
                 self.line((l + 1, t + 1), (l + 1, b - 2), WHITE);
                 self.line((l + 2, t + 1), (rt - 2, t + 1), WHITE);
@@ -277,7 +277,11 @@ impl Walk<'_> {
             } else {
                 let state = self.box_state(id, depressed || on, over);
                 let (fill, border) = box_colors(self.vm, p, state);
-                self.rounded_box(rect, fill, border);
+                let radius = match self.profile_radius(p) {
+                    0 => BOX_RADIUS,
+                    set => set,
+                };
+                self.rounded_box_with(rect, Some(fill), border, radius);
                 text_color = box_text_color(self.vm, p, state);
             }
         }
@@ -338,7 +342,7 @@ impl Walk<'_> {
         let rect = [offset.0, offset.1, ext.0, ext.1];
         if flag(vm, p, b"opaque") {
             let fill = color_field(vm, p, b"fillColor");
-            self.fill(rect, fill);
+            self.fill_profile(p, rect, fill);
         }
         let focused = crate::input::canvas_first_responder(self.gui) == Some(id);
         self.draw_edit_text(id, p, rect, focused);
@@ -530,7 +534,7 @@ impl Walk<'_> {
             } else {
                 if flag(vm, p, b"opaque") {
                     let fill = color_field(vm, p, b"fillColor");
-                    self.fill(rect, fill);
+                    self.fill_profile(p, rect, fill);
                 }
                 if int_field(vm, p, b"border") != 0 {
                     self.render_border(p, rect);

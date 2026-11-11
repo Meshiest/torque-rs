@@ -68,6 +68,11 @@ fn a_bitmap_is_sized_from_its_first_bytes_and_every_lookup_is_charged() {
 struct SizedFonts;
 
 impl Fallback for SizedFonts {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, size: i32) -> Option<Font> {
         let side = size.clamp(1, 128) as u32;
         Some(Font {

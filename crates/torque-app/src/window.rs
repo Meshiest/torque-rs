@@ -343,6 +343,10 @@ impl<G: App> WindowGame for AppWindow<G> {
         self.game.advance(ms);
     }
 
+    fn wheel_part(&mut self, part: f32) {
+        self.game.host().wheel_part(part);
+    }
+
     /// In a browser: the page's requests to the scripts, once a pass ([`crate::page_bridge::serve`]).
     fn upkeep(&mut self) {
         #[cfg(target_arch = "wasm32")]

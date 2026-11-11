@@ -406,6 +406,11 @@ fn a_cache_reads_the_format_it_is_given() {
 struct BigFallback(u32);
 
 impl Fallback for BigFallback {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, _size: i32) -> Option<Font> {
         Some(Font {
             height: 10,
@@ -469,6 +474,11 @@ fn removing_a_face_drops_its_fonts_and_gives_their_pixels_back() {
 struct CountingFallback(Arc<std::sync::atomic::AtomicU32>);
 
 impl Fallback for CountingFallback {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, size: i32) -> Option<Font> {
         self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let side = size.max(1) as u32;

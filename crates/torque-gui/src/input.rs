@@ -528,6 +528,7 @@ pub fn set_first_responder(vm: &mut Vm, gui: &Gui, id: ObjId) -> Result<(), VmEr
         let old = input(gui).first_responder;
         set_first_responder_of(vm, gui, p, id, 0)?;
         if old != Some(id) && input(gui).first_responder == Some(id) {
+            crate::scroll::reveal(vm, gui, id);
             gui.ext().focused(vm, gui, id)?;
         }
     }
@@ -1338,7 +1339,7 @@ fn on_key_down_at(
         let k = u16::from(ev.key_code);
         if (k == KEY_RETURN || k == KEY_SPACE) && ev.modifier == 0 {
             button_sound(vm, gui, id, b"soundButtonDown");
-            if gui.ext().key_press(vm, id) {
+            if key_presses(vm, gui, id) {
                 gui.with_mut(id, |c| c.depressed = true);
             }
             return Ok(true);
@@ -1346,6 +1347,12 @@ fn on_key_down_at(
         return parent_key_down(vm, gui, id, ev, depth);
     }
     parent_key_down(vm, gui, id, ev, depth)
+}
+
+/// Whether the button `id`, with the key focus, is pressed by Return and Space: its profile's `keyActivate`, or the extension's
+/// say ([`crate::GuiExtension::key_press`]). TGE's button only plays its down sound on those keys and never answers them.
+fn key_presses(vm: &Vm, gui: &Gui, id: ObjId) -> bool {
+    profile_flag(vm, id, b"keyActivate") || gui.ext().key_press(vm, id)
 }
 
 pub(crate) fn on_key_up_at(
@@ -1368,7 +1375,7 @@ pub(crate) fn on_key_up_at(
             && (k == KEY_RETURN || k == KEY_SPACE)
             && ev.modifier == 0
         {
-            if gui.ext().key_press(vm, id) {
+            if key_presses(vm, gui, id) {
                 gui.with_mut(id, |c| c.depressed = false);
             }
             on_action(vm, gui, id)?;
@@ -1586,6 +1593,7 @@ fn process_canvas_event(vm: &mut Vm, gui: &Gui, ev: &InputEvent) -> Result<bool,
             let pt = gui.0.borrow().cursor_pos;
             input(gui).last.point = pt;
             if ev.action == SI_MAKE {
+                crate::glide::finish_all(gui);
                 gui.ext().mouse_pressed(gui);
             }
             match ev.obj_inst {
@@ -1887,3 +1895,7 @@ pub fn host_mouse_move(vm: &mut Vm, gui: &Gui, pt: (i32, i32), modifier: u8) -> 
 }
 
 pub mod text_edit;
+
+#[cfg(test)]
+#[path = "input/key_activate_tests.rs"]
+mod key_activate_tests;

@@ -37,8 +37,8 @@ Console classes, with the fields each adds to its parent's. 119 classes.
 | [GuiConsole](#guiconsole) | [GuiArrayCtrl](#guiarrayctrl) | 0 |
 | [GuiConsoleEditCtrl](#guiconsoleeditctrl) | [GuiTextEditCtrl](#guitexteditctrl) | 1 |
 | [GuiConsoleTextCtrl](#guiconsoletextctrl) | [GuiControl](#guicontrol) | 1 |
-| [GuiControl](#guicontrol) | [SimGroup](#simgroup) | 14 |
-| [GuiControlProfile](#guicontrolprofile) | [SimObject](#simobject) | 35 |
+| [GuiControl](#guicontrol) | [SimGroup](#simgroup) | 15 |
+| [GuiControlProfile](#guicontrolprofile) | [SimObject](#simobject) | 37 |
 | [GuiCrossHairHud](#guicrosshairhud) | [GuiBitmapCtrl](#guibitmapctrl) | 4 |
 | [GuiCursor](#guicursor) | [SimObject](#simobject) | 3 |
 | [GuiFadeinBitmapCtrl](#guifadeinbitmapctrl) | [GuiBitmapCtrl](#guibitmapctrl) | 0 |
@@ -563,6 +563,7 @@ No fields of its own.
 | `tooltipprofile` | GuiProfile |  |  |
 | `tooltip` | string |  |  |
 | `langTableMod` | string |  |  |
+| `opacity` | float |  |  |
 
 ## GuiControlProfile
 
@@ -605,6 +606,8 @@ No fields of its own.
 | `bitmap` | filename |  |  |
 | `soundButtonDown` | AudioProfilePtr |  |  |
 | `soundButtonOver` | AudioProfilePtr |  |  |
+| `cornerRadius` | int |  |  |
+| `keyActivate` | bool |  |  |
 
 ## GuiCrossHairHud
 

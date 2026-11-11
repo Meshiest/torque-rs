@@ -601,6 +601,21 @@ impl<G: ConnGame, S: GameServer> ClientHost<G, S> {
         }
     }
 
+    /// The wheel's part of a notch the window has not yet posted as a whole one (positive away from the user), which smooth
+    /// scrolling follows ([`gui::glide::wheel_part`]; nothing while it is off). A script's error is kept in
+    /// [`ClientHost::input_errors`].
+    pub fn wheel_part(&mut self, part: f32) {
+        let vm = self.server.vm_mut();
+        let saved = vm.begin_host_budget_with_runs(input::MAX_EVENT_WORK, input::MAX_EVENT_STEPS);
+        let result = gui::glide::wheel_part(vm, &self.gui, part);
+        vm.end_host_budget(saved);
+        if let Err(e) = result
+            && self.input_errors.len() < MAX_MISSING_OBJECTS
+        {
+            self.input_errors.push(e);
+        }
+    }
+
     /// A key going down or up, as the window posts it ([`input::key_message`]: a system key while Alt is held): who took it.
     pub fn key(&mut self, key: input::Key, down: bool) -> input::Taken {
         use gui::keys::{SI_LALT, SI_RALT};

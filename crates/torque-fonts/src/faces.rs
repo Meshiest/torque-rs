@@ -68,6 +68,10 @@ impl Fallback for RegistryFallback {
         Some(font)
     }
 
+    fn resolves(&self, face: &str) -> bool {
+        self.next.resolves(face)
+    }
+
     fn name(&self) -> &'static str {
         self.next.name()
     }

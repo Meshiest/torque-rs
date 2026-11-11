@@ -48,6 +48,13 @@ different.
   straddles it.
 - `torque-gui`: buttons, popups and slider thumbs drawn as rounded boxes; `GuiExtension::classic_boxes` keeps TGE's
   beveled ones.
+- `torque-gui`: smooth scrolling (off; `$Pref::Gui::SmoothScroll`, `setSmoothScroll`): a scroll control's content is at its
+  final place at once and its drawing glides there over 150 ms of the simulation clock, from the wheel (a high-resolution
+  wheel or touchpad by its share of a notch; `ClientHost::wheel_part`) and from revealing the focused control; a press ends the
+  glide. With `$Pref::Gui::RevealFocus` (`setRevealFocus`; off) a control that takes the key focus scrolls its nearest scroll
+  control to show it. A profile's `keyActivate` has Return and Space press the focused button. `registerFont(face, path)` registers a `.ttf` of the game's files as a font face (a name the game's fonts
+  already have is refused; `FontSource::register_face`; `torque::app::layout_fonts` is now a `FaceCache`). A control's `opacity` dims it and what is in
+  it; a profile's `cornerRadius` gives fills and style 1 borders rounded corners and buttons the same radius.
 - `torque-fonts`: system fonts on Linux and macOS, with metric-compatible free faces in place of missing ones.
 - `torque::app::config`: `game.toml`, a small config in a game's files read by the prebuilt engine: the plugins to turn off or on by id, the runner, and the scripts a server and a client run first (TGE fixes them in the executable). Strict: unknown keys are warnings, a size cap, errors with line and column.
 - `torque::app::gizmos`: debug lines, boxes, spheres, arrows, crosses and text labels in world space (`GizmosPlugin`, not in

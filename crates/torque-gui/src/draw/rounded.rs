@@ -2,7 +2,9 @@
 //! thumb draw unless the host keeps TGE's bevels for their profile ([`crate::ext::GuiExtension::classic_boxes`]).
 //!
 //! - **The shape**: a rectangle with corners of [`BOX_RADIUS`] pixels (less on a box under twice that), a solid fill and a
-//!   one-pixel border, both with anti-aliased corners.
+//!   one-pixel border, both with anti-aliased corners. A profile's `cornerRadius` (at most [`MAX_PROFILE_RADIUS`]) gives a
+//!   control's fill and style 1 border the same shape with that radius instead of the square ones, and the boxes above that
+//!   radius.
 //! - **The colors**, by state ([`BoxState`]), from the profile: normal `fillColor`; hover `fillColorHL`; pressed (a depressed
 //!   or toggled-on button, an open popup's list) `fillColorHL` darkened to [`PRESSED_SHADE`]; disabled (not active or not
 //!   enabled) `fillColorNA`. The border is `borderColor` (`borderColorHL` over and pressed, `borderColorNA` disabled, when the
@@ -15,15 +17,18 @@
 
 use std::sync::{Arc, LazyLock};
 
+use torque_ts_vm::fields::Value;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
-use super::{Walk, color_i};
+use super::{Walk, color_i, int_field};
 use crate::profile::Rect;
 use crate::textures::GuiTexture;
 
 /// The corner radius of a rounded box (pixels).
 pub const BOX_RADIUS: i32 = 5;
+/// The largest corner radius a profile's `cornerRadius` gives (pixels; a larger value is cut to it).
+pub const MAX_PROFILE_RADIUS: i32 = 24;
 /// How far a popup's left or right justified text keeps from the side of its rounded box (pixels).
 pub const BOX_TEXT_PAD: i32 = BOX_RADIUS + 3;
 /// A box's fill when its profile sets no `fillColor`.
@@ -44,11 +49,12 @@ pub enum BoxState {
     Disabled,
 }
 
-/// The corner sprites of every radius from 1 to [`BOX_RADIUS`]: row `r` (at [`Sprites::rows`]) holds three squares of side
+/// The corner sprites of every radius from 1 to the set's largest: row `r` (at [`Sprites::rows`]) holds three squares of side
 /// `2r + 1`, white with the coverage as alpha: the whole shape, the shape half a pixel in (under a border) and the border.
 struct Sprites {
     texture: Arc<GuiTexture>,
-    rows: [i32; BOX_RADIUS as usize + 1],
+    /// The first texel row of each radius's squares, by radius.
+    rows: Vec<i32>,
 }
 
 /// Which sprite of a row.
@@ -85,15 +91,16 @@ fn coverage(tx: u32, ty: u32, covered: impl Fn(f32, f32) -> bool) -> u8 {
     ((hits * 255 + n * n / 2) / (n * n)) as u8
 }
 
-fn build_sprites() -> Sprites {
-    let max_side = 2 * BOX_RADIUS as u32 + 1;
-    let width = 3 * max_side;
-    let height: u32 = (1..=BOX_RADIUS as u32).map(|r| 2 * r + 1).sum();
+/// The sprites of the radii 1 to `max`, in a texture named `name`.
+fn build_sprites(max: i32, name: &str) -> Sprites {
+    let max = max as u32;
+    let width = 3 * (2 * max + 1);
+    let height: u32 = (1..=max).map(|r| 2 * r + 1).sum();
     let size = (crate::textures::pow2(width), crate::textures::pow2(height));
     let mut rgba = vec![0u8; (size.0 * size.1 * 4) as usize];
-    let mut rows = [0i32; BOX_RADIUS as usize + 1];
+    let mut rows = vec![0i32; max as usize + 1];
     let mut y0 = 0u32;
-    for r in 1..=BOX_RADIUS as u32 {
+    for r in 1..=max {
         rows[r as usize] = y0 as i32;
         let side = 2 * r + 1;
         let (s, rf) = (side as f32, r as f32);
@@ -115,7 +122,7 @@ fn build_sprites() -> Sprites {
     Sprites {
         texture: Arc::new(GuiTexture {
             id: crate::textures::next_id(),
-            name: "engine:rounded-box".to_string(),
+            name: name.to_string(),
             bitmap_size: (width, height),
             size,
             rgba,
@@ -126,7 +133,20 @@ fn build_sprites() -> Sprites {
     }
 }
 
-static SPRITES: LazyLock<Sprites> = LazyLock::new(build_sprites);
+/// The sprites of the boxes' own radii; the wider ones of a profile's `cornerRadius` are made when a control first asks.
+static SPRITES: LazyLock<Sprites> =
+    LazyLock::new(|| build_sprites(BOX_RADIUS, "engine:rounded-box"));
+static WIDE_SPRITES: LazyLock<Sprites> =
+    LazyLock::new(|| build_sprites(MAX_PROFILE_RADIUS, "engine:rounded-corners"));
+
+/// The sprites that hold radius `radius` (1 or more).
+fn sprites_for(radius: i32) -> &'static Sprites {
+    if radius <= BOX_RADIUS {
+        &SPRITES
+    } else {
+        &WIDE_SPRITES
+    }
+}
 
 /// The rounded boxes' texture (one for the process, made on first use).
 pub fn box_texture() -> Arc<GuiTexture> {
@@ -186,43 +206,77 @@ pub fn box_text_color(vm: &Vm, p: ObjId, state: BoxState) -> Option<[u8; 4]> {
 impl Walk<'_> {
     /// A rounded box over `r` (x, y, width, height): `fill`, then a one-pixel `border` around it (none when its alpha is 0).
     pub(super) fn rounded_box(&mut self, r: Rect, fill: [u8; 4], border: [u8; 4]) {
+        self.rounded_box_with(r, Some(fill), border, BOX_RADIUS);
+    }
+
+    /// [`rounded_box`](Self::rounded_box) with corners of `radius` pixels (cut to half the box's shorter side), the fill left out
+    /// when it is `None`; square corners at a radius of 0.
+    pub(super) fn rounded_box_with(
+        &mut self,
+        r: Rect,
+        fill: Option<[u8; 4]>,
+        border: [u8; 4],
+        radius: i32,
+    ) {
         if r[2] <= 0 || r[3] <= 0 {
             return;
         }
-        let radius = BOX_RADIUS.min(r[2] / 2).min(r[3] / 2);
         let bordered = border[3] != 0;
-        if radius == 0 {
+        if let Some(fill) = fill {
+            self.fill_corners(r, fill, radius, bordered);
+        }
+        if bordered {
+            self.border_corners(r, border, radius);
+        }
+    }
+
+    /// The fill color `fill` over `r` with corners of `radius` pixels (square at 0); `bordered`: a one-pixel border is drawn over its
+    /// edge, so it is the shape half a pixel in.
+    pub(super) fn fill_corners(&mut self, r: Rect, fill: [u8; 4], radius: i32, bordered: bool) {
+        let radius = radius.min(r[2] / 2).min(r[3] / 2);
+        if radius <= 0 {
             self.fill(r, fill);
-            if bordered {
-                let (rt, b) = (r[0].wrapping_add(r[2]) - 1, r[1].wrapping_add(r[3]) - 1);
-                self.outline((r[0], r[1]), (rt, b), border);
-            }
             return;
         }
-        let texture = box_texture();
-        let fill_sprite = if bordered {
+        let sprite = if bordered {
             Sprite::Inner
         } else {
             Sprite::Fill
         };
-        self.nine_slice(&texture, r, radius, fill_sprite, fill);
-        if bordered {
-            self.nine_slice(&texture, r, radius, Sprite::Ring, border);
+        self.nine_slice(r, radius, sprite, fill);
+    }
+
+    /// A one-pixel border of color `border` around `r` with corners of `radius` pixels (square at 0).
+    pub(super) fn border_corners(&mut self, r: Rect, border: [u8; 4], radius: i32) {
+        let radius = radius.min(r[2] / 2).min(r[3] / 2);
+        if radius <= 0 {
+            let (rt, b) = (r[0].wrapping_add(r[2]) - 1, r[1].wrapping_add(r[3]) - 1);
+            self.outline((r[0], r[1]), (rt, b), border);
+            return;
+        }
+        self.nine_slice(r, radius, Sprite::Ring, border);
+    }
+
+    /// A profile's fill `color` over `r`, with the corners of its `cornerRadius` (square when it has none).
+    pub(super) fn fill_profile(&mut self, profile: ObjId, r: Rect, color: [u8; 4]) {
+        let bordered = int_field(self.vm, profile, b"border") == 1;
+        self.fill_corners(r, color, self.profile_radius(profile), bordered);
+    }
+
+    /// The profile's `cornerRadius` in pixels, at most [`MAX_PROFILE_RADIUS`] (0: none).
+    pub(super) fn profile_radius(&self, profile: ObjId) -> i32 {
+        match self.vm.objects().static_value(profile, b"cornerRadius") {
+            Some(Value::Int(radius)) => (*radius).clamp(0, MAX_PROFILE_RADIUS),
+            _ => 0,
         }
     }
 
-    /// One sprite of radius `radius` over `r`: the corners one texel a pixel, the edges and the middle stretched from the
+    /// One sprite of radius `radius` (at least 1) over `r`: the corners one texel a pixel, the edges and the middle stretched from the
     /// sprite's middle row and column (the border's middle is empty and not drawn).
-    fn nine_slice(
-        &mut self,
-        t: &Arc<GuiTexture>,
-        r: Rect,
-        radius: i32,
-        sprite: Sprite,
-        color: [u8; 4],
-    ) {
+    fn nine_slice(&mut self, r: Rect, radius: i32, sprite: Sprite, color: [u8; 4]) {
+        let sprites = sprites_for(radius);
         let side = 2 * radius + 1;
-        let (sx, sy) = (sprite as i32 * side, SPRITES.rows[radius as usize]);
+        let (sx, sy) = (sprite as i32 * side, sprites.rows[radius as usize]);
         let (x0, y0) = (r[0], r[1]);
         let (mw, mh) = (r[2] - 2 * radius, r[3] - 2 * radius);
         let (x1, y1) = (x0.wrapping_add(radius), y0.wrapping_add(radius));
@@ -244,7 +298,7 @@ impl Walk<'_> {
                 if i == 1 && j == 1 && matches!(sprite, Sprite::Ring) {
                     continue;
                 }
-                self.stretch(t, [x, y, w, h], [u, v, uw, vh], color, false);
+                self.stretch(&sprites.texture, [x, y, w, h], [u, v, uw, vh], color, false);
             }
         }
     }

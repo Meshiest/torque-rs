@@ -2,10 +2,12 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 23 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 25 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
+| `$Pref::Gui::RevealFocus` | bool | `0` |  | Whether a control that takes the key focus (a click, Tab, `makeFirstResponder`) scrolls its nearest scroll control to show it (`setRevealFocus` writes it). Off, focus moves no content, as TGE's does. | client |
+| `$Pref::Gui::SmoothScroll` | bool | `0` |  | Whether the scroll controls draw their content gliding to where the wheel puts it (`setSmoothScroll` writes it). Off, a wheel notch steps the content as TGE's does. | client |
 | `$Pref::Hierarchy::MaxChildren` | int | `256` | 1 to 1024 | The most children of one parent. | server; needs `torque.hierarchy` |
 | `$Pref::Hierarchy::MaxDepth` | int | `16` | 1 to 32 | The longest chain below a root, in links. | server; needs `torque.hierarchy` |
 | `$Pref::Hierarchy::MaxDescendants` | int | `4096` | 1 to 16384 | The most descendants of one root: what moving a root may cost. | server; needs `torque.hierarchy` |

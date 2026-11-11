@@ -116,7 +116,8 @@ use torque_render_scene::source::Eye;
 
 use torque_client::conn::tge::TgeConn;
 use torque_client::host::ClientHost;
-use torque_fonts::{Fallback, FontCache, NoFallback};
+use torque_fonts::faces::FaceCache;
+use torque_fonts::{Fallback, NoFallback};
 use torque_gui::{DrawCache, GuiDraws};
 use torque_server::server::Server;
 
@@ -185,6 +186,11 @@ pub fn draw_cache() -> DrawCache {
 }
 
 /// The fonts the GUI's layout measures text with: the same faces [`draw_cache`] draws with.
-pub fn layout_fonts() -> FontCache {
-    FontCache::new("fonts", system_fallback())
+pub fn layout_fonts() -> FaceCache {
+    FaceCache::new(
+        "fonts",
+        system_fallback(),
+        Box::new(torque_fonts::uft::Uft::default()),
+        std::convert::identity,
+    )
 }

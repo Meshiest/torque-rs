@@ -117,8 +117,10 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("getRequiredModCount")` *none; server and client*
 - `ts.call("getRequiredModField", id, field)` *2; server and client*
 - `ts.call("getRequiredModList")` *none; server and client*
+- `ts.call("getRevealFocus")` *none; client*
 - `ts.call("getServerCount")` *none; client*
 - `ts.call("getSimTime")` *none; server and client*
+- `ts.call("getSmoothScroll")` *none; client*
 - `ts.call("getSubStr", text, start, count)` *3; server and client*
 - `ts.call("getTag", taggedText)` *1; server and client*
 - `ts.call("getTaggedString", tag)` *1; server and client*
@@ -216,6 +218,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("queryMasterServer", ...)` *10; client*
 - `ts.call("querySingleServer", address, flags)` *2; client*
 - `ts.call("quit")` *none; server and client*
+- `ts.call("registerFont", string face, string path)` *2; client*
 - `ts.call("removeField", text, index)` *2; server and client*
 - `ts.call("removeRecord", text, index)` *2; server and client*
 - `ts.call("removeTaggedString", tag)` *1; server and client*
@@ -283,8 +286,10 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("setRandomSeed", [seed])` *0 to 1; server and client*
 - `ts.call("setRecord", text, index, value)` *3; server and client*
 - `ts.call("setRenderer", id)` *1; client*
+- `ts.call("setRevealFocus", bool on)` *1; client*
 - `ts.call("setScreenMode", int width, int height, int bpp, bool fullScreen)` *4; client*
 - `ts.call("setServerInfo", index)` *1; client*
+- `ts.call("setSmoothScroll", bool on)` *1; client*
 - `ts.call("setWord", text, index, value)` *3; server and client*
 - `ts.call("setZoomSpeed", speed)` *1; client; needs `torque.zoom`*
 - `ts.call("stopServerQuery")` *none; client*

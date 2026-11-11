@@ -208,6 +208,10 @@ fn plain_name(face: &str) -> bool {
 }
 
 impl Fallback for SystemFonts {
+    fn resolves(&self, face: &str) -> bool {
+        self.resolve(face).is_some()
+    }
+
     fn make(&self, face: &str, size: i32) -> Option<Font> {
         if !(1..=MAX_SIZE).contains(&size) {
             return None;

@@ -84,7 +84,65 @@ fn set_face(ctx: &CanvasRenderingContext2d, font: &str) {
     ctx.set_fill_style_str("#fff");
 }
 
+/// The generic families a face is told apart from, and the text it is measured with: a face the browser has makes a line of another
+/// width than every generic family it would fall back to.
+const GENERIC_FAMILIES: [&str; 3] = ["monospace", "serif", "sans-serif"];
+const PROBE_TEXT: &str = "mmmmmmmmmmlliWW@";
+
+/// The width of `PROBE_TEXT` in `font`, if the canvas measures it.
+fn probe_width(ctx: &CanvasRenderingContext2d, font: &str) -> Option<f64> {
+    ctx.set_font(font);
+    Some(ctx.measure_text(PROBE_TEXT).ok()?.width())
+}
+
+/// Whether the page's font set (`document.fonts`: the faces its stylesheets and scripts added) has a family named `face`. None
+/// when the set cannot be read.
+fn page_has(document: &web_sys::Document, face: &str) -> Option<bool> {
+    let fonts = js_sys::Reflect::get(document, &"fonts".into()).ok()?;
+    if fonts.is_undefined() || fonts.is_null() {
+        return None;
+    }
+    for item in js_sys::try_iter(&fonts).ok()?? {
+        let family = js_sys::Reflect::get(&item.ok()?, &"family".into())
+            .ok()?
+            .as_string()?;
+        if family
+            .trim_matches(&['"', '\''][..])
+            .eq_ignore_ascii_case(face)
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
+/// Whether the browser has an installed font named `face`: text in it measures other than in every generic family. None when
+/// no canvas measures.
+fn installed(face: &str) -> Option<bool> {
+    let quoted = face.replace(['"', '\\', ';'], "");
+    let (_canvas, ctx) = canvas(1, 1)?;
+    for generic in GENERIC_FAMILIES {
+        let plain = probe_width(&ctx, &format!("72px {generic}"))?;
+        let named = probe_width(&ctx, &format!("72px \"{quoted}\", {generic}"))?;
+        if (plain - named).abs() > f64::EPSILON {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
+
 impl Fallback for BrowserFonts {
+    /// Whether the browser has a font of this name, from the page's own font set or installed: a face it has is one a lookup
+    /// would draw with, so it is refused for a registration. When the page cannot tell, the answer is yes, so a registration is
+    /// refused rather than let past. (`document.fonts.check` is not used: it answers true for a family the set does not hold at
+    /// all, which is every installed font, so it cannot say a face is absent.)
+    fn resolves(&self, face: &str) -> bool {
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return true;
+        };
+        page_has(&document, face).unwrap_or(true) || installed(face).unwrap_or(true)
+    }
+
     /// Every glyph is measured first; then the glyphs with ink are drawn side by side on a sheet or two, each clipped to its own
     /// box, and each sheet is read back once. A glyph's pixels are those it draws alone at its origin. Glyph by glyph (measured,
     /// drawn and read back in turn) the arena menu's five faces took 270 ms in Chrome, all in one frame; this way they take

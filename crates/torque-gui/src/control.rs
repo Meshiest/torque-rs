@@ -501,6 +501,7 @@ impl EngineClass for ControlClass {
             Ok(())
         };
         crate::input::forget(&self.0, id);
+        crate::glide::forget(&self.0, id);
         self.0.ext().removed(id);
         crate::custom::removed(&self.0, id);
         crate::client_script::forget(&self.0, id);

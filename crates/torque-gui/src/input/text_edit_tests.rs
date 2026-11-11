@@ -10,6 +10,11 @@ use crate::ext::{FontSource, GuiExtension};
 struct EvenFonts;
 
 impl Fallback for EvenFonts {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, face: &str, _size: i32) -> Option<Font> {
         if face == "Missing" {
             return None;

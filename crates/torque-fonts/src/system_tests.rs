@@ -137,3 +137,24 @@ fn windows_fonts_come_out_as_before_the_checks() {
     }
     assert!(compared > 0, "no common face in {}", dir.display());
 }
+
+#[test]
+fn a_face_the_folder_has_resolves_and_any_other_does_not() {
+    let dir = folder("resolves");
+    let fonts_dir = dir.join("Fonts");
+    put(&fonts_dir, "ARIAL.TTF", &Synth::basic().build());
+    let fonts = SystemFonts::folder(&fonts_dir).unwrap();
+    assert!(fonts.resolves("arial"));
+    assert!(!fonts.resolves("Times New Roman"));
+    assert!(!fonts.resolves("../ARIAL"));
+    // A face a cache of the host's fonts asks about is answered through the registry's wrapper.
+    let cache = crate::faces::FaceCache::new(
+        "cache",
+        Box::new(fonts),
+        Box::new(crate::uft::Uft::default()),
+        |f| f,
+    );
+    assert!(cache.fallback_resolves("Arial"));
+    assert!(!cache.fallback_resolves("Nope"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

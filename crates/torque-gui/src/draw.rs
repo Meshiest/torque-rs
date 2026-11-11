@@ -13,6 +13,9 @@
 //!   but clipped to the whole viewport instead, and a parent with `clipToParent` 0 cuts its children by the viewport.
 //! - **`GuiControl::onRender`**: the script's `onRender` once (the "has rendered" flag), a fill of the profile's
 //!   `fillColor` when `opaque`, the border when `border` is not 0, then the children.
+//!   Torque-rs adds two things TGE has not: a control's `opacity` (0 to 1, default 1) dims the control and everything in it (each
+//!   quad's alpha times it, so the children's own opacities multiply), and a profile's `cornerRadius` (pixels, default 0) draws
+//!   its fill and style 1 border with that radius, anti-aliased, instead of the square ones (see `rounded`).
 //! - **`dglDrawBitmapStretchSR`**: `GL_MODULATE` with the bitmap modulation colour, blending `SRC_ALPHA,
 //!   ONE_MINUS_SRC_ALPHA` (`DST_COLOR, ONE_MINUS_SRC_ALPHA` with the multiply flag), one quad from the destination rectangle's corners,
 //!   texture coordinates the source rectangle over the padded texture's size (`texWidth`, `texHeight`).
@@ -68,10 +71,14 @@ use crate::{Gui, MAX_TREE_DEPTH, atoi};
 
 mod hud;
 mod menus;
+#[cfg(test)]
+mod pictures_tests;
 mod rounded;
 pub use hud::{color_byte, name_opacity, project};
 use menus::CellKind;
-pub use rounded::{BOX_RADIUS, BoxState, DEFAULT_FILL, PRESSED_SHADE, box_colors, box_texture};
+pub use rounded::{
+    BOX_RADIUS, BoxState, DEFAULT_FILL, MAX_PROFILE_RADIUS, PRESSED_SHADE, box_colors, box_texture,
+};
 
 /// The most quads one frame draws (a hostile GUI with a million controls draws to here).
 pub const MAX_QUADS: usize = 1 << 20;
@@ -520,6 +527,8 @@ pub struct DrawCache {
     pub layer_replays: u64,
     /// The sheet texture the last glyph of the last run was drawn from.
     sheet_hint: Option<SheetHint>,
+    /// How many of the GUI's registered TrueType faces ([`crate::faces`]) the fonts have taken.
+    faces_taken: usize,
 }
 
 /// A font sheet's texture and what names it ([`DrawCache::sheets`] has the same under its key).
@@ -819,6 +828,7 @@ impl DrawCache {
             layer: None,
             layer_replays: 0,
             sheet_hint: None,
+            faces_taken: 0,
         }
     }
 }
@@ -1538,15 +1548,44 @@ impl Walk<'_> {
                     clip = self.viewport;
                 }
                 self.set_clip(clip);
-                let alpha = self.alpha;
-                if let Some(o) = self.ext.opacity(self.vm, child) {
-                    self.alpha = alpha * o;
-                }
                 self.known_extent = Some((child, ext));
-                self.control(child, at, clip, depth + 1);
-                self.alpha = alpha;
+                self.control_faded(child, at, clip, depth + 1, true);
             }
         }
+    }
+
+    /// The opacity the control `id` draws itself and its children at, times their parent's: its `opacity` field (0 to 1) and, for
+    /// a child (`child`), the extension's ([`crate::GuiExtension::opacity`]); `None` when neither dims it.
+    fn opacity_of(&self, id: ObjId, child: bool) -> Option<f32> {
+        let own = match self.vm.objects().static_value(id, b"opacity") {
+            Some(torque_ts_vm::fields::Value::Float(f)) if *f < 1.0 => Some(f.max(0.0)),
+            _ => None,
+        };
+        if !child {
+            return own;
+        }
+        match (own, self.ext.opacity(self.vm, id)) {
+            (Some(own), Some(ext)) => Some(own * ext),
+            (own, ext) => own.or(ext),
+        }
+    }
+
+    /// [`control`](Self::control) at its opacity ([`opacity_of`](Self::opacity_of)): the controls under it draw at it too. `child`:
+    /// a child of a control drawn (the extension may dim those); a layer's content or an overlay takes its own field alone.
+    fn control_faded(
+        &mut self,
+        id: ObjId,
+        offset: (i32, i32),
+        update: [i32; 4],
+        depth: usize,
+        child: bool,
+    ) {
+        let alpha = self.alpha;
+        if let Some(o) = self.opacity_of(id, child) {
+            self.alpha = alpha * o;
+        }
+        self.control(id, offset, update, depth);
+        self.alpha = alpha;
     }
 
     /// One control's `onRender`, by its class.
@@ -1714,7 +1753,7 @@ impl Walk<'_> {
         if let Some(p) = profile_of(self.vm, id) {
             if flag(self.vm, p, b"opaque") && !self.blurred(p) {
                 let color = color_field(self.vm, p, b"fillColor");
-                self.fill(rect, color);
+                self.fill_profile(p, rect, color);
             }
             self.render_border(p, rect);
         }
@@ -2514,6 +2553,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     }
     let ext = gui.ext();
     cache.fonts.next_frame();
+    crate::faces::sync(gui, cache.fonts.as_mut(), &mut cache.faces_taken);
     ext.begin_draw(gui, cache.fonts.as_mut());
     let mut walk = Walk {
         vm,
@@ -2539,7 +2579,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
             if walk.is_gui_control(child) {
                 walk.set_clip(viewport);
                 let pos = point(vm, child, b"position");
-                walk.control(child, pos, viewport, 1);
+                walk.control_faded(child, pos, viewport, 1, false);
             }
             walk.mark(if i == 0 {
                 crate::client_script::LayerMark::Content
@@ -2558,7 +2598,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
             }
             walk.set_clip(viewport);
             let pos = point(vm, o, b"position");
-            walk.control(o, pos, viewport, 1);
+            walk.control_faded(o, pos, viewport, 1, false);
         }
         walk.engine_layer(&layers);
         walk.set_clip(viewport);

@@ -748,6 +748,10 @@ pub trait CacheFormat: Send + Sync {
 pub trait Fallback: Send + Sync {
     /// The font, or None when this fallback cannot make it.
     fn make(&self, face: &str, size: i32) -> Option<Font>;
+    /// Whether this fallback would make fonts of `face` (a face no cache file has, so that a later lookup of it would find one
+    /// here): what a host checks before it lets a face be registered over it. Every fallback decides: one that cannot tell
+    /// answers true, so that a registration is refused rather than let past.
+    fn resolves(&self, face: &str) -> bool;
     /// A name for the reports.
     fn name(&self) -> &'static str;
     /// The cache dropped `font`, which this fallback made for `face` (lower case): what was counted for it may be given back.
@@ -758,6 +762,11 @@ pub trait Fallback: Send + Sync {
 pub struct NoFallback;
 
 impl Fallback for NoFallback {
+    // It makes no font for any face, so nothing a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, _size: i32) -> Option<Font> {
         None
     }
@@ -1109,6 +1118,12 @@ impl FontCache {
     /// draw made while it stood at one value is made again by the same fonts.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Whether the fallback would make fonts of `face` ([`Fallback::resolves`]): a lookup of it that finds no cache file would
+    /// find them there.
+    pub fn fallback_resolves(&self, face: &str) -> bool {
+        self.fallback.resolves(face)
     }
 
     /// Whether `face` at `size` was looked up and is still kept (found or not): a lookup of it loads nothing.

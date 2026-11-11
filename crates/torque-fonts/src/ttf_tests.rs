@@ -54,6 +54,11 @@ fn bundled_faces_make_every_size_with_the_cell_height() {
 struct FaceFallback(Arc<TtfFace>);
 
 impl Fallback for FaceFallback {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, size: i32) -> Option<Font> {
         self.0.make(size)
     }

@@ -79,6 +79,11 @@ fn registering_a_face_drops_what_the_cache_had_for_it() {
 fn the_other_faces_go_to_the_hosts_fallback() {
     struct Own(Arc<TtfFace>);
     impl Fallback for Own {
+        // Makes one generic face for any name: none is a system face a registration could replace.
+        fn resolves(&self, _face: &str) -> bool {
+            false
+        }
+
         fn make(&self, _face: &str, size: i32) -> Option<Font> {
             self.0.make(size)
         }
@@ -135,4 +140,26 @@ fn a_byte_font_converter_makes_byte_fonts_of_the_windows_1252_characters() {
     assert!(cache.register("Inter", face));
     let (f, _) = cache.get("Inter", 14, &|_| None).expect("registered");
     assert_eq!(*f, bytes);
+}
+
+#[test]
+fn no_fallback_resolves_no_face_and_the_cache_asks_the_hosts_fallback() {
+    assert!(!cache(Box::new(NoFallback)).fallback_resolves("Arial"));
+    struct Has;
+    impl Fallback for Has {
+        fn resolves(&self, face: &str) -> bool {
+            face == "Here"
+        }
+
+        fn make(&self, _face: &str, _size: i32) -> Option<Font> {
+            None
+        }
+
+        fn name(&self) -> &'static str {
+            "has"
+        }
+    }
+    let cache = cache(Box::new(Has));
+    assert!(cache.fallback_resolves("Here"));
+    assert!(!cache.fallback_resolves("There"));
 }

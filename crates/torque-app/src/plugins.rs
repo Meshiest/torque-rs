@@ -191,6 +191,7 @@ pub struct GuiPlugin {
 impl Plugin for GuiPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         let layout_fonts = self.layout_fonts;
+        engine.client_script().prefs::<torque_gui::GuiPrefs>();
         engine.client(ClientStage::Gui, move |vm, engine| {
             let wiring = client_wiring(vm, "the GUI")?;
             let gui = torque_gui::register(vm);

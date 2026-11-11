@@ -156,8 +156,10 @@ getRenderer -
 getRequiredModCount -
 getRequiredModField -
 getRequiredModList -
+getRevealFocus -
 getServerCount -
 getSimTime -
+getSmoothScroll -
 getSubStr -
 getTag -
 getTaggedString -
@@ -395,6 +397,7 @@ queryLanServers network
 queryMasterServer -
 querySingleServer -
 quit engine
+registerFont -
 removeField -
 removeRecord -
 removeTaggedString -
@@ -487,8 +490,10 @@ setRandomSeed -
 setRecord -
 setRenderer -
 setRenderQuality -
+setRevealFocus -
 setScreenMode -
 setServerInfo -
+setSmoothScroll -
 setWord -
 setZoomSpeed -
 ShapeBase::applyDamage -

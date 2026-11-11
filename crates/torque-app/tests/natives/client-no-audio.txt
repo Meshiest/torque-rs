@@ -228,7 +228,9 @@ getRenderer 1..1 getRenderer();
 getRequiredModCount 1..1 getRequiredModCount() - how many mods the server requires of its clients (on a client, how many its server announced)
 getRequiredModField 3..3 getRequiredModField(id, field) - one fact about a required mod: name (the one to show; the id when it has no other), version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
 getRequiredModList 1..1 getRequiredModList() - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
+getRevealFocus 1..1 () - whether a control that takes the key focus scrolls its scroll control to show it ($Pref::Gui::RevealFocus)
 getSimTime 1..1 getSimTime() - the simulation time in milliseconds
+getSmoothScroll 1..1 () - whether the scroll controls glide to where the wheel puts them ($Pref::Gui::SmoothScroll)
 getSubStr 4..4 getSubStr(text, start, count) - count bytes of the text from start
 getTag 2..2 getTag(taggedText) - the tag's id
 getTaggedString 2..2 getTaggedString(tag) - the text of a tag
@@ -268,6 +270,7 @@ mSqrt 2..2 mSqrt(x) - the square root
 mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
 quit 1..1 quit() - asks the main loop to stop
+registerFont 3..3 (string face, string path) - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
@@ -282,7 +285,9 @@ setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced
 setRenderer 2..2 setRenderer(id);
+setRevealFocus 2..2 (bool on) - turns on or off scrolling the nearest scroll control to show the control that takes the key focus
 setScreenMode 5..5 ( int width, int height, int bpp, bool fullScreen )
+setSmoothScroll 2..2 (bool on) - turns smooth scrolling on or off: with it on, the scroll controls draw their content gliding to where the wheel puts it
 setWord 4..4 setWord(text, index, value) - the text with that word replaced
 strToPlayerName 2..2 strToPlayerName(text) - the text as a short display name
 strchr 3..3 strchr(text, char) - the text from the first occurrence of the character

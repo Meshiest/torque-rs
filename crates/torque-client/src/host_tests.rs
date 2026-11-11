@@ -258,6 +258,11 @@ fn pause_is_its_own_key_unless_the_gui_keeps_tge_s_key_codes() {
 struct EvenFonts;
 
 impl fonts::Fallback for EvenFonts {
+    // Makes one generic face for any name: none is a system face a registration could replace.
+    fn resolves(&self, _face: &str) -> bool {
+        false
+    }
+
     fn make(&self, _face: &str, _size: i32) -> Option<fonts::Font> {
         let glyph = fonts::Glyph {
             x_increment: 6,

@@ -61,6 +61,27 @@
 //!   (`a_bitmap_with_no_header_in_reach_is_read_at_most_once_and_never_past_its_cap`).
 //! - Every pass of a reflow is constant work: tags are pushed and their ids kept in a set, and every number is read from its tag
 //!   alone (`a_reflow_of_sixty_five_thousand_tags_is_linear`, `a_duplicate_tag_id_is_still_counted_once`).
+//! - Scrolling ([`glide`]): the content is always at its final place, so scripts, hit tests and `position` never see a glide; only
+//!   [`scroll::shown`] (the draw) adds it. Only the wheel, the wheel's parts and [`scroll::reveal`] push a glide (through
+//!   [`scroll::report_moved`]); [`scroll::scroll_to`] and the keyboard never do, and a press ends every glide
+//!   (`the_content_is_at_its_final_place_at_once_and_only_the_picture_glides`,
+//!   `a_press_ends_every_glide_and_leaves_the_content_where_it_is`,
+//!   `keyboard_and_script_scrolls_move_at_once_with_the_glide_left_as_it_was`). A glide runs on [`Vm::sim_time`], never on frames
+//!   (`a_glide_takes_the_same_clock_time_however_the_frames_come`). A part of a wheel notch the content could not move by is not
+//!   owed back (`a_part_the_content_could_not_move_by_is_not_owed_back`). The reveal of a focused control is made in
+//!   `input::set_first_responder`, where every way of taking the focus passes, and only with `$Pref::Gui::RevealFocus` on
+//!   (`scroll::tests`, `a_control_that_takes_the_focus_scrolls_nothing_until_the_pref_is_on`).
+//! - The profile fields TGE has not are read as stock until a game sets them: `keyActivate` (`a_button_whose_profile_does_not_ask_never_answers_the_keys`),
+//!   `cornerRadius` (0 draws the square fills and borders, the buttons' own radius of 5) and a control's `opacity` (1;
+//!   `opacity_starts_at_one_on_every_class`). The corner sprites of a radius above [`draw::BOX_RADIUS`] are a texture made on first
+//!   use; the radius is cut to [`draw::MAX_PROFILE_RADIUS`] and to half the box's shorter side.
+//! - `registerFont` checks the face name and the path before it reads anything, refuses a name the game's fonts have (the default
+//!   faces, the layout's found faces, the cache files' faces), pays for a file's bytes before it reads them, reads through the file
+//!   host, and registers once a face in at most [`torque_fonts::faces::MAX_REGISTERED`]; every draw cache takes the faces up before its frame
+//!   (`faces::sync`), so a host's own [`FontSource`] must implement [`FontSource::register_face`] to take them
+//!   (`every_draw_cache_draws_text_in_the_registered_face`, `a_face_name_the_games_fonts_have_is_refused_in_any_case`,
+//!   `the_bytes_are_paid_for_before_they_are_read`). A face is registered for the session: nothing scopes one to a server.
+//! - The pictures of these looks are made by `TORQUE_PICTURE_DIR=<folder> cargo test -p torque-gui --lib pictures_tests`.
 //!
 //! Costs a frame must not grow back (bench `gui draw 300 controls`, timed under the bench lock): a control's class is matched
 //! by its borrowed name (no copy a control, and none for a plugin's control), a run of glyphs finds its font sheet once a sheet
@@ -87,6 +108,8 @@ mod control;
 pub mod custom;
 pub mod draw;
 pub mod ext;
+pub mod faces;
+pub mod glide;
 pub mod hud;
 pub mod input;
 pub mod keys;
@@ -97,6 +120,8 @@ pub mod profile;
 pub mod scroll;
 pub mod slider;
 pub mod specs;
+#[cfg(test)]
+mod test_rig;
 pub mod textlist;
 pub mod textures;
 pub mod window;
@@ -111,6 +136,7 @@ pub use control::{
 };
 pub use draw::{DrawCache, GuiDraws, TextLook, draw_canvas, run_callbacks};
 pub use ext::{FontSource, GuiExtension, NoExtension};
+pub use glide::GuiPrefs;
 pub use input::{CursorShape, hover_cursor};
 
 /// The most children one walk visits under one control: a hostile script's GUI with more is walked to here (a named cap).
@@ -294,6 +320,10 @@ pub struct GuiState {
     pub overlays: Vec<ObjId>,
     /// The host layers of client scripts: the server layer, the engine layer and the chip ([`client_script`]).
     pub client_script: client_script::LayerState,
+    /// The scroll controls' glides, with smooth scrolling on ([`glide`]).
+    pub glides: glide::Glides,
+    /// The TrueType faces scripts registered (`registerFont`), which every draw cache takes up ([`faces`]).
+    pub faces: faces::Registered,
 }
 
 impl Default for GuiState {
@@ -324,6 +354,8 @@ impl Default for GuiState {
             custom: custom::Custom::default(),
             overlays: Vec::new(),
             client_script: client_script::LayerState::default(),
+            glides: glide::Glides::default(),
+            faces: faces::Registered::default(),
         }
     }
 }
@@ -674,6 +706,8 @@ pub fn register(vm: &mut Vm) -> Gui {
     specs::install(vm);
     let gui = Gui::default();
     control::register(vm, &gui);
+    glide::register(vm, &gui);
+    faces::register(vm, &gui);
     canvas::register(vm, &gui);
     classes::register(vm, &gui);
     gui

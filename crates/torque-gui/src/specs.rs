@@ -100,9 +100,11 @@ pub static CLASSES: &[ClassSpec] = &[
             field("tooltipprofile", FieldType::GuiProfile, 1),
             field("tooltip", FieldType::String, 1),
             field("langTableMod", FieldType::String, 1),
+            field("opacity", FieldType::F32, 1),
         ],
         methods: &[],
         defaults: Some(&[
+            ("opacity", "1"),
             ("position", "0 0"),
             ("extent", "64 64"),
             ("minExtent", "8 2"),
@@ -447,6 +449,8 @@ pub static CLASSES: &[ClassSpec] = &[
             field("bitmap", FieldType::Filename, 1),
             field("soundButtonDown", FieldType::DataBlock("AudioProfile"), 1),
             field("soundButtonOver", FieldType::DataBlock("AudioProfile"), 1),
+            field("cornerRadius", FieldType::S32, 1),
+            field("keyActivate", FieldType::Bool, 1),
         ],
         methods: &[],
         // TGE's constructor: a profile is modal (its controls take the mouse) unless it says otherwise.

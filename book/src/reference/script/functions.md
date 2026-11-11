@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-307 entries in 1 namespace.
+312 entries in 1 namespace.
 
 ## Global
 
@@ -285,10 +285,14 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; server and client*
 - `getRequiredModList()` - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
   *arguments: none; server and client*
+- `getRevealFocus()` - whether a control that takes the key focus scrolls its scroll control to show it ($Pref::Gui::RevealFocus)
+  *arguments: none; client*
 - `getServerCount()`
   *arguments: none; client*
 - `getSimTime()` - the simulation time in milliseconds
   *arguments: none; server and client*
+- `getSmoothScroll()` - whether the scroll controls glide to where the wheel puts them ($Pref::Gui::SmoothScroll)
+  *arguments: none; client*
 - `getSubStr(text, start, count)` - count bytes of the text from start
   *arguments: 3; server and client*
 - `getTag(taggedText)` - the tag's id
@@ -589,6 +593,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; client*
 - `quit()` - asks the main loop to stop
   *arguments: none; server and client*
+- `registerFont(string face, string path)` - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
+  *arguments: 2; client*
 - `removeField(text, index)` - the text without that field
   *arguments: 2; server and client*
 - `removeRecord(text, index)` - the text without that record
@@ -826,9 +832,13 @@ Console functions, by namespace. Functions of the global namespace are called as
 
   false, with a console line saying why, when no renderer has the id or it could not be made.
 
+- `setRevealFocus(bool on)` - turns on or off scrolling the nearest scroll control to show the control that takes the key focus
+  *arguments: 1; client*
 - `setScreenMode(int width, int height, int bpp, bool fullScreen)`
   *arguments: 4; client*
 - `setServerInfo(index)`
+  *arguments: 1; client*
+- `setSmoothScroll(bool on)` - turns smooth scrolling on or off: with it on, the scroll controls draw their content gliding to where the wheel puts it
   *arguments: 1; client*
 - `setWord(text, index, value)` - the text with that word replaced
   *arguments: 3; server and client*

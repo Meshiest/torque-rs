@@ -1,0 +1,4 @@
+# The manifest a game's `plugins/` folder holds beside the library (torque_lua.dll, libtorque_lua.so or libtorque_lua.dylib).
+id = "torque.lua"
+version = "0.1.0"
+library = "torque_lua"

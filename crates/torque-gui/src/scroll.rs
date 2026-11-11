@@ -634,26 +634,73 @@ pub fn wheel(vm: &mut Vm, gui: &Gui, id: ObjId, up: bool, modifier: u8) -> bool 
     true
 }
 
-/// The content's move since `before` (its relative position then), told to the extension ([`crate::GuiExtension::scrolled`]).
+/// The content's move since `before` (its relative position then): the picture glides there while smooth scrolling is on
+/// ([`crate::glide`]), and the extension is told ([`crate::GuiExtension::scrolled`]).
 pub fn report_moved(vm: &Vm, gui: &Gui, id: ObjId, before: (i32, i32)) {
     let after = state(gui, id).child_rel;
-    gui.ext().scrolled(
-        vm,
-        gui,
-        id,
-        (
-            before.0.wrapping_sub(after.0),
-            before.1.wrapping_sub(after.1),
-        ),
+    let moved = (
+        before.0.wrapping_sub(after.0),
+        before.1.wrapping_sub(after.1),
     );
+    crate::glide::push(vm, gui, id, moved);
+    gui.ext().scrolled(vm, gui, id, moved);
 }
 
-/// The control's state as drawn `now`: the relative position the extension's displacement ([`crate::GuiExtension::shift`])
-/// shows (kept inside the scroll range) and the thumbs there, with the displacement its children are drawn at. Without one,
-/// the state and none.
+/// The scroll control above `id` that holds it, nearest first, scrolled so that `id` shows (it glides there while smooth scrolling
+/// is on). Nothing unless `$Pref::Gui::RevealFocus` is on ([`crate::glide::reveal_enabled`]), when no scroll control holds `id`, or
+/// when `id` is the content itself.
+pub fn reveal(vm: &mut Vm, gui: &Gui, id: ObjId) {
+    if !crate::glide::reveal_enabled(vm) {
+        return;
+    }
+    let mut at = crate::control::parent(vm, id);
+    for _ in 0..=crate::MAX_TREE_DEPTH {
+        let Some(scroll) = at else {
+            return;
+        };
+        if is_a(vm, scroll, "GuiScrollCtrl") {
+            reveal_in(vm, gui, scroll, id);
+            return;
+        }
+        at = crate::control::parent(vm, scroll);
+    }
+}
+
+/// [`reveal`] in the scroll control `scroll`: `id`'s rectangle in the coordinates of its content (the first child, which the
+/// scroll control moves) brought inside the content area.
+fn reveal_in(vm: &mut Vm, gui: &Gui, scroll: ObjId, id: ObjId) {
+    let Some(&content) = children(vm, scroll).first() else {
+        return;
+    };
+    if content == id || !gui.is_awake(scroll) {
+        return;
+    }
+    let (at, origin) = (
+        crate::control::screen_position(vm, id),
+        crate::control::screen_position(vm, content),
+    );
+    let (_, extent) = bounds(vm, id);
+    let rect = [
+        at.0.wrapping_sub(origin.0),
+        at.1.wrapping_sub(origin.1),
+        extent.0,
+        extent.1,
+    ];
+    let before = state(gui, scroll).child_rel;
+    scroll_rect_visible(vm, gui, scroll, rect);
+    report_moved(vm, gui, scroll, before);
+}
+
+/// The control's state as drawn `now`: the relative position the glide ([`crate::glide`]) and the extension's displacement
+/// ([`crate::GuiExtension::shift`]) show (kept inside the scroll range) and the thumbs there, with the displacement its children
+/// are drawn at. Without one, the state and none.
 pub fn shown(vm: &Vm, gui: &Gui, id: ObjId, now: u32) -> (ScrollState, (i32, i32)) {
     let mut s = state(gui, id);
-    let d = gui.ext().shift(gui, id, now);
+    let (glide, ext) = (
+        crate::glide::shift(gui, id, now),
+        gui.ext().shift(gui, id, now),
+    );
+    let d = (glide.0.wrapping_add(ext.0), glide.1.wrapping_add(ext.1));
     if d == (0, 0) {
         return (s, d);
     }
@@ -673,3 +720,7 @@ pub fn shown(vm: &Vm, gui: &Gui, id: ObjId, now: u32) -> (ScrollState, (i32, i32
     thumbs(gui, &mut s, flag(vm, id, b"constantThumbHeight"));
     (s, d)
 }
+
+#[cfg(test)]
+#[path = "scroll_tests.rs"]
+mod tests;
