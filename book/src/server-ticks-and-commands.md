@@ -1,7 +1,7 @@
-# Server tick hooks and commands
+# Server tick hooks, main-loop hooks and commands
 
-Two seams let a plugin act on a server without a script function to call: work that runs on every server tick, and
-commands a client may send, each held to limits before it runs.
+Three seams let a plugin act on a server without a script function to call: work that runs on every server tick, the main
+loop's own hooks and mission loader, and commands a client may send, each held to limits before it runs.
 
 ## Tick hooks
 
@@ -43,6 +43,41 @@ fn build(engine: &mut EngineBuilder) {
 A plugin whose logic is driven by the map (switches, triggers, timers that objects of the map own) uses an `after` hook to step
 its logic once a tick: it needs no script function that the game would have to call from a `schedule`. Hooks run on the
 dedicated server and on the browser host's server alike, since both are a `GameServer`.
+
+## Main-loop hooks and the mission loader
+
+A tick hook runs once per 32 ms tick. Two things are not per tick: work a game does once a pass (a pass covers several ticks
+after a stall), and how long a pass's Sim events may take. They belong to `ServerHooks`, and the way a mission loads belongs to
+`MissionLoader`. A plugin sets both on the engine builder, and the server makes them itself, once its recipes have run:
+
+```rust,ignore
+use std::rc::Rc;
+use torque_app_server::slots::ServerSlots;
+use torque_server::server::{MissionLoader, ServerHooks};
+
+fn build(engine: &mut EngineBuilder) {
+    // A list: every plugin may add hooks.
+    engine.server_hooks(|vm| Ok(Rc::new(MyHooks::over(vm)?) as Rc<dyn ServerHooks>));
+    // Exclusive: the one loader the server's missions go through.
+    engine.mission_loader(|vm| Ok(Rc::new(MyMaps::over(vm)?) as Rc<dyn MissionLoader>));
+}
+```
+
+- **A factory, not an instance.** Each call makes the hooks or the loader for one server, from the script engine its recipes
+  left their extensions and state on, so hooks over a server's own state work. The engine can make any number of servers.
+- **When.** After the `Net` stage and before the entry script (`server.cs`, or the script `game.toml` names). An error stops
+  that server's start with the factory's message, naming the plugin for hooks. `GameServer::start*` applies them; a game whose
+  host does not go through it makes the same objects with
+  `slots::make_server_hooks(engine, vm)` and `slots::make_mission_loader(engine, vm)` (each answers none when no plugin set
+  one) and hands them to `Server::set_hooks` and `Server::set_mission_loader`.
+- **Hooks.** `before_events` runs once a pass after the tick and the send pass, before the Sim events, with the pass's elapsed
+  milliseconds (the first pass covers the start-up: 1,024). `pass_slice` may give the pass's events a slice of the wall instead
+  of the host's steps; `pass_sliced` tells the hooks whether the pass ran on it, and reaches every hook, including ones that
+  gave no slice. With several entries the hooks run in the
+  order the plugins were added, and `pass_slice` is the first answer that is not none. With none the server runs as it always
+  did. A `Server::set_hooks` after the start replaces the plugins' hooks, all of them; the plugins' `ServerTick` hooks stay.
+- **Loader.** The loader slot is exclusive: a second plugin that sets it fails the build, naming both. `GameServer::load_mission`
+  uses it; with none it `exec`s the `.mis`, as TGE does. The loader's report is whatever it returns.
 
 ## Server commands
 

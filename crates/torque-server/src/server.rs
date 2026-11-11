@@ -122,6 +122,43 @@ pub trait ServerHooks {
     }
 }
 
+/// Several hooks as one: `before_events` and `pass_sliced` run in the order the hooks were added, and `pass_slice` is the first
+/// answer (the first hook whose answer is not none).
+#[derive(Default)]
+pub struct HookList(Vec<Rc<dyn ServerHooks>>);
+
+impl HookList {
+    #[must_use]
+    pub fn new(hooks: Vec<Rc<dyn ServerHooks>>) -> HookList {
+        HookList(hooks)
+    }
+}
+
+impl ServerHooks for HookList {
+    fn before_events(&self, vm: &mut Vm, delta_ms: u32) {
+        for hooks in &self.0 {
+            hooks.before_events(vm, delta_ms);
+        }
+    }
+
+    fn pass_slice(&self, view: &PassView<'_>) -> Option<PassSlice> {
+        self.0.iter().find_map(|hooks| hooks.pass_slice(view))
+    }
+
+    fn pass_sliced(&self, sliced: bool) {
+        for hooks in &self.0 {
+            hooks.pass_sliced(sliced);
+        }
+    }
+}
+
+/// Makes a server's hooks once its stages ran, so it can read what the recipes left on the script engine. An error stops the
+/// server's start with its message.
+pub type MakeHooks = dyn Fn(&mut Vm) -> Result<Rc<dyn ServerHooks>, String>;
+
+/// Makes a server's mission loader, as [`MakeHooks`] makes its hooks.
+pub type MakeMissionLoader = dyn Fn(&mut Vm) -> Result<Rc<dyn MissionLoader>, String>;
+
 /// Work a host runs around the process list's pass of every server tick, apart from [`ServerHooks`] (which a game replaces as a
 /// whole): the engine's plugins' `ServerTick` hooks. [`Server::set_tick_hooks`] sets them; a server with none runs its ticks
 /// as it always did. A pass that covers several ticks (the first pass, or one after a stall) calls `before` for each of

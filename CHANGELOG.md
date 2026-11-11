@@ -269,6 +269,10 @@ different.
   `serverCmd*` with typed arguments, a per-client token bucket counted in ticks, and an argument size cap: a call past the limit or
   with a wrong argument is refused before the function runs, counted (`commandDrops(%client, name)`) and reported once a
   second; `server_command_limits` holds a command a script defines. TGE's commands and bytes are unchanged.
+- Plugins set a server's main-loop hooks and mission loader (`ServerSlots`): `engine.server_hooks(make)` adds hooks (a list, run in
+  add order; `pass_slice` is the first answer) and `engine.mission_loader(make)` sets how `GameServer::load_mission` loads
+  a mission (exclusive; none `exec`s the `.mis`). Each `make` runs once per server, after the network host is attached and
+  before the entry script, so it can read what the server's recipes set up.
 - In the engine's protocol `commandToServer` and `commandToClient` are carried as two built-in RPCs (`torque.command`,
   `torque.command.client`) instead of events; scripts see the same callbacks, arguments, tags and order. A command no plugin
   declared is held to default limits there (32 a second, burst 64, at most 20 arguments of 255 bytes, one bucket for the

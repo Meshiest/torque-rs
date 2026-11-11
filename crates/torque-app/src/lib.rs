@@ -89,7 +89,7 @@
 // crate's paths.
 #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
 pub use torque_app_server::serve;
-pub use torque_app_server::{cli, config, files, manifest, server, water};
+pub use torque_app_server::{cli, config, files, manifest, server, slots, water};
 
 pub mod camera_behind;
 pub mod camera_blend;

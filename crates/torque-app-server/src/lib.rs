@@ -19,6 +19,20 @@
 //!   a room) and its start-up lines.
 //! - [`config`]: `game.toml`, the config a game's folder carries: entry scripts, plugins on and off, the runner.
 //! - [`cli`]: the command line's flags and their values.
+//! - [`slots`]: [`slots::ServerSlots`], the engine builder's calls for a server's main-loop seams: hooks (a list) and the
+//!   mission loader (exclusive).
+//!
+//! # Maintaining
+//!
+//! **The main-loop seams hold factories, run once per server** ([`slots`]). `GameServer::start_prepared` calls
+//! `slots::make_server_hooks` and `slots::make_mission_loader` (public, so a host of its own applies the same slots) after the
+//! `Net` stage and the engine's tick hooks and before the entry script, so what a factory makes can
+//! read what the recipes left on the script engine. One entry sets its hooks as they are, several go in a
+//! `torque_server::server::HookList` (add order; `pass_slice` is the first answer); the loader slot replaces `ExecMission`, and
+//! a second setter fails the build through the engine's exclusive slot. A factory error returns from the start. An engine with
+//! no entry builds a server with the plain engine's `NoHooks` and `ExecMission`, so the wire goldens and native snapshots do
+//! not move. Tests are `server_hooks_*` and `mission_loader_*` in `slots_tests.rs`
+//! (`cargo test -p torque-app-server --lib -- server_hooks_ mission_loader_`).
 
 pub mod cli;
 pub mod config;
@@ -29,6 +43,7 @@ pub mod run;
 #[cfg(all(feature = "p2p", not(target_arch = "wasm32")))]
 pub mod serve;
 pub mod server;
+pub mod slots;
 pub mod terrain;
 pub mod transports;
 pub mod uploads;
@@ -42,6 +57,8 @@ mod engine_tickets_tests;
 mod plugins_tests;
 #[cfg(test)]
 mod run_tests;
+#[cfg(test)]
+mod slots_tests;
 #[cfg(test)]
 mod tick_tests;
 #[cfg(test)]

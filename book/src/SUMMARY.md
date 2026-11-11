@@ -15,7 +15,7 @@
 [Assets from plugins](asset-loaders.md)
 [Rendering and input from plugins](rendering-and-input.md)
 [Writing a plugin](writing-a-plugin.md)
-[Server tick hooks and commands](server-ticks-and-commands.md)
+[Server tick hooks, main-loop hooks and commands](server-ticks-and-commands.md)
 [Networked plugins](networked-plugins.md)
 [Network protocols](network-protocols.md)
 [Uploads](uploads.md)

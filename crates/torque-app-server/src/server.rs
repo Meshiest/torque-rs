@@ -17,6 +17,7 @@
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks and a packet to every client.
 
+use std::any::Any;
 use std::cell::RefCell;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
@@ -39,7 +40,7 @@ use torque_server::net::transport::{
     LanRules, MemoryEnd, PlainEngineRefusal, SharedTransport, check_plain_engine_bind,
 };
 use torque_server::net::{HostParts, NetShared};
-use torque_server::server::{Server, TICK_MS, TickHooks};
+use torque_server::server::{MissionError, Server, TICK_MS, TickHooks};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
@@ -394,6 +395,13 @@ impl GameServer {
                 printed: RefCell::default(),
             })));
         }
+        // The plugins' hooks and mission loader, made now that every stage but the entry has run.
+        if let Some(hooks) = crate::slots::make_server_hooks(engine, &mut server.vm)? {
+            server.set_hooks(hooks);
+        }
+        if let Some(loader) = crate::slots::make_mission_loader(engine, &mut server.vm)? {
+            server.set_mission_loader(loader);
+        }
         for (name, value) in start.globals {
             server.vm.set_global(name, value);
         }
@@ -420,6 +428,12 @@ impl GameServer {
             end,
             status_every: None,
         })
+    }
+
+    /// Loads `mission` with the server's mission loader (the engine's [`ServerSlots::mission_loader`](crate::slots::ServerSlots::mission_loader),
+    /// else TGE's: the `.mis` is `exec`'d); the answer is the loader's own report.
+    pub fn load_mission(&mut self, mission: &str) -> Result<Box<dyn Any>, MissionError> {
+        self.server.load_mission(mission.as_bytes())
     }
 
     /// Where the socket is bound.
