@@ -9,10 +9,12 @@
 //! **Behaviours.** [`register`] gives the classes with an add-time or preload step their [`EngineClass`] (the classes that also
 //! load a shape get theirs through [`shapes`](crate::shapes), which composes these); the checks themselves are the host's
 //! [`DatablockRules`](rules::DatablockRules), TGE's by default. A datablock declared again runs no `onAdd`, only its
-//! `preload`, so the add-time checks are wrapped ([`revalidated`]): the preload of a redeclare runs them again, and the
-//! clamps and the emitter's particle list are those a fresh declaration of the same fields would leave. A redeclare whose
-//! values the checks refuse prints the checks' own line and the datablock keeps them (a first declaration is deleted), so no
-//! object is left pointing at a deleted datablock.
+//! `preload`, so the add-time checks are wrapped ([`revalidated`]): the preload of a redeclare runs them again, silently,
+//! and the clamps and the emitter's particle list are those a fresh declaration of the same fields would leave. The engine
+//! has no such step (`compiledEval.cpp`'s `OP_ADD_OBJECT` runs `onAdd` once, at the registration, and `DebrisData::onAdd`
+//! in `debris.cpp` prints its warnings there), so only the warnings follow it: they are printed once, for the declaration that
+//! adds the datablock. A redeclare whose values the checks refuse prints the checks' own warnings and the datablock keeps the
+//! values (a first declaration is deleted), so no object is left pointing at a deleted datablock.
 
 pub mod fields;
 pub mod image;
@@ -171,7 +173,7 @@ impl DbValues {
 
 /// An add-time behavior whose checks run again when the datablock is declared again (see the module docs): `on_add` marks
 /// the add, the first `preload` after it takes the mark and does nothing, every later `preload` is a redeclare and runs the
-/// checks again.
+/// checks again without their warnings (printed once, at the add, as the engine's `onAdd` does).
 struct Revalidate {
     add: Rc<dyn EngineClass>,
     values: DbValues,
@@ -188,12 +190,19 @@ impl EngineClass for Revalidate {
         self.add.on_remove(vm, id)
     }
 
-    /// The checks again for a redeclare; what they refuse they have said themselves, and the datablock stays as declared.
+    /// The checks again for a redeclare, their warnings held back; a redeclare they refuse (or fail) says them after all, and the
+    /// datablock stays as declared.
     fn preload(&self, vm: &mut Vm, id: ObjId) -> Result<(), PreloadError> {
         if self.values.take_added(id) {
             return Ok(());
         }
-        self.add.on_add(vm, id).map_err(PreloadError::Vm)?;
+        let (added, warnings) = vm.holding_warnings(|vm| self.add.on_add(vm, id));
+        if !matches!(added, Ok(true)) {
+            for line in warnings {
+                vm.warn(line);
+            }
+        }
+        added.map_err(PreloadError::Vm)?;
         Ok(())
     }
 }

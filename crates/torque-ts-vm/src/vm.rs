@@ -91,6 +91,9 @@ pub const COMPILE_BASE_STEPS: u64 = 2_048;
 pub const COMPILE_BASE_WORK: u64 = COMPILE_BASE_STEPS * WORK_PER_STEP;
 /// The longest console line, in bytes: `Con::_printf`'s 4096-byte buffer less its terminator.
 pub const MAX_LOG_LINE: usize = 4095;
+
+/// The warning lines [`Vm::holding_warnings`] keeps back; a warning past them is logged as usual.
+pub const MAX_HELD_WARNINGS: usize = 64;
 /// The most the retained log may hold ([`Vm::log`]): the bytes of its lines and [`LOG_LINE_OVERHEAD`] for each. Past
 /// it the oldest lines are dropped and counted ([`Vm::dropped_log_lines`]).
 ///
@@ -211,6 +214,8 @@ struct LogKeep {
     sink: Option<ConsoleSink>,
     /// Every line printed so far ([`Vm::lines_printed`]).
     printed: u64,
+    /// While [`Vm::holding_warnings`] runs: the warnings it keeps back instead of logging.
+    held_warnings: Option<Vec<Vec<u8>>>,
 }
 
 /// A host's receiver of every printed line ([`Vm::set_console_sink`]), with the level and the text as the log keeps it.
@@ -1645,6 +1650,33 @@ impl Vm {
         self.log_bytes(Level::Warning, text.as_bytes());
     }
 
+    /// Runs `f` with its warning lines kept back: they are neither logged nor printed, and come back as the second value
+    /// (in order, as [`warn`](Self::warn) would have logged them) for the caller to print or drop. Other levels log as usual.
+    /// For native code that runs no script: a script callback run inside `f` has its warnings held too. At most
+    /// [`MAX_HELD_WARNINGS`] lines are kept, each cut as the log cuts it; a warning past that is logged as usual. The hold ends
+    /// when `f` returns or panics. Nested calls each keep back their own lines.
+    pub fn holding_warnings<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> (R, Vec<String>) {
+        /// Puts the enclosing hold (if any) back when the call ends, however it ends.
+        struct Hold<'a> {
+            vm: &'a mut Vm,
+            outer: Option<Vec<Vec<u8>>>,
+        }
+        impl Drop for Hold<'_> {
+            fn drop(&mut self) {
+                self.vm.log.held_warnings = self.outer.take();
+            }
+        }
+        let outer = self.log.held_warnings.replace(Vec::new());
+        let hold = Hold { vm: self, outer };
+        let result = f(&mut *hold.vm);
+        let held = hold.vm.log.held_warnings.take().unwrap_or_default();
+        let lines = held
+            .iter()
+            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .collect();
+        (result, lines)
+    }
+
     /// The one place a log line is made. `Con::_printf` formats into a 4096-byte buffer, so
     /// a longer line is cut at 4095 bytes (a 5016-byte `echo` is logged as 4095). Retained log memory is
     /// therefore bounded per line, and every line is charged one work unit per byte it keeps (the unit of
@@ -1665,6 +1697,13 @@ impl Vm {
             if *b == b'\t' {
                 *b = b'^';
             }
+        }
+        if level == Level::Warning
+            && let Some(held) = self.log.held_warnings.as_mut()
+            && held.len() < MAX_HELD_WARNINGS
+        {
+            held.push(text);
+            return;
         }
         self.log.held = self
             .log

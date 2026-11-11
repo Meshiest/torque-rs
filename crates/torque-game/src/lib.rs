@@ -55,7 +55,8 @@
 //! - the add-time checks of the six checked datablock classes (Explosion, Debris, Particle, ParticleEmitter, AudioDescription,
 //!   AudioProfile) run again on a redeclare ([`dbvalues`]'s `Revalidate`: `on_add` marks, the first `preload` takes the mark,
 //!   a later one is a redeclare), so a redeclared datablock's clamps and the emitter's particle list equal a fresh one's
-//!   (`a_redeclare_leaves_the_same_clamped_fields...`); a redeclare the checks refuse is an error and the datablock stays;
+//!   (`a_redeclare_leaves_the_same_clamped_fields...`); the redeclare's checks are silent, the warnings are printed once, at the
+//!   add (`a_redeclared_checked_datablock_warns_once`); a redeclare the checks refuse says its warnings and the datablock stays;
 //! - a Projectile whose datablock was deleted deletes itself at its next tick ([`sim::projectile::tick`];
 //!   `a_projectile_data_removed...`): no dead id is read;
 //! - a plugin's objects outside the process list are found by the wide scan when a datablock's count says it has more users

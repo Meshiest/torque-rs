@@ -997,6 +997,50 @@ fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked
     );
 }
 
+/// A datablock declared again runs only its preload in the engine (`OP_ADD_OBJECT`), whose `onAdd` printed the warnings for
+/// the first declaration: the redeclare clamps again and prints nothing of its own.
+#[test]
+fn a_redeclared_checked_datablock_warns_once() {
+    let mut s = server();
+    // The particle the emitter names and the description the profile names.
+    eval(
+        &mut s,
+        "datablock ParticleData(Dust) {}; datablock AudioDescription(Voice) { volume = 0.5; };",
+    );
+    for checked in &CHECKED {
+        let Checked {
+            class,
+            body,
+            fields,
+        } = checked;
+        let name = format!("W{class}");
+        let declare = format!("datablock {class}({name}) {{ {body} }};");
+        logged(&mut s);
+        eval(&mut s, &declare);
+        let first = logged(&mut s)
+            .into_iter()
+            .filter(|l| l.contains(&name))
+            .count();
+        let clamped = fields_of(&mut s, &name, fields);
+        // Out-of-range values written back over the clamped ones, then the same declaration again.
+        eval(&mut s, &format!("datablock {class}({name}) {{ {body} }};"));
+        let second = logged(&mut s);
+        assert!(
+            second.iter().all(|l| !l.contains(&name)),
+            "{class}: the redeclare warned again: {second:?}"
+        );
+        assert_eq!(
+            fields_of(&mut s, &name, fields),
+            clamped,
+            "{class}: the redeclare did not clamp the same way"
+        );
+        // The audio classes clamp without a warning.
+        if !class.starts_with("Audio") {
+            assert!(first > 0, "{class}: the first declaration warns");
+        }
+    }
+}
+
 /// How many objects of `class` the server has.
 fn objects_of(s: &NetServer, class: &str) -> usize {
     let objects = s.vm.objects();
