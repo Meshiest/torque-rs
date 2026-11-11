@@ -8,9 +8,9 @@ use torque_ts_vm::vm::Vm;
 
 use crate::param::{Res, ResMut, ResourceError};
 use crate::recipe::Recipe;
-use crate::script::{EntryKind, ScriptEntry, replay_entries};
+use crate::script::{EntryKind, ScriptEntry, Sides, replay_entries};
 use crate::slots::{Resources, Store};
-use crate::{EngineBuilder, PluginId, PluginType, RecipeError, Stage, Warning};
+use crate::{ClientStage, EngineBuilder, PluginId, PluginType, RecipeError, Stage, Warning};
 
 /// The plugins built into recipes, resources, slots and lists. Cheap to clone (one `Rc`); a game keeps it and makes
 /// every server and client script engine from it, as many times as it likes.
@@ -95,7 +95,18 @@ impl Engine {
     /// the script registry's functions, methods and globals for that side are registered after the recipes, in the
     /// order the plugins declared them ([`ScriptRegistry`](crate::ScriptRegistry)).
     pub fn replay(&self, stage: impl Into<Stage>, vm: &mut Vm) -> Result<(), RecipeError> {
-        let stage = stage.into();
+        self.replay_with(stage.into(), vm, Sides::Own)
+    }
+
+    /// [`replay`](Self::replay) of a client stage on a script engine a server of this engine made and its client shares:
+    /// the stage's recipes, then only the registry's client-only entries. The entries of both sides went in at the server's
+    /// [`SERVER_SCRIPT_STAGE`](crate::script::SERVER_SCRIPT_STAGE), and registering them again would set their globals and
+    /// prefs back to their defaults over what the server's scripts wrote.
+    pub fn replay_shared(&self, stage: ClientStage, vm: &mut Vm) -> Result<(), RecipeError> {
+        self.replay_with(stage.into(), vm, Sides::Shared)
+    }
+
+    fn replay_with(&self, stage: Stage, vm: &mut Vm, sides: Sides) -> Result<(), RecipeError> {
         for recipe in self.0.recipes.iter().filter(|r| r.stage == stage) {
             (recipe.run)(vm, self).map_err(|message| RecipeError {
                 plugin: recipe.plugin,
@@ -103,7 +114,7 @@ impl Engine {
                 message,
             })?;
         }
-        replay_entries(&self.0.script, stage, vm, self);
+        replay_entries(&self.0.script, stage, vm, self, sides);
         Ok(())
     }
 

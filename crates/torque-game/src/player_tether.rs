@@ -3,12 +3,14 @@
 //!
 //! A plugin adds a [`TetherSource`] to a script engine ([`add`]) on each side: the server's step asks it with the Player's object
 //! id, a client's prediction with the ghost index of the Player it predicts. An engine with no source has nothing installed, and
-//! the Player's step is Torque's.
+//! the Player's step is Torque's. Each side keeps its own sources ([`of`]), so on a script engine a client shares with its
+//! server the server's step never asks a client's source with an object id, nor the prediction a server's with a ghost index.
 
 use std::rc::Rc;
 
 pub use ::sim::player::tether::{MAX_DAMPING, MAX_LENGTH, MAX_STIFFNESS, Tether, apply};
 use collide::math::F3;
+pub use collide::source::Side;
 use ts_vm::vm::Vm;
 
 /// A plugin's tethers on Players.
@@ -60,14 +62,36 @@ impl TetherSources {
     }
 }
 
-/// Adds `source` to `vm`'s tether sources.
-pub fn add(vm: &mut Vm, source: Rc<dyn TetherSource>) {
-    let mut sources = of(vm).map_or_else(TetherSources::default, |s| (*s).clone());
-    sources.0.push(source);
-    vm.set_extension(Rc::new(sources));
+/// The sources of each side of a script engine.
+#[derive(Clone, Default)]
+struct BySide {
+    server: Option<Rc<TetherSources>>,
+    client: Option<Rc<TetherSources>>,
 }
 
-/// The sources `vm` was given, if any.
-pub fn of(vm: &Vm) -> Option<Rc<TetherSources>> {
-    vm.extension::<TetherSources>()
+impl BySide {
+    fn side_mut(&mut self, side: Side) -> &mut Option<Rc<TetherSources>> {
+        match side {
+            Side::Server => &mut self.server,
+            Side::Client => &mut self.client,
+        }
+    }
+}
+
+/// Adds `source` to `vm`'s tether sources of `side` (the server's step, or a client's prediction).
+pub fn add(vm: &mut Vm, side: Side, source: Rc<dyn TetherSource>) {
+    let mut sides = vm
+        .extension::<BySide>()
+        .map_or_else(BySide::default, |s| (*s).clone());
+    let slot = sides.side_mut(side);
+    let mut sources = slot.as_deref().cloned().unwrap_or_default();
+    sources.0.push(source);
+    *slot = Some(Rc::new(sources));
+    vm.set_extension(Rc::new(sides));
+}
+
+/// The sources `vm` was given for `side`, if any.
+pub fn of(vm: &Vm, side: Side) -> Option<Rc<TetherSources>> {
+    let mut sides = (*vm.extension::<BySide>()?).clone();
+    sides.side_mut(side).take()
 }

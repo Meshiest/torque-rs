@@ -19,6 +19,34 @@
 //! [`ClientBuilder::from_engine`] make a client of it; [`ClientBuilder::from_engine_with_conn`] makes one of any `C` from the
 //! same plugins. The pass is the engine's slot of `dyn ClientPass<C>` when a game set one, else [`EnginePass`]. What reads
 //! TGE's world ([`GameClient::with_world`], [`GameClient::predict_frame`]) is there for a conn game whose feed is TGE's.
+//!
+//! **Over a server** ([`ClientBuilder::over_server`]): the client is made on the script engine of a server the game started,
+//! so the two halves share one engine, as TGE's client holds its local server: the server's objects (its datablocks) are
+//! the client's, a script function of the client can host the game in the same engine (`createServer`), and the client
+//! host's server host (`H`) is that server, whose ticks run the client's work before each. Only the client's stages run on
+//! it (the server's ran when it started), with these rules where the halves meet:
+//! - natives: a client recipe registers after the server's, so where both register one under the same namespace and name
+//!   the client's is called; a recipe that keeps the server's for the server's objects looks it up first
+//!   (`Vm::native_of`), as the connection's natives do. Every server native replaced so is listed by
+//!   [`ClientBuilder::replaced_natives`]; nothing is printed;
+//! - classes: the server's stand (a class is registered once; the client's `Classes` stage adds only the classes the server
+//!   did not register);
+//! - stages: none of the server's run again; the client's run once each, with the script registry's entries of both sides
+//!   left as the server registered them ([`Engine::replay_shared`]), and the files, the build's warnings, the plugins'
+//!   collision and the mods the server's;
+//! - object ids: one counter, so the client's objects take ids after the server's, and a datablock the server made is the
+//!   one object both halves read;
+//! - `commandToServer`: the client's sends on its connection, except in a command a remote party's connection is running (a
+//!   server's `serverCmd*` handler), where the server's answers and sends nothing (`Vm::command_source`);
+//! - refused: an engine-protocol client whose RPCs would ride the lanes the server already keeps on the engine.
+//!
+//! A plugin whose recipes install the same state on both sides keeps the server's on a shared engine: `ModsPlugin` and the
+//! TCP plugin skip their client install when the server's is there (and only the server's tick polls the TCP sockets), the
+//! loader's languages keep the server's side, and state a side reads by its own keys is kept per side (the Players' tether
+//! sources, `torque_game::player_tether`).
+//!
+//! A client on a script engine of its own, the default, is made as before: the client host's server host is a [`Server`]
+//! over it.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -37,11 +65,12 @@ use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder, PluginGroup}
 use torque_gui::Gui;
 use torque_server::net::NetGame;
 use torque_server::net::channels::ClientChannels;
+use torque_server::net::rpc::RpcLanes;
 use torque_server::net::rpc::{ClientRpc, ClientRpcHost, register_client_natives};
-use torque_server::server::{GameServer as _, Server, TICK_MS};
+use torque_server::server::{GameServer as ServerHost, Server, TICK_MS};
 use torque_ts_text::{atof, atoi};
 use torque_ts_vm::host::{FileHost, MemFiles};
-use torque_ts_vm::vm::Vm;
+use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
 use super::Host;
 use super::plugins::{
@@ -109,9 +138,22 @@ impl Default for ClientSetup {
 /// What a client made with no client host fails with.
 const NO_CLIENT_HOST: &str = "the engine has no client host (ClientHostPlugin)";
 
-/// A client being made, of conn game `C` (TGE's by default): its script engine, GUI and state, the engine's natives
-/// registered.
-pub struct ClientBuilder<C: ConnGame = TgeConn> {
+/// What a client over a server fails with when its RPCs would share the server's lanes.
+const SHARED_RPC_LANES: &str = "a client over a server cannot carry RPCs in the engine's protocol: the server's RPC lanes are on the script engine they share";
+
+/// Whose script engine a client is made on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sharing {
+    /// Its own.
+    Own,
+    /// The one of the server it runs over ([`ClientBuilder::over_server`]).
+    OverServer,
+}
+
+/// A client being made, of conn game `C` (TGE's by default), on the script engine of the server host `H`: one of its own
+/// ([`Server`], the default) or the game's server it runs over ([`ClientBuilder::over_server`]). Its script engine, GUI and
+/// state, the engine's natives registered.
+pub struct ClientBuilder<C: ConnGame = TgeConn, H: ServerHost = Server> {
     pub vm: Vm,
     pub gui: Gui,
     pub state: Rc<RefCell<ClientState<C>>>,
@@ -119,6 +161,11 @@ pub struct ClientBuilder<C: ConnGame = TgeConn> {
     engine: Engine,
     pass: Rc<dyn ClientPass<C>>,
     host: ClientHostSetup,
+    /// Gives the script engine to the client host's server host once the client is built.
+    server: Box<dyn FnOnce(Vm) -> H>,
+    sharing: Sharing,
+    /// The server's natives the client's recipes registered again ([`ClientBuilder::replaced_natives`]).
+    replaced: Vec<String>,
 }
 
 impl ClientBuilder {
@@ -186,19 +233,61 @@ impl<C: ConnGame> ClientBuilder<C> {
         ClientBuilder::from_engine_files(engine, files.map(file_setter), net)
     }
 
+    /// A client of conn game `C` made by `engine`'s plugins on the script engine of `server`, a server of the same engine
+    /// that has started (its entry may leave connections off, for a script of the client to host the game): the two share
+    /// one script engine (see the module docs for the rules where they meet). The client's stages run as
+    /// [`ClientBuilder::from_engine_with_conn`] runs them, over the server's files, with a socket as `net` says; once built,
+    /// the client host's server host is `server`, and every pass of the client runs a tick of its main loop. `server` is any
+    /// server host: the engine's [`GameServer`], or a game's own.
+    ///
+    /// # Errors
+    /// What [`ClientBuilder::from_engine_with_conn`] fails with, and an engine-protocol client with RPCs over a server that
+    /// carries them. `server` is dropped.
+    pub fn over_server<H: ServerHost + 'static>(
+        engine: &Engine,
+        mut server: H,
+        net: ClientNet,
+    ) -> Result<ClientBuilder<C, H>, String> {
+        // The recipes take the script engine by value; the server gets it back when the client is built.
+        let vm = std::mem::replace(server.vm_mut(), Vm::new());
+        let made = ClientBuilder::make(engine, vm, None, Sharing::OverServer, net)?;
+        Ok(made.with_server(Box::new(move |vm| {
+            *server.vm_mut() = vm;
+            server
+        })))
+    }
+
     /// The body of the `from_engine` constructors (not generic over the file host, so it is built once per conn game).
     fn from_engine_files(
         engine: &Engine,
         files: Option<FileSetter>,
         net: ClientNet,
     ) -> Result<ClientBuilder<C>, String> {
+        // An engine without a client host makes no script engine.
+        engine.resource::<ClientHostSetup>().ok_or(NO_CLIENT_HOST)?;
+        let vm = crate::slots::make_script_engine(engine);
+        ClientBuilder::make(engine, vm, files, Sharing::Own, net)
+    }
+
+    /// The client's recipes run on `vm`, stage by stage: the body of every constructor (generic over the conn game only).
+    fn make(
+        engine: &Engine,
+        mut vm: Vm,
+        files: Option<FileSetter>,
+        sharing: Sharing,
+        net: ClientNet,
+    ) -> Result<ClientBuilder<C>, String> {
         let host = *engine.resource::<ClientHostSetup>().ok_or(NO_CLIENT_HOST)?;
         let pass = engine
             .slot::<dyn ClientPass<C>>()
             .unwrap_or_else(|| Rc::new(EnginePass));
-        let mut vm = crate::slots::make_script_engine(engine);
-        for warning in engine.warnings() {
-            vm.warn(warning.to_string());
+        let shared = sharing == Sharing::OverServer;
+        let servers = shared.then(|| natives_of(&vm));
+        // Over a server they were printed on the console the two share.
+        if !shared {
+            for warning in engine.warnings() {
+                vm.warn(warning.to_string());
+            }
         }
         for warning in client_transport_warnings(engine) {
             vm.warn(warning);
@@ -223,7 +312,10 @@ impl<C: ConnGame> ClientBuilder<C> {
         {
             // In engine mode the batches ride the session's RPC lanes, which the connection fills and empties.
             let rpc = if engine.protocol() == torque_engine::ProtocolKind::Engine {
-                let lanes = Rc::new(torque_server::net::rpc::RpcLanes::default());
+                if vm.extension::<RpcLanes>().is_some() {
+                    return Err(SHARED_RPC_LANES.to_string());
+                }
+                let lanes = Rc::new(RpcLanes::default());
                 vm.set_extension(Rc::clone(&lanes));
                 Rc::new(ClientRpc::over_lanes(rpcs, Rc::clone(&channels), lanes))
             } else {
@@ -235,20 +327,22 @@ impl<C: ConnGame> ClientBuilder<C> {
             torque_server::net::uploads::install_client(&mut vm, &rpc, &channels);
             vm.set_extension(rpc);
         }
-        replay(engine, ClientStage::Classes, &mut vm)?;
+        replay(engine, ClientStage::Classes, &mut vm, sharing)?;
         if let Some(files) = files {
             files(&mut vm);
         }
         if let Some(game) = engine.slot::<dyn ClientGame>() {
             torque_client::game::set_client_game(&mut vm, game);
         }
-        // The plugins' collision the client's prediction world includes.
-        for warning in torque_game::plugin_collision::install(
-            &mut vm,
-            engine.list::<torque_collide::source::PluginCollision>(),
-            torque_collide::source::Side::Client,
-        ) {
-            vm.warn(warning);
+        // The plugins' collision the client's prediction world includes (over a server, the server's when it has some).
+        if !shared || torque_game::plugin_collision::sources_of(&vm).is_none() {
+            for warning in torque_game::plugin_collision::install(
+                &mut vm,
+                engine.list::<torque_collide::source::PluginCollision>(),
+                torque_collide::source::Side::Client,
+            ) {
+                vm.warn(warning);
+            }
         }
         for stage in [
             ClientStage::Game,
@@ -259,8 +353,9 @@ impl<C: ConnGame> ClientBuilder<C> {
             ClientStage::Query,
             ClientStage::Natives,
         ] {
-            replay(engine, stage, &mut vm)?;
+            replay(engine, stage, &mut vm, sharing)?;
         }
+        let replaced = servers.map_or_else(Vec::new, |servers| replaced_natives(&vm, &servers));
         let gui = parts.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
         Ok(ClientBuilder {
             vm,
@@ -270,7 +365,47 @@ impl<C: ConnGame> ClientBuilder<C> {
             engine: engine.clone(),
             pass,
             host,
+            server: Box::new(Server::new),
+            sharing,
+            replaced,
         })
+    }
+
+    /// The builder with `server` as what makes the client host's server host.
+    fn with_server<H: ServerHost>(self, server: Box<dyn FnOnce(Vm) -> H>) -> ClientBuilder<C, H> {
+        let ClientBuilder {
+            vm,
+            gui,
+            state,
+            link,
+            engine,
+            pass,
+            host,
+            server: _,
+            sharing,
+            replaced,
+        } = self;
+        ClientBuilder {
+            vm,
+            gui,
+            state,
+            link,
+            engine,
+            pass,
+            host,
+            server,
+            sharing,
+            replaced,
+        }
+    }
+}
+
+impl<C: ConnGame, H: ServerHost> ClientBuilder<C, H> {
+    /// The server's natives the client's recipes registered again under the same namespace and name, as
+    /// `namespace::name` (`name` for a global function), in the order the natives are listed: a client over a server calls
+    /// the client's for them (see the module docs). Empty for a client on a script engine of its own.
+    pub fn replaced_natives(&self) -> &[String] {
+        &self.replaced
     }
 
     /// Gives the client `socket` under `policy` (a client made with [`ClientNet::External`]; any other socket it had is
@@ -312,9 +447,7 @@ impl<C: ConnGame> ClientBuilder<C> {
             Some(run) => run(&mut self.vm)?,
             None => self.exec(&crate::config::client_entry(&self.engine))?,
         }
-        self.engine
-            .replay(ClientStage::Entry, &mut self.vm)
-            .map_err(|e| e.to_string())
+        replay(&self.engine, ClientStage::Entry, &mut self.vm, self.sharing)
     }
 
     /// Calls the script function `function` with no arguments.
@@ -325,11 +458,12 @@ impl<C: ConnGame> ClientBuilder<C> {
             .map_err(|e| format!("{function}: {e}"))
     }
 
-    /// The client host over the engine, in a window's mode, with no server hosted yet.
-    pub fn build<S>(mut self) -> GameClient<S, C> {
+    /// The client host over the engine, in a window's mode, with no server hosted yet; over a server, the client host's
+    /// server host is that server.
+    pub fn build<S>(mut self) -> GameClient<S, C, H> {
         // The host takes the script engine, so the `Host` stage's recipes are the last to see it.
-        if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
-            self.vm.warn(e.to_string());
+        if let Err(e) = replay(&self.engine, ClientStage::Host, &mut self.vm, self.sharing) {
+            self.vm.warn(e);
         }
         let mut ticks = self.engine.list::<ClientTick>().to_vec();
         if self.vm.extension::<ClientRpc>().is_some() {
@@ -352,7 +486,7 @@ impl<C: ConnGame> ClientBuilder<C> {
         self.vm
             .set_extension(Rc::new(TgeTicked(crate::sounds::tick)));
         let mut host = ClientHost::new(
-            Server::new(self.vm),
+            (self.server)(self.vm),
             self.gui,
             self.state,
             pass,
@@ -377,7 +511,7 @@ impl<C: ConnGame> ClientBuilder<C> {
     }
 }
 
-impl<C: ConnGame> Connect for ClientBuilder<C> {
+impl<C: ConnGame, H: ServerHost> Connect for ClientBuilder<C, H> {
     fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
         let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
         self.set_socket(socket, policy);
@@ -427,9 +561,51 @@ impl<C: ConnGame> ClientPass<C> for TickedPass<C> {
     }
 }
 
-/// Replays `stage` of `engine`'s client recipes on `vm`.
-fn replay(engine: &Engine, stage: ClientStage, vm: &mut Vm) -> Result<(), String> {
-    engine.replay(stage, vm).map_err(|e| e.to_string())
+/// Replays `stage` of `engine`'s client recipes on `vm`, a script engine of the client's own or the one it shares with its
+/// server ([`Engine::replay_shared`]).
+fn replay(
+    engine: &Engine,
+    stage: ClientStage,
+    vm: &mut Vm,
+    sharing: Sharing,
+) -> Result<(), String> {
+    match sharing {
+        Sharing::Own => engine.replay(stage, vm),
+        Sharing::OverServer => engine.replay_shared(stage, vm),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// A native's function.
+type NativeFn = Rc<dyn Fn(&mut Vm, &NativeCall) -> Native>;
+
+/// Every native of `vm`: its namespace, its name and its function.
+fn natives_of(vm: &Vm) -> Vec<(String, String, NativeFn)> {
+    vm.native_signatures()
+        .into_iter()
+        .filter_map(|(namespace, name, _, _)| {
+            let (_, _, _, f) = vm.native_of(&namespace, &name)?;
+            Some((namespace, name, f))
+        })
+        .collect()
+}
+
+/// The natives of `before` that `vm` calls another function for now, as `namespace::name` (`name` in the global one).
+fn replaced_natives(vm: &Vm, before: &[(String, String, NativeFn)]) -> Vec<String> {
+    before
+        .iter()
+        .filter(|(namespace, name, f)| {
+            vm.native_of(namespace, name)
+                .is_none_or(|(_, _, _, now)| !std::ptr::addr_eq(Rc::as_ptr(f), Rc::as_ptr(&now)))
+        })
+        .map(|(namespace, name, _)| {
+            if namespace.is_empty() {
+                name.clone()
+            } else {
+                format!("{namespace}::{name}")
+            }
+        })
+        .collect()
 }
 
 /// Opens the client's socket as `net` says, over the engine's transports (`udp` for [`ClientNet::Loopback`] and
@@ -467,9 +643,10 @@ struct Parked {
 }
 
 /// A game's client of conn game `C` (TGE's by default), and the server `S` it hosts: a [`GameServer`], or a game's own type
-/// over one (borrowed as one, and made one when it stops).
-pub struct GameClient<S = GameServer, C: ConnGame = TgeConn> {
-    pub host: Host<C>,
+/// over one (borrowed as one, and made one when it stops). `H` is the client host's server host: a [`Server`] of its own
+/// script engine by default, or the server it runs over ([`ClientBuilder::over_server`]).
+pub struct GameClient<S = GameServer, C: ConnGame = TgeConn, H: ServerHost = Server> {
+    pub host: Host<C, H>,
     engine: Engine,
     /// The server this client runs in its own process, if any.
     pub server: Option<S>,
@@ -486,7 +663,7 @@ pub struct GameClient<S = GameServer, C: ConnGame = TgeConn> {
     pub client_log: Vec<String>,
 }
 
-impl<S, C: ConnGame> Connect for GameClient<S, C> {
+impl<S, C: ConnGame, H: ServerHost> Connect for GameClient<S, C, H> {
     fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
         let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
         {
@@ -504,15 +681,15 @@ impl<S, C: ConnGame> Connect for GameClient<S, C> {
 /// clients made with [`ClientNet::Memory`] that have no server of their own: what each sent goes in, and what the server sent goes
 /// to the client it is addressed to. Call it around each tick of the server and each step of the clients. The server may speak any
 /// net game, and the clients any conn game.
-pub fn carry_between<S, G: NetGame, C: ConnGame>(
+pub fn carry_between<S, G: NetGame, C: ConnGame, H: ServerHost>(
     server: &GameServer<G>,
-    clients: &[&GameClient<S, C>],
+    clients: &[&GameClient<S, C, H>],
 ) {
     let links: Vec<&MemoryLink> = clients.iter().filter_map(|c| c.link.as_ref()).collect();
     MemoryLink::carry_all(&links, server);
 }
 
-impl<S, C: ConnGame> GameClient<S, C> {
+impl<S, C: ConnGame, H: ServerHost> GameClient<S, C, H> {
     /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
     /// [`transports`](crate::transports)), closing any other socket it had: a browser's client opens a new link to join
     /// again. Not while a game is played alone ([`GameClient::start_local`]). Err: no transport is registered under `id`, the
@@ -522,7 +699,7 @@ impl<S, C: ConnGame> GameClient<S, C> {
     }
 }
 
-impl<S, C: ConnGame> GameClient<S, C> {
+impl<S, C: ConnGame, H: ServerHost> GameClient<S, C, H> {
     pub fn vm(&self) -> &Vm {
         self.host.server.vm()
     }
@@ -623,7 +800,7 @@ impl<S, C: ConnGame> GameClient<S, C> {
 }
 
 /// What reads TGE's world: a client whose conn game's feed is TGE's.
-impl<S, C: ConnGame<Feed = TgeFeed>> GameClient<S, C> {
+impl<S, C: ConnGame<Feed = TgeFeed>, H: ServerHost> GameClient<S, C, H> {
     /// The client's world of ghosts, if it is connected.
     pub fn with_world<R>(&self, f: impl FnOnce(&TgeWorld) -> R) -> Option<R> {
         let st = self.host.client.borrow();
@@ -673,7 +850,9 @@ impl<S, C: ConnGame<Feed = TgeFeed>> GameClient<S, C> {
     }
 }
 
-impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>, C: ConnGame> GameClient<S, C> {
+impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>, C: ConnGame, H: ServerHost>
+    GameClient<S, C, H>
+{
     /// `ms` of the clock (see the module docs).
     pub fn step(&mut self, ms: u32) {
         let mut left = ms;
@@ -784,3 +963,7 @@ impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>, C: ConnGame> Game
             .and_then(|s| std::borrow::Borrow::<GameServer>::borrow(s).address())
     }
 }
+
+#[cfg(test)]
+#[path = "client_over_server_tests.rs"]
+mod over_server_tests;

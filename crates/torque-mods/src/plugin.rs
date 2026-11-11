@@ -210,6 +210,11 @@ impl Plugin for ModsPlugin {
             Ok(())
         });
         engine.client(ClientStage::Game, |vm, engine| {
+            // A client over its server's script engine keeps the server's mods: they are mounted, and the server's natives
+            // read them.
+            if Mods::of(vm).is_some() {
+                return Ok(());
+            }
             Mods::setup(vm, engine, ModSide::Client)?;
             if let Some(mods) = Mods::of(vm) {
                 mods.attach_client(vm);
@@ -223,7 +228,9 @@ impl Plugin for ModsPlugin {
             Ok(())
         });
         engine.client(ClientStage::Entry, |vm, _| {
-            if let Some(mods) = Mods::of(vm) {
+            if let Some(mods) = Mods::of(vm)
+                && mods.side() == ModSide::Client
+            {
                 mods.run_auto(vm);
             }
             Ok(())

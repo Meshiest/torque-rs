@@ -580,7 +580,8 @@ impl<'a> PlayerHost for HostImpl<'a> {
 
     /// The first tether a plugin's source puts on this Player ([`crate::player_tether`]).
     fn tether(&mut self, _s: &PlayerState) -> Option<::sim::player::tether::Tether> {
-        let sources = self.read(crate::player_tether::of)?;
+        let sources =
+            self.read(|vm| crate::player_tether::of(vm, crate::player_tether::Side::Server))?;
         let (index, tether) = sources.tether(self.id)?;
         self.tether = Some((sources, index));
         Some(tether)

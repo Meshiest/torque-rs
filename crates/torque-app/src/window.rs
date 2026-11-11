@@ -9,7 +9,6 @@ use winit::window::Window;
 
 use torque_client::platform::window::{self as driver, WindowGame};
 use torque_client::screen::ScreenRules;
-use torque_server::server::Server;
 
 use super::view::WorldView;
 use super::{GameApp, Host};
@@ -291,13 +290,13 @@ impl<G: GameApp> AppWindow<G> {
 
 impl<G: GameApp> WindowGame for AppWindow<G> {
     type Conn = G::Conn;
-    type Server = Server;
+    type Server = G::Server;
 
-    fn host(&mut self) -> &mut Host<G::Conn> {
+    fn host(&mut self) -> &mut Host<G::Conn, G::Server> {
         self.game.host()
     }
 
-    fn host_ref(&self) -> &Host<G::Conn> {
+    fn host_ref(&self) -> &Host<G::Conn, G::Server> {
         self.game.host_ref()
     }
 

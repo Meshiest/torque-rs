@@ -352,6 +352,7 @@ struct Counted<C: ConnGame> {
 
 impl<C: ConnGame> GameApp for Counted<C> {
     type Conn = C;
+    type Server = torque_server::server::Server;
 
     fn host(&mut self) -> &mut Host<C> {
         &mut self.client.host

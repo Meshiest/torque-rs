@@ -86,6 +86,14 @@
 //!   ([`slots::HostSlots`]), and over a game's own file host with [`ClientBuilder::from_engine_with_files`]; both
 //!   `from_engine` constructors share one body that is not generic over the file host. With none set the client is the same as
 //!   before (`host_slots_tests.rs`; the native snapshots in `tests/natives`).
+//! - A client over its server ([`ClientBuilder::over_server`]) is made by the same body as a client of its own
+//!   (`ClientBuilder::make`, generic over the conn game only) on the server's script engine, taken out of the server for the
+//!   stages and given back in [`ClientBuilder::build`], so the client host's server host is the server and each pass ticks
+//!   its main loop. On it the client's stages replay with `Engine::replay_shared`, and the build's warnings, the files and
+//!   the plugins' collision are the server's; a client native over a server native is listed, not printed
+//!   ([`ClientBuilder::replaced_natives`]). A client of its own takes none of these branches, so its natives and bytes do
+//!   not move (`client_over_server_tests.rs`; the native snapshots; the wire goldens). [`GameApp::Server`] names the server
+//!   host to the runners; every [`App`] has [`Server`].
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 //! - The client recipes name no conn game: a client of any [`ConnGame`] is made by the same
@@ -165,8 +173,9 @@ pub use files::GameFiles;
 pub use server::{GameServer, Listen};
 pub use view::{Daylight, SceneShape, WorldView};
 
-/// The client host a game drives: the connection half `C` (TGE's by default) over a script engine as its server.
-pub type Host<C = TgeConn> = ClientHost<C, Server>;
+/// The client host a game drives: the connection half `C` (TGE's by default) over the server host `S` of its script
+/// engine: one of its own by default, or the game's server it runs over ([`ClientBuilder::over_server`]).
+pub type Host<C = TgeConn, S = Server> = ClientHost<C, S>;
 
 /// A game the window ([`window::run`]) and the pictures ([`shots`]) drive.
 pub trait App {
@@ -202,11 +211,15 @@ pub trait GameApp: 'static {
     /// The connection half the game's client host runs.
     type Conn: ConnGame;
 
+    /// The server host of the client host's script engine: [`Server`] for a client on a script engine of its own, the
+    /// game's server for a client that runs over it ([`ClientBuilder::over_server`]).
+    type Server: torque_client::host::GameServer;
+
     /// The game's client host, for the runners to drive.
-    fn host(&mut self) -> &mut Host<Self::Conn>;
+    fn host(&mut self) -> &mut Host<Self::Conn, Self::Server>;
 
     /// The game's client host, read only.
-    fn host_ref(&self) -> &Host<Self::Conn>;
+    fn host_ref(&self) -> &Host<Self::Conn, Self::Server>;
 
     /// The window's title.
     fn title(&self) -> String;
@@ -236,6 +249,7 @@ pub trait GameApp: 'static {
 
 impl<A: App + 'static> GameApp for A {
     type Conn = TgeConn;
+    type Server = Server;
 
     fn host(&mut self) -> &mut Host {
         App::host(self)

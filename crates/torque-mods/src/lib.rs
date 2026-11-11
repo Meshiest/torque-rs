@@ -39,6 +39,9 @@
 //! `Assets::debug_assert_untrusted` when they are mounted (`mount_server_files`). A new kind of mount does both.
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - A client over its server's script engine keeps the server's mods: the client's `Game` recipe sets up none when a
+//!   `Mods` is there already, and its `Entry` recipe runs the stages of a client's mods only, so no mod script runs twice in
+//!   one engine (`a_client_over_its_servers_script_engine_keeps_the_servers_mods_and_runs_none_again` in `tests/mods.rs`).
 //! - What the offer and the data message carry is versioned (`offer::WIRE_VERSION`, the digit in their head; the request has none).
 //!   Change what they carry and the version moves with it; a message of another version is answered with `MessageError::Version` naming both
 //!   (`a_message_of_another_version_is_refused_with_the_versions`). The content message the cache stores has its own head and is

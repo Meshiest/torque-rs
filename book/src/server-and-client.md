@@ -130,6 +130,48 @@ does what `TgeConn` does: the engine's protocol when the engine speaks it, the e
 per-ghost blocks. Such a client keeps `GameClient::with_world`, `ghost_count`, `sky_distances` and `predict_frame`. A feed
 of the game's own does those things itself, and fills the view from its own world in its frame.
 
+## A client over its server
+
+By default a client is made on a script engine of its own, and a game it hosts runs in a second one
+(`GameClient::start_local`). A game whose client holds its server half, as TGE's does, makes the server first and the
+client on that server's script engine:
+
+```rust,ignore
+let server = GameServer::start_engine(&engine, files, &start)?;
+let mut builder = ClientBuilder::<TgeConn>::over_server(&engine, server, ClientNet::None)?;
+builder.exec_entry()?;
+let client: GameClient<GameServer, TgeConn, GameServer> = builder.build();
+```
+
+The two halves share one engine: the server's datablocks are the client's objects, a script function of the client can
+host the game there (a `createServer` that runs the server's scripts and turns connections on, with a server entry that
+left them off), and the client host's server host is the server, so each pass of the client runs one tick of the server's
+main loop with the client's work before it. `over_server` takes any server host (`torque_server::server::GameServer`): the
+engine's `GameServer`, or a game's own. Where the halves meet:
+
+- **Stages.** None of the server's run again. The client's run once each; the script registry's entries for both sides
+  stay as the server registered them (`Engine::replay_shared`), so a client stage does not set their globals and prefs back
+  to the defaults. The client takes no files (the server's serve both), prints none of the build's warnings again, and
+  keeps the server's plugin collision and mods.
+- **Natives.** A client recipe registers after the server's, so where both register one under the same namespace and
+  name the client's is called. A recipe that keeps the server's for the server's objects looks it up first
+  (`Vm::native_of`), as the connection's natives do for `GameConnection`. `ClientBuilder::replaced_natives` lists every
+  server native the client's recipes replaced; nothing is printed.
+- **Classes.** The server's stand: a class is registered once, and the client's `Classes` stage adds only the ones the
+  server did not.
+- **Object ids.** One counter: the client's objects take ids after the server's.
+- **`commandToServer`.** The client's sends on its connection, except in a command a remote party's connection is
+  running (a server's `serverCmd*` handler): there the server's answers, and nothing is sent (`Vm::command_source`).
+- **Plugins with an install on each side.** A plugin whose server and client recipes install the same state (`ModsPlugin`,
+  the TCP plugin) skips the client's when the server's is on the engine, and the TCP sockets are polled by the server's tick
+  alone. The loader's script languages keep the server's side. State each side reads by keys of its own is kept per side:
+  the Players' tether sources (`torque_game::player_tether::add(vm, side, source)`), which the server asks by object id and
+  the prediction by ghost index.
+- **Refused.** A client in the engine's protocol whose RPCs would ride the RPC lanes the server keeps on the engine.
+
+The game's app names the server host with `type Server` on `GameApp` (every `App` has `torque_server::server::Server`, a
+script engine of its own), and the runners drive it as they drive any other.
+
 ## What the example leaves out
 
 A game adds these on the same pieces: the mission phases and the datablocks a client is sent before ghosting starts

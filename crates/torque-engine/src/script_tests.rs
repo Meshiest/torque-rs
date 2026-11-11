@@ -485,6 +485,27 @@ fn entries_go_to_their_side_after_the_stage_recipes() {
 }
 
 #[test]
+fn a_shared_replay_registers_only_the_clients_own_entries_over_the_servers() {
+    let engine = engine(|e| {
+        e.script().global("$Both", "default");
+        e.client_script()
+            .function("", "onClient", &[], "", || 1)
+            .global("$ClientOnly", "1");
+    });
+    let mut vm = server(&engine);
+    vm.set_global("$Both", "the server's");
+    for &stage in ClientStage::ALL {
+        engine.replay_shared(stage, &mut vm).expect("runs");
+    }
+    assert_eq!(vm.global("$Both").as_deref(), Some(&b"the server's"[..]));
+    assert_eq!(vm.global("$ClientOnly").as_deref(), Some(&b"1"[..]));
+    assert_eq!(eval(&mut vm, "return isFunction(onClient);"), "1");
+    // A replay of its own puts the default back, as on a client's own script engine.
+    engine.replay(CLIENT_SCRIPT_STAGE, &mut vm).expect("runs");
+    assert_eq!(vm.global("$Both").as_deref(), Some(&b"default"[..]));
+}
+
+#[test]
 fn a_name_declared_twice_fails_the_build_naming_both_plugins() {
     let build = |a: Hook, b: Hook| {
         EngineBuilder::new()

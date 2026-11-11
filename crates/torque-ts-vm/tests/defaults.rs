@@ -117,6 +117,27 @@ fn each_source_has_its_own_unknown_command_lines_and_a_timer_reports_what_it_lef
 }
 
 #[test]
+fn a_remote_partys_command_is_the_running_source_through_the_hosts_own_calls_inside_it() {
+    use torque_ts_vm::vm::{CommandSource, Native};
+    let mut vm = Vm::new();
+    vm.register("who", 1, 1, "", |vm, _| {
+        Native::Int(i32::try_from(vm.command_source().0).unwrap_or(-1))
+    });
+    vm.register("nested", 1, 1, "", |vm, _| {
+        let who = vm.invoke(None, b"who", &[]).unwrap_or_default();
+        Native::Str(who)
+    });
+    assert_eq!(text(&mut vm, "who", &[]), "0");
+    let from = |vm: &mut Vm, name: &[u8]| {
+        String::from_utf8_lossy(&vm.invoke_from(CommandSource(7), None, name, &[]).unwrap())
+            .into_owned()
+    };
+    assert_eq!(from(&mut vm, b"who"), "7");
+    assert_eq!(from(&mut vm, b"nested"), "7");
+    assert_eq!(vm.command_source(), CommandSource::LOCAL);
+}
+
+#[test]
 fn strpos_finds_an_empty_needle_at_its_offset() {
     let mut vm = Vm::new();
     assert_eq!(text(&mut vm, "strpos", &["abc", ""]), "0");

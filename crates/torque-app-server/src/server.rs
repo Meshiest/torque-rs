@@ -42,7 +42,9 @@ use torque_server::net::transport::{
     LanRules, MemoryEnd, PlainEngineRefusal, SharedTransport, check_plain_engine_bind,
 };
 use torque_server::net::{HostParts, NetShared};
-use torque_server::server::{MissionError, Server, TICK_MS, TickHooks};
+use torque_server::server::{
+    GameServer as ServerHost, MissionError, RunEnd, Server, TICK_MS, TickHooks,
+};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::{FileHost, MemFiles};
 use torque_ts_vm::vm::Vm;
@@ -611,6 +613,28 @@ impl<G: NetGame> GameServer<G> {
     /// The transport's work between ticks, done now ([`Transport::service`](torque_server::net::transport::Transport::service); a harness that paces ticks itself calls it).
     pub fn service(&mut self) {
         self.transport.borrow_mut().service();
+    }
+}
+
+impl<G: NetGame> AsMut<NetServer<G>> for GameServer<G> {
+    fn as_mut(&mut self) -> &mut NetServer<G> {
+        &mut self.server
+    }
+}
+
+/// A game's server as the server host of a client that runs over it (`torque_app::client::ClientBuilder::over_server`):
+/// the client's work runs before each of its ticks, which are [`GameServer::tick`]'s.
+impl<G: NetGame> ServerHost for GameServer<G> {
+    fn vm(&self) -> &Vm {
+        &self.server.vm
+    }
+
+    fn vm_mut(&mut self) -> &mut Vm {
+        &mut self.server.vm
+    }
+
+    fn run_ticks(&mut self, limit_ms: u32, until: impl FnMut(&mut Self) -> bool) -> RunEnd {
+        NetServer::<G>::run_on(self, limit_ms, until)
     }
 }
 

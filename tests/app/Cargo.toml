@@ -93,6 +93,15 @@ name = "loader_native_effects"
 path = "tests/loader/native_effects.rs"
 
 [[test]]
+name = "loader_shared_side"
+path = "tests/loader/shared_side.rs"
+
+# torque-plugin-props: the tether sources of each side on a script engine a client shares with its server.
+[[test]]
+name = "props_shared"
+path = "tests/props/shared.rs"
+
+[[test]]
 name = "loader_pictures"
 path = "tests/loader/pictures.rs"
 required-features = ["render"]

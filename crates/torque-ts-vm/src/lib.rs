@@ -22,6 +22,9 @@
 //!   how many each left out once its second is over
 //!   (`a_flood_of_unknown_commands_prints_a_few_lines_a_second_and_how_many_it_left_out`,
 //!   `each_source_has_its_own_unknown_command_lines_and_a_timer_reports_what_it_left_out`).
+//! - [`vm::Vm::command_source`] is the innermost remote party's command in progress, kept through the host's own calls inside
+//!   it and restored when it ends (`a_remote_partys_command_is_the_running_source_through_the_hosts_own_calls_inside_it`);
+//!   torque-client's `commandToServer` reads it on a script engine a server shares.
 //! - The step budget is a time budget: an operation that copies or scans a value it leaves on the stack (a save, a
 //!   variable or field array name, an object lookup, a `foreach$`'s text, an `_NP` jump, the classic executor's every
 //!   read of the current string) is charged its bytes each time (`chained_assignments_are_charged_by_their_bytes` in both

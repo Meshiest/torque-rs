@@ -384,6 +384,10 @@ different.
 - `torque`: the umbrella crate, re-exporting the engine crates behind features; `torque-app` (`torque::app`) holds what
   every game shares (its files, a server, a client, a window, the world view and offscreen pictures).
 - Math on `glam`.
+- `torque-app`: a client can run over its server, on that server's script engine (`ClientBuilder::over_server`), as TGE's
+  client holds its local server; the client host then ticks the server. `GameApp` gains `type Server`, the server host of
+  the client's script engine: a game that implements `GameApp` itself must add it (every `App` has
+  `torque_server::server::Server`; stable Rust has no default for an associated type).
 - `torque-script-reference` (`just script-reference`): writes the guide's script reference (every console function, method, class and pref of a default engine, with the opt-in plugins' marked) from the script engines it makes; CI fails when the checked-in pages are stale.
 - Native extensions (`torque-plugin-loader`, the `torque` crate's `native-extensions` feature): libraries loaded at run time
   from a local `plugins/` folder over a versioned C ABI (`torque-plugin-abi`, the generated header `torque_plugin.h`), off

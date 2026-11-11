@@ -174,12 +174,25 @@ mod native {
             Ok(())
         });
         engine.client(ClientStage::Game, move |vm, _| {
-            install(vm, make());
+            // A client over its server's script engine shares the server's sockets and classes, which the server's tick
+            // services.
+            if vm.extension::<TcpHost>().is_some() {
+                vm.set_extension(Rc::new(ServerPolls));
+            } else {
+                install(vm, make());
+            }
             Ok(())
         });
         engine.push(ServerTick::before(|mut vm: VmMut| tick(&mut vm)));
-        engine.push(ClientTick::new(tick));
+        engine.push(ClientTick::new(|vm| {
+            if vm.extension::<ServerPolls>().is_none() {
+                tick(vm);
+            }
+        }));
     }
+
+    /// Marks a script engine whose sockets the server's tick services: a client over its server's.
+    struct ServerPolls;
 
     /// One tick's pass, its callbacks' errors printed.
     fn tick(vm: &mut Vm) {

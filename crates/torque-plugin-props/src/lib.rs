@@ -519,7 +519,11 @@ impl Plugin for PropsPlugin {
                 vm,
                 Rc::new(server::Blasts(tethers.clone())),
             );
-            torque_game::player_tether::add(vm, joints::server::tethers(&tethers));
+            torque_game::player_tether::add(
+                vm,
+                torque_game::player_tether::Side::Server,
+                joints::server::tethers(&tethers),
+            );
             torque_game::scene::links::add_child_rule(
                 vm,
                 Rc::new(hierarchy::PropRule(tethers.clone())),
@@ -531,7 +535,11 @@ impl Plugin for PropsPlugin {
             props: book.clone(),
         };
         engine.client(ClientStage::Classes, move |vm, _| {
-            torque_game::player_tether::add(vm, Rc::new(client_tethers.clone()));
+            torque_game::player_tether::add(
+                vm,
+                torque_game::player_tether::Side::Client,
+                Rc::new(client_tethers.clone()),
+            );
             Ok(())
         });
         engine

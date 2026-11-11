@@ -576,12 +576,30 @@ impl ScriptTable {
     }
 }
 
+/// Whose entries a replay registers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Sides {
+    /// Every entry of the stage's side, on a script engine of that side alone.
+    Own,
+    /// Only the client's own, on a server's script engine its client shares (the entries of both sides are there already).
+    Shared,
+}
+
 /// Runs the registry's entries for `stage` on `vm`: the server's at [`SERVER_SCRIPT_STAGE`], the client's at
 /// [`CLIENT_SCRIPT_STAGE`], in the order the plugins declared them.
-pub(crate) fn replay_entries(entries: &[ScriptEntry], stage: Stage, vm: &mut Vm, engine: &Engine) {
-    let side: fn(Side) -> bool = match stage {
-        Stage::Server(stage) if stage == SERVER_SCRIPT_STAGE => Side::server,
-        Stage::Client(stage) if stage == CLIENT_SCRIPT_STAGE => Side::client,
+pub(crate) fn replay_entries(
+    entries: &[ScriptEntry],
+    stage: Stage,
+    vm: &mut Vm,
+    engine: &Engine,
+    sides: Sides,
+) {
+    let side: fn(Side) -> bool = match (stage, sides) {
+        (Stage::Server(stage), Sides::Own) if stage == SERVER_SCRIPT_STAGE => Side::server,
+        (Stage::Client(stage), Sides::Own) if stage == CLIENT_SCRIPT_STAGE => Side::client,
+        (Stage::Client(stage), Sides::Shared) if stage == CLIENT_SCRIPT_STAGE => {
+            |side| side == Side::Client
+        }
         _ => return,
     };
     for entry in entries.iter().filter(|e| side(e.side)) {

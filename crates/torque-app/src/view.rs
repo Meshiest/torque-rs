@@ -446,8 +446,10 @@ impl WorldView {
     /// the view draws with the slot's renderer and its features, and with each swap from its next frame. A renderer chosen
     /// before (a script at start-up) that cannot be made on this view's GPU gives way to the engine's own, with a warning on
     /// the client's console.
-    pub fn attach_to<C: ConnGame>(&mut self, host: &mut crate::Host<C>) {
-        use torque_client::host::GameServer;
+    pub fn attach_to<C: ConnGame, S: torque_client::host::GameServer>(
+        &mut self,
+        host: &mut crate::Host<C, S>,
+    ) {
         let vm = host.server.vm_mut();
         if let Some(slot) = RendererSlot::of(vm)
             && let Err(e) = self.attach_slot(slot)
@@ -643,11 +645,13 @@ impl WorldView {
     }
 
     /// The warnings since the last take on the console of the client `host` runs.
-    pub fn report_warnings<C: ConnGame>(&mut self, host: &mut crate::Host<C>) {
+    pub fn report_warnings<C: ConnGame, S: torque_client::host::GameServer>(
+        &mut self,
+        host: &mut crate::Host<C, S>,
+    ) {
         if self.warnings.is_empty() {
             return;
         }
-        use torque_client::host::GameServer;
         let vm = host.server.vm_mut();
         for w in self.take_warnings() {
             vm.warn(format!("render: {w}"));

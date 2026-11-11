@@ -88,7 +88,8 @@ impl VmContext {
         *self.policy.borrow_mut() = policy;
     }
 
-    /// Sets the side, once: a script engine made by a server's or a client's recipes.
+    /// Sets the side, once: a script engine made by a server's or a client's recipes. A client over its server's script
+    /// engine keeps the server's side, whatever its own recipes ask.
     pub(crate) fn set_side(&self, side: Side) {
         if self.side() == Side::Both {
             *self.side.borrow_mut() = side;

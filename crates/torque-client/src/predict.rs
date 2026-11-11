@@ -1365,7 +1365,7 @@ impl<W: PredictWorld> Predictor<W> {
         }
         self.static_world
             .set_plugin_sources(torque_game::plugin_collision::sources_of(vm));
-        self.tethers = torque_game::player_tether::of(vm);
+        self.tethers = torque_game::player_tether::of(vm, torque_game::player_tether::Side::Client);
         self.free_look = vm
             .global("$mvFreeLook")
             .is_some_and(|v| ts_vm::fields::atob(&v));

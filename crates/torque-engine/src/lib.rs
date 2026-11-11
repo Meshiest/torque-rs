@@ -61,6 +61,12 @@
 //!
 //! # Maintaining
 //!
+//! **A client over its server replays only its own entries.** [`Engine::replay_shared`] runs a client stage's recipes on the
+//! script engine a server of the engine made, and registers only the registry's client-only entries: the entries of both sides
+//! went in at the server's stage, and registering them again would set their globals and prefs back over what the server's
+//! scripts wrote. [`Engine::replay`] is unchanged for every other host
+//! (`a_shared_replay_registers_only_the_clients_own_entries_over_the_servers` in `script_tests.rs`).
+//!
 //! A native, global or pref that writes or deletes files, runs code from text, changes the engine as a whole (mods, limits,
 //! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on
 //! [`function`]): the extensions' call policy reads it, and torque-plugin-loader's

@@ -452,6 +452,8 @@ pub struct Vm {
     profile: Option<Box<profile::Profiler>>,
     /// The "Unknown command" warnings of each source's second in progress ([`MAX_UNKNOWN_COMMAND_LINES`]).
     unknown_commands: std::collections::HashMap<CommandSource, UnknownCommands>,
+    /// The remote party whose command is running ([`Vm::command_source`]).
+    command_source: CommandSource,
 }
 
 /// Who asked [`Vm::invoke_from`] for a function: [`CommandSource::LOCAL`] for the host itself, else a number the host gives each
@@ -557,6 +559,7 @@ impl Vm {
             host_budget: Default::default(),
             profile: None,
             unknown_commands: std::collections::HashMap::new(),
+            command_source: CommandSource::LOCAL,
         };
         vm.id = NEXT_VM_ID.fetch_add(1, Ordering::Relaxed);
         vm.binding_epoch = vm.id;
@@ -1002,9 +1005,23 @@ impl Vm {
         let mut argv = Vec::with_capacity(args.len().saturating_add(1));
         argv.push(name.to_vec());
         argv.extend(args.iter().cloned());
+        // The host's own calls inside a remote party's command stay that party's.
+        let outer = self.command_source;
+        if source != CommandSource::LOCAL {
+            self.command_source = source;
+        }
         let saved = self.enter_run();
         let result = self.invoke_callable(entry, argv, true);
+        self.command_source = outer;
         self.leave_run(saved, result)
+    }
+
+    /// The remote party whose command is running: the source of the innermost [`invoke_from`](Self::invoke_from) of one
+    /// (a host's own calls inside it keep it), else [`CommandSource::LOCAL`]. A native that answers a remote party apart from
+    /// the host's own scripts reads it.
+    #[must_use]
+    pub fn command_source(&self) -> CommandSource {
+        self.command_source
     }
 
     /// [`invoke`](Self::invoke) with the argument list made by the caller, which gives it up (`argv[0]` is the

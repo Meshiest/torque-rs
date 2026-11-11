@@ -35,6 +35,11 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - The connection's natives that take over a server's (registered after it on one script engine) answer for the
+//!   server's objects as the server does: the methods fall back through `prev`, and `commandToServer` gives a remote
+//!   party's command ([`ts_vm::vm::Vm::command_source`] other than the client's connection) to the server's own, so a
+//!   server's handler sends nothing on the client's connection (torque-app's `client_over_server_tests.rs`). With no server
+//!   native before it the client's is the only one, as on a client of its own.
 //! - A tick's prediction spends at most [`predict::TICK_WORK`], about 8 ms of the reference machine (measured with
 //!   `torque-sim`'s `work_units_cost`; the trace-hash scenarios' lines must not change), and a predicted Player's box is held to
 //!   [`predict::MAX_PREDICTED_BOX`] (`a_predicted_players_box_is_held_to_the_largest_side_prediction_takes`).

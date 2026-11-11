@@ -88,6 +88,10 @@ splits, one `onReceive` at a time, each line an `onLine`. The end of a connectio
 
 **Invariants and the tests that hold them.**
 
+- One `TcpHost` a script engine: a client over its server's script engine (torque-app's `ClientBuilder::over_server`) keeps
+  the server's classes and sockets, so its `Game` recipe installs nothing when a `TcpHost` is there (`tcp_sides` in
+  torque-test-app: `a_client_over_its_server_shares_the_servers_classes_and_sockets`), and only the server's tick hook polls
+  it, once a tick (`a_client_over_its_server_polls_the_one_host_once_a_tick`).
 - No borrow of the table is held while a script runs, and after each callback the socket is checked to still be the object's
   (`a_deleted_object_closes_its_connection`, `a_listening_object_offers_each_connection_and_a_new_object_takes_it`).
 - TGE's order of callbacks (`a_name_is_looked_up_before_the_connect_and_a_missing_one_fails_alone`,

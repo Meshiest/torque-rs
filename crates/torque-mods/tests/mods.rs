@@ -4,7 +4,9 @@
 mod common;
 
 use common::{console, eval, files, server, zip_of};
-use torque_engine::{AssetError, Assets, Engine, EngineBuilder, Plugin, PluginId, Spec};
+use torque_engine::{
+    AssetError, Assets, ClientStage, Engine, EngineBuilder, Plugin, PluginId, Spec,
+};
 use torque_mods::{MANIFEST, ModLimits, ModStatus, Mods, ModsConfig, ModsPlugin, Version};
 use torque_ts_vm::vm::Vm;
 
@@ -105,6 +107,25 @@ fn a_zip_mod_overrides_a_function_adds_a_datablock_and_adds_an_asset() {
         eval(&mut vm, "return getModField(\"hello\", \"package\");"),
         "Mod_hello"
     );
+}
+
+#[test]
+fn a_client_over_its_servers_script_engine_keeps_the_servers_mods_and_runs_none_again() {
+    let engine = engine();
+    let zip = hello_zip();
+    let mut vm = server(&engine, game(&[("mods/hello.zip", &zip)]), "server.cs");
+    let mods = Mods::of(&vm).expect("the server's mods");
+    console(&mut vm);
+    for &stage in ClientStage::ALL {
+        engine
+            .replay_shared(stage, &mut vm)
+            .expect("the stage replays");
+    }
+    let kept = Mods::of(&vm).expect("the mods");
+    assert!(std::rc::Rc::ptr_eq(&mods, &kept), "the server's mods stand");
+    let log = console(&mut vm);
+    assert!(!log.contains("Executing mods/hello/server.cs."), "{log}");
+    assert_eq!(eval(&mut vm, "return greet();"), "mod");
 }
 
 #[test]

@@ -1583,9 +1583,17 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
             Native::Void
         },
     );
-    // commandToServer(tag, ...): over the connection to the server, once there is one.
+    // commandToServer(tag, ...): over the connection to the server, once there is one. On a script engine a server shares with
+    // this client, the server's own (it sends nothing) answers a command a remote party's connection is running, so a server's
+    // command handler never sends on the client's connection.
     let st = Rc::clone(client);
+    let server = vm.native_of("", "commandToServer").map(|(_, _, _, f)| f);
     vm.register("commandToServer", 2, 21, "", move |vm, c| {
+        if let Some(server) = &server
+            && runs_a_servers_command(vm, &st)
+        {
+            return server(vm, c);
+        }
         let bytes = c
             .argv
             .iter()
@@ -1598,6 +1606,19 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         command_to_server(vm, &st, c.argv.get(1..).unwrap_or(&[]))
     });
     G::register_natives(vm, client, gui);
+}
+
+/// Whether the command running is a remote party's other than this client's own server (whose commands come over the
+/// client's connection object).
+fn runs_a_servers_command<G: ConnGame>(vm: &Vm, client: &Rc<RefCell<ClientState<G>>>) -> bool {
+    let source = vm.command_source();
+    source != CommandSource::LOCAL
+        && !client
+            .borrow()
+            .conn
+            .conn
+            .as_ref()
+            .is_some_and(|conn| CommandSource(u64::from(conn.obj)) == source)
 }
 
 fn command_to_server<G: ConnGame>(

@@ -66,6 +66,11 @@
 //! the same goldens. Extension points: a new per-server part of the host goes on `NetGameParts` (a field with Torque's value
 //! as `TorqueNetFactory`'s); a runner that must start any net game calls `net_game::start_net_game`; a method a runner needs goes
 //! on `RunServer`.
+//!
+//! **A [`server::GameServer`] is a server host** (`torque_server::server::GameServer`), so torque-app's
+//! `ClientBuilder::over_server` can make a client on its script engine: `run_ticks` is `Server::run_on` over the server it
+//! holds, the same main loop as [`server::GameServer::tick`] with the client's work before each tick. Nothing in this crate
+//! calls it, so a server alone ticks as before (torque-app's `client_over_server_tests.rs`).
 
 pub mod cli;
 pub mod config;
