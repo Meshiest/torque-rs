@@ -119,7 +119,10 @@
 //! `onDataBlocksDone` again; a round with nothing to send sends nothing. With no round asked the wire is Torque's
 //! (torque-trace-hash's `wire_golden` in both protocols); `tests/datablock_live.rs` has the chain (one body per edit, the
 //! order, an edit during a download, loss, the callbacks) and torque-test-app's `server_datablock_live` whole clients in
-//! both protocols with their caps.
+//! both protocols with their caps. In the engine's protocol a connection's control object is held back from a change of its
+//! datablock until the client has read the record (`net::host`'s `PredictedHold`, `ConnDatablocks::awaits`), so its moves are
+//! stepped with the values the client predicts them with: 0 corrections from the change on a 20% loss link
+//! (torque-plugin-props's `datablock_prediction`). Torque's protocol applies it at once, as Torque does.
 //!
 //! **A live round waits for a connection's content** (`net::content`, `net::datablocks`): the game's `ContentServer` names
 //! the connections it sent content to mid-game (`take_late`), and the host holds each as it held it at the accept (a late

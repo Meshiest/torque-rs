@@ -15,7 +15,8 @@
 //! swaps the info): a script that changes `maxForwardSpeed` mid-game is obeyed from the next tick (the preload products such as
 //! `runSurfaceCos` are rebuilt too). The words the state copied from the datablock (mass, drag, speeds, recharge rate, the box,
 //! the damage and energy as shares of their maxima) follow through the tick's refresh of the datablock's users
-//! ([`crate::scene::refresh`]), which runs [`new_datablock`] again for the Player.
+//! ([`crate::scene::refresh`]), which runs [`new_datablock`] again for the Player. A Player the host holds back from the change
+//! ([`crate::scene::refresh::is_held`]) keeps both its info and those words until the hold ends.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree: `T3D/player.cpp` and
 //! `T3D/aiPlayer.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
@@ -354,7 +355,7 @@ pub fn refresh_info(vm: &mut Vm, id: ObjId) {
         return;
     };
     let count = generation(vm, db);
-    if old_db == db && old_gen == count {
+    if old_db == db && (old_gen == count || crate::scene::refresh::is_held(vm, id)) {
         return;
     }
     // A refused budget leaves the old products; the run ends with the step limit.

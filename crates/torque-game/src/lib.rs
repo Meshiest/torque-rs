@@ -60,7 +60,11 @@
 //!   `a_projectile_data_removed...`): no dead id is read;
 //! - a plugin's objects outside the process list are found by the wide scan when a datablock's count says it has more users
 //!   than the process list holds, and a plugin counts them itself ([`scene::refresh::user_added`], [`scene::refresh::user_left`];
-//!   the unit test `a_user_outside_the_process_list...`, torque-plugin-props's `datablock_reload`).
+//!   the unit test `a_user_outside_the_process_list...`, torque-plugin-props's `datablock_reload`);
+//! - a user a host holds ([`scene::refresh::HoldChanges`]) keeps its old values, a Player its info too, and takes the change at
+//!   the first drain after the hold ends or at the [`scene::refresh::MAX_HOLD_TICKS`]th drain of the hold, and one whose hold
+//!   ran out is not held again while the host still holds it (`a_held_user_takes_the_change...`; torque-plugin-props's
+//!   `datablock_prediction`, with a client that never acknowledges).
 //!
 //! Extension points: a game chains its refresh with [`behaviour::chain`] on its datablock class; the drain's caps are
 //! [`scene::refresh::MAX_REFRESHES_PER_DRAIN`] and [`scene::refresh::DRAIN_WORK`]. Check: `cargo test -p torque-game --lib refresh`

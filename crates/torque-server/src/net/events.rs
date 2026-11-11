@@ -736,6 +736,18 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
         Ok(())
     }
 
+    /// Whether the connection that controls `obj` has yet to read datablock `db`'s new body from a live round
+    /// ([`ConnDatablocks::awaits`]): false for an object no connection controls.
+    pub fn control_awaits_datablock(&self, obj: ObjId, db: ObjId) -> bool {
+        let st = self.state.borrow();
+        let Some(conn) = st.hub.as_ref().and_then(|hub| hub.control_holder(obj)) else {
+            return false;
+        };
+        st.conns
+            .get(&conn)
+            .is_some_and(|c| !c.queue.is_closed() && c.datablocks.awaits(db, st.keys.key_of(db)))
+    }
+
     /// The key `id` was last sent with to `conn`, when a body of it was ([`ConnDatablocks::sent_key`]).
     pub fn datablock_sent_key(&self, conn: ConnId, id: ObjId) -> Option<i32> {
         self.state

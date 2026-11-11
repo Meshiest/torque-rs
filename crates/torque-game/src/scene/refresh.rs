@@ -35,6 +35,15 @@
 //! object's `dataBlock` is read as an object reference or as the integer id a plugin class declares it as. A plugin whose
 //! objects are not `GameBase` counts them itself ([`user_added`] when one is made, [`user_left`] when one is gone).
 //!
+//! **Holds.** A host may hold a change back from some users for a while ([`set_hold`], [`HoldChanges`]): the network host of
+//! the engine's protocol holds a client's control object while that client has yet to get the datablock's new record, so the
+//! server steps it with the values the client predicts it with. A held user keeps what it was built with (a Player's info
+//! too: [`is_held`]) and takes the change at the first drain after its hold ends, or at the [`MAX_HOLD_TICKS`]th drain of the
+//! hold: the held object is the server's own, which damage, collisions and every other client see, and only its client ends
+//! the hold. A user whose hold ran out is not held again until a drain finds the host no longer holding it, so changes made
+//! every tick cannot keep it held. One that is gone or took another datablock is dropped from the holds. Its datablock's
+//! `onReloaded` runs with the refresh of the users not held.
+//!
 //! **Limits.** A drain refreshes the users of dirty datablocks in id order until it has refreshed [`MAX_REFRESHES_PER_DRAIN`]
 //! objects (the first datablock's users are always taken, however many) and runs under a host work budget ([`DRAIN_WORK`]),
 //! in chunks of [`REFRESH_CHUNK`] users: once the budget refuses, the datablock keeps a cursor at its last finished chunk and
@@ -68,6 +77,10 @@ pub const MAX_REFRESHES_PER_DRAIN: usize = 4096;
 /// tick's pass ([`crate::sim::pass::TICK_PASS_WORK`]). [`set_drain_work`] changes it.
 pub const DRAIN_WORK: u64 = crate::sim::pass::TICK_PASS_WORK;
 
+/// The most drains a user is held back from a change ([`HoldChanges`]), the one that held it included: then it takes the change
+/// whatever the host says. A record reaches a client in about 2 ticks on a clean link and 9-12 at 20% loss.
+pub const MAX_HOLD_TICKS: u32 = 16;
+
 /// The users a drain refreshes between two checks of its budget: a datablock put off by the budget resumes after its last
 /// finished chunk.
 pub const REFRESH_CHUNK: usize = 32;
@@ -92,6 +105,10 @@ pub struct Stats {
     pub deferred: u64,
     /// The work the drains charged, in the units of `Vm::charge_work`.
     pub work: u64,
+    /// Users held back from a change ([`HoldChanges`]; one held again while held counts once), and held users refreshed
+    /// when their hold ended or ran out.
+    pub held: u64,
+    pub released: u64,
 }
 
 /// A dirty datablock's mark: the change and, after a drain the budget stopped, the last user it finished.
@@ -101,9 +118,22 @@ struct Mark {
     resume_after: Option<ObjId>,
 }
 
+/// A user held back from its datablock's change: the change, and the drains it has been held for.
+#[derive(Debug, Clone, Copy)]
+struct Held {
+    db: ObjId,
+    change: DatablockChange,
+    drains: u32,
+}
+
 #[derive(Default)]
 struct State {
     marks: IdMap<ObjId, Mark>,
+    /// The users held back, by id: at most one entry per live object.
+    held: IdMap<ObjId, Held>,
+    /// The users whose hold ran out, with the datablock: not held again while the host still holds them (at most one entry per
+    /// live object).
+    expired: IdMap<ObjId, ObjId>,
     /// The classes warned about for having users and no refresh.
     warned: IdSet<ClassId>,
     stats: Stats,
@@ -119,6 +149,32 @@ pub struct DirtyDatablocks {
 
 fn dirty(vm: &Vm) -> Option<Rc<DirtyDatablocks>> {
     vm.extension::<DirtyDatablocks>()
+}
+
+/// What a host holds back: users that keep their datablock's old values for now, though the datablock changed. Asked by every
+/// drain, for each user of a changed datablock and for each user already held.
+pub trait HoldChanges {
+    /// Whether `user` keeps the values it has of `db` this tick.
+    fn holds(&self, vm: &Vm, user: ObjId, db: ObjId) -> bool;
+}
+
+/// The host's holds: a `Vm` extension of its own, so a host may set them before or after [`install`].
+struct Holds(Rc<dyn HoldChanges>);
+
+/// Sets the host's holds ([`HoldChanges`]); a later call replaces them.
+pub fn set_hold(vm: &mut Vm, hold: Rc<dyn HoldChanges>) {
+    vm.set_extension(Rc::new(Holds(hold)));
+}
+
+/// Whether `user` is held back from a change of the datablock it has now.
+pub fn is_held(vm: &Vm, user: ObjId) -> bool {
+    dirty(vm).is_some_and(|set| {
+        set.state
+            .borrow()
+            .held
+            .get(&user)
+            .is_some_and(|h| datablock_of(vm, user) == Some(h.db))
+    })
 }
 
 /// Marks `db` dirty with `change`; a redeclare's mark outranks a write's. Nothing without the extension (a client, a
@@ -301,6 +357,8 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
     };
     // A retiring datablock whose users are all gone is freed before the marks are read (its mark would be dropped anyway).
     let mut errors = purge_retiring(vm);
+    let hold = vm.extension::<Holds>().map(|h| Rc::clone(&h.0));
+    errors.extend(release_held(vm, &set, hold.as_deref()));
     let (marks, work) = {
         let mut state = set.state.borrow_mut();
         (
@@ -355,6 +413,10 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
             }
         }
     }
+    let held = hold
+        .as_deref()
+        .map(|hold| hold_users(vm, &set, hold, &mut dirty_users))
+        .unwrap_or_default();
     let mut refreshed = 0usize;
     let saved = vm.begin_host_budget(work);
     // Datablock order: the ids, so a tick's work is the same whatever the map's order.
@@ -372,6 +434,12 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
             mark.resume_after.is_none_or(|after| u > after) && vm.objects().contains(u)
         });
         if users.is_empty() {
+            // Every user is held: the script hears of the change all the same.
+            if held.contains(&db)
+                && let Err(error) = vm.call_method(db, b"onReloaded", &[])
+            {
+                errors.push(error);
+            }
             continue;
         }
         // Once the budget refused (a refusal holds until the budget closes), or the cap is reached, the rest waits for the
@@ -406,6 +474,123 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
     errors
 }
 
+/// Takes the users the host holds out of their datablock's refresh and into the holds (a user held already keeps its count of
+/// drains and takes the larger change). Returns the datablocks that had a user held.
+fn hold_users(
+    vm: &Vm,
+    set: &DirtyDatablocks,
+    hold: &dyn HoldChanges,
+    dirty_users: &mut IdMap<ObjId, (Mark, Vec<ObjId>)>,
+) -> IdSet<ObjId> {
+    let mut state = set.state.borrow_mut();
+    let State {
+        held,
+        expired,
+        stats,
+        ..
+    } = &mut *state;
+    let mut dbs = IdSet::default();
+    for (&db, (mark, users)) in dirty_users.iter_mut() {
+        users.retain(|&user| {
+            if expired.contains_key(&user) || !hold.holds(vm, user, db) {
+                return true;
+            }
+            dbs.insert(db);
+            let entry = held.entry(user).or_insert_with(|| {
+                stats.held += 1;
+                Held {
+                    db,
+                    change: mark.change,
+                    drains: 1,
+                }
+            });
+            entry.db = db;
+            entry.change = entry.change.max(mark.change);
+            false
+        });
+    }
+    dbs
+}
+
+/// The held users whose hold ended, or reached [`MAX_HOLD_TICKS`] drains, take their datablock's change now (the ones that ran
+/// out are kept from the next holds); the ones gone, or on another datablock, are dropped. A user leaves the holds whatever
+/// its refresh did: one the budget stopped marks its datablock dirty again, so the next drain refreshes it like any user.
+fn release_held(
+    vm: &mut Vm,
+    set: &DirtyDatablocks,
+    hold: Option<&dyn HoldChanges>,
+) -> Vec<VmError> {
+    let held_by =
+        |vm: &Vm, user: ObjId, db: ObjId| hold.is_some_and(|hold| hold.holds(vm, user, db));
+    let mut due: Vec<(ObjId, Held, bool)> = {
+        let mut state = set.state.borrow_mut();
+        let live = |vm: &Vm, user: ObjId, db: ObjId| {
+            vm.objects().contains(user) && datablock_of(vm, user) == Some(db)
+        };
+        state
+            .expired
+            .retain(|&user, &mut db| live(vm, user, db) && held_by(vm, user, db));
+        if state.held.is_empty() {
+            return Vec::new();
+        }
+        state.held.retain(|&user, h| {
+            h.drains = h.drains.saturating_add(1);
+            live(vm, user, h.db)
+        });
+        state
+            .held
+            .iter()
+            .filter_map(|(&user, &h)| {
+                let held = held_by(vm, user, h.db);
+                (!held || h.drains >= MAX_HOLD_TICKS).then_some((user, h, held))
+            })
+            .collect()
+    };
+    due.sort_unstable_by_key(|&(user, ..)| user);
+    let mut errors = Vec::new();
+    let saved = vm.begin_host_budget(DRAIN_WORK);
+    for (user, h, ran_out) in due {
+        let refreshed = refresh_users(vm, h.db, &[user], h.change);
+        {
+            let mut state = set.state.borrow_mut();
+            state.held.remove(&user);
+            if ran_out {
+                state.expired.insert(user, h.db);
+            }
+        }
+        if let Err(error) = refreshed {
+            errors.push(error);
+            mark(vm, h.db, h.change);
+            break;
+        }
+        set.state.borrow_mut().stats.released += 1;
+    }
+    let used = vm.end_host_budget(saved);
+    set.state.borrow_mut().stats.work += used;
+    errors
+}
+
+/// The class chain's refresh of `db`'s `users` after `change`: whether a behavior took it. Stops once `db` is gone (a
+/// behavior's script deleted it).
+fn refresh_users(
+    vm: &mut Vm,
+    db: ObjId,
+    users: &[ObjId],
+    change: DatablockChange,
+) -> Result<bool, VmError> {
+    let Some(class) = vm.objects().get(db).map(ts_vm::sim::SimObject::class) else {
+        return Ok(false);
+    };
+    let mut taken = false;
+    for behavior in &vm.objects().classes.behaviours(class) {
+        taken |= behavior.datablock_changed(vm, db, users, change)?;
+        if !vm.objects().contains(db) {
+            break;
+        }
+    }
+    Ok(taken)
+}
+
 /// Keeps `db` dirty for the next tick with `mark` (a new mark of the tick outranks it, a cursor is kept).
 fn defer(set: &DirtyDatablocks, db: ObjId, mark: Mark) {
     let mut state = set.state.borrow_mut();
@@ -433,20 +618,15 @@ fn refresh_one(
     let Some(class) = vm.objects().get(db).map(ts_vm::sim::SimObject::class) else {
         return Ok(());
     };
-    let behaviors = vm.objects().classes.behaviours(class);
     let mut taken = false;
     let mut resume_after = None;
     for chunk in users.chunks(REFRESH_CHUNK) {
-        for behavior in &behaviors {
-            taken |= behavior
-                .datablock_changed(vm, db, chunk, change)
-                .map_err(|error| Stopped {
-                    error,
-                    resume_after,
-                })?;
-            if !vm.objects().contains(db) {
-                return Ok(());
-            }
+        taken |= refresh_users(vm, db, chunk, change).map_err(|error| Stopped {
+            error,
+            resume_after,
+        })?;
+        if !vm.objects().contains(db) {
+            return Ok(());
         }
         resume_after = chunk.last().copied();
         // Counted per finished chunk: a datablock resumed over several ticks counts each user once (a chunk the budget
@@ -689,5 +869,71 @@ mod tests {
         assert_eq!(stats(&vm), Stats::default());
         let generation = ext::get(vm.objects(), d).map_or(0, |e| e.db_generation);
         assert_eq!(generation, 1, "the write still moved the generation");
+    }
+
+    /// Holds every user while its flag is up.
+    struct Flag(std::cell::Cell<bool>);
+
+    impl HoldChanges for Flag {
+        fn holds(&self, _: &Vm, _: ObjId, _: ObjId) -> bool {
+            self.0.get()
+        }
+    }
+
+    #[test]
+    fn a_held_user_takes_the_change_when_its_hold_ends_or_runs_out_and_is_not_held_again_while_the_host_holds_it()
+     {
+        let process = ProcessHandle::new();
+        let (mut vm, _, s) = scene(&process);
+        let flag = Rc::new(Flag(std::cell::Cell::new(true)));
+        set_hold(&mut vm, flag.clone());
+        vm.eval(b"function StaticShapeData::onReloaded(%db) { $reloads++; }")
+            .unwrap();
+        let reloads = |vm: &Vm| vm.global("$reloads");
+        // Two writes while held: one hold, the script told at each drain that had the change.
+        vm.eval(b"D.dynamicType = 1;").unwrap();
+        assert!(drain(&mut vm).is_empty());
+        vm.eval(b"D.dynamicType = 2;").unwrap();
+        assert!(drain(&mut vm).is_empty());
+        assert!(is_held(&vm, s));
+        let now = stats(&vm);
+        assert_eq!((now.held, now.released, now.light), (1, 0, 0));
+        assert_eq!(reloads(&vm), Some(b"2".to_vec()));
+        // The hold ends: the next drain refreshes it, though nothing is dirty.
+        flag.0.set(false);
+        assert!(drain(&mut vm).is_empty());
+        assert!(!is_held(&vm, s));
+        assert_eq!(stats(&vm).released, 1);
+        // A hold that never ends runs out at its MAX_HOLD_TICKS-th drain, the one that held it included.
+        flag.0.set(true);
+        vm.eval(b"D.dynamicType = 3;").unwrap();
+        for _ in 1..MAX_HOLD_TICKS {
+            assert!(drain(&mut vm).is_empty());
+        }
+        assert!(is_held(&vm, s));
+        assert!(drain(&mut vm).is_empty());
+        assert!(!is_held(&vm, s));
+        assert_eq!((stats(&vm).held, stats(&vm).released), (2, 2));
+        // While the host still holds it, every change reaches it at once: a write a tick cannot keep it held.
+        let light = stats(&vm).light;
+        for value in 10..20 {
+            vm.eval(format!("D.dynamicType = {value};").as_bytes())
+                .unwrap();
+            assert!(drain(&mut vm).is_empty());
+            assert!(!is_held(&vm, s));
+        }
+        assert_eq!((stats(&vm).held, stats(&vm).light), (2, light + 10));
+        // A drain that finds the host no longer holding it ends that, and the next change holds it again.
+        flag.0.set(false);
+        assert!(drain(&mut vm).is_empty());
+        flag.0.set(true);
+        // A held user that goes is dropped, not refreshed.
+        vm.eval(b"D.dynamicType = 4;").unwrap();
+        assert!(drain(&mut vm).is_empty());
+        assert!(is_held(&vm, s));
+        vm.eval(b"S.delete();").unwrap();
+        flag.0.set(false);
+        assert!(drain(&mut vm).is_empty());
+        assert_eq!((stats(&vm).held, stats(&vm).released), (3, 2));
     }
 }

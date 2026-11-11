@@ -384,6 +384,10 @@ struct Chain {
     walk: Walk,
     /// Made and not yet settled (posted, or held in [`ConnDatablocks::unposted`]).
     cells: Vec<Rc<DbCell>>,
+    /// The positions settled: every one under `settled`, and the ones above it settled out of order (at most a window). The
+    /// client reads ordered events in order, so a position is in once every position up to it settled.
+    settled: u32,
+    settled_above: Vec<u32>,
 }
 
 impl Chain {
@@ -405,6 +409,29 @@ impl Chain {
 
     fn is_live(&self) -> bool {
         matches!(self.walk, Walk::Live(_))
+    }
+
+    fn new(seq: i32, walk: Walk, cells: Vec<Rc<DbCell>>) -> Chain {
+        Chain {
+            seq,
+            walk,
+            cells,
+            settled: 0,
+            settled_above: Vec::new(),
+        }
+    }
+
+    /// Position `index` settled.
+    fn settle(&mut self, index: u32) {
+        if index != self.settled {
+            self.settled_above.push(index);
+            return;
+        }
+        self.settled += 1;
+        while let Some(at) = self.settled_above.iter().position(|&i| i == self.settled) {
+            self.settled_above.swap_remove(at);
+            self.settled += 1;
+        }
     }
 }
 
@@ -586,6 +613,19 @@ impl ConnDatablocks {
         self.chain.as_ref().is_some_and(Chain::is_live)
     }
 
+    /// Whether the connection has yet to read datablock `id`'s body at `key` (its current key) from a live round: the round
+    /// that runs has it at a position the client has not read up to (ordered events are read in order), or a round waits
+    /// and the connection was last sent it at another key.
+    pub fn awaits(&self, id: ObjId, key: i32) -> bool {
+        if let Some(chain) = &self.chain
+            && let Walk::Live(list) = &chain.walk
+            && let Some(at) = list.iter().position(|&d| d == id)
+        {
+            return at as u32 >= chain.settled;
+        }
+        self.live_pending && self.sent.get(&id) != Some(&key)
+    }
+
     /// A live round waits for the chain's end, or for the connection's content.
     pub fn live_pending(&self) -> bool {
         self.live_pending
@@ -720,11 +760,7 @@ impl ConnDatablocks {
             .iter()
             .map(|c| DbPost::Cell(DbEvent(Rc::clone(c))))
             .collect::<Vec<_>>();
-        self.chain = Some(Chain {
-            seq,
-            walk: Walk::Live(list),
-            cells,
-        });
+        self.chain = Some(Chain::new(seq, Walk::Live(list), cells));
         (LiveRound::Started(total), events, scanned)
     }
 
@@ -799,11 +835,7 @@ impl ConnDatablocks {
             .map(|c| DbPost::Cell(DbEvent(Rc::clone(c))))
             .collect::<Vec<_>>();
         let n = events.len();
-        self.chain = Some(Chain {
-            seq,
-            walk: Walk::Mission,
-            cells,
-        });
+        self.chain = Some(Chain::new(seq, Walk::Mission, cells));
         (Transmit::Started(n), events, scanned)
     }
 
@@ -826,6 +858,7 @@ impl ConnDatablocks {
             return out;
         };
         chain.cells.remove(at);
+        chain.settle(cell.index);
         // A connection whose sequence moved on is ignored; the host never moves it under a chain, so this is the chain's own.
         let seq = chain.seq;
         let live = chain.is_live();
@@ -1271,4 +1304,48 @@ pub fn tge_affine(m: &Mat4) -> Option<Affine> {
         position: [m[0][3], m[1][3], m[2][3]],
         quaternion,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A connection in a live round of `ids`, none settled.
+    fn in_round(ids: &[ObjId]) -> ConnDatablocks {
+        ConnDatablocks {
+            chain: Some(Chain::new(-1, Walk::Live(ids.to_vec()), Vec::new())),
+            ..ConnDatablocks::default()
+        }
+    }
+
+    #[test]
+    fn a_datablock_of_a_round_is_awaited_until_every_position_up_to_its_own_settled() {
+        let mut c = in_round(&[10, 11, 12]);
+        assert!([10, 11, 12].iter().all(|&id| c.awaits(id, 1)));
+        assert!(!c.awaits(13, 1), "not in the round, and no round waits");
+        // Settled out of order: the client reads ordered events in order, so 12 waits for 11.
+        let chain = c.chain.as_mut().expect("the round");
+        chain.settle(0);
+        chain.settle(2);
+        assert_eq!(
+            (c.awaits(10, 1), c.awaits(11, 1), c.awaits(12, 1)),
+            (false, true, true)
+        );
+        c.chain.as_mut().expect("the round").settle(1);
+        assert!(![10, 11, 12].iter().any(|&id| c.awaits(id, 1)));
+    }
+
+    #[test]
+    fn a_waiting_round_awaits_the_datablocks_last_sent_at_another_key() {
+        let mut c = ConnDatablocks {
+            live_pending: true,
+            ..ConnDatablocks::default()
+        };
+        c.sent.insert(10, 3);
+        assert!(!c.awaits(10, 3), "sent at its key");
+        assert!(c.awaits(10, 4), "changed since");
+        assert!(c.awaits(11, 1), "never sent");
+        c.live_pending = false;
+        assert!(!c.awaits(10, 4), "no round waits");
+    }
 }

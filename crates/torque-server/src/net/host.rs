@@ -771,8 +771,23 @@ pub fn attach_host<G: NetGame>(vm: &mut Vm, host: Host<G>) -> Rc<RefCell<NetShar
     commands::register_always(vm, &engine);
     if ProtocolMode::of(vm) == torque_engine::ProtocolKind::Engine {
         install_engine_removal(vm, &shared.borrow().events, &*codecs);
+        let layer = shared.borrow().events.clone();
+        torque_game::scene::refresh::set_hold(vm, Rc::new(PredictedHold(layer)));
     }
     shared
+}
+
+/// The engine's protocol holds a datablock change back from a connection's control object until that client has read the new
+/// record (`torque_game::scene::refresh::HoldChanges`): the client predicts the object with the record it has, so the server
+/// steps the client's moves with the same values and the change itself makes no correction. The client reads the record before
+/// it runs the moves it sends next; the packet carrying them acknowledges the record, and the drain of the tick that reads it
+/// releases the object before the pass steps those moves. Torque's protocol applies the change at once, as Torque does.
+struct PredictedHold<H: GameEvents, S: GhostGame>(EventLayer<H, S>);
+
+impl<H: GameEvents, S: GhostGame> torque_game::scene::refresh::HoldChanges for PredictedHold<H, S> {
+    fn holds(&self, _vm: &Vm, user: ObjId, db: ObjId) -> bool {
+        self.0.control_awaits_datablock(user, db)
+    }
 }
 
 /// In the engine's protocol the event table has the datablock removal ([`engine_event_registry`]) and the game's removal hook

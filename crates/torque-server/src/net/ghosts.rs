@@ -1312,6 +1312,11 @@ impl<G: GhostGame> GhostHub<G> {
     pub fn control_of(&self, conn: ConnId) -> Option<ObjId> {
         self.0.borrow().conns.get(&conn)?.control
     }
+
+    /// The connection whose control object `obj` is.
+    pub fn control_holder(&self, obj: ObjId) -> Option<ConnId> {
+        self.0.borrow().control_index.holder(obj)
+    }
 }
 
 /// The links between the hub's connections and the objects they control.
