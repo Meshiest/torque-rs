@@ -111,53 +111,10 @@ new GuiControlProfile(BannerShadow) { fontType = "Arial"; fontSize = 48; fontCol
 new GuiControlProfile(TeamProfile) { fontType = "Arial"; fontSize = 15; fontColors[0] = "235 238 245 255"; justify = "left"; };
 new GuiControlProfile(TeamShadow) { fontType = "Arial"; fontSize = 15; fontColors[0] = "0 0 0 230"; justify = "left"; };
 
-// Sound on: the kick plays through the engine's mixer. Nothing opens a sound card for it, so the headless demo is silent.
+// Sound on: the kick (the server plays it in the kicking player's sound slot, as part of that player's update) plays
+// through the engine's mixer at the player, from the mod's sound file. A window opens the sound card for it; headless, the
+// mixer runs on the clock and nothing is heard.
 OpenALInitDriver();
-
-// The pitch's reach (src/assets.rs holds these numbers; `the_mods_scripts_agree_with_the_pitchs_numbers` checks them): a sound
-// the server places is kept inside it.
-$Pitch::HalfWidth = 8;
-$Pitch::HalfLength = 12;
-$Pitch::GoalDepth = 1.5;
-$Pitch::GoalHeight = 2.1;
-
-// The one sound the server may ask for: the kick, played at a point on the pitch as a 3D sound, quieter farther from the
-// listener. Any other file plays nothing, and a place that is not three numbers plays nothing; one past the pitch is moved
-// onto its edge.
-new AudioDescription(ServerSound3D)
-{
-   volume = 0.8;
-   isLooping = false;
-   is3D = true;
-   referenceDistance = 4;
-   maxDistance = 40;
-};
-
-// Whether %text is a plain number (digits, a point, a sign, an exponent; nothing else, and not too long).
-function isPlainNumber(%text)
-{
-   return %text !$= "" && strlen(%text) <= 24 && stripChars(%text, "0123456789.-+e") $= "";
-}
-
-// %value as a number, kept between %low and %high.
-function clampNumber(%value, %low, %high)
-{
-   %value = %value + 0;
-   return %value < %low ? %low : (%value > %high ? %high : %value);
-}
-
-function clientCmdPlaySound(%file, %x, %y, %z)
-{
-   if (strcmp(%file, "sounds/kick.wav") != 0 || !isPlainNumber(%x) || !isPlainNumber(%y) || !isPlainNumber(%z))
-      return;
-   %x = clampNumber(%x, -$Pitch::HalfWidth, $Pitch::HalfWidth);
-   %y = clampNumber(%y, -($Pitch::HalfLength + $Pitch::GoalDepth), $Pitch::HalfLength + $Pitch::GoalDepth);
-   %z = clampNumber(%z, 0, $Pitch::GoalHeight);
-   %handle = alxCreateSource(ServerSound3D, %file, %x, %y, %z);
-   $Sound::Last = %handle ? alxPlay(%handle) : 0;
-   $Sound::At = %x SPC %y SPC %z;
-   $Sound::Played++;
-}
 
 // The team this client plays for, and the way it attacks (1: toward +y, -1: toward -y). Its own goals come first on the board,
 // in its color.

@@ -72,7 +72,7 @@ client's script engine the way a Torque game expects. Here is what it adds, in o
 | `ConnPlugin` | `torque.conn` | the client's connection to a server and the ghosts' natives |
 | `ServerQueryPlugin` | `torque.server-query` | the server browser's natives |
 | `ServerTransportPlugins`, `ClientTransportPlugins` | `torque.transport-udp-server`, ... | the transports a server listens on and a client connects over, a plugin each (see [Transports](#transports)) |
-| `AudioPlugin` | `torque.audio` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick; it plays through the null sink and opens no sound card |
+| `AudioPlugin` | `torque.audio` | the `alx` natives, the audio datablock classes (`AudioDescription`, `AudioProfile`) and a mixer of the client's own, moved once per tick, on which the world's sounds play (see [Sound](audio.md)); it plays through the null sink until a window opens the sound card (the `audio-device` feature) |
 | `ClientHostPlugin` | `torque.frame-host` | the client host that runs the frames |
 | `RendererSlotPlugin` | `torque.renderer-slot` | the renderer slot each client shares with its world view, and `setRenderer`/`getRenderer` |
 | `RendererPlugin` | `torque.renderer` | the engine's renderer, registered on the slot as `default` (the `renderer` feature) |

@@ -21,6 +21,7 @@
 [Uploads](uploads.md)
 [Props and joints](props-and-joints.md)
 [Scene hierarchy](scene-hierarchy.md)
+[Sound](audio.md)
 [Mods](mods.md)
 [Native extensions](native-extensions.md)
 [Lua](lua.md)

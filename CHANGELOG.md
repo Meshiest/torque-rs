@@ -284,6 +284,11 @@ different.
 
 #### Gameplay
 
+- Sound: the client mixes through its own mixer (no OpenAL), on the simulation clock until a window opens the sound card
+  (`audio-device`); without a device, or headless, every `alx` function answers as with sound and nothing is heard, where TGE's
+  `OpenALInitDriver` fails. A ShapeBase's sound slots, audio events and image state sounds play on it as TGE's client plays
+  them, in both network protocols.
+
 - `torque-hierarchy`: parent and child transforms for any scene object, unlike TGE's one-level mounting: a tree with depth,
   children and size caps, cycle checks, parents-first resolve, keep-world or keep-local reparenting, a recursive delete and
   a per-child flag to go with the parent, and a quantizer for local poses on the wire. `torque-plugin-hierarchy` (on in engine

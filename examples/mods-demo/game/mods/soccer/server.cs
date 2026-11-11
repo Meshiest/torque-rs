@@ -57,6 +57,25 @@ datablock PropData(BallData)
    canFreeze = false;
 };
 
+// The kick: a short thump played at the player who kicked, quieter the farther away the listener is. The server plays it in
+// the player's first sound slot (playAudio); the slot goes out with the player's update, and each client plays the mod's
+// sound where that player is.
+datablock AudioDescription(KickDescription)
+{
+   volume = 0.8;
+   isLooping = false;
+   is3D = true;
+   referenceDistance = 4;
+   maxDistance = 40;
+};
+
+datablock AudioProfile(KickSound)
+{
+   fileName = "sounds/kick.wav";
+   description = KickDescription;
+   preload = true;
+};
+
 function soccerBlock(%data, %x, %y, %z, %sx, %sy, %sz)
 {
    if (!isObject(Pitch))
@@ -140,12 +159,10 @@ function soccerBall(%data)
    return propSpawn(%data, "0 0" SPC %data.radius + 0.02) SPC %data.radius;
 }
 
-// The ball was kicked at %x %y %z: every player hears the kick there (the client plays the mod's sound as a 3D sound,
-// quieter the farther away it is).
-function soccerKickSound(%x, %y, %z)
+// The player %figure kicked the ball: every client hears the kick at that player.
+function soccerKick(%figure)
 {
-   for (%i = 0; %i < ClientGroup.getCount(); %i++)
-      commandToClient(ClientGroup.getObject(%i), 'PlaySound', "sounds/kick.wav", %x, %y, %z);
+   %figure.playAudio(0, KickSound);
 }
 
 function soccerTeam(%client, %name, %attack)

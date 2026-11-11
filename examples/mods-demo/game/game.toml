@@ -7,6 +7,6 @@ client = "client.cs"
 
 [plugins]
 # Plugins of DefaultPlugins this game never uses: no water, no terrain. The game-list queries stay on (the join screen lists
-# the network's games, and a server answers them), and so does sound: the kick plays through the engine's mixer (silent in
-# the headless demo).
+# the network's games, and a server answers them), and so does sound: the kick plays through the engine's mixer (a window
+# opens the sound card; the headless demo is silent).
 disable = ["torque.water", "torque.terrain"]

@@ -1315,9 +1315,19 @@ pub fn start_feed<G: ConnGame<Feed = TgeFeed>>(
 #[derive(Debug, Default)]
 pub struct TgeConn;
 
+/// What runs at the end of each tick of TGE's connection ([`ConnGame::ticked`]), when a host sets it as the script
+/// engine's extension: the world's sounds on the host's mixer, which this crate has none of.
+pub struct TgeTicked(pub fn(&mut Vm, &Rc<RefCell<ClientState<TgeConn>>>));
+
 impl ConnGame for TgeConn {
     type Feed = TgeFeed;
     type Parts = TgeParts;
+
+    fn ticked(vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+        if let Some(hook) = vm.extension::<TgeTicked>() {
+            (hook.0)(vm, client);
+        }
+    }
 
     const HANDSHAKE_WAIT_MS: u32 = TGE_HANDSHAKE_WAIT_MS;
     const HANDSHAKE_TRIES: u32 = TGE_HANDSHAKE_TRIES;

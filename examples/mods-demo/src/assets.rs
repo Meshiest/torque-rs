@@ -466,7 +466,6 @@ mod tests {
     const RULES: &str = include_str!("../game/mods/soccer/lib/rules.lua");
     const SOCCER: &str = include_str!("../game/mods/soccer/server.cs");
     const BIG_BALL: &str = include_str!("../game/mods/big-ball/server.cs");
-    const CLIENT: &str = include_str!("../game/client.cs");
 
     /// The number after `<name> =` on the first line of `text` that starts with it (Lua's `NAME = 1,`, a datablock's
     /// `name = 1;` or `name = "1 1 1";`, whose first word it takes).
@@ -498,14 +497,6 @@ mod tests {
             ("FLOOR_LENGTH", FLOOR[1]),
         ] {
             assert_eq!(number(RULES, name), value, "lib/rules.lua's {name}");
-        }
-        for (name, value) in [
-            ("$Pitch::HalfWidth", HALF_WIDTH),
-            ("$Pitch::HalfLength", HALF_LENGTH),
-            ("$Pitch::GoalDepth", GOAL_DEPTH),
-            ("$Pitch::GoalHeight", GOAL_HEIGHT),
-        ] {
-            assert_eq!(number(CLIENT, name), value, "client.cs's {name}");
         }
         assert_eq!(number(SOCCER, "radius"), BALL_RADIUS, "BallData's radius");
         // The big ball is the soccer mod's shape drawn at its radius.

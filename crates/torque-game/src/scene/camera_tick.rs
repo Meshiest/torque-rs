@@ -134,6 +134,7 @@ pub fn shape_base_tick(
     // The script threads, then the fade, before the image slots and the triggers.
     super::shapebase::advance_threads(vm, id)?;
     super::shapebase::fade_tick(vm, id);
+    super::shapebase::sound_timeout_tick(vm, id);
     // The Ghostable, non-ghost objects with a datablock call the script for each trigger that changed.
     if let Some(db) = datablock
         && let Some((mv, calls)) = input

@@ -26,7 +26,7 @@ use std::net::{SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
 use torque_client::conn::ConnGame;
-use torque_client::conn::tge::{TgeConn, TgeFeed, TgeWorld};
+use torque_client::conn::tge::{TgeConn, TgeFeed, TgeTicked, TgeWorld};
 use torque_client::game::ClientGame;
 use torque_client::host::{ClientHost, ClientPass, EnginePass};
 use torque_client::hud::HudWorld as _;
@@ -343,14 +343,14 @@ impl<C: ConnGame> ClientBuilder<C> {
                 }),
             );
         }
-        let pass = if ticks.is_empty() {
-            self.pass
-        } else {
-            Rc::new(TickedPass {
-                pass: self.pass,
-                ticks,
-            })
-        };
+        let pass = Rc::new(TickedPass {
+            pass: self.pass,
+            ticks,
+        });
+        // The world's sounds on the audio plugin's mixer, at the end of each tick of TGE's connection (another conn game
+        // plays its own world's sounds from its own `ticked`).
+        self.vm
+            .set_extension(Rc::new(TgeTicked(crate::sounds::tick)));
         let mut host = ClientHost::new(
             Server::new(self.vm),
             self.gui,

@@ -282,3 +282,27 @@ fn a_streamed_source_reports_its_times() {
         "0"
     );
 }
+
+#[test]
+fn without_a_sound_card_the_host_says_so_and_the_voices_run_on_the_clock() {
+    let (mut vm, host) = rig();
+    eval(&mut vm, "OpenALInitDriver();");
+    // The window path found no output device (or could not open it): the host falls back to the null sink.
+    host.borrow_mut().no_device();
+    assert!(host.borrow().device.is_none());
+    assert_eq!(host.borrow().report, Some(AudioReport::no_device()));
+    assert_eq!(
+        eval(&mut vm, "return alGetString(AL_RENDERER);"),
+        "No output device (silent)"
+    );
+    // The natives work as with a sound card, on the simulation clock: a half-second sound is over after 600 ms of ticks.
+    eval(
+        &mut vm,
+        "new AudioDescription(D0) { type = 0; }; $h = alxPlay(alxCreateSource(D0, \"base/snd/a.wav\"));",
+    );
+    assert_eq!(eval(&mut vm, "return alxIsPlaying($h);"), "1");
+    tick(&vm, &host, own);
+    assert!(vm.advance_time(600).is_empty());
+    tick(&vm, &host, own);
+    assert_eq!(eval(&mut vm, "return alxIsPlaying($h);"), "0");
+}

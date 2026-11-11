@@ -190,10 +190,17 @@ impl AudioHost {
         self.core.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Opens the default sound card (a window client only): the device's callback moves the voices from now on.
+    /// Opens the default sound card (a window client only): the device's callback moves the voices from now on. Err: why
+    /// none could be opened; the host then stays on the null sink ([`AudioHost::no_device`]), so the game plays on, silent.
     #[cfg(feature = "device")]
     pub fn open_device(&mut self) -> Result<String, String> {
-        let d = crate::device::Device::open(self.core.clone())?;
+        let d = match crate::device::Device::open(self.core.clone()) {
+            Ok(d) => d,
+            Err(why) => {
+                self.no_device();
+                return Err(why);
+            }
+        };
         let name = d.name.clone();
         self.device = Some(name.clone());
         self.report = Some(AudioReport {
@@ -202,6 +209,17 @@ impl AudioHost {
         });
         self.stream = Some(d);
         Ok(name)
+    }
+
+    /// The null sink, known: no sound card plays (none was found, or opening it failed). The voices keep moving on the
+    /// host's clock, `alxIsPlaying` and the rest answer as with sound, and `alGetString` reports no output device.
+    pub fn no_device(&mut self) {
+        self.device = None;
+        self.report = Some(AudioReport::no_device());
+        #[cfg(feature = "device")]
+        {
+            self.stream = None;
+        }
     }
 }
 

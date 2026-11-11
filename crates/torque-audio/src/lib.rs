@@ -17,6 +17,11 @@
 //!
 //! **Fuzz timing.** `fuzz::hostile_sound_files_never_panic` reports its slowest case and fails past a bound; a decoder's work must be
 //! tied to its input.
+//!
+//! **No test opens a device.** `AudioHost::open_device` is the window's alone (`torque-app`'s `sounds::open_device`); a failure
+//! leaves the host on the null sink through `AudioHost::no_device`, which is what the tests exercise
+//! (`without_a_sound_card_the_host_says_so_and_the_voices_run_on_the_clock`). The world's sounds (ShapeBase slots, audio events)
+//! reach the mixer through `natives::play_profile_at` from `torque-app`, not from this crate: it knows no ghost world.
 
 pub mod al;
 pub mod buffer;

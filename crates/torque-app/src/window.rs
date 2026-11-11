@@ -446,7 +446,15 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
 /// returns at once: the page's event loop runs the game from then on.
 pub fn run<G: GameApp>(game: G) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
-    let w = AppWindow {
+    // Mutable for the sound card's note alone.
+    #[cfg_attr(
+        not(all(not(target_arch = "wasm32"), feature = "audio-device")),
+        expect(
+            unused_mut,
+            reason = "the window is only changed when a sound card is opened"
+        )
+    )]
+    let mut w = AppWindow {
         game,
         surface: None,
         view: None,
@@ -473,6 +481,14 @@ pub fn run<G: GameApp>(game: G) -> Result<(), String> {
         use torque_render_core::pipeline_cache;
         if pipeline_cache::dir().is_none() {
             pipeline_cache::set_dir(pipeline_cache::user_dir(w.game.log_name()));
+        }
+        // The sound card, when the build has one: a failure leaves the mixer on the clock and the game plays on.
+        #[cfg(feature = "audio-device")]
+        {
+            let line = crate::sounds::open_device(torque_client::host::GameServer::vm(
+                &w.game.host_ref().server,
+            ));
+            w.note(&line);
         }
         let (w, ran) = match driver::run(w, event_loop) {
             Ok(w) => (w, Ok(())),

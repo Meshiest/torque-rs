@@ -418,6 +418,12 @@ impl<'a> VehicleHost for HostImpl<'a> {
         {
             crate::scene::shapebase::fade_tick(self.slot.vm(), id);
         }
+        if self
+            .slot
+            .read(|vm| crate::scene::shapebase::sounds_time_out(vm, id))
+        {
+            crate::scene::shapebase::sound_timeout_tick(self.slot.vm(), id);
+        }
     }
 
     fn damage_changed(&mut self, s: &mut VehicleState) {

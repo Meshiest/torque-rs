@@ -158,3 +158,29 @@ fn tges_player_box_is_the_bounding_box_and_it_steps_no_threads_of_its_own() {
         0
     );
 }
+
+#[test]
+fn a_one_shot_sound_slot_times_out_on_the_server_and_a_looping_one_stays() {
+    use super::{AUDIO_TIMEOUT_MS, SOUND_MASK_N, SOUND_THREADS, SoundSlot, sound_timeout_step};
+    let mut sounds = [SoundSlot::default(); SOUND_THREADS];
+    sounds[1] = SoundSlot {
+        playing: Some(90),
+        timeout: Some(1_000 + AUDIO_TIMEOUT_MS),
+    };
+    sounds[2] = SoundSlot {
+        playing: Some(91),
+        timeout: None,
+    };
+    // Not yet, and not at the timeout itself (`timeout < now`).
+    assert_eq!(sound_timeout_step(&mut sounds, 1_000), 0);
+    assert_eq!(sound_timeout_step(&mut sounds, 1_000 + AUDIO_TIMEOUT_MS), 0);
+    assert_eq!(sounds[1].playing, Some(90));
+    // Past it: the slot is free and its bit is to be cleared; the looping slot stays.
+    assert_eq!(
+        sound_timeout_step(&mut sounds, 1_001 + AUDIO_TIMEOUT_MS),
+        SOUND_MASK_N << 1
+    );
+    assert_eq!(sounds[1], SoundSlot::default());
+    assert_eq!(sounds[2].playing, Some(91));
+    assert_eq!(sound_timeout_step(&mut sounds, u32::MAX), 0);
+}

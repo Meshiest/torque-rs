@@ -627,6 +627,21 @@ impl GameView<'_> {
         })
     }
 
+    /// A ShapeBase's sound slot `index` (`playAudio`'s): whether it plays, and the profile.
+    fn sound(&self, field: &str, index: usize) -> Option<Value> {
+        if !field.starts_with("sound_") {
+            return None;
+        }
+        let slot = torque_game::scene::shapebase::state(self.fields.vm, self.fields.obj)
+            .and_then(|s| s.sounds.get(index).copied())
+            .unwrap_or_default();
+        Some(match field {
+            "sound_play" => Value::Bool(slot.playing.is_some()),
+            "sound_profile" => Value::Id(slot.playing),
+            _ => return None,
+        })
+    }
+
     /// A ShapeBase's script thread `index` (`playThread`'s): its sequence (-1 for none), state, direction and end.
     fn thread(&self, field: &str, index: usize) -> Option<Value> {
         if !field.starts_with("thread_") {
@@ -707,6 +722,9 @@ impl ObjectView for GameView<'_> {
             return v;
         }
         if let Some(v) = self.thread(field, index) {
+            return v;
+        }
+        if let Some(v) = self.sound(field, index) {
             return v;
         }
         if let Some(v) = self.projectile(field, index) {

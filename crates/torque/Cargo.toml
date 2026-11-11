@@ -93,7 +93,7 @@ client = ["dep:torque-client", "server", "gui", "ghost-world"]
 # The client's window glue (winit: keys, cursor hold, frame cap; the URL opener).
 client-window = ["client", "torque-client/window"]
 # Sound output through the system's audio device (ALSA on Linux).
-audio-device = ["audio", "torque-audio/device"]
+audio-device = ["audio", "torque-audio/device", "torque-app?/audio-device"]
 # The system's fonts as the fallback for a face and size with no font cache.
 system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen

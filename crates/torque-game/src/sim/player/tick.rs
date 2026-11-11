@@ -795,11 +795,19 @@ impl<'a> PlayerHost for HostImpl<'a> {
     }
 
     fn fade_tick(&mut self, s: &mut PlayerState) {
-        // The step holds the Player's shape state (the skeleton's), the fade with it.
-        if let Some(st) = self.skel.st.as_deref_mut()
-            && crate::scene::shapebase::fade_step(&mut st.fade)
-        {
+        // The step holds the Player's shape state (the skeleton's), the fade and the sound slots with it.
+        let now = self.sim_time();
+        let Some(st) = self.skel.st.as_deref_mut() else {
+            return;
+        };
+        if crate::scene::shapebase::fade_step(&mut st.fade) {
             s.mask_bits |= crate::scene::shapebase::FADE_MASK;
+        }
+        let cleared = crate::scene::shapebase::sound_timeout_step(&mut st.sounds, now);
+        if cleared != 0 {
+            s.mask_bits &= !cleared;
+            let id = self.id;
+            ghosts::unmark(self.vm(), id, cleared);
         }
     }
 

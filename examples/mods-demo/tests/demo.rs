@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use torque::app::server::GameServer;
+use torque::app::sounds::WorldSounds;
 use torque::mods::Mods;
 use torque_example_mods_demo::{Lua, Session, assets, library_file_name};
 
@@ -270,19 +271,10 @@ fn two_clients_download_the_mod_and_play_a_match() {
             Some(PropShape::Ball(0.75)),
             "client {n} holds the big ball"
         );
-        // The kicks are heard: the server asks each client to play the kick, and the client loads it from the mod's content.
-        assert!(
-            s.client_global(n, "$Sound::Played")
-                .parse::<u32>()
-                .unwrap_or(0)
-                > 0,
-            "client {n} heard no kick"
-        );
-        assert_ne!(
-            s.client_global(n, "$Sound::Last"),
-            "0",
-            "client {n} could not play the kick"
-        );
+        // The kicks are heard: the server plays the kick in the kicking player's sound slot, the slot comes with the player's
+        // update, and the client plays the mod's sound (loaded from the content it downloaded) on its mixer.
+        let sounds = WorldSounds::of(s.clients[n].vm()).expect("the client has world sounds");
+        assert!(sounds.borrow().started > 0, "client {n} heard no kick");
     }
 
     // A second join of a client that has the content in its cache sends nothing.
@@ -335,51 +327,6 @@ fn a_servers_lua_never_runs_on_a_client_that_has_the_extension() {
     assert_eq!(s.client_global(0, "$Soccer::Round"), "");
     assert_eq!(s.client_global(0, "$Soccer::Goals"), "");
     assert!(number(&s, "$Soccer::Round") >= 1, "the server's copy runs");
-}
-
-#[test]
-#[ignore = "builds the Lua extension (Luau's C++)"]
-fn a_client_plays_only_the_kick_and_only_on_the_pitch() {
-    let mut s = session("sound", false);
-    s.add_client().unwrap();
-    s.connect(0).unwrap();
-    assert!(s.run_until(6_000, joined));
-    let client = &mut s.clients[0];
-    let mut play = |args: &[&str]| {
-        let before = client.global("$Sound::Played");
-        client.call("clientCmdPlaySound", args).unwrap();
-        (client.global("$Sound::Played") != before).then(|| client.global("$Sound::At"))
-    };
-    // The kick on the pitch plays where it was asked.
-    assert_eq!(
-        play(&["sounds/kick.wav", "1", "-2", "0.5"]).as_deref(),
-        Some("1 -2 0.5")
-    );
-    // Any other file plays nothing, even one the client has.
-    for file in [
-        "shapes/ball.png",
-        "sounds/../sounds/kick.wav",
-        "SOUNDS/KICK.WAV",
-        "client.cs",
-    ] {
-        assert_eq!(play(&[file, "0", "0", "0"]), None, "{file}");
-    }
-    // A place that is not three plain numbers plays nothing.
-    for place in [
-        ["nan", "0", "0"],
-        ["1", "inf", "0"],
-        ["1", "2", ""],
-        ["1;2", "0", "0"],
-        ["1 2", "0", "0"],
-    ] {
-        let [x, y, z] = place;
-        assert_eq!(play(&["sounds/kick.wav", x, y, z]), None, "{place:?}");
-    }
-    // A place past the pitch is moved onto its edge.
-    assert_eq!(
-        play(&["sounds/kick.wav", "1e30", "-99999", "-5"]).as_deref(),
-        Some("8 -13.5 0")
-    );
 }
 
 #[test]

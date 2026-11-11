@@ -144,6 +144,14 @@ impl ClientDatablock for TgeDatablock {
         }
     }
 
+    /// `AudioProfile::mDescriptionObject` (the record's `description`).
+    fn audio_description(&self) -> Option<u32> {
+        match self.get("description", 0)? {
+            Value::Id(id) => *id,
+            _ => None,
+        }
+    }
+
     /// `TSShapeConstructor::baseShape`.
     fn base_shape(&self) -> Option<&[u8]> {
         self.text("baseShape")

@@ -26,7 +26,7 @@ use crate::methods::register_method;
 use crate::scene::camera::{self, is_class};
 use crate::scene::ext;
 use crate::scene::ghost as ghosts;
-use crate::scene::shapebase::is_player;
+use crate::scene::shapebase::{self, is_player};
 
 pub fn arg(c: &NativeCall, i: usize) -> &[u8] {
     c.argv.get(i).map_or(&b""[..], Vec::as_slice)
@@ -450,15 +450,14 @@ fn register_extras(vm: &mut Vm) {
         Native::Float(f64::from(v))
     });
     // `playAudio(slot, profile)`: a slot past 3 is false; an `AudioProfile` by name or id is true (none is false); one with a
-    // description that the slot is not already playing starts in the slot (mask 0x1000 << slot).
+    // description that the slot is not already playing starts in the slot ([`shapebase::play_audio`]).
     register_method(vm, "ShapeBase", "playAudio", |vm, c| {
         let Some(id) = c.this_object else {
             return Native::Bool(false);
         };
-        let slot = c.argv.get(2).map_or(0, |a| ts_vm::text::atoi(a) as u32);
-        if slot > 3 {
+        let Some(slot) = sound_slot(c) else {
             return Native::Bool(false);
-        }
+        };
         let Some(profile) = vm
             .objects()
             .find(arg(c, 3))
@@ -466,17 +465,31 @@ fn register_extras(vm: &mut Vm) {
         else {
             return Native::Bool(false);
         };
-        let described = crate::scene::access::object_field(vm, profile, b"description").is_some();
-        if described
-            && let Some(st) = ext::get_mut(vm.objects_mut(), id)
-                .map(|e| &mut **e.shape.get_or_insert_with(Box::default))
-            && st.sounds[slot as usize] != Some(profile)
-        {
-            st.sounds[slot as usize] = Some(profile);
-            ghosts::mark(vm, id, 0x1000 << slot);
+        if let Some(desc) = crate::scene::access::object_field(vm, profile, b"description") {
+            let looping = crate::scene::access::bool_field(vm, desc, b"isLooping");
+            shapebase::play_audio(vm, id, slot, profile, looping);
         }
         Native::Bool(true)
     });
+    // `stopAudio(slot)`: a slot past 3 is false; else the slot's sound stops ([`shapebase::stop_audio`]) and it is true.
+    register_method(vm, "ShapeBase", "stopAudio", |vm, c| {
+        let Some(id) = c.this_object else {
+            return Native::Bool(false);
+        };
+        let Some(slot) = sound_slot(c) else {
+            return Native::Bool(false);
+        };
+        shapebase::stop_audio(vm, id, slot);
+        Native::Bool(true)
+    });
+}
+
+/// The sound slot argument of `playAudio` and `stopAudio` (`dAtoi(argv[2])`), when it is one of the four.
+fn sound_slot(c: &NativeCall) -> Option<usize> {
+    let slot = c.argv.get(2).map_or(0, |a| ts_vm::text::atoi(a));
+    usize::try_from(slot)
+        .ok()
+        .filter(|s| *s < shapebase::SOUND_THREADS)
 }
 
 #[cfg(test)]

@@ -127,10 +127,101 @@ pub struct ShapeBaseState {
     /// holds one engine reference (let go of when the name is set again and in [`release_names`]), 0 for none.
     pub shape_name: u32,
     pub skin_name: u32,
-    /// The sound slots `playAudio` fills (each: playing and the profile).
-    pub sounds: [Option<ObjId>; 4],
+    /// The sound slots `playAudio` fills.
+    pub sounds: [SoundSlot; SOUND_THREADS],
     /// The fade `startFade` starts.
     pub fade: Fade,
+}
+
+/// `ShapeBase::mSoundThread`'s four slots.
+pub const SOUND_THREADS: usize = 4;
+/// `sAudioTimeout`: how long the server counts a one-shot sound slot as playing (ms); past it the slot is free again
+/// without a word to the clients, so the same profile can be played in it anew.
+pub const AUDIO_TIMEOUT_MS: u32 = 500;
+/// The mask bit of sound slot 0 as the game classes number it (slot `i` is `SOUND_MASK_N << i`); the codecs' `sim_mask`
+/// moves it to TGE's `SoundMaskN`.
+pub const SOUND_MASK_N: u32 = 0x1000;
+
+/// One of the four sound slots (`ShapeBase::SoundThread`): the profile it plays, and on the server when a one-shot's play is
+/// counted over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SoundSlot {
+    /// The profile playing; `None` when the slot is stopped.
+    pub playing: Option<ObjId>,
+    /// `timeout`: the simulation time a one-shot's play is over on the server (`None` for a looping profile or a stopped
+    /// slot).
+    pub timeout: Option<u32>,
+}
+
+/// `ShapeBase::playAudio(slot, profile)` on the server: a profile the slot is not already playing starts in it (its mask bit
+/// marked), with a timeout of [`AUDIO_TIMEOUT_MS`] unless its description loops.
+pub fn play_audio(vm: &mut Vm, id: ObjId, slot: usize, profile: ObjId, looping: bool) {
+    let now = vm.sim_time();
+    let Some(st) = name_state(vm, id) else {
+        return;
+    };
+    let s = &mut st.sounds[slot];
+    if s.playing == Some(profile) {
+        return;
+    }
+    *s = SoundSlot {
+        playing: Some(profile),
+        timeout: (!looping).then(|| now.wrapping_add(AUDIO_TIMEOUT_MS)),
+    };
+    ghosts::mark(vm, id, SOUND_MASK_N << slot);
+}
+
+/// `ShapeBase::stopAudio(slot)` on the server: a playing slot stops (its mask bit marked, so the clients stop it too).
+pub fn stop_audio(vm: &mut Vm, id: ObjId, slot: usize) {
+    let Some(st) = state_mut(vm, id) else {
+        return;
+    };
+    let s = &mut st.sounds[slot];
+    if s.playing.is_none() {
+        return;
+    }
+    *s = SoundSlot::default();
+    ghosts::mark(vm, id, SOUND_MASK_N << slot);
+}
+
+/// `ShapeBase::updateServerAudio` on the slots themselves (a Player's tick holds its shape state outside the object): a
+/// one-shot whose timeout is past `now` is over, and the mask bits returned are to be cleared (`clearMaskBits`: a sound that
+/// timed out before its update went out is never sent).
+pub fn sound_timeout_step(sounds: &mut [SoundSlot; SOUND_THREADS], now: u32) -> u32 {
+    let mut cleared = 0;
+    for (i, s) in sounds.iter_mut().enumerate() {
+        if s.playing.is_some()
+            && let Some(t) = s.timeout
+            && (now.wrapping_sub(t) as i32) > 0
+        {
+            *s = SoundSlot::default();
+            cleared |= SOUND_MASK_N << i;
+        }
+    }
+    cleared
+}
+
+/// Whether [`sound_timeout_tick`] has anything to do for the object (its one-shot slots, for a step that would rather not
+/// take the plain `Vm`).
+pub fn sounds_time_out(vm: &Vm, id: ObjId) -> bool {
+    state(vm, id).is_some_and(|st| st.sounds.iter().any(|s| s.timeout.is_some()))
+}
+
+/// `ShapeBase::updateServerAudio` (part of `ShapeBase::processTick` on the server, with the fade): the one-shot slots whose
+/// time is past are freed and their pending mask bits cleared.
+pub fn sound_timeout_tick(vm: &mut Vm, id: ObjId) {
+    // Read first: `state_mut` makes the object's extension when it has none, and most objects never play a sound.
+    if !sounds_time_out(vm, id) {
+        return;
+    }
+    let now = vm.sim_time();
+    let Some(st) = state_mut(vm, id) else {
+        return;
+    };
+    let cleared = sound_timeout_step(&mut st.sounds, now);
+    if cleared != 0 {
+        ghosts::unmark(vm, id, cleared);
+    }
 }
 
 /// A ShapeBase's fade: whether it fades out, whether it is fading, the value, the elapsed time, the fade time and the

@@ -132,6 +132,10 @@ pub trait ClientDatablock: Clone + Debug + PartialEq + Send + Sync {
     /// A projectile datablock's explosion (the explosion datablock's id).
     fn explosion(&self) -> Option<u32>;
 
+    /// A sound profile's description (the description datablock's id): what a client plays a ShapeBase sound slot or a
+    /// sound event with, where its own profile object cannot name it (a remote client's datablocks are unnamed).
+    fn audio_description(&self) -> Option<u32>;
+
     /// A shape constructor's base shape.
     fn base_shape(&self) -> Option<&[u8]>;
 

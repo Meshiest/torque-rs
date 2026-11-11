@@ -217,7 +217,7 @@ local function kick(t, bx, by)
             local vx, vy = rules.kick(fx, fy, bx, by, radius, TEAMS[player.team].attack)
             if vx then
                 ts.call("propSetVelocity", ball, vx .. " " .. vy .. " 0")
-                ts.call("soccerKickSound", bx, by, radius)
+                ts.call("soccerKick", player.figure)
                 player.kicked = t
                 lastKick = t
                 kicks = kicks + 1

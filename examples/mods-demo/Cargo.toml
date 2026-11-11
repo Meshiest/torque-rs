@@ -24,9 +24,10 @@ torque-plugin-props = { path = "../../crates/torque-plugin-props" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 
-# Natively: the Lua extension the server's game mode runs on, loaded from `plugins/`.
+# Natively: the Lua extension the server's game mode runs on, loaded from `plugins/`, and the sound card the window plays
+# the kick through.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-torque = { path = "../../crates/torque", default-features = false, features = ["native-extensions"] }
+torque = { path = "../../crates/torque", default-features = false, features = ["native-extensions", "audio-device"] }
 
 # Built for the web: the functions the page calls (`torque::app::web_exports!`).
 [target.'cfg(target_arch = "wasm32")'.dependencies]

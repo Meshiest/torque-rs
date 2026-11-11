@@ -88,6 +88,24 @@ impl Ticking<TickCx<'_>> for DayTicker {
     }
 }
 
+/// The tick of a ShapeBase class with no motion of its own on the server (a StaticShape, a marker): of
+/// `ShapeBase::processTick` only the server audio runs ([`crate::scene::shapebase::sound_timeout_tick`]: the one-shot sound slots free
+/// themselves).
+pub struct ShapeTicker {
+    pub id: ObjId,
+    class: &'static str,
+}
+
+impl Ticking<TickCx<'_>> for ShapeTicker {
+    fn class(&self) -> &'static str {
+        self.class
+    }
+
+    fn process_tick(&mut self, cx: &mut TickCx<'_>, _mv: Option<&Move>) {
+        crate::scene::shapebase::sound_timeout_tick(cx.vm, self.id);
+    }
+}
+
 /// The tick of a class with no tick of its own: nothing happens.
 pub struct NoopTicker {
     class: &'static str,
@@ -171,5 +189,10 @@ pub fn ticker_for(
             _ => {}
         }
     }
-    Box::new(NoopTicker { class })
+    match class {
+        "StaticShape" | "MissionMarker" | "WayPoint" | "SpawnSphere" | "PathCamera" => {
+            Box::new(ShapeTicker { id, class })
+        }
+        _ => Box::new(NoopTicker { class }),
+    }
 }

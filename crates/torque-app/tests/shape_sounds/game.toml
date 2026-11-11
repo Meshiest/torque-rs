@@ -1,0 +1,7 @@
+[game]
+name = "Shape sounds test"
+server = "server.cs"
+client = "main.cs"
+
+[plugins]
+disable = ["torque.water", "torque.terrain", "torque.server-query"]

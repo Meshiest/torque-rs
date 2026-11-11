@@ -95,6 +95,12 @@
 //!   and writes the bytes a client of TGE's writes in both protocols (`conn_game_natives_are_the_engines_and_its_own`,
 //!   `conn_game_writes_torques_bytes_in_both_protocols`, in `torque-trace-hash/tests/conn_game.rs`), and the runners drive a
 //!   [`GameApp`] over it (`conn_game_app_for_draws_64_offscreen_frames_of_a_client_of_its_own_conn_game`, in `run_tests.rs`).
+//! - The world's sounds ([`sounds`]) run at the end of each tick of TGE's connection (its `ticked` hook,
+//!   `torque_client::conn::tge::TgeTicked`, which [`client::ClientBuilder::build`] sets), before the plugins' ticks, so a
+//!   voice a tick starts is advanced by the audio plugin's tick of the same pass: a server `playAudio` is a voice at the
+//!   object in both protocols, following it, stopped by `stopAudio`, the ghost's end or a new world
+//!   (`tests/shape_sounds.rs`). The sound card is opened by [`window::run`] alone, behind the `audio-device` feature; a
+//!   failure leaves the mixer on the clock and the game plays on.
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.
@@ -120,6 +126,7 @@ pub mod renderers;
 mod resting;
 pub mod run;
 pub mod shots;
+pub mod sounds;
 pub mod terrain;
 pub mod transports;
 pub mod view;

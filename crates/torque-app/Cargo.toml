@@ -17,7 +17,7 @@ categories = ["game-engines", "game-development"]
 glam = { workspace = true }
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
-# The audio plugin: the null sink only (no `device` feature, so no sound card library).
+# The audio plugin and the world's sounds on its mixer; the sound card itself behind the `audio-device` feature.
 torque-audio = { path = "../torque-audio", features = ["engine"] }
 torque-client = { path = "../torque-client", features = ["window"] }
 torque-collide = { path = "../torque-collide" }
@@ -80,6 +80,9 @@ webrtc = ["web", "torque-app-server/webrtc", "torque-server/webrtc", "torque-cli
 # Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
 # `net::web::p2p`) and a client's datagrams to it (torque-client's `net::room_join`).
 p2p = ["webrtc", "torque-app-server/p2p", "torque-server/p2p", "torque-client/p2p"]
+# The window opens the default sound card for the client's mixer (cpal; ALSA on Linux); without a device, or without this
+# feature, the mixer runs on the clock and nothing is heard.
+audio-device = ["torque-audio/device"]
 
 [dev-dependencies]
 criterion = { workspace = true }
