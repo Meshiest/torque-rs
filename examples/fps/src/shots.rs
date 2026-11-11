@@ -102,7 +102,19 @@ pub fn write_all(
     b.game
         .call("eval", &["AddressEdit.setValue(\"my-server.example\");"])?;
     b.game.call("connectAddress", &[])?;
-    run(&gpu, &mut [&mut a, &mut b], 64)?;
+    // The name's lookup runs on the system's resolver: the picture waits for its answer, not for a set time.
+    let mut waited = 0;
+    while b
+        .game
+        .call("eval", &["return JoinStatus.getValue();"])?
+        .starts_with("Looking up")
+    {
+        if waited > WAIT_LIMIT_MS {
+            return Err("timed out waiting for the name's lookup".to_string());
+        }
+        run(&gpu, &mut [&mut a, &mut b], FRAME_MS)?;
+        waited += FRAME_MS;
+    }
     save(&b.picture(&gpu)?, "join-error")?;
     b.game.call("eval", &["AddressEdit.setValue(\"\");"])?;
 

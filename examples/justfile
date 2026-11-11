@@ -72,11 +72,12 @@ shots-all dir="../target/shots":
 
 # Compares two folders drawn by `shots-all`: per picture whether the sizes match, the differing pixels and the largest channel
 # difference; the exit code is 1 when any picture differs. Left out: the top right corner of every picture (160x40 px), where the
-# corner readout shows the frame rate measured on the clock, which differs from run to run. Pictures off by one level on at most 32
+# corner readout shows the frame rate measured on the clock, which differs from run to run, and the regions each example declares
+# in its own `shots-ignore.txt` (other readouts measured on the clock). Pictures off by one level on at most 32
 # pixels (`shots_tolerance`) pass as near and are listed apart from the exact matches. Works on the folder of a single example too;
 # a relative folder is relative to `examples/`
 shots-diff a b:
-    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
+    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 --ignore-from "{{justfile_directory()}}" {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
 
 # `shots-diff` on one example's folder: `example` is the folder name below the `shots-all` dir (for instance `vehicle-demo`), `a`
 # is the dir a run drew into and `b` the baseline dir

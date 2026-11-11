@@ -12,6 +12,7 @@ use torque_engine::{
 };
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
+use torque_render_hd::ext::NoExtension;
 use torque_render_scene::source::Eye;
 use torque_server::server::TICK_MS;
 use torque_ts_text::atoi;
@@ -279,6 +280,7 @@ struct Shared {
 impl GameApp for Shared {
     type Conn = TgeConn;
     type Server = GameServer;
+    type Ext = NoExtension;
 
     fn host(&mut self) -> &mut Host<TgeConn, GameServer> {
         &mut self.client.host

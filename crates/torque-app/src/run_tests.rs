@@ -14,6 +14,7 @@ use torque_engine::{
 };
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
+use torque_render_hd::ext::NoExtension;
 use torque_render_scene::source::Eye;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Native;
@@ -353,6 +354,7 @@ struct Counted<C: ConnGame> {
 impl<C: ConnGame> GameApp for Counted<C> {
     type Conn = C;
     type Server = torque_server::server::Server;
+    type Ext = NoExtension;
 
     fn host(&mut self) -> &mut Host<C> {
         &mut self.client.host

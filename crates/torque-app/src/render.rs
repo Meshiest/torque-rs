@@ -108,10 +108,16 @@ impl RenderPassEntry {
 /// A static batch source a plugin added.
 #[derive(Clone)]
 pub struct StaticBatchEntry {
+    name: &'static str,
     make: Rc<dyn Fn() -> Box<dyn StaticBatchSource>>,
 }
 
 impl StaticBatchEntry {
+    /// Its source's type name (the warnings name it).
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
     /// A new source of it.
     pub fn make(&self) -> Box<dyn StaticBatchSource> {
         (self.make)()
@@ -170,6 +176,7 @@ impl RenderRegistry<'_> {
         make: impl Fn() -> S + 'static,
     ) -> &mut Self {
         self.engine.push(StaticBatchEntry {
+            name: std::any::type_name::<S>(),
             make: Rc::new(move || Box::new(make())),
         });
         self

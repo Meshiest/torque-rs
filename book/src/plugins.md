@@ -757,7 +757,9 @@ fn main() -> ExitCode {
 title and what to draw) from the built engine, when a runner that needs one starts.
 
 `App` is the game over TGE's connection half. A game with a connection half of its own implements `GameApp` instead (the
-same methods, plus `type Conn` naming its `ConnGame`, `type Server` naming the server host of its client's script engine
+same methods, plus `type Conn` naming its `ConnGame`, `type Server` naming the server host of its client's script engine,
+`type Ext` naming the render extension its world view draws with (`NoExtension` unless the game draws its own cells:
+[A game's own render extension](rendering-and-input.md#a-games-own-render-extension))
 and a `screen_rules` that is TGE 1.4's unless you change it) and
 names itself with `app_for`; the runners then drive it as its own type, with no dynamic calls on the way. Every `App` is
 already a `GameApp`, so `app` and `app_for` take either, and they share one slot: naming a second game, by either, fails

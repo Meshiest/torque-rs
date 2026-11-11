@@ -7,6 +7,11 @@
 //! Options:
 //! - `--ignore-corner WxH` leaves the top right corner of that size out of every comparison (the corner readout of the frame
 //!   rate, which is measured on the clock and so differs from run to run).
+//! - `--ignore-from <folder>` reads the regions each example declares in its own `shots-ignore.txt` (every
+//!   `<folder>/*/shots-ignore.txt`) and leaves them out of the pictures they name: text measured on the clock somewhere other
+//!   than the corner. A line is `<pattern> <x> <y> <width> <height>`, and `#` starts a comment. The pattern is a picture's path
+//!   below the compared folders, or below their parent (so one example's folder diffs as the whole set does), where `*` stands
+//!   for any part of one name.
 //! - `--max-delta N` and `--max-pixels M` (both default 0) set a tolerance: a picture whose differing pixels all differ by at
 //!   most `N` in every channel, and number at most `M`, passes as "near". Near pictures are listed apart from exact matches at
 //!   the end of the output, so they stay visible; a picture beyond either limit differs as usual.
@@ -77,11 +82,94 @@ fn pngs(root: &Path, at: &Path, found: &mut Vec<PathBuf>) -> Result<(), String> 
     Ok(())
 }
 
+/// A rectangle left out of the pictures whose path matches `pattern` ([`parse_regions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Region {
+    pattern: String,
+    /// x, y, width, height in pixels.
+    rect: [u32; 4],
+}
+
+impl Region {
+    fn holds(&self, x: u32, y: u32) -> bool {
+        let [rx, ry, w, h] = self.rect;
+        x >= rx && y >= ry && x - rx < w && y - ry < h
+    }
+}
+
+/// Whether `name` matches `pattern`, where `*` stands for any run of characters other than `/`.
+fn matches(pattern: &str, name: &str) -> bool {
+    let Some((head, tail)) = pattern.split_once('*') else {
+        return pattern == name;
+    };
+    let Some(rest) = name.strip_prefix(head) else {
+        return false;
+    };
+    rest.char_indices()
+        .map(|(i, _)| i)
+        .chain(Some(rest.len()))
+        .take_while(|&i| !rest[..i].contains('/'))
+        .any(|i| matches(tail, &rest[i..]))
+}
+
+/// The regions of one `shots-ignore.txt` (`from` names it in the errors).
+fn parse_regions(text: &str, from: &str) -> Result<Vec<Region>, String> {
+    let mut regions = Vec::new();
+    for (n, line) in text.lines().enumerate() {
+        let line = line.split_once('#').map_or(line, |(kept, _)| kept).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let bad = || {
+            format!(
+                "{from}:{}: expected `<pattern> <x> <y> <width> <height>`",
+                n + 1
+            )
+        };
+        let mut words = line.split_whitespace();
+        let pattern = words.next().ok_or_else(bad)?;
+        let numbers: Vec<u32> = words
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|_| bad())?;
+        let rect: [u32; 4] = numbers.try_into().map_err(|_| bad())?;
+        regions.push(Region {
+            pattern: pattern.to_string(),
+            rect,
+        });
+    }
+    Ok(regions)
+}
+
+/// The regions every example below `folder` declares (`<folder>/*/shots-ignore.txt`, in name order).
+fn regions_from(folder: &Path) -> Result<Vec<Region>, String> {
+    let entries = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(|e| Some(e.ok()?.path().join("shots-ignore.txt")))
+        .filter(|f| f.is_file())
+        .collect();
+    files.sort();
+    if files.is_empty() {
+        return Err(format!(
+            "--ignore-from {}: no example there declares regions",
+            folder.display()
+        ));
+    }
+    let mut regions = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+        regions.extend(parse_regions(&text, &file.display().to_string())?);
+    }
+    Ok(regions)
+}
+
 /// What to leave out of a comparison and how much difference to accept.
 #[derive(Default)]
 struct Options {
     /// Size of the top right corner left out of every comparison.
     corner: (u32, u32),
+    /// Rectangles left out of the pictures they name.
+    regions: Vec<Region>,
     /// Pictures left out, by path below the folders.
     skip: Vec<String>,
     /// A skip that matches no picture is reported, not an error.
@@ -155,6 +243,19 @@ fn run(a: &Path, b: &Path, options: &Options) -> Result<Report, String> {
             continue;
         }
         let corner = options.corner;
+        let below_parent = a
+            .file_name()
+            .map(|f| format!("{}/{shown}", f.to_string_lossy()));
+        let regions: Vec<&Region> = options
+            .regions
+            .iter()
+            .filter(|r| {
+                matches(&r.pattern, &shown)
+                    || below_parent
+                        .as_deref()
+                        .is_some_and(|p| matches(&r.pattern, p))
+            })
+            .collect();
         let mut pixels = 0usize;
         let mut max = 0u8;
         let (mut lo, mut hi) = ((u32::MAX, u32::MAX), (0u32, 0u32));
@@ -172,7 +273,9 @@ fn run(a: &Path, b: &Path, options: &Options) -> Result<Report, String> {
                 .max()
                 .unwrap_or(0);
             let (px, py) = (i as u32 % pa.width, i as u32 / pa.width);
-            if delta > 0 && !(px + corner.0 >= pa.width && py < corner.1) {
+            let left_out = (px + corner.0 >= pa.width && py < corner.1)
+                || regions.iter().any(|r| r.holds(px, py));
+            if delta > 0 && !left_out {
                 pixels += 1;
                 max = max.max(delta);
                 lo = (lo.0.min(px), lo.1.min(py));
@@ -243,6 +346,12 @@ fn parse(args: impl IntoIterator<Item = String>) -> Result<(Options, Vec<String>
                     .and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
                 options.corner = parsed.ok_or("--ignore-corner needs a size like 160x40")?;
             }
+            "--ignore-from" => {
+                let folder = args
+                    .next()
+                    .ok_or("--ignore-from needs the examples' folder")?;
+                options.regions.extend(regions_from(Path::new(&folder))?);
+            }
             "--skip" => {
                 let path = args.next().ok_or("--skip needs a picture's path")?;
                 options.skip.push(path);
@@ -266,7 +375,7 @@ fn main() -> ExitCode {
     };
     let [a, b] = folders.as_slice() else {
         eprintln!(
-            "usage: shots-diff [--ignore-corner WxH] [--max-delta N] [--max-pixels M] [--skip <path>]... [--subset] <folder> <folder>"
+            "usage: shots-diff [--ignore-corner WxH] [--ignore-from <examples folder>] [--max-delta N] [--max-pixels M] [--skip <path>]... [--subset] <folder> <folder>"
         );
         return ExitCode::from(2);
     };
@@ -434,6 +543,59 @@ mod tests {
         };
         assert!(!run(&a, &b, &masked).unwrap().failed());
         assert!(run(&a, &b, &Options::default()).unwrap().failed());
+    }
+
+    #[test]
+    fn a_difference_in_a_declared_region_of_a_matching_picture_passes() {
+        let (a, b) = (folder("region", "a"), folder("region", "b"));
+        picture(&a, "x.png", (8, 8), 9, 9);
+        picture(&b, "x.png", (8, 8), 9, 200);
+        let masked = |pattern: &str, rect: [u32; 4]| Options {
+            regions: vec![Region {
+                pattern: pattern.to_string(),
+                rect,
+            }],
+            ..Options::default()
+        };
+        let top_right = [6, 0, 2, 1];
+        assert!(!run(&a, &b, &masked("x.png", top_right)).unwrap().failed());
+        assert!(!run(&a, &b, &masked("*.png", top_right)).unwrap().failed());
+        // Below the parent: one example's folder diffs as the whole set does.
+        assert!(!run(&a, &b, &masked("a/*.png", top_right)).unwrap().failed());
+        assert!(run(&a, &b, &masked("y.png", top_right)).unwrap().failed());
+        assert!(
+            run(&a, &b, &masked("x.png", [0, 0, 7, 8]))
+                .unwrap()
+                .failed()
+        );
+    }
+
+    #[test]
+    fn a_star_stands_for_part_of_one_name() {
+        assert!(matches(
+            "level-demo*/*.png",
+            "level-demo-swim/swim-tread.png"
+        ));
+        assert!(matches("level-demo*/*.png", "level-demo/maze-eye.png"));
+        assert!(matches("hud/level-*.png", "hud/level-play-640x480.png"));
+        assert!(!matches("hud/level-*.png", "hud/arena-play.png"));
+        assert!(!matches("*.png", "hud/x.png"));
+        assert!(!matches("level-demo*/*.png", "fps/level-demo/x.png"));
+    }
+
+    #[test]
+    fn region_files_parse_and_a_bad_line_names_its_place() {
+        let text = "# why\nhud/level-*.png 180 6 150 18  # the readout\n\n";
+        assert_eq!(
+            parse_regions(text, "f").unwrap(),
+            [Region {
+                pattern: "hud/level-*.png".to_string(),
+                rect: [180, 6, 150, 18],
+            }]
+        );
+        let bad = parse_regions("x.png 1 2 3", "f").unwrap_err();
+        assert!(bad.starts_with("f:1:"), "{bad}");
+        assert!(parse_regions("x.png 1 2 3 four", "f").is_err());
     }
 
     #[test]

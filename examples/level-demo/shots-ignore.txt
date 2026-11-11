@@ -1,0 +1,6 @@
+# Regions of this example's pictures that `shots-diff` leaves out (`--ignore-from`, see the examples' justfile): a pattern for a
+# picture's path below the shots folder (`*` stands for any part of one name), then x y width height in pixels.
+
+# The frame rate on the world's band (PlayStats in game/client.cs), measured on the clock.
+level-demo*/*.png 180 6 150 18
+hud/level-*.png 180 6 150 18

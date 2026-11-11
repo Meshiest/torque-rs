@@ -22,6 +22,11 @@
 //! ([`WorldView::attach_to`](crate::view::WorldView::attach_to)); the window and offscreen runners attach it. A swap chosen
 //! before then (a script at start-up) is made when the view attaches. Between swaps a frame only compares one counter.
 //!
+//! **A game's extension.** A world view that draws a game's own render extension (`WorldView<E>` with `E` not `NoExtension`)
+//! is drawn by the engine's renderer only: the others draw the engine's plain scene, which carries none of the game's data. Its
+//! slot refuses a swap to any other ([`SwitchError::Extension`], naming the extension), and one chosen before the view attached
+//! gives way to the engine's own, with the reason on the client's console.
+//!
 //! **The engine's renderer's features** are plugins of their own ([`RenderFeaturePlugins`]): each turns one of its switches on
 //! (`torque_render_hd::HdFeatures` and the water's and particles' looks), so a game drops one by turning its plugin off
 //! (`DefaultPlugins.disable::<CloudsPlugin>()`). With all of them on the renderer draws as it always has.
@@ -229,6 +234,13 @@ pub enum SwitchError {
         /// Why.
         why: String,
     },
+    /// The attached view draws a game's extension, which only the engine's renderer draws ([`DEFAULT_RENDERER`]).
+    Extension {
+        /// The id asked for.
+        id: String,
+        /// The extension's type name.
+        extension: &'static str,
+    },
 }
 
 impl fmt::Display for SwitchError {
@@ -246,6 +258,11 @@ impl fmt::Display for SwitchError {
             SwitchError::Failed { id, why } => {
                 write!(f, "the renderer {id:?} could not be made: {why}")
             }
+            SwitchError::Extension { id, extension } => write!(
+                f,
+                "the renderer {id:?} cannot draw this view: its world has the game extension {extension}, which only \
+                 the engine's renderer ({DEFAULT_RENDERER:?}) draws"
+            ),
         }
     }
 }
@@ -263,6 +280,8 @@ pub struct RendererSlot {
     generation: Cell<u64>,
     /// The attached view's GPU (None until a view attaches: a swap before then is made at the attach).
     gpu: RefCell<Option<Gpu>>,
+    /// The game extension the attached view draws (its type name): the slot then refuses every renderer but the engine's.
+    extension: Cell<Option<&'static str>>,
     /// The renderers made so far, by entry.
     made: RefCell<Vec<Option<Box<dyn WorldRenderer>>>>,
     /// The passes, static batches and emitter kinds the engine's plugins added ([`crate::render`]).
@@ -309,6 +328,7 @@ impl RendererSlot {
             features,
             generation: Cell::new(0),
             gpu: RefCell::new(None),
+            extension: Cell::new(None),
             made,
             adds: RenderAdds::default(),
         };
@@ -353,7 +373,8 @@ impl RendererSlot {
     }
 
     /// Draws with the renderer `id` from the view's next frame, made now if a view is attached and it was never made. Err: no
-    /// renderer has the id, or it could not be made (the renderer drawing stays; choosing it again tries again).
+    /// renderer has the id, it could not be made (the renderer drawing stays; choosing it again tries again), or it is not the
+    /// engine's and the attached view draws a game extension.
     pub fn switch(&self, id: &str) -> Result<(), SwitchError> {
         let Some(index) = self.entries.iter().position(|e| e.id == id) else {
             return Err(SwitchError::Unknown {
@@ -364,6 +385,7 @@ impl RendererSlot {
         if self.current.get() == Some(index) {
             return Ok(());
         }
+        self.refuse_on_extension(index)?;
         self.make(index)?;
         self.current.set(Some(index));
         self.generation.set(self.generation.get() + 1);
@@ -406,14 +428,35 @@ impl RendererSlot {
         Ok(())
     }
 
-    /// A view on `gpu` attached: the renderers are made on it. The renderer chosen before, if it cannot be made, gives way to
-    /// [`DEFAULT_RENDERER`] (else to none); the error is returned for the view to report.
-    pub(crate) fn attach_gpu(&self, gpu: &Gpu) -> Result<(), SwitchError> {
+    /// Err when the attached view draws a game extension and entry `index` is not the engine's renderer.
+    fn refuse_on_extension(&self, index: usize) -> Result<(), SwitchError> {
+        let entry = &self.entries[index];
+        match self.extension.get() {
+            Some(extension) if entry.make().is_some() => Err(SwitchError::Extension {
+                id: entry.id.clone(),
+                extension,
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// A view on `gpu` attached, drawing the game extension `extension` (its type name; None: the engine's plain cells): the
+    /// renderers are made on it. The renderer chosen before, if it cannot be made or the view's extension refuses it, gives
+    /// way to [`DEFAULT_RENDERER`] (else to none); the error is returned for the view to report.
+    pub(crate) fn attach_gpu(
+        &self,
+        gpu: &Gpu,
+        extension: Option<&'static str>,
+    ) -> Result<(), SwitchError> {
         *self.gpu.borrow_mut() = Some(gpu.clone());
+        self.extension.set(extension);
         let Some(index) = self.current.get() else {
             return Ok(());
         };
-        let Err(e) = self.make(index) else {
+        let Err(e) = self
+            .refuse_on_extension(index)
+            .and_then(|()| self.make(index))
+        else {
             return Ok(());
         };
         let fallback = self

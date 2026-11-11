@@ -94,6 +94,18 @@
 //!   ([`ClientBuilder::replaced_natives`]). A client of its own takes none of these branches, so its natives and bytes do
 //!   not move (`client_over_server_tests.rs`; the native snapshots; the wire goldens). [`GameApp::Server`] names the server
 //!   host to the runners; every [`App`] has [`Server`].
+//! - [`view::WorldView`] is generic over the renderer's extension (`WorldView<E = NoExtension>`): `new` stays on the default
+//!   type and [`view::WorldView::with_extension`] makes any other, so every game that names no extension builds the same code
+//!   as before; [`GameApp::Ext`] names it for the runners (`NoExtension` for every [`App`]). The view reaches the frame only
+//!   through the scene's deref and [`ViewScene`] (mode, time, batch cells), never a field of the engine's own scene. A view
+//!   with a game's extension makes its slot refuse every renderer but the engine's (`RendererSlot::attach_gpu` takes the
+//!   extension's name; [`renderers::SwitchError::Extension`]), and a scene without batch cells refuses static meshes,
+//!   batches and the plugins' sources with a warning naming them (both in `tests/render_ext.rs`, whose tint test also checks
+//!   a game's extension with its block off draws exactly the engine's picture). The view's GPU world is its `world` field,
+//!   made in `with_extension` alone; the slot's features and passes go into it in `attach_slot`/`take_adds`, and the scene's
+//!   cells carry their `resident` flags. Emptying and rebuilding it means a new `HdWorld`, its `warm_effects`, those two
+//!   steps, `set_daylight` again and the cells marked not resident; the quality and the particle light are applied again
+//!   through `attach_slot` and `set_quality`.
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 //! - The client recipes name no conn game: a client of any [`ConnGame`] is made by the same
@@ -146,6 +158,7 @@ pub mod web_page;
 pub mod window;
 
 pub use torque_render_core::Gpu;
+use torque_render_hd::ext::{HdExtension, NoExtension, ViewScene};
 pub use torque_render_scene::source::Eye;
 
 use torque_client::conn::ConnGame;
@@ -215,6 +228,10 @@ pub trait GameApp: 'static {
     /// game's server for a client that runs over it ([`ClientBuilder::over_server`]).
     type Server: torque_client::host::GameServer;
 
+    /// The extension the world view draws the game's own static geometry with ([`view::WorldView`]'s `E`;
+    /// [`NoExtension`] for the engine's plain cells).
+    type Ext: HdExtension<Scene: ViewScene>;
+
     /// The game's client host, for the runners to drive.
     fn host(&mut self) -> &mut Host<Self::Conn, Self::Server>;
 
@@ -228,13 +245,13 @@ pub trait GameApp: 'static {
     fn log_name(&self) -> &str;
 
     /// A world view on `gpu` for the game's frames.
-    fn view(&self, gpu: &Gpu) -> WorldView;
+    fn view(&self, gpu: &Gpu) -> WorldView<Self::Ext>;
 
     /// `ms` of the clock between two frames.
     fn advance(&mut self, ms: u32);
 
     /// The frame: the world into `view`, the canvas drawn (with the world's rectangle) and the eye.
-    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
+    fn frame(&mut self, view: &mut WorldView<Self::Ext>) -> (GuiDraws, Eye);
 
     /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
     fn loading(&self) -> bool {
@@ -250,6 +267,7 @@ pub trait GameApp: 'static {
 impl<A: App + 'static> GameApp for A {
     type Conn = TgeConn;
     type Server = Server;
+    type Ext = NoExtension;
 
     fn host(&mut self) -> &mut Host {
         App::host(self)

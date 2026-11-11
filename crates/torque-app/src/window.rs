@@ -111,10 +111,10 @@ impl WindowSurface {
 }
 
 /// A [`GameApp`] in a window: its surface and world view once the window is made.
-struct AppWindow<G> {
+struct AppWindow<G: GameApp> {
     game: G,
     surface: Option<WindowSurface>,
-    view: Option<WorldView>,
+    view: Option<WorldView<G::Ext>>,
     /// In a browser: the canvas's device, asked for when the window is made and answered later ([`WebDevice`]).
     #[cfg(target_arch = "wasm32")]
     web: Option<WebDevice>,

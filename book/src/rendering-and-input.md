@@ -128,6 +128,32 @@ An `EmitterKind` is a particle emitter of a plugin's own: the view runs it by th
 the lights as TGE's smoke is. It reaches its sprites with `EmitterDraws::sprites`. A client makes one of each kind; a plugin
 shares state with it through what its factory captures.
 
+## A game's own render extension
+
+A game whose world has static geometry of its own (cells with its own data per vertex, its own tables, its own WGSL) gives
+the engine's renderer an `HdExtension` (`torque_render_hd::ext`). The world view draws with it as `WorldView<E>`:
+`WorldView::new(gpu)` is the engine's plain cells (`NoExtension`), `WorldView::<MyExt>::with_extension(gpu)` a game's. The
+extension's scene is a `ViewScene`: the engine's frame by deref, plus whatever the game keeps beside it, which it reaches with
+`view.scene_mut()`. What the extension reads every frame (its uniform block, its mode) can change there freely; an edit to
+the frame's cells, planes or lights is seen after `view.mark_statics_changed()`, which costs the next frame the renderer's
+full compare of them (a frame where only the moving objects changed skips it), so call it once after such an edit, not every
+frame. Everything the view sets (the daylight, the ground, the water, the moving shapes, the particles) works the
+same on either. A game run by the engine's runners names its extension on `GameApp` (`type Ext = MyExt`; every `App` is
+`NoExtension`), and its `view` and `frame` take `WorldView<Self::Ext>`.
+
+Three rules come with it:
+
+- **One extension a process.** The renderer composes its shader modules with the extension's chunks once, so every view in a
+  process has the same extension. A test that compares a game's extension with the engine's draws the engine's picture in a
+  second run of its test binary (`torque-app`'s `tests/render_ext.rs` does this).
+- **Only the engine's renderer draws it.** The other renderers on the slot draw the engine's plain scene, which carries none of
+  the game's data, so `setRenderer` to one of them on a view with a game extension is refused with the reason (one chosen before
+  the view attached gives way to the engine's own, with the reason on the console). Render passes, emitter kinds and gizmos work
+  on any view.
+- **Static batches need cells to go in.** A scene whose `ViewScene::batch_cells` is `None` takes no static meshes or batches:
+  the plugins' static batch sources are left out with a console warning naming them, and `set_static_batch` returns the
+  warning.
+
 ## Input, cameras, controls and assets
 
 The other four registries have a chapter each. In short:

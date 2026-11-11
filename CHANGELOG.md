@@ -31,6 +31,7 @@ different.
 
 #### Rendering
 
+- `torque::app`: `GameApp` gains `type Ext`, the render extension its world view draws with (`WorldView<E>`).
 - `torque-render-hd`: passes at the opaque and translucent stages can sample the sun's shadows (`PassCx::sun_shadows`,
   `SUN_SHADOW_WGSL`, a bind group layout and group), with the lookup the forward pass shades with.
 - `torque-render-hd`: the HD renderer, beside the fixed-function one that keeps the original look. Cascaded sun shadows

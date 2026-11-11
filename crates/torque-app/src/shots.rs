@@ -19,9 +19,9 @@ pub const FRAME_MS: u32 = 16;
 pub const SETTLE_FRAMES: u32 = 24;
 
 /// One game and what its frames draw into.
-pub struct Seat<G> {
+pub struct Seat<G: GameApp> {
     pub game: G,
-    pub view: WorldView,
+    pub view: WorldView<G::Ext>,
     pub target: Offscreen,
     /// An eye in place of the game's (none: the game's).
     pub eye: Option<Eye>,

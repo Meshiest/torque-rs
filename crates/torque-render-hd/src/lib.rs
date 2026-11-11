@@ -14,6 +14,10 @@
 //!   (`loose_draws_past_the_largest_buffer_are_left_out_and_counted_not_a_panic`,
 //!   `a_table_of_mesh_places_past_the_largest_buffer_leaves_the_loose_draws_out`,
 //!   `particles_past_the_largest_buffer_are_left_out_and_counted`).
+//! - A world view's scene is an extension's `Scene` that is also an [`ext::ViewScene`] (mode, time, the cells static batches
+//!   go in); [`ext::PlainScene`]'s is the engine's own. The shader modules are composed with one extension's chunks a process
+//!   ([`shaders::register`]; [`HdWorld::try_from_device`] panics on a second), so a test comparing two extensions' pictures
+//!   draws one of them in another process (`torque-app`'s `tests/render_ext.rs`).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are

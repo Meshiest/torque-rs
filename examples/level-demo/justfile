@@ -15,18 +15,18 @@ default:
 # `--port`, `--bind`, `--cache` after the recipe. The catalog's menu runs only with the realm guest (`just lua-client-web`, which
 # needs the WASI SDK named by WASI_SDK_PATH, or TORQUE_CLIENT_GUEST); without it the office is played without the catalog
 run *args:
-    cargo run -p torque-example-level-demo --release -- {{args}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- {{args}}
 
 # The office server people join (console only): the office with its props, the catalog mod sent to players who lack it, on UDP
 # 127.0.0.1:28000, answering the list of matches. `--bind <your LAN address>` lets others on the network join; `--port`,
 # `--name`, `--ticks N`, and the web's switches (`--transport both`, `--webrtc`, `--room`)
 office-server *args:
-    cargo run -p torque-example-level-demo --release --bin office-server -- {{args}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --bin office-server -- {{args}}
 
 # The office server open to the internet: every interface (0.0.0.0) on UDP 28000 (`--port` changes it); players outside the
 # network need that port forwarded to this computer and the firewall to allow it
 office-server-public *args:
-    cargo run -p torque-example-level-demo --release --bin office-server -- --bind 0.0.0.0 --port 28000 {{args}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --bin office-server -- --bind 0.0.0.0 --port 28000 {{args}}
 
 # The office for browsers and desktops in one match: the browser build with the server-scripts runner and the realm guest, then
 # the office server on UDP and the web on 127.0.0.1:{{port}}, serving that build; a browser joins at
@@ -35,7 +35,7 @@ office-server-public *args:
 office-web port="28000" *args:
     just --justfile ../../justfile --working-directory ../.. lua-client-web
     node ../../web/build.mjs level-demo --client-scripts
-    cargo run -p torque-example-level-demo --release --bin office-server -- --transport both --port {{port}} {{args}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --bin office-server -- --transport both --port {{port}} {{args}}
 
 # A room service for an office hosted on a desktop, on 127.0.0.1:{{port}}, serving the browser build: the desktop runs
 # `office-server --room ws://127.0.0.1:{{port}}` and prints its code, and browsers join at http://127.0.0.1:{{port}}/?room=<code>
@@ -59,7 +59,7 @@ office-web-check:
 # the catalog part way down, the consent prompt, the catalog with a second player's plant, and the office
 match-shots dir="../../target/level-demo-match-shots":
     just --justfile ../../justfile --working-directory ../.. lua-client-web
-    cargo run -p torque-example-level-demo --release -- --match-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- --match-shots {{dir}}
 
 # The level demo in a browser (WebGPU): built for the web, then served on http://127.0.0.1:{{port}}/ (`?map=office` starts a map
 # at once). The page shows each loading stage, fetches the files by their list (`files.json`) and keeps them in the browser's
@@ -104,52 +104,52 @@ web-embedded-check:
 # The level demo's pictures (the menu, and each map's overview, a view from behind the figure and from its eyes), drawn
 # offscreen into `dir`
 shots dir="../../target/level-demo-shots":
-    cargo run -p torque-example-level-demo --release -- --shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- --shots {{dir}}
 
 # The level demo with the rope plugin (the `rope` feature): the plaza's clothesline hung between its front pillars, from behind the figure,
 # from the front, thrown up and swinging, drawn offscreen into `dir`
 rope-shots dir="../../target/level-demo-rope-shots":
-    cargo run -p torque-example-level-demo --release --features rope -- --rope-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --features rope -- --rope-shots {{dir}}
 
 # The level demo's rope styles (the `rope` feature): a ribbon cable and glowing laser lines beside the clothesline, the figure with
 # a laser through and behind it and a ribbon across in front, the camera looking almost along a ribbon, and a thin laser from far
 # away, drawn offscreen into `dir`
 rope-style-shots dir="../../target/level-demo-rope-style-shots":
-    cargo run -p torque-example-level-demo --release --features rope -- --rope-style-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --features rope -- --rope-style-shots {{dir}}
 
 # A correction the server forces on the plaza's figure (moved 1.2 units sideways), frame by frame, with TGE's predictor and with
 # the smoothed one (the `smooth-prediction` feature), from beside the figure and from the game's camera, drawn offscreen into
 # `dir` (`correction-strip.png` has the four sequences in rows)
 correction-shots dir="../../target/level-demo-correction-shots":
-    cargo run -p torque-example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --features smooth-prediction -- --correction-shots {{dir}}
 
 # The level demo's valley (its lake at golden hour, its woods and mountains) from a few places, the world alone, drawn offscreen
 # into `dir`
 valley-shots dir="../../target/level-demo-valley-shots":
-    cargo run -p torque-example-level-demo --release -- --valley-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- --valley-shots {{dir}}
 
 # The figure swimming in the valley's lake (mid-stroke from beside it, from the camera behind it, and treading water), drawn
 # offscreen into `dir`
 swim-shots dir="../../target/level-demo-swim-shots":
-    cargo run -p torque-example-level-demo --release -- --swim-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- --swim-shots {{dir}}
 
 # The figure in the valley from behind and from its eyes, looking down, level and up (`Tab` keeps where the view looks), drawn
 # offscreen into `dir`
 switch-shots dir="../../target/level-demo-switch-shots":
-    cargo run -p torque-example-level-demo --release -- --switch-shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release -- --switch-shots {{dir}}
 
 # The level demo's prop catalog, headless: the office's server requires the catalog mod of its clients, two clients download it, allow its
 # menu and spawn props from it. Builds the realm guest first (`just lua-client-web`: the WASI SDK, named by WASI_SDK_PATH);
 # TORQUE_CLIENT_GUEST names a built one instead
 catalog:
     just --justfile ../../justfile --working-directory ../.. lua-client-web
-    cargo run -p torque-example-level-demo --release --example level-catalog
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --example level-catalog
 
 # The catalog's pictures (the consent prompt, the catalog, a label typed and the recent list, a chair in the office, a refusal), drawn
 # offscreen into `dir`
 catalog-shots dir="../../target/level-catalog-shots":
     just --justfile ../../justfile --working-directory ../.. lua-client-web
-    cargo run -p torque-example-level-demo --release --example level-catalog -- --shots {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --example level-catalog -- --shots {{dir}}
 
 # The catalog's end-to-end tests (level-demo's tests/catalog.rs, and tests/multiplayer.rs: the office server on UDP, the list
 # of matches, the download, Allow, a prop another player picks up, a second join from the cache), with the guest
@@ -161,4 +161,4 @@ catalog-test:
 # The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
 # offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)
 catalog-icons dir="catalog/icons":
-    cargo run -p torque-example-level-demo --release --example catalog-icons -- {{dir}}
+    cargo run -p torque-example-level-demo --bin example-level-demo --release --example catalog-icons -- {{dir}}

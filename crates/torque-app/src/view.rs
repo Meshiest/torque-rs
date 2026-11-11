@@ -10,10 +10,16 @@
 //! GUI alone). Attached to a client ([`WorldView::attach_to`]), it follows that client's slot (`setRenderer` in its scripts)
 //! from its next frame.
 //!
+//! The view is generic over the renderer's extension ([`HdExtension`]): `WorldView` (the engine's plain cells, [`PlainScene`])
+//! by default, `WorldView<E>` for a game's own static geometry ([`WorldView::with_extension`]), whose scene keeps the game's data
+//! beside the engine's frame ([`WorldView::scene_mut`]). Only the engine's renderer draws such a view (its slot refuses the
+//! others), and a scene without batch cells ([`ViewScene::batch_cells`]) takes no static meshes or batches.
+//!
 //! The shapes are posed on the CPU: [`WorldView::shape_object`] turns a [`SceneShape`] and its [`ShapeInstance`] (after its
 //! threads were advanced and animated) into an object whose vertices are in the world. [`WorldView::set_objects`] hands the
 //! frame its objects and keeps the last frame's, which give each object its motion (the anti-aliasing's history follows it).
 
+use std::any::{Any, TypeId, type_name};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -22,8 +28,8 @@ use torque_client::conn::ConnGame;
 use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
-use torque_render_hd::ext::{NoExtension, PlainScene};
-use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture, StaticCells};
+use torque_render_hd::ext::{HdExtension, NoExtension, PlainScene, ViewScene};
+use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
 use torque_render_scene::hd::environment::ClientDay;
@@ -156,6 +162,9 @@ pub fn static_batch_key(batch: u32, chunk: u32) -> [i32; 3] {
     ]
 }
 
+/// Why a view refuses static meshes and batches: its scene's geometry takes none ([`ViewScene::batch_cells`]).
+const NO_BATCH_CELLS: &str = "this view's scene takes no static batches";
+
 /// The most warnings a view keeps for the console between takes ([`WorldView::take_warnings`]).
 pub const MAX_WARNINGS: usize = 16;
 
@@ -285,11 +294,13 @@ impl SceneShape {
     }
 }
 
-/// The enhanced renderer, the GUI pass and the scene they draw.
-pub struct WorldView {
-    world: HdWorld<NoExtension>,
+/// The enhanced renderer, the GUI pass and the scene they draw. `E` is the extension the renderer draws the world's own static
+/// geometry with ([`HdExtension`]): the engine's plain cells by default, else a game's, whose scene ([`ViewScene`]) holds the
+/// game's data beside the engine's frame.
+pub struct WorldView<E: HdExtension<Scene: ViewScene> = NoExtension> {
+    world: HdWorld<E>,
     gui: GuiPass,
-    scene: PlainScene,
+    scene: E::Scene,
     /// Whether the floor or the daylight changed since the last frame (else only the objects did).
     statics_changed: bool,
     /// Where the day's sun was when the view was last lit by it ([`WorldView::set_day`]).
@@ -332,7 +343,17 @@ impl WorldView {
     /// A view on `gpu` with the default [`Daylight`], no floor and no objects, drawn at [`Quality::High`]. The effects' pipelines
     /// start being made on a worker thread ([`HdWorld::warm_effects`]).
     pub fn new(gpu: &Gpu) -> WorldView {
-        let mut frame = HdScene::new(StaticCells::default());
+        WorldView::with_extension(gpu)
+    }
+}
+
+impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
+    /// [`WorldView::new`] drawing the world's static geometry with the extension `E`, its scene the scene's default with the
+    /// view's frame settings. The renderer's modules are composed with `E`'s shaders once a process, so every view and
+    /// renderer of a process has the same extension ([`HdWorld::try_from_device`] panics on another).
+    pub fn with_extension(gpu: &Gpu) -> WorldView<E> {
+        let mut scene = E::Scene::default();
+        let frame: &mut HdScene<E::Geometry> = &mut scene;
         // The physical sky in the server sky's place: the scene has no sky of its own.
         frame.atmosphere = true;
         // Sharper penumbrae, a wider occlusion and some of it in the sun.
@@ -343,10 +364,6 @@ impl WorldView {
         frame.smooth_occlusion = true;
         // Smoke and dust lit by the sun, the sky and the lights; additive glows stay unlit.
         frame.particle_light = Some(ParticleLight::BLENDED);
-        let scene = PlainScene {
-            frame,
-            ..PlainScene::default()
-        };
         let mut view = WorldView {
             world: HdWorld::new(gpu),
             gui: GuiPass::new(gpu, None),
@@ -381,8 +398,28 @@ impl WorldView {
     }
 
     /// The scene as the next frame draws it.
-    pub fn scene(&self) -> &PlainScene {
+    pub fn scene(&self) -> &E::Scene {
         &self.scene
+    }
+
+    /// The scene, for the game's data beside the engine's frame (what the extension reads each frame: its uniform block, its
+    /// mode). An edit to the frame's statics here (cells, planes, lights) is not seen until
+    /// [`mark_statics_changed`](Self::mark_statics_changed).
+    pub fn scene_mut(&mut self) -> &mut E::Scene {
+        &mut self.scene
+    }
+
+    /// The next frame takes the scene's statics as changed, as after the view's own setters: the renderer compares its cells,
+    /// planes and lights again instead of sending only the moving objects (the fast path of a frame where only they moved), so
+    /// call it once after an edit to them through [`scene_mut`](Self::scene_mut), not every frame.
+    pub fn mark_statics_changed(&mut self) {
+        self.statics_changed = true;
+    }
+
+    /// The extension's type name when it is a game's, not the engine's ([`NoExtension`]): only the engine's renderer draws such
+    /// a view.
+    fn game_extension() -> Option<&'static str> {
+        (TypeId::of::<E>() != TypeId::of::<NoExtension>()).then(type_name::<E>)
     }
 
     /// Whether the effects' pipelines are still being made on their worker thread ([`HdWorld::warming`]).
@@ -397,7 +434,7 @@ impl WorldView {
     }
 
     /// The enhanced renderer the view draws with (its timers and reports).
-    pub fn renderer(&mut self) -> &mut HdWorld<NoExtension> {
+    pub fn renderer(&mut self) -> &mut HdWorld<E> {
         &mut self.world
     }
 
@@ -409,7 +446,7 @@ impl WorldView {
     /// The engine's renderer's quality step.
     pub fn set_quality(&mut self, quality: Quality) {
         self.quality = quality;
-        self.scene.mode = Some(self.features.mode(quality));
+        self.scene.set_mode(Some(self.features.mode(quality)));
     }
 
     /// The id of the renderer drawing (None: the world is not drawn).
@@ -492,12 +529,14 @@ impl WorldView {
     /// slot had chosen could not be made (the engine's own draws instead, else none).
     pub fn attach_slot(&mut self, slot: Rc<RendererSlot>) -> Result<(), String> {
         self.features = slot.features();
-        self.scene.mode = Some(self.features.mode(self.quality));
+        self.scene.set_mode(Some(self.features.mode(self.quality)));
         self.world.features = self.features.features;
         let lit = self.features.particle_light;
         self.scene.particle_light = self.particle_light.filter(|_| lit);
         self.take_adds(&slot);
-        let made = slot.attach_gpu(&self.gpu).map_err(|e| e.to_string());
+        let made = slot
+            .attach_gpu(&self.gpu, Self::game_extension())
+            .map_err(|e| e.to_string());
         // Any generation but the slot's: the next follow takes its renderer.
         self.slot = Some((Rc::clone(&slot), slot.generation().wrapping_sub(1)));
         self.follow_slot();
@@ -516,14 +555,23 @@ impl WorldView {
         for i in 0..self.batch_sources.len() {
             self.remove_static_batch(PLUGIN_BATCHES + i as u32);
         }
-        self.batch_sources = adds
-            .batches
-            .iter()
-            .map(|e| BatchSource {
-                source: e.make(),
-                seen: None,
-            })
-            .collect();
+        self.batch_sources.clear();
+        if !adds.batches.is_empty() && self.scene.batch_cells().is_none() {
+            let names: Vec<&str> = adds.batches.iter().map(|e| e.name()).collect();
+            self.warn(format!(
+                "the static batch sources {} are left out: {NO_BATCH_CELLS}",
+                names.join(", ")
+            ));
+        } else {
+            self.batch_sources = adds
+                .batches
+                .iter()
+                .map(|e| BatchSource {
+                    source: e.make(),
+                    seen: None,
+                })
+                .collect();
+        }
         self.kinds.kinds = adds
             .kinds
             .iter()
@@ -538,8 +586,16 @@ impl WorldView {
     }
 
     /// Lays out `source`'s batch from the next frame, and again whenever it changes ([`StaticBatchSource`]). False: the view
-    /// holds [`crate::render::MAX_ADDS`] sources.
-    pub fn add_static_batch_source(&mut self, source: impl StaticBatchSource) -> bool {
+    /// holds [`crate::render::MAX_ADDS`] sources, or its scene takes no static batches ([`ViewScene::batch_cells`], with a
+    /// warning naming the source).
+    pub fn add_static_batch_source<S: StaticBatchSource>(&mut self, source: S) -> bool {
+        if self.scene.batch_cells().is_none() {
+            self.warn(format!(
+                "the static batch source {} is left out: {NO_BATCH_CELLS}",
+                type_name::<S>()
+            ));
+            return false;
+        }
         if self.batch_sources.len() >= crate::render::MAX_ADDS {
             return false;
         }
@@ -597,6 +653,11 @@ impl WorldView {
         if batch.draws.is_empty() {
             return None;
         }
+        if self.scene.batch_cells().is_none() {
+            let warning = format!("static batch {id} is left out: {NO_BATCH_CELLS}");
+            self.warn(warning.clone());
+            return Some(warning);
+        }
         let others: usize = self.batch_keys.values().map(|(_, t)| t).sum();
         let budget = self.batch_budget.saturating_sub(others);
         let layout = batch.layout(budget);
@@ -621,8 +682,7 @@ impl WorldView {
         let mut keys = Vec::with_capacity(layout.chunks.len());
         for (n, copies) in layout.chunks.iter().enumerate() {
             let key = static_batch_key(id, n as u32);
-            self.put_static_mesh(key, &local, &batch.chunk_draws(copies));
-            if self.scene.frame.cells.cells.contains_key(&key) {
+            if self.put_static_mesh(key, &local, &batch.chunk_draws(copies)) {
                 keys.push(key);
             }
         }
@@ -723,7 +783,7 @@ impl WorldView {
 
     /// How the volumetric clouds look (None: the engine's, [`CloudLook::DEFAULT`]).
     pub fn set_cloud_look(&mut self, look: Option<CloudLook>) {
-        self.scene.frame.cloud_look = look;
+        self.scene.cloud_look = look;
     }
 
     pub fn set_daylight(&mut self, d: &Daylight) {
@@ -901,13 +961,13 @@ impl WorldView {
     /// a clock of their own) and the stars' twinkle run on it; the image's grain does not (its pattern stays still). It starts
     /// at 0 and stands still until a game runs it ([`WorldView::advance_time`]).
     pub fn time(&self) -> f32 {
-        self.scene.time
+        E::time(&self.scene)
     }
 
     /// Runs the effects' clock on by `seconds`, a frame's time ([`EffectClock`]).
     pub fn advance_time(&mut self, seconds: f32) {
         self.effect_clock.advance(seconds);
-        self.scene.time = self.effect_clock.gpu();
+        self.scene.set_time(self.effect_clock.gpu());
     }
 
     /// No ground and no water: the floor, the terrain and the water taken away.
@@ -1061,12 +1121,17 @@ impl WorldView {
             .collect()
     }
 
-    fn put_static_mesh(&mut self, key: [i32; 3], local: &[usize], draws: &[Draw]) {
+    /// Puts the static mesh `key` into the scene's batch cells; whether it holds a cell now (false: nothing to draw, or the
+    /// scene takes no static geometry of the view's, with a warning).
+    fn put_static_mesh(&mut self, key: [i32; 3], local: &[usize], draws: &[Draw]) -> bool {
+        let Some(cells) = self.scene.batch_cells() else {
+            self.warn(format!("static mesh {key:?} is left out: {NO_BATCH_CELLS}"));
+            return false;
+        };
         let draws: Vec<HdDraw> = draws
             .iter()
             .map(|d| HdDraw::from_fixed(d, material::KIND_SHAPE, local))
             .collect();
-        let cells = &mut self.scene.frame.cells;
         let mut slot_of = |texture: Option<(usize, Sampler)>| -> u32 {
             let want = SlotTexture {
                 texture: texture.map(|t| t.0),
@@ -1149,17 +1214,21 @@ impl WorldView {
                 cell.bounds[1][k] = cell.bounds[1][k].max(v.position[k]);
             }
         }
-        if cell.indices.is_empty() {
-            cells.cells.remove(&key);
-        } else {
+        let held = !cell.indices.is_empty();
+        if held {
             cells.cells.insert(key, cell);
+        } else {
+            cells.cells.remove(&key);
         }
         self.statics_changed = true;
+        held
     }
 
     /// Takes the static mesh `key` out of the view (nothing if there is none).
     pub fn remove_static_mesh(&mut self, key: [i32; 3]) {
-        if self.scene.frame.cells.cells.remove(&key).is_some() {
+        if let Some(cells) = self.scene.batch_cells()
+            && cells.cells.remove(&key).is_some()
+        {
             self.statics_changed = true;
         }
     }
@@ -1196,7 +1265,7 @@ impl WorldView {
             return None;
         }
         let records = world.records();
-        let frame = &self.scene.frame;
+        let frame: &HdScene<E::Geometry> = &self.scene;
         let last = frame.eye?;
         let camera = records.eye();
         if eye.copied().or(camera).is_some_and(|e| is_cut(&last, &e)) {
@@ -1319,10 +1388,17 @@ impl WorldView {
         let camera = HdCamera::new(eye, fov, s.visible_distance, w, h);
         #[cfg_attr(not(feature = "gizmos"), allow(unused_variables))]
         let own = if let (Drawing::Other(i), Some((slot, _))) = (self.drawing, &self.slot) {
+            // The slot refuses other renderers on a game extension's view, so the scene is the engine's here.
+            let scene = (&self.scene as &dyn Any).downcast_ref::<PlainScene>();
+            debug_assert!(
+                scene.is_some(),
+                "another renderer on a game extension's view"
+            );
+            let scene = scene.ok_or("the renderer cannot draw this view's scene")?;
             slot.draw(
                 i,
                 RenderFrame {
-                    scene: &self.scene,
+                    scene,
                     camera: &camera,
                     target,
                     rect: [x, y, w, h],
