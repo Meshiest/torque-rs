@@ -1,0 +1,58 @@
+[package]
+name = "torque-example-build-features"
+description = "Turns on the same engine features for every example that uses the app layer, so they share one build of the engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "example", "gamedev"]
+categories = ["game-development"]
+
+# Cargo builds a crate once for each set of features a build asks of it, and `cargo run -p <example>` asks for the features of
+# that example's dependencies only. Examples that asked for different sets built `torque-app`, `torque-server` and everything
+# above them again each time. Every example that uses the app layer depends on this crate, which asks for the union of
+# their sets, so every build of one of them resolves the same features and switching examples rebuilds only the example.
+#
+# A feature an example needs goes in this list as well as in the example's own manifest; an example that asks for a feature
+# not listed here splits the build again (`cargo tree -p <example> -e features` shows it). Optional per-example features
+# (`rope`, `gamepad`, `smooth-prediction`) reach only crates nothing else depends on, and stay optional. A native-only
+# feature goes in the second table, so the web builds never see it.
+#
+# The crates below `torque` get the same treatment (the way a "workspace hack" crate does): features that only some examples'
+# own dependencies ask of them (the Lua host's Wasmtime, the props' physics) would otherwise rebuild them and every crate above
+# them for those examples. Each line is the union over the examples; `cargo tree -p <example> -e features --prefix none -f
+# '{p} {f}'` lists the sets to compare when a dependency changes. To see whether an example drifted, run it for two
+# examples and compare the lines of `torque-app`, `torque-server` and the crates listed below: they must be equal.
+# The versions here only select a major the lock already holds; this crate pins features, never versions.
+
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "mods", "web", "webrtc", "p2p"] }
+
+# Natively: the QUIC transport, the sound card, and the loader of native extensions.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["quic", "audio-device", "native-extensions"] }
+
+# What only some examples' dependencies ask of the crates the engine builds on.
+either = { version = "1", default-features = false, features = ["std", "use_std"] }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher", "inline-more", "serde"] }
+indexmap = { version = "2", features = ["serde"] }
+num-traits = { version = "0.2", default-features = false, features = ["i128", "libm"] }
+profiling = { version = "1", features = ["procmacros"] }
+serde = { version = "1", features = ["alloc", "derive"] }
+smallvec = { version = "1", features = ["serde", "union"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug", "Win32_System_Kernel", "Win32_System_Memory", "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+# The same for what the build scripts and the proc macros run on: they get a set of features of their own.
+[build-dependencies]
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
+
+[lints]
+workspace = true

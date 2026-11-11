@@ -18,6 +18,7 @@ categories = ["game-development"]
 
 [dependencies]
 torque = { path = "../../crates/torque", default-features = false, features = ["app", "web", "webrtc", "p2p"] }
+torque-example-build-features = { path = "../build-features" }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-render-core = { path = "../../crates/torque-render-core" }

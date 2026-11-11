@@ -16,6 +16,7 @@ categories = ["game-development", "network-programming"]
 [dependencies]
 torque-example-assets = { path = "../assets" }
 torque = { path = "../../crates/torque", default-features = false, features = ["app", "mods"] }
+torque-example-build-features = { path = "../build-features" }
 # The window client (feature `window`): the app trait names the renderer's types.
 torque-render-core = { path = "../../crates/torque-render-core", optional = true }
 torque-render-scene = { path = "../../crates/torque-render-scene", optional = true }

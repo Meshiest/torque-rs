@@ -18,6 +18,7 @@ categories = ["game-development"]
 # `mods`: the office's server requires the catalog mod of its clients; `web`, `webrtc` and `p2p`: the office server's web
 # transport, data channels and rooms natively, and in a browser the game socket a page joins it on.
 torque = { path = "../../crates/torque", default-features = false, features = ["app", "maps", "mods", "web", "webrtc", "p2p", "quic"] }
+torque-example-build-features = { path = "../build-features" }
 torque-example-assets = { path = "../assets" }
 torque-example-common = { path = "../common" }
 torque-import = { path = "../../crates/torque-import" }

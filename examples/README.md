@@ -2,6 +2,8 @@
 
 Small games made with the engine. Run each from the repository root with `just examples <example> <recipe>`. The web builds need rustup's `wasm32-unknown-unknown` target and Node.
 
+The examples that use the app layer share one build of the engine (`examples/build-features`), so switching between them rebuilds only the example.
+
 <table>
 <tr>
 <td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-plaza.webp" width="200" alt="The level demo"><br>The level demo</a></td>

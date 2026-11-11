@@ -4322,11 +4322,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-example-build-features"
+version = "0.1.0"
+dependencies = [
+ "either",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "num-traits",
+ "profiling",
+ "serde",
+ "smallvec",
+ "torque",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "torque-example-character"
 version = "0.1.0"
 dependencies = [
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-example-common",
  "torque-render-core",
  "torque-render-scene",
@@ -4339,6 +4355,7 @@ dependencies = [
  "glam 0.34.2",
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-render-core",
  "torque-render-scene",
 ]
@@ -4370,6 +4387,7 @@ dependencies = [
  "js-sys",
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-example-common",
  "torque-plugin-rope",
  "torque-render-core",
@@ -4386,6 +4404,7 @@ dependencies = [
  "torque-client-script-format",
  "torque-client-script-host",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-example-common",
  "torque-import",
  "torque-interior-builder",
@@ -4416,6 +4435,7 @@ version = "0.1.0"
 dependencies = [
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-render-core",
  "torque-render-scene",
 ]
@@ -4426,6 +4446,7 @@ version = "0.1.0"
 dependencies = [
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-plugin-props",
  "torque-render-core",
  "torque-render-scene",
@@ -4439,6 +4460,7 @@ version = "0.1.0"
 dependencies = [
  "png",
  "torque",
+ "torque-example-build-features",
  "torque-example-character",
  "torque-example-fps",
  "torque-example-level-demo",
@@ -4453,6 +4475,7 @@ version = "0.1.0"
 dependencies = [
  "torque",
  "torque-example-assets",
+ "torque-example-build-features",
  "torque-example-common",
  "torque-plugin-gamepad",
  "torque-render-core",

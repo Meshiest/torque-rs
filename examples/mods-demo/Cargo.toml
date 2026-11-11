@@ -18,6 +18,7 @@ categories = ["game-development"]
 # `web` and `webrtc`: the server's web transport and data channels natively, the client's game socket over WebSocket with a
 # data channel beside it in a browser; `p2p`: a server hosted through a room service, and a page that joins it by its code.
 torque = { path = "../../crates/torque", default-features = false, features = ["app-core", "renderer", "mods", "web", "webrtc", "p2p"] }
+torque-example-build-features = { path = "../build-features" }
 torque-example-assets = { path = "../assets" }
 # The ball: a prop the players' boxes push.
 torque-plugin-props = { path = "../../crates/torque-plugin-props" }
