@@ -145,7 +145,8 @@ pub struct HdScene<G> {
     /// planes drawn as before (the base plane's tiling as the extension says).
     pub ground_variation: bool,
     /// Opt-in: the volumetric clouds' own clock (seconds: their drift with the wind, their change of shape and their shadows),
-    /// for a scene whose clouds run faster or slower than its effects (a timelapse). None: the effect time, as before.
+    /// for a scene whose clouds run faster or slower than its effects (a timelapse). None: the effect time, as before. The game
+    /// keeps it small: an `f32` second count has a step of 2 ms at 2^14 s (4.6 hours), and the clouds' drift jumps by that step.
     pub cloud_time: Option<f32>,
     /// The fixed-function frame's clear (the fog colour quad), gamma 0..1.
     pub clear: [f32; 3],

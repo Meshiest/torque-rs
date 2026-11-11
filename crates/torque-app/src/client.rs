@@ -656,7 +656,7 @@ pub struct GameClient<S = GameServer, C: ConnGame = TgeConn, H: ServerHost = Ser
     /// Milliseconds of the client's clock the hosted server has not ticked yet.
     server_lag: u32,
     /// The seconds the next frame covers.
-    frame_dt: f32,
+    frame_dt: f64,
     /// Lines the hosted server printed (kept for the tests and the console).
     pub server_log: Vec<String>,
     /// Lines the client printed.
@@ -790,12 +790,12 @@ impl<S, C: ConnGame, H: ServerHost> GameClient<S, C, H> {
 
     /// Adds `seconds` to the time the next frame covers.
     pub fn add_frame_time(&mut self, seconds: f32) {
-        self.frame_dt += seconds;
+        self.frame_dt += f64::from(seconds);
     }
 
     /// The time the next frame covers (seconds), taken.
     pub fn take_frame_time(&mut self) -> f32 {
-        std::mem::take(&mut self.frame_dt)
+        std::mem::take(&mut self.frame_dt) as f32
     }
 }
 

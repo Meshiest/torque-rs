@@ -288,7 +288,8 @@ impl State {
     }
 }
 
-/// How long a shape asked for `seconds` lasts.
+/// How long a shape asked for `seconds` lasts. A countdown, not a running total: at most [`MAX_SECONDS`], where an `f32` still
+/// resolves 8 ms.
 fn ttl(seconds: f32) -> f32 {
     if seconds.is_finite() {
         seconds.clamp(0.0, MAX_SECONDS)

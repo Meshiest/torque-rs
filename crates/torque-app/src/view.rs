@@ -324,6 +324,8 @@ pub struct WorldView {
     /// What the last frame's moving objects were made of ([`objects_of`]'s kept objects): an object whose builds did not change
     /// is the last frame's again.
     kept: HashMap<u32, KeptObject>,
+    /// The effects' clock ([`WorldView::advance_time`]); the scene's time is its wrapped `f32`.
+    effect_clock: EffectClock,
 }
 
 impl WorldView {
@@ -370,6 +372,7 @@ impl WorldView {
             batch_sources: Vec::new(),
             kinds: EmitterKinds::default(),
             kept: HashMap::new(),
+            effect_clock: EffectClock::default(),
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
@@ -901,9 +904,10 @@ impl WorldView {
         self.scene.time
     }
 
-    /// Runs the effects' clock on by `seconds`, a frame's time ([`advance_effect_time`]).
+    /// Runs the effects' clock on by `seconds`, a frame's time ([`EffectClock`]).
     pub fn advance_time(&mut self, seconds: f32) {
-        self.scene.time = advance_effect_time(self.scene.time, seconds);
+        self.effect_clock.advance(seconds);
+        self.scene.time = self.effect_clock.gpu();
     }
 
     /// No ground and no water: the floor, the terrain and the water taken away.
@@ -1355,18 +1359,32 @@ impl WorldView {
     }
 }
 
-/// The effects' clock starts over here (seconds: about an hour, well within an `f32`'s precision for the waves' motion).
-pub const EFFECT_TIME_WRAP: f32 = 4_096.0;
+/// The effects' clock starts over here (seconds: about 68 minutes; a power of two, so the wrap is exact). The wrap is not
+/// seamless: the water's waves (`omega * t`), the sky's twinkle and the clouds' fallback drift jump once per wrap, and the
+/// frame at the wrap shows one frame of spurious motion vectors. 4,096 s keeps the `f32` the shaders get within 0.25 ms of
+/// the clock.
+pub const EFFECT_TIME_WRAP: f64 = 4_096.0;
 
-/// The effects' clock `time` run on by `seconds`, wrapped at [`EFFECT_TIME_WRAP`]: a step that is not a positive finite number
-/// leaves it, and a clock that is not finite starts over from 0.
-pub fn advance_effect_time(time: f32, seconds: f32) -> f32 {
-    let time = if time.is_finite() { time } else { 0.0 };
-    if !(seconds.is_finite() && seconds > 0.0) {
-        return time;
+/// The effects' clock: exact seconds in an `f64`, wrapped at [`EFFECT_TIME_WRAP`]. Only the wrapped value is narrowed for the
+/// GPU, so a frame's step is not rounded to the `f32` grid at every addition (which drifts the clock's rate when the steps are
+/// small against that grid, as at a high refresh rate).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EffectClock {
+    seconds: f64,
+}
+
+impl EffectClock {
+    /// The clock run on by `seconds`, a frame's time: a step that is not a positive finite number leaves it.
+    pub fn advance(&mut self, seconds: f32) {
+        if seconds.is_finite() && seconds > 0.0 {
+            self.seconds = (self.seconds + f64::from(seconds)) % EFFECT_TIME_WRAP;
+        }
     }
-    let next = (time + seconds) % EFFECT_TIME_WRAP;
-    if next.is_finite() { next } else { 0.0 }
+
+    /// The clock as the shaders take it, in `[0, EFFECT_TIME_WRAP)`.
+    pub fn gpu(self) -> f32 {
+        self.seconds as f32
+    }
 }
 
 /// A floor's two triangles at height 0, `half` each way from the origin, tinted `color`, with texture `texture` of the frame's
@@ -1506,12 +1524,40 @@ mod tests {
 
     #[test]
     fn the_effect_clock_runs_wraps_and_ignores_steps_that_are_not_forward() {
-        assert_eq!(advance_effect_time(1.0, 0.5), 1.5);
-        assert!(advance_effect_time(EFFECT_TIME_WRAP - 0.25, 0.5) < 0.5);
-        assert_eq!(advance_effect_time(2.0, -1.0), 2.0);
-        assert_eq!(advance_effect_time(2.0, f32::NAN), 2.0);
-        assert_eq!(advance_effect_time(2.0, f32::INFINITY), 2.0);
-        assert_eq!(advance_effect_time(f32::NAN, 0.5), 0.5);
+        let mut clock = EffectClock::default();
+        clock.advance(1.5);
+        assert_eq!(clock.gpu(), 1.5);
+        clock.advance(-1.0);
+        clock.advance(f32::NAN);
+        clock.advance(f32::INFINITY);
+        assert_eq!(clock.gpu(), 1.5);
+        clock.advance(EFFECT_TIME_WRAP as f32 - 1.0);
+        assert!((0.0..1.0).contains(&clock.gpu()), "{}", clock.gpu());
+    }
+
+    /// Two hours of frames, across the wrap: the clock the shaders take still runs at the frame rate (its advance over a second
+    /// of frames within 1% of a second), at 60 Hz and at a high refresh rate whose step is small against the `f32` grid near
+    /// the wrap.
+    #[test]
+    fn the_effect_clock_keeps_its_rate_over_two_hours_of_frames() {
+        for fps in [60u32, 144, 240] {
+            let step = 1.0 / fps as f32;
+            let mut clock = EffectClock::default();
+            let (mut worst, mut last) = (0.0_f64, clock.gpu());
+            for frame in 1..=(2 * 3600 * fps) {
+                clock.advance(step);
+                if frame % fps == 0 {
+                    let now = clock.gpu();
+                    let ran = (f64::from(now) - f64::from(last)).rem_euclid(EFFECT_TIME_WRAP);
+                    worst = worst.max((ran - 1.0).abs());
+                    last = now;
+                }
+            }
+            assert!(
+                worst < 0.01,
+                "{fps} Hz: a second of frames ran the clock {worst} off 1 s"
+            );
+        }
     }
 
     /// A sheet of water from a hostile map: a height, a corner or a tile that is not a finite number (or a span that overflows)
