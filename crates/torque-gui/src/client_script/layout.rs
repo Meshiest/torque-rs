@@ -59,7 +59,7 @@ impl RealmLayout {
     }
 }
 
-/// A layout plugin's registration, as the engine's list of them holds it ([`Gui::add_realm_layouts`] takes the list).
+/// A layout plugin's registration, as the engine's list of them holds it (`Gui::add_realm_layouts` takes the list).
 #[derive(Clone, Copy, Debug)]
 pub struct RealmLayoutEntry(pub(crate) &'static RealmLayout);
 

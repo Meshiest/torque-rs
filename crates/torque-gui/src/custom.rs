@@ -291,7 +291,7 @@ impl ControlCx<'_> {
 
     /// Says that this control, or one it places, now draws differently from what a draw already made of it saw. Everything the
     /// methods below change is said already; a control that changes something else through [`vm`](Self::vm) (a field a draw
-    /// reads) says so here. A client-script layer is drawn again, not kept, after it ([`Gui::custom_stamp`]).
+    /// reads) says so here. A client-script layer is drawn again, not kept, after it (`Gui::custom_stamp`).
     pub fn changed(&self) {
         self.gui.touch_custom();
     }

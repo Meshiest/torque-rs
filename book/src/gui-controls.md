@@ -109,3 +109,31 @@ The older seam, `GuiExtension::draw_control`, is deprecated: it is still called 
 handles, so an extension written before keeps drawing, but a game that draws its own classes through its extension should
 write them as control classes instead (the `draw` method takes the place of `draw_control`, and the class gets fields, state,
 layout and input of its own). The extension keeps its other jobs (looks for the engine's controls, key rules, fonts).
+
+## More than one extension
+
+A GUI has one primary extension (`GuiExtension`) and any number added after it, so two plugins can each hook the engine's
+controls (an opacity, a fill, an outline, a scroll rule) without one replacing the other. A plugin gives the engine a factory,
+and the GUI plugin calls it for each client's GUI:
+
+```rust,ignore
+engine.gui_primary(|gui, vm| Rc::new(MyExtension::new(gui, vm)));   // one only
+engine.gui_extension(|gui, vm| Rc::new(OtherExtension::new(gui, vm))); // any number
+```
+
+A second `gui_primary` fails the build and names both plugins. The members are asked primary first, then the added ones in the
+order they were added, and each method has a rule for joining their answers:
+
+| Rule | Methods |
+|------|---------|
+| primary only (what the whole GUI is) | `fonts`, `begin_draw`, `default_canvas_size`, `key_tables`, `rule`, `missing_bitmap`, `message`, `classic_boxes` |
+| all, in order; the first `Err` stops the rest | `removed`, `before_control`, `scrolled`, `thumb_dragged`, `mouse_pressed`, `focused`, `before_canvas` |
+| the first answer (`Some` or `true`) | `draw_control`, `key_press`, `list_color`, `list_pad`, `text_outline`, `bitmap_fit`, `ml_max_bitmap_height`, `scroll_line_sizes`, `scroll_rects`, `scroll_thumbs` |
+| any true | `starts_active`, `replaces_fill`, `ml_auto_resize` |
+| true unless a member says no | `clip_to_parent` |
+| combined | `opacity` (the product of the answers), `shift` (the sum), `layer_stamp` (a hash of the answers; none when a member cannot say) |
+
+With nothing added, `Gui::ext()` is the primary itself. `Gui::extension::<T>()` finds the primary or the first added extension
+of type `T`. A game with a host of its own makes its GUI (`torque_gui::register`) and calls `gui.install_extensions(vm, &engine)`, which
+applies the engine's primary and added extensions the way the GUI plugin does; `Gui::set_extension` and `Gui::add_extension` set
+one directly.

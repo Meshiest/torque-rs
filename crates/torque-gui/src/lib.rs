@@ -81,6 +81,16 @@
 //!   (`faces::sync`), so a host's own [`FontSource`] must implement [`FontSource::register_face`] to take them
 //!   (`every_draw_cache_draws_text_in_the_registered_face`, `a_face_name_the_games_fonts_have_is_refused_in_any_case`,
 //!   `the_bytes_are_paid_for_before_they_are_read`). A face is registered for the session: nothing scopes one to a server.
+//! - Extensions ([`fanout`]): a GUI has one primary [`GuiExtension`] and any number added after it, and [`Gui::ext`] is the primary
+//!   itself while none is added, so the hot paths pay for the list only when a game has one. Every method of the trait has a rule in
+//!   `fanout::FanOut`, and a method added to the trait gets one there in the same change: the game-wide ones (fonts, canvas
+//!   size, key tables, rules, messages) are the primary's alone, so an added extension cannot change what the whole GUI is
+//!   (`fanout_game_wide_methods_are_the_primarys_alone`); `clip_to_parent` answers true unless a member says no, because the
+//!   trait's default is true (`fanout_a_control_is_clipped_unless_a_member_says_no`); a layer stamp is unsaid when any member
+//!   cannot say, so a member with hooks the stamp does not cover never gets a stale layer
+//!   (`fanout_the_layer_stamp_follows_every_answer_in_order`). Plugins add extensions as factories ([`GuiExtensions`]), made once
+//!   for each client's GUI by the GUI plugin; two primaries fail the build (`fanout_a_second_primary_fails_the_build_naming_both_plugins`).
+//!   Check: `cargo test -p torque-gui --lib fanout_`.
 //! - The pictures of these looks are made by `TORQUE_PICTURE_DIR=<folder> cargo test -p torque-gui --lib pictures_tests`.
 //!
 //! Costs a frame must not grow back (bench `gui draw 300 controls`, timed under the bench lock): a control's class is matched
@@ -109,6 +119,7 @@ pub mod custom;
 pub mod draw;
 pub mod ext;
 pub mod faces;
+pub mod fanout;
 pub mod glide;
 pub mod hud;
 pub mod input;
@@ -136,6 +147,7 @@ pub use control::{
 };
 pub use draw::{DrawCache, GuiDraws, TextLook, draw_canvas, run_callbacks};
 pub use ext::{FontSource, GuiExtension, NoExtension};
+pub use fanout::{Extension, GuiExtensionEntry, GuiExtensions, GuiPrimary};
 pub use glide::GuiPrefs;
 pub use input::{CursorShape, hover_cursor};
 
@@ -247,22 +259,6 @@ impl std::fmt::Debug for SharedFonts {
     }
 }
 
-/// The host's extension of the GUI ([`GuiExtension`]; [`NoExtension`] by default).
-#[derive(Clone)]
-pub struct Extension(pub Rc<dyn GuiExtension>);
-
-impl Default for Extension {
-    fn default() -> Extension {
-        Extension(Rc::new(NoExtension))
-    }
-}
-
-impl std::fmt::Debug for Extension {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Extension")
-    }
-}
-
 /// The canvas and every control's state.
 #[derive(Debug)]
 pub struct GuiState {
@@ -311,7 +307,7 @@ pub struct GuiState {
     pub world_camera: bool,
     /// What the HUD classes read of the connection (the client host sets it every tick: [`hud::HudFeed`]).
     pub hud: hud::HudFeed,
-    /// The host's extension ([`GuiExtension`]).
+    /// The host's extensions ([`GuiExtension`], [`fanout`]).
     pub ext: Extension,
     /// The control classes plugins added and their controls ([`custom`]).
     pub(crate) custom: custom::Custom,
@@ -365,29 +361,6 @@ impl Default for GuiState {
 pub struct Gui(pub Rc<RefCell<GuiState>>);
 
 impl Gui {
-    /// The host's extension (held outside the state's borrow while it runs).
-    pub fn ext(&self) -> Rc<dyn GuiExtension> {
-        Rc::clone(&self.0.borrow().ext.0)
-    }
-
-    /// The extension as its own type, when it is one.
-    pub fn extension<T: GuiExtension>(&self) -> Option<Rc<T>> {
-        self.ext().into_any().downcast::<T>().ok()
-    }
-
-    /// Sets the host's extension and the layout's font source it gives (if any).
-    pub fn set_extension(&self, ext: Rc<dyn GuiExtension>) {
-        let fonts = ext.fonts();
-        let mut s = self.0.borrow_mut();
-        if s.canvas.is_none() {
-            s.canvas_size = ext.default_canvas_size();
-        }
-        if let Some(f) = fonts {
-            s.fonts = SharedFonts::new(f);
-        }
-        s.ext = Extension(ext);
-    }
-
     /// Whether `id` is a GUI control the model knows.
     pub fn is_control(&self, id: ObjId) -> bool {
         self.0.borrow().controls.contains_key(&id)

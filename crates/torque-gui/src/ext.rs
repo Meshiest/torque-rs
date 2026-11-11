@@ -1,7 +1,8 @@
 //! The GUI's seams for a host: where its fonts come from ([`FontSource`]) and an extension ([`GuiExtension`]) that adds extra
 //! looks to the engine's controls (profile fields read by the draw, a pass before each control draws, a displacement of the
 //! children drawn, key and focus rules). Without one the GUI is TGE's: [`NoExtension`] and the `torque-fonts` cache. Control
-//! classes of a plugin's own are not an extension's: any number of plugins add them ([`crate::custom`]).
+//! classes of a plugin's own are not an extension's: any number of plugins add them ([`crate::custom`]). A GUI has one primary
+//! extension and any number added after it; each method says how their answers are joined ([`crate::fanout`]).
 
 use std::any::Any;
 use std::rc::Rc;

@@ -19,7 +19,7 @@
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
 //! | [`HierarchyPlugin`] | `torque.hierarchy` | server, `Game`, a `Resolve` tick hook; only in engine mode | the scene hierarchy: parent and child transforms (`torque_plugin_hierarchy`) |
-//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, and the control classes plugins add ([`torque_gui::custom`]) |
+//! | [`GuiPlugin`] | `torque.gui` | client, `Gui` | `torque_gui::register`, the control classes plugins add ([`torque_gui::custom`]) and the GUI extensions ([`torque_gui::fanout`]) |
 //! | [`ActionMapPlugin`] | `torque.action-map` | client, `Input` | the `ActionMap` class and its natives, and the input sources plugins add ([`torque_client::input_source`]) |
 //! | [`ScreenPlugin`] | `torque.screen` | client, `Screen` | `torque_client::screen::register` |
 //! | [`ConnPlugin`] | `torque.conn` | client, `Conn` | `torque_client::conn::register` |
@@ -204,6 +204,8 @@ impl Plugin for GuiPlugin {
                 gui.0.borrow_mut().fonts =
                     torque_gui::SharedFonts::new(Box::new(crate::layout_fonts()));
             }
+            // The extensions the plugins added (`gui_primary`, `gui_extension`), made for this client's GUI.
+            gui.install_extensions(vm, engine);
             *wiring.gui.borrow_mut() = Some(gui);
             Ok(())
         });

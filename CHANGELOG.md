@@ -68,6 +68,8 @@ different.
   plugins can each add some; supersedes `GuiExtension::draw_control`, now deprecated. A control class can also run once a
   frame (`update`), place other controls (`ControlCx::set_bounds_of`, `resize_control`) and keep data on any control
   (`Gui::control_data`).
+- `torque-gui`: more than one `GuiExtension` on a GUI: a primary one and any number added after it (`gui_primary`,
+  `gui_extension`, `Gui::add_extension`), each method joining their answers by a rule; with one extension the GUI asks it directly.
 - `torque-plugin-gui-layout`: flex and grid layout containers (`GuiFlexCtrl`, `GuiGridCtrl`; taffy) whose children are any
   controls, read through dynamic layout fields, inside GUIs that keep TGE's absolute positions (`GuiLayoutPlugin`, not in
   `DefaultPlugins`); TGE has only absolute positions and sizing flags. A server's client scripts get them as the `flex` and
