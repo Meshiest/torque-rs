@@ -13,6 +13,14 @@ struct Target {
     key: (u32, u32, u32),
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// The march's and the composite's groups over the depth they were made with (made again when it is another).
+    groups: Option<Groups>,
+}
+
+struct Groups {
+    depth: wgpu::TextureView,
+    march: wgpu::BindGroup,
+    composite: wgpu::BindGroup,
 }
 
 pub struct Volumetric {
@@ -134,19 +142,6 @@ impl Volumetric {
         }
     }
 
-    fn group(
-        &self,
-        device: &wgpu::Device,
-        depth: &wgpu::TextureView,
-        vol: &wgpu::TextureView,
-    ) -> wgpu::BindGroup {
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hd volumetric"),
-            layout: &self.layout,
-            entries: &[crate::tv(0, depth), crate::tv(1, vol)],
-        })
-    }
-
     /// The march into its texture (`iw` x `ih` over `scale`), from `depth` (the prepass's).
     #[allow(clippy::too_many_arguments)]
     pub fn encode_march(
@@ -179,12 +174,33 @@ impl Volumetric {
                 view_formats: &[],
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            self.target = Some(Target { key, texture, view });
+            self.target = Some(Target {
+                key,
+                texture,
+                view,
+                groups: None,
+            });
         }
-        let Some(t) = self.target.as_ref() else {
+        let Some(t) = self.target.as_mut() else {
             return;
         };
-        let group = self.group(device, depth, &self.dummy);
+        if t.groups.as_ref().is_none_or(|g| g.depth != *depth) {
+            let group = |vol: &wgpu::TextureView| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("hd volumetric"),
+                    layout: &self.layout,
+                    entries: &[crate::tv(0, depth), crate::tv(1, vol)],
+                })
+            };
+            t.groups = Some(Groups {
+                depth: depth.clone(),
+                march: group(&self.dummy),
+                composite: group(&t.view),
+            });
+        }
+        let Some(groups) = &t.groups else {
+            return;
+        };
         crate::count_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hd volumetric march"),
@@ -196,27 +212,37 @@ impl Volumetric {
         });
         pass.set_pipeline(&self.march);
         pass.set_bind_group(0, frame_group, &[]);
-        pass.set_bind_group(1, &group, &[]);
+        pass.set_bind_group(1, &groups.march, &[]);
         pass.set_bind_group(2, sky_group, &[]);
         pass.draw(0..3, 0..1);
         crate::count_draws(1);
         self.drawn = true;
     }
 
-    /// The march's light added over `hdr` (after the opaque pass).
+    /// Lets go of the groups over the last depth (its frame's targets are being let go).
+    pub(crate) fn forget_depth(&mut self) {
+        if let Some(t) = &mut self.target {
+            t.groups = None;
+        }
+    }
+
+    /// Whether groups over a depth are kept.
+    #[cfg(test)]
+    pub(crate) fn holds_depth(&self) -> bool {
+        self.target.as_ref().is_some_and(|t| t.groups.is_some())
+    }
+
+    /// The march's light added over `hdr` (after the opaque pass, over the depth the march read).
     pub fn encode_composite(
         &self,
-        device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         frame_group: &wgpu::BindGroup,
         sky_group: &wgpu::BindGroup,
-        depth: &wgpu::TextureView,
         hdr: &wgpu::TextureView,
     ) {
-        let Some(t) = self.target.as_ref() else {
+        let Some(groups) = self.target.as_ref().and_then(|t| t.groups.as_ref()) else {
             return;
         };
-        let group = self.group(device, depth, &t.view);
         crate::count_pass();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("hd volumetric composite"),
@@ -236,7 +262,7 @@ impl Volumetric {
         });
         pass.set_pipeline(&self.composite);
         pass.set_bind_group(0, frame_group, &[]);
-        pass.set_bind_group(1, &group, &[]);
+        pass.set_bind_group(1, &groups.composite, &[]);
         pass.set_bind_group(2, sky_group, &[]);
         pass.draw(0..3, 0..1);
         crate::count_draws(1);

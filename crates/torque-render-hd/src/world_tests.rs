@@ -172,3 +172,36 @@ fn a_table_of_mesh_places_past_the_largest_buffer_leaves_the_loose_draws_out() {
     assert!(!world.nodes_fit(120));
     assert!(world.nodes_fit(0));
 }
+
+#[test]
+fn targets_made_again_let_go_of_the_groups_kept_over_the_old_ones() {
+    use torque_render_scene::hd::kit::{box_object, look_at};
+    let gpu = match torque_render_core::Gpu::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    let mut world: HdWorld<crate::ext::NoExtension> = HdWorld::new(&gpu);
+    world.auto_exposure = true;
+    let mut scene = crate::ext::PlainScene::default();
+    let mut floor = box_object(0, [0.0, 0.0, -0.5], [10.0, 10.0, 0.5]);
+    floor.stamp = None;
+    scene.frame.objects.push(floor);
+    let eye = look_at([0.0, -6.0, 2.0], [0.0, 0.0, 0.0]);
+    let camera = HdCamera::new(eye, 90.0_f32, 100.0, 96, 64);
+    world.upload(&scene);
+    world.draw(&scene, &camera, None).expect("a frame");
+    assert!(world.exposure.holds_source(), "the exposure ran");
+    assert!(world.volumetric.holds_depth(), "the volumetric light ran");
+    let t = world.targets.as_ref().expect("the targets");
+    let (iw, ih, ao_scale, uses) = (t.iw, t.ih, t.ao_scale, t.uses);
+    assert!(
+        world
+            .ensure_targets(128, 64, iw, ih, ao_scale, uses)
+            .expect("new targets")
+    );
+    assert!(!world.exposure.holds_source());
+    assert!(!world.volumetric.holds_depth());
+}

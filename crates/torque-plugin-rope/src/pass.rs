@@ -474,12 +474,16 @@ struct Layouts {
 pub struct RopePass {
     world: SharedWorld,
     anchors: Arc<dyn FrameAnchors>,
+    /// The tubes (the opaque and shadows stages draw them). Each set of buffers holds one content a frame: the frame's queue
+    /// writes all land before its commands, so buffers written again at a later stage are read with that content at every stage.
     buffers: Option<Buffers>,
     color: Option<Pipeline>,
     shadow: Option<Pipeline>,
     strip: Option<Pipeline>,
     strip_additive: Option<Pipeline>,
     strip_shadow: Option<Pipeline>,
+    /// The ribbons and lines facing the camera (the translucent stage's).
+    strip_buffers: Option<Buffers>,
     /// The strips' shadow casters (the shadows stage's own: its tubes are in `buffers`).
     shadow_buffers: Option<Buffers>,
     layouts: Option<Layouts>,
@@ -507,6 +511,7 @@ impl RopePass {
             strip: None,
             strip_additive: None,
             strip_shadow: None,
+            strip_buffers: None,
             shadow_buffers: None,
             layouts: None,
             textures: None,
@@ -989,7 +994,7 @@ impl RopePass {
         camera.height.hash(&mut hasher);
         let key = hasher.finish();
         let (device, queue) = (cx.device, cx.queue);
-        self.buffers
+        self.strip_buffers
             .get_or_insert_with(|| Buffers::new(device))
             .upload(device, queue, key, || {
                 let mesh = StripMesh::build(&set, &view);
@@ -1009,7 +1014,10 @@ impl RopePass {
                 resource: globals.as_entire_binding(),
             }],
         });
-        let buffers = self.buffers.as_ref().expect("the buffers were just made");
+        let buffers = self
+            .strip_buffers
+            .as_ref()
+            .expect("the buffers were just made");
         let mut pass = begin_color_pass(cx.encoder, hdr, depth, "rope strips");
         let [x, y, w, h] = cx.viewport;
         pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);

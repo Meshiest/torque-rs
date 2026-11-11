@@ -294,6 +294,8 @@ pub struct PassScene<'a> {
 pub struct PassCx<'a> {
     pub stage: Stage,
     pub device: &'a wgpu::Device,
+    /// The queue. The frame is one submit: what a pass writes through it lands before any of the frame's commands run, at
+    /// every stage, so a buffer read with different contents at two stages needs two places.
     pub queue: &'a wgpu::Queue,
     /// The frame's commands (a pass begins its own render passes in it).
     pub encoder: &'a mut wgpu::CommandEncoder,

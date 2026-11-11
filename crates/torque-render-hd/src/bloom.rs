@@ -40,6 +40,8 @@ pub struct Bloom {
     up: wgpu::ComputePipeline,
     mirror: wgpu::Sampler,
     uniforms: wgpu::Buffer,
+    /// What `uniforms` holds (written again only when it changes).
+    written: Vec<u8>,
     dummy: wgpu::TextureView,
     chain: Option<Chain>,
     /// The levels of the last frame drawn (0: none).
@@ -129,6 +131,7 @@ impl Bloom {
             layout,
             mirror,
             uniforms,
+            written: Vec::new(),
             dummy,
             chain: None,
             drawn_levels: 0,
@@ -240,6 +243,13 @@ impl Bloom {
         });
     }
 
+    /// Lets go of the prefilter's group over the last source (its frame's targets are being let go).
+    pub(crate) fn forget_source(&mut self) {
+        if let Some(c) = &mut self.chain {
+            c.prefilter = None;
+        }
+    }
+
     /// The chain over `source` (`w` x `h`) with `levels` levels and the settings' threshold.
     #[allow(clippy::too_many_arguments)]
     pub fn encode(
@@ -304,7 +314,10 @@ impl Bloom {
                 [0.0, 0.0, BLOOM_SPREAD, 0.0],
             );
         }
-        queue.write_buffer(&self.uniforms, 0, &bytes);
+        if bytes != self.written {
+            queue.write_buffer(&self.uniforms, 0, &bytes);
+            self.written = bytes;
+        }
         let Some((_, prefilter_group)) = chain.prefilter.as_ref() else {
             return;
         };

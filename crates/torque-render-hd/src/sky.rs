@@ -608,8 +608,9 @@ impl SkyGpu {
         queue.write_buffer(&self.uniform, 0, &b);
     }
 
-    /// The tables: the transmittance and the multiple scattering the first time, the sky view with the physical sky.
-    pub fn encode_tables(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    /// The tables into `pass` (the frame's pass with the clusters): the transmittance and the multiple scattering the first time,
+    /// the sky view with the physical sky.
+    pub fn encode_tables(&mut self, pass: &mut wgpu::ComputePass<'_>) {
         let mut jobs: Vec<(usize, (u32, u32))> = Vec::new();
         if !self.luts_built {
             jobs.push((0, TRANSMITTANCE_SIZE));
@@ -619,14 +620,6 @@ impl SkyGpu {
         if self.physical {
             jobs.push((2, SKY_VIEW_SIZE));
         }
-        if jobs.is_empty() {
-            return;
-        }
-        crate::count_pass();
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("hd sky tables"),
-            timestamp_writes: None,
-        });
         for (k, (w, h)) in jobs {
             pass.set_pipeline(&self.lut_pipelines[k]);
             pass.set_bind_group(0, &self.lut_groups[k], &[]);

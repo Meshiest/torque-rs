@@ -450,3 +450,108 @@ fn a_textured_tube_shows_the_texture_and_a_ribbon_blends_by_its_alpha() {
     assert!(holed < solid, "{holed} against {solid}");
     ropes.lock().clear();
 }
+
+/// The tube of `make` (casting), and with `strip` also a ribbon of many segments pulled tight high above it (casting no shadow).
+fn make_tube_and_strip(ropes: &RopeShared, strip: bool) {
+    let mut world = ropes.lock();
+    world.clear();
+    world
+        .create(
+            RopeParams {
+                segments: 24,
+                length: 9.0,
+                thickness: 0.14,
+                color: [190, 120, 60, 255],
+                cast_shadow: true,
+                ..RopeParams::default()
+            },
+            [-4.0, 0.0, 3.0],
+            [4.0, 0.0, 3.0],
+        )
+        .unwrap();
+    if strip {
+        world
+            .create(
+                RopeParams {
+                    style: RopeStyle::Ribbon,
+                    segments: 64,
+                    length: 8.05,
+                    thickness: 0.2,
+                    color: [60, 200, 90, 255],
+                    cast_shadow: false,
+                    ..RopeParams::default()
+                },
+                [-4.0, 0.0, 7.0],
+                [4.0, 0.0, 7.0],
+            )
+            .unwrap();
+    }
+    for _ in 0..300 {
+        world.advance(0.032);
+    }
+}
+
+/// One [`RopePass`] that draws at every stage it is added at (the plugin adds a pass of its own at each).
+#[derive(Clone)]
+struct SharedPass(std::sync::Arc<std::sync::Mutex<torque_plugin_rope::RopePass>>);
+
+impl torque_app::render::HdPass for SharedPass {
+    fn draw(&mut self, cx: &mut torque_app::render::PassCx<'_>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .draw(cx);
+    }
+}
+
+/// [`SharedPass`] over a world of its own, at the shadows, opaque and translucent stages.
+struct OnePass(RopeShared);
+
+impl torque_engine::PluginType for OnePass {
+    const ID: torque_engine::PluginId = torque_engine::PluginId::new("test.rope-one-pass");
+}
+
+impl torque_engine::Plugin for OnePass {
+    fn build(&self, engine: &mut EngineBuilder) {
+        use torque_app::render::{EngineRender, Stage};
+        let pass = SharedPass(std::sync::Arc::new(std::sync::Mutex::new(
+            torque_plugin_rope::RopePass::new(self.0.0.clone()),
+        )));
+        let mut render = engine.render();
+        for stage in [Stage::Shadows, Stage::Opaque, Stage::Translucent] {
+            let pass = pass.clone();
+            render.pass(stage, move || pass.clone());
+        }
+    }
+}
+
+/// A frame is one submit, so its queue writes all land before its commands: one pass drawing the strips at the translucent stage
+/// keeps them apart from the tubes it drew at the shadows and opaque stages. Below the ribbon the picture is the tube's alone.
+#[test]
+fn a_ribbon_beside_a_tube_leaves_the_tube_and_its_shadow_as_they_are() {
+    let Some(gpu) = gpu() else { return };
+    let ropes = RopeShared::new();
+    let engine = EngineBuilder::new()
+        .add_plugins((
+            RendererPlugin,
+            torque_app::renderers::RenderFeaturePlugins,
+            OnePass(ropes.clone()),
+        ))
+        .build()
+        .expect("the engine is built");
+    let mut v = view(&gpu, &engine);
+    make_tube_and_strip(&ropes, false);
+    let tube = shot(&mut v, &gpu);
+    make_tube_and_strip(&ropes, true);
+    let both = shot(&mut v, &gpu);
+    save(&both, "tube-and-strip");
+    let (_, top) = project([0.0, 0.0, 5.5]);
+    let below = [0, top, SIZE.0, SIZE.1 - top];
+    assert!(
+        changed(&tube, &both, [0, 0, SIZE.0, top], 40) > 100,
+        "the ribbon is drawn above"
+    );
+    let differ = changed(&tube, &both, below, 8);
+    assert!(differ < 20, "{differ} pixels differ from the tube alone");
+    ropes.lock().clear();
+}

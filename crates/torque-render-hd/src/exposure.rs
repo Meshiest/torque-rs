@@ -21,6 +21,8 @@ pub struct Exposure {
     pub state: wgpu::Buffer,
     /// The next frame starts the adaptation again.
     reset: bool,
+    /// The group over the source it was made with (made again for another).
+    group: Option<(wgpu::TextureView, wgpu::BindGroup)>,
 }
 
 fn storage(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -113,12 +115,24 @@ impl Exposure {
             ),
             layout,
             reset: true,
+            group: None,
         }
     }
 
     /// The next frame takes its target at once.
     pub fn reset(&mut self) {
         self.reset = true;
+    }
+
+    /// Lets go of the group over the last source (its frame's targets are being let go).
+    pub(crate) fn forget_source(&mut self) {
+        self.group = None;
+    }
+
+    /// Whether a group over a source is kept.
+    #[cfg(test)]
+    pub(crate) fn holds_source(&self) -> bool {
+        self.group.is_some()
     }
 
     /// The histogram of `source` (`w` x `h`) and the adaptation over `dt` seconds.
@@ -146,32 +160,38 @@ impl Exposure {
         push_f32(&mut p, &[if self.reset { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0]);
         queue.write_buffer(&self.params, 0, &p);
         self.reset = false;
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("hd exposure"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.params.as_entire_binding(),
-                },
-                crate::tv(1, source),
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.bins.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.state.as_entire_binding(),
-                },
-            ],
-        });
+        if self.group.as_ref().is_none_or(|(v, _)| v != source) {
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hd exposure"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: self.params.as_entire_binding(),
+                    },
+                    crate::tv(1, source),
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.bins.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.state.as_entire_binding(),
+                    },
+                ],
+            });
+            self.group = Some((source.clone(), group));
+        }
+        let Some((_, group)) = &self.group else {
+            return;
+        };
         encoder.clear_buffer(&self.bins, 0, None);
         crate::count_pass();
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("hd exposure"),
             timestamp_writes: None,
         });
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(0, group, &[]);
         pass.set_pipeline(&self.histogram);
         pass.dispatch_workgroups(w.div_ceil(16), h.div_ceil(16), 1);
         pass.set_pipeline(&self.adapt);

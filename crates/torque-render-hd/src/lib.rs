@@ -22,8 +22,13 @@
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are
-//!   kept by what they bind (`GroupCache` in `world.rs`), the bloom's prefilter group by the source it reads, and every
-//!   per-frame value goes through buffers already bound.
+//!   kept by what they bind (`GroupCache` in `world.rs`), the bloom's prefilter group and the exposure's by the source they
+//!   read, the volumetric light's by the depth, and every per-frame value goes through buffers already bound (the bloom's
+//!   uniforms written only when they change).
+//! - A frame is one command buffer and one submit: a submit costs about a tenth of a millisecond of CPU, and a frame sent in
+//!   parts makes the GPU wait for the CPU between them (`level-profile`). Work that can share a pass does: a filter chain's levels and
+//!   the sky's tables with the lights' clusters are one compute pass each ([`encode_chain`]), and the decals draw in the
+//!   opaque pass unless a pass of the opaque stage ([`passes`]) draws between them.
 //! - The particles' vertex and index buffers are kept and written in place (made anew only to grow), their bytes in kept lists;
 //!   the shadow casters' bytes go up to the last caster used, the mesh places' table from a kept list (`frame-cpu`).
 //! - A stamped object whose stamp its run holds is not encoded or written again (bench `upload_loose 64 figures kept`).

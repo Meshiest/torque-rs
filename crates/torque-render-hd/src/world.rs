@@ -184,11 +184,7 @@ pub(crate) const CONTACT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba
 /// The timestamp queries: the frame's first pass's start, the tonemap's end, the shadow maps' end, the contact pass's start and end,
 /// the AO pass's start and its filter's end, the TAA's (or the FXAA-style filter's) start and end, the secondary views' and the
 /// SSR's start and end, and the volumetric clouds' start and end.
-const QUERIES: u32 = 20;
-/// The frame's early submits' timestamps (the end of the part submitted, the start of the next: `Q_GAPS` + 2 k, + 2 k + 1), so
-/// the frame's GPU time leaves out the GPU's wait for the CPU between its parts.
-const Q_GAPS: u32 = 16;
-const MAX_SPLITS: u32 = 2;
+const QUERIES: u32 = 16;
 const Q_FRAME_BEGIN: u32 = 0;
 const Q_FRAME_END: u32 = 1;
 const Q_SHADOWS_END: u32 = 2;
@@ -205,7 +201,7 @@ const Q_SSR_END: u32 = 13;
 const Q_CLOUDS_BEGIN: u32 = 14;
 const Q_CLOUDS_END: u32 = 15;
 /// The resolve buffer's slots (one a group of queries).
-const RESOLVE_SLOTS: u64 = 9;
+const RESOLVE_SLOTS: u64 = 8;
 /// A query resolve's destination alignment.
 const RESOLVE_ALIGN: u64 = 256;
 /// The largest frame (a side).
@@ -587,9 +583,6 @@ struct Timer {
     views: bool,
     ssr: bool,
     clouds: bool,
-    /// The early submits whose gaps were stamped (`write_timestamp` between encoders needs the device's
-    /// `TIMESTAMP_QUERY_INSIDE_ENCODERS`).
-    splits: u32,
     /// The frames' times read without waiting ([`HdWorld::take_finished_gpu_ms`]), and the slot this frame copied into (mapped
     /// after its submit).
     ring: Vec<RingSlot>,
@@ -607,27 +600,20 @@ const SLOT_MAPPING: u8 = 2;
 const SLOT_READY: u8 = 3;
 const SLOT_FAILED: u8 = 4;
 
-/// One frame's resolved timestamps on their way back without a wait: the frame's place in submission order and its gaps.
+/// One frame's resolved timestamps on their way back without a wait, and the frame's place in submission order.
 struct RingSlot {
     buffer: wgpu::Buffer,
     state: std::sync::Arc<std::sync::atomic::AtomicU8>,
     frame: u64,
-    splits: u32,
 }
 
-/// A frame's GPU time from its resolved timestamps: the first pass's start to the tonemap's end, less the GPU's waits for the
-/// CPU between the frame's submits (`splits` of them stamped).
-fn frame_span_ms(data: &[u8], splits: u32, period_ns: f64) -> Option<f64> {
+/// A frame's GPU time from its resolved timestamps: the first pass's start to the tonemap's end (one submit: the GPU does not
+/// wait for the CPU in between).
+fn frame_span_ms(data: &[u8], period_ns: f64) -> Option<f64> {
     let at = |o: usize| -> Option<u64> {
         Some(u64::from_le_bytes(data.get(o..o + 8)?.try_into().ok()?))
     };
-    let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * period_ns / 1e6;
-    let r = RESOLVE_ALIGN as usize;
-    let mut gaps = 0.0;
-    for k in 0..splits as usize {
-        gaps += ms(at(8 * r + 16 * k)?, at(8 * r + 16 * k + 8)?);
-    }
-    Some((ms(at(0)?, at(8)?) - gaps).max(0.0))
+    Some(at(8)?.saturating_sub(at(0)?) as f64 * period_ns / 1e6)
 }
 
 /// The most vertices of an object without a stamp whose content is hashed ([`unstamped_content`]).
@@ -2319,7 +2305,6 @@ impl<E: HdExtension> HdWorld<E> {
                     }),
                     state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(SLOT_FREE)),
                     frame: 0,
-                    splits: 0,
                 })
                 .collect(),
             ring_copied: None,
@@ -2332,7 +2317,6 @@ impl<E: HdExtension> HdWorld<E> {
             views: false,
             ssr: false,
             clouds: false,
-            splits: 0,
         });
         let post = PostPipes::new(&device, cache);
         let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -5065,8 +5049,11 @@ impl<E: HdExtension> HdWorld<E> {
         }) {
             return Ok(false);
         }
-        // The old targets go first (a switch never holds both sets).
+        // The old targets go first (a switch never holds both sets), with the groups kept over their views.
         self.targets = None;
+        self.exposure.forget_source();
+        self.volumetric.forget_depth();
+        self.bloom.forget_source();
         let device = &self.device;
         let tex = |label: &str, (w, h): (u32, u32), format, usage| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -6077,6 +6064,9 @@ impl<E: HdExtension> HdWorld<E> {
         cpu_mark!("begin: extras");
         let has_extras = self.ext.has_extras();
         let coloured = self.features.coloured_shadows && quality.coloured_shadows();
+        // The whole frame is one command buffer and one submit: a submit costs the CPU about a tenth of a millisecond, and a frame
+        // sent in parts makes the GPU wait for the CPU between them. Queue writes made while encoding all land before the frame's
+        // commands, so a buffer two of its passes read differently needs two places, not two writes.
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -6178,39 +6168,6 @@ impl<E: HdExtension> HdWorld<E> {
         }
         mark!("cull");
         let _ = set_pass_kind(PassKind::Cascade);
-        // What is encoded so far goes to the GPU now, so it works on it while the rest is encoded and submitted (each command
-        // buffer's finish is most of the frame's CPU cost). The same commands in the same order on one queue: the frame is the same.
-        let gap_stamps = self.timer.is_some()
-            && self
-                .device
-                .features()
-                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
-        let mut splits = 0u32;
-        macro_rules! submit_so_far {
-            ($next:expr) => {
-                if gap_stamps
-                    && splits < MAX_SPLITS
-                    && let Some(t) = &self.timer
-                {
-                    encoder.write_timestamp(&t.queries, Q_GAPS + 2 * splits);
-                }
-                let done = std::mem::replace(
-                    &mut encoder,
-                    self.device
-                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                            label: Some($next),
-                        }),
-                );
-                self.queue.submit([done.finish()]);
-                if gap_stamps
-                    && splits < MAX_SPLITS
-                    && let Some(t) = &self.timer
-                {
-                    encoder.write_timestamp(&t.queries, Q_GAPS + 2 * splits + 1);
-                    splits += 1;
-                }
-            };
-        }
         // The ground's boxes for the shadows' range (a terrain is hundreds of thousands of vertices: taken again only when it changes).
         let ground = scene.planes.iter().chain(&scene.water);
         let key: Vec<[usize; 3]> = ground
@@ -6382,8 +6339,6 @@ impl<E: HdExtension> HdWorld<E> {
             sky_clouds,
             &E::fog_ends(scene),
         );
-        self.sky.encode_tables(&mut encoder);
-        mark!("sky tables");
         // The lights' shadow slots.
         if self.written_slots.as_ref() != Some(&self.shadows.light_slots) {
             let mut lb = self.light_bytes.clone();
@@ -6404,10 +6359,11 @@ impl<E: HdExtension> HdWorld<E> {
         let targets = self.targets.as_ref().ok_or("no targets")?;
         // The AO the forward pass reads: the AO pass's filtered copy (each frame's estimate stands alone, smoothed in space).
         let ao_shown = &targets.ao_smooth_view;
+        // The sky's tables and the lights' clusters: one compute pass.
         {
             crate::count_pass();
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("hd clusters"),
+                label: Some("hd sky tables and clusters"),
                 timestamp_writes: self.timer.as_ref().filter(|_| !done.timed).map(|t| {
                     wgpu::ComputePassTimestampWrites {
                         query_set: &t.queries,
@@ -6416,11 +6372,12 @@ impl<E: HdExtension> HdWorld<E> {
                     }
                 }),
             });
+            self.sky.encode_tables(&mut pass);
             pass.set_pipeline(&self.clusters_pipeline);
             pass.set_bind_group(0, &self.clusters_group, &[]);
             pass.dispatch_workgroups(cluster_count(), 1, 1);
         }
-        mark!("clusters");
+        mark!("sky tables, clusters");
         let _ = set_pass_kind(PassKind::View);
         locked(&self.frame_groups).next_frame();
         locked(&self.tonemap_groups).next_frame();
@@ -6690,9 +6647,6 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         mark!("prepass");
-        // The shadows, the views and the prepass to the GPU at once (the screen-space passes after them read the prepass).
-        submit_so_far!("hd frame (screen space)");
-        mark!("prepass submit");
         let _ = set_pass_kind(PassKind::Post);
         // The Hi-Z and the screen-space reflections.
         let ssr_timed = self.encode_ssr(
@@ -6843,9 +6797,6 @@ impl<E: HdExtension> HdWorld<E> {
             self.volumetric.drawn = false;
         }
         mark!("volumetric march");
-        // The screen-space passes before the frame's colour to the GPU (with the prepass, about half its GPU time).
-        submit_so_far!("hd frame (colour)");
-        mark!("early submit");
         let _ = set_pass_kind(PassKind::Main);
         let mut draw_calls = 0;
         let refl_group = self.refl.main_group(p).ok_or("no reflection groups")?;
@@ -7007,6 +6958,10 @@ impl<E: HdExtension> HdWorld<E> {
         );
         targets.sky_copy.encode(&mut encoder, &self.refl.down);
         mark!("sky");
+        // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light: in the opaque
+        // pass, or in a pass of their own after the opaque stage's passes when there are any.
+        let decals = decal_start < split;
+        let decals_apart = decals && passes.has(PassStage::Opaque);
         {
             let mut pass = begin!("hd opaque", false, &targets.depth_view, &frame_group);
             draw_list(&mut pass, &keyed(sky_end..decal_start), &mut draw_calls);
@@ -7014,6 +6969,12 @@ impl<E: HdExtension> HdWorld<E> {
                 pass.set_bind_group(1, &self.groups[&(TexRef::White, SamplerKey::PLAIN)], &[]);
                 extras = self.ext.draw_extras(&mut pass, false, clustered);
                 draw_calls += extras.calls;
+            }
+            if decals && !decals_apart {
+                if has_extras {
+                    set_groups(&mut pass, [&frame_group, sky_group, refl_group]);
+                }
+                draw_list(&mut pass, &keyed(decal_start..split), &mut draw_calls);
             }
         }
         run_passes!(
@@ -7027,8 +6988,7 @@ impl<E: HdExtension> HdWorld<E> {
             hdr = Some(&targets.hdr_view),
             sun_shadows = sun_shadows!(),
         );
-        // The multiplied decals over the whole opaque frame (lit, shadowed and fogged), before the volumetric light.
-        if decal_start < split {
+        if decals_apart {
             let mut pass = begin!("hd decals", false, &targets.depth_view, &frame_group);
             draw_list(&mut pass, &keyed(decal_start..split), &mut draw_calls);
         }
@@ -7036,11 +6996,9 @@ impl<E: HdExtension> HdWorld<E> {
         // The volumetric light over the opaque frame, the water's depth, the opaque frame's copy.
         if vol_on {
             self.volumetric.encode_composite(
-                &self.device,
                 &mut encoder,
                 &frame_group,
                 &self.sky.group,
-                &targets.depth_view,
                 &targets.hdr_view,
             );
         }
@@ -7700,14 +7658,6 @@ impl<E: HdExtension> HdWorld<E> {
                     7 * RESOLVE_ALIGN,
                 );
             }
-            if splits > 0 {
-                encoder.resolve_query_set(
-                    &t.queries,
-                    Q_GAPS..Q_GAPS + 2 * splits,
-                    &t.resolve,
-                    8 * RESOLVE_ALIGN,
-                );
-            }
             encoder.copy_buffer_to_buffer(
                 &t.resolve,
                 0,
@@ -7733,12 +7683,10 @@ impl<E: HdExtension> HdWorld<E> {
                 slot.state
                     .store(SLOT_COPIED, std::sync::atomic::Ordering::Release);
                 slot.frame = t.ring_frames;
-                slot.splits = splits;
                 t.ring_frames += 1;
                 t.ring_copied = Some(i);
             }
             t.pending = true;
-            t.splits = splits;
             t.shadows = done.timed;
             t.contact = contact_timed;
             t.ao = ao_timed;
@@ -8014,13 +7962,8 @@ impl<E: HdExtension> HdWorld<E> {
             let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * t.period_ns / 1e6;
             let begin = at(0)?;
             let r = RESOLVE_ALIGN as usize;
-            // Less the GPU's waits for the CPU between the frame's submits.
-            let mut gaps = 0.0;
-            for k in 0..t.splits as usize {
-                gaps += ms(at(8 * r + 16 * k)?, at(8 * r + 16 * k + 8)?);
-            }
             GpuTimes {
-                frame: (ms(begin, at(8)?) - gaps).max(0.0),
+                frame: ms(begin, at(8)?),
                 shadow_maps: if t.shadows { ms(begin, at(r)?) } else { 0.0 },
                 contact: if t.contact {
                     ms(at(2 * r)?, at(2 * r + 8)?)
@@ -8075,7 +8018,7 @@ impl<E: HdExtension> HdWorld<E> {
                         .slice(..)
                         .get_mapped_range()
                         .ok()
-                        .and_then(|data| frame_span_ms(&data, slot.splits, t.period_ns));
+                        .and_then(|data| frame_span_ms(&data, t.period_ns));
                     slot.buffer.unmap();
                     if let Some(ms) = ms {
                         done.push((slot.frame, ms));
