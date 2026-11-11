@@ -88,11 +88,17 @@ fn cube(at: [f32; 3], half: f32, color: [u8; 3]) -> Draw {
 
 /// A floor, a static cube, a moving cube (the object `7`, at `x`) and a red light by them.
 fn view(gpu: &Gpu, x: f32) -> WorldView {
-    let mut view = WorldView::new(gpu);
+    scene_of(WorldView::new(gpu), x)
+}
+
+/// [`view`]'s scene on `view`, whose renderer (if it has one) is set to draw unbudgeted.
+fn scene_of(mut view: WorldView, x: f32) -> WorldView {
     view.set_plain_floor(50.0, [120, 160, 90]);
     view.set_daylight(&Daylight::default());
     view.set_effect_frame_seconds(Some(1.0 / 60.0));
-    view.renderer().set_unbudgeted();
+    if view.has_gpu() {
+        view.renderer().set_unbudgeted();
+    }
     view.set_static_mesh(
         static_mesh_key(0),
         TextureSet::new(&NoFiles),
@@ -384,4 +390,54 @@ fn adopting_a_world_replaces_the_one_a_view_holds_and_counts_the_cells_without_m
     cell.batches.clear();
     cell.clusters.clear();
     assert_eq!(view.adopt_gpu(HdWorld::new(&gpu)), 1);
+}
+
+#[test]
+fn a_view_that_starts_released_builds_no_world_and_draws_the_same_picture_after_a_restore() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut normal = view(&gpu, 3.0);
+    let before = shot(&mut normal, &gpu);
+
+    let mut view = scene_of(WorldView::released(&gpu), 3.0);
+    assert!(!view.has_gpu(), "no world is built");
+    assert!(!view.warming(), "no warm-up thread runs");
+    assert_eq!(view.gpu_geometry_bytes(), 0);
+    assert!(view.render_world(&gpu, SIZE, eye()).is_err());
+    view.release_gpu();
+    assert!(!view.has_gpu(), "a release of a released view is harmless");
+
+    assert_eq!(view.restore_gpu(), 0);
+    assert!(view.has_gpu());
+    view.renderer().set_unbudgeted();
+    let after = shot(&mut view, &gpu);
+    assert!(
+        before.rgba == after.rgba,
+        "the picture is the one a normal view draws, pixel for pixel"
+    );
+}
+
+#[test]
+fn a_view_that_starts_released_takes_a_world_built_elsewhere() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut normal = view(&gpu, 3.0);
+    let before = shot(&mut normal, &gpu);
+    let mut view = scene_of(WorldView::released(&gpu), 3.0);
+    let world = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let mut world = HdWorld::new(&gpu);
+                world.warm_effects();
+                world
+            })
+            .join()
+            .expect("the world is built")
+    });
+    assert_eq!(view.adopt_gpu(world), 0);
+    view.renderer().set_unbudgeted();
+    let after = shot(&mut view, &gpu);
+    assert!(before.rgba == after.rgba, "the same picture");
 }

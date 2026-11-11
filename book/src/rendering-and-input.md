@@ -184,6 +184,12 @@ settings to the new one and does the rest of `restore_gpu` (the slot's passes, e
 returns the same count; the picture is the one a restore draws. The world must be of the view's extension and made on the
 view's own device (the `Gpu` the view was made with, or a clone of it): a world of another device fails at its first use.
 
+A game that draws the world its own way from its first frame need not build the renderer only to drop it: `WorldView::released(&gpu)`
+(`released_with_extension` for a game's extension) makes a view that starts as if it had been released. No `HdWorld` is built, no
+thread compiles pipelines, and the GUI pass waits for the first `view.draw` (a game that draws its own GUI never makes it).
+Everything above holds for it: `has_gpu()` is false, `restore_gpu` or `adopt_gpu` makes the first world, with the renderer's
+default settings, and the picture is the one a normal view draws. The other constructors are unchanged.
+
 ## Input, cameras, controls and assets
 
 The other four registries have a chapter each. In short:

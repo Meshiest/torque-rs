@@ -33,6 +33,8 @@ struct Chooser {
     choices: Option<WindowChoices<'static>>,
     upkeeps: u32,
     work: Vec<Duration>,
+    /// Whether the game's own warm-up worker is still compiling.
+    compiling: bool,
 }
 
 impl Chooser {
@@ -42,6 +44,7 @@ impl Chooser {
             choices,
             upkeeps: 0,
             work: Vec::new(),
+            compiling: false,
         }
     }
 }
@@ -88,6 +91,10 @@ impl App for Chooser {
 
     fn pass_work(&mut self, work: Duration) {
         self.work.push(work);
+    }
+
+    fn warming(&self, view: &WorldView) -> bool {
+        self.compiling || view.warming()
     }
 }
 
@@ -183,4 +190,37 @@ fn a_frame_counts_the_frame_average_only_when_the_game_chose_it() {
 fn run_takes_a_game_and_run_with_a_game_and_an_event_loop_the_caller_built() {
     let _: fn(Chooser) -> Result<(), String> = super::run;
     let _: fn(Chooser, winit::event_loop::EventLoop<()>) -> Result<(), String> = super::run_with;
+}
+
+fn due(w: &mut AppWindow<Chooser>, view: &WorldView) -> bool {
+    AppWindow::cache_due(&w.game, &mut w.cache_saved, view)
+}
+
+/// A view that starts released has no warm-up of its own, so only the game's answer holds the cache back.
+#[test]
+fn the_cache_is_saved_once_the_game_says_its_warm_up_is_over() {
+    let gpu = match crate::window::offscreen_gpu() {
+        Ok(gpu) => gpu,
+        Err(e) => {
+            eprintln!("skipped: {e}");
+            return;
+        }
+    };
+    let view = WorldView::released(&gpu);
+    assert!(!view.warming(), "a released view warms nothing");
+    let mut w = AppWindow::new(Chooser::new(None));
+    w.game.compiling = true;
+    assert!(!due(&mut w, &view));
+    assert!(!due(&mut w, &view), "still compiling");
+    w.game.compiling = false;
+    assert!(due(&mut w, &view), "saved at the first frame after");
+    assert!(!due(&mut w, &view), "and only once");
+    w.game.compiling = true;
+    assert!(!due(&mut w, &view), "a later warm-up does not save again");
+
+    let mut plain = AppWindow::new(Chooser::new(None));
+    assert!(
+        due(&mut plain, &view),
+        "the default hook is the view's own state"
+    );
 }

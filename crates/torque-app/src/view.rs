@@ -294,6 +294,14 @@ impl SceneShape {
     }
 }
 
+/// What a released view keeps of its world for the next one.
+enum Carried {
+    /// The settings of the world that was released.
+    Settings(Box<HdSettings>),
+    /// No world was ever made: the first one keeps the renderer's defaults.
+    Defaults,
+}
+
 /// The enhanced renderer, the GUI pass and the scene they draw. `E` is the extension the renderer draws the world's own static
 /// geometry with ([`HdExtension`]): the engine's plain cells by default, else a game's, whose scene ([`ViewScene`]) holds the
 /// game's data beside the engine's frame.
@@ -301,8 +309,10 @@ pub struct WorldView<E: HdExtension<Scene: ViewScene> = NoExtension> {
     /// The enhanced renderer's GPU world (None: released, [`WorldView::release_gpu`]).
     world: Option<HdWorld<E>>,
     /// What the released world was set to, for the one [`WorldView::restore_gpu`] makes (Some exactly while `world` is None).
-    carried: Option<HdSettings>,
-    gui: GuiPass,
+    carried: Option<Carried>,
+    /// The GUI pass, made at the first [`WorldView::draw`] on a view that starts released
+    /// ([`WorldView::released_with_extension`]), else with the view.
+    gui: Option<GuiPass>,
     scene: E::Scene,
     /// Whether the floor or the daylight changed since the last frame (else only the objects did).
     statics_changed: bool,
@@ -348,6 +358,12 @@ impl WorldView {
     pub fn new(gpu: &Gpu) -> WorldView {
         WorldView::with_extension(gpu)
     }
+
+    /// [`WorldView::new`] without the GPU world: no renderer is built and no warm-up thread starts, and the GUI pass is made at
+    /// the first [`draw`](WorldView::draw). See [`WorldView::released_with_extension`].
+    pub fn released(gpu: &Gpu) -> WorldView {
+        WorldView::released_with_extension(gpu)
+    }
 }
 
 impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
@@ -355,6 +371,21 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// view's frame settings. The renderer's modules are composed with `E`'s shaders once a process, so every view and
     /// renderer of a process has the same extension ([`HdWorld::try_from_device`] panics on another).
     pub fn with_extension(gpu: &Gpu) -> WorldView<E> {
+        Self::make(gpu, false)
+    }
+
+    /// [`with_extension`](Self::with_extension) for a game that draws its world with its own renderer: the view starts as if
+    /// [`release_gpu`](Self::release_gpu) had been called on it. No [`HdWorld`] is built, no pipeline-warming thread starts and
+    /// the GUI pass is not made until the first [`draw`](Self::draw) (a game that draws its own GUI never makes it), so a
+    /// start holds nothing on the GPU that the game would drop at its first frame. The scene, the daylight and the setters
+    /// that need no renderer work as on any view. [`restore_gpu`](Self::restore_gpu) or [`adopt_gpu`](Self::adopt_gpu) build
+    /// the renderer later, with the engine's default settings; until then the view is released
+    /// ([`has_gpu`](Self::has_gpu) is false), `draw` leaves the world to the app, and `draw_world` is an error.
+    pub fn released_with_extension(gpu: &Gpu) -> WorldView<E> {
+        Self::make(gpu, true)
+    }
+
+    fn make(gpu: &Gpu, released: bool) -> WorldView<E> {
         let mut scene = E::Scene::default();
         let frame: &mut HdScene<E::Geometry> = &mut scene;
         // The physical sky in the server sky's place: the scene has no sky of its own.
@@ -368,9 +399,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         // Smoke and dust lit by the sun, the sky and the lights; additive glows stay unlit.
         frame.particle_light = Some(ParticleLight::BLENDED);
         let mut view = WorldView {
-            world: Some(HdWorld::new(gpu)),
-            carried: None,
-            gui: GuiPass::new(gpu, None),
+            world: (!released).then(|| HdWorld::new(gpu)),
+            carried: released.then_some(Carried::Defaults),
+            gui: (!released).then(|| GuiPass::new(gpu, None)),
             scene,
             statics_changed: true,
             day_sun: None,
@@ -482,7 +513,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         let Some(world) = self.world.take() else {
             return;
         };
-        self.carried = Some(world.settings());
+        self.carried = Some(Carried::Settings(Box::new(world.settings())));
         // A frame still in flight holds the buffers; the warm-up thread ends with the world.
         let _ = world.finish();
         drop(world);
@@ -537,7 +568,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             .carried
             .take()
             .expect("a world is installed only after a release");
-        world.apply_settings(carried);
+        if let Carried::Settings(settings) = carried {
+            world.apply_settings(*settings);
+        }
         if self.slot.is_some() {
             world.features = self.features.features;
         }
@@ -1484,7 +1517,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             self.draw_world(target, rect, eye)?;
         }
         let clear = (world.is_none() && !own_look).then_some([0.0, 0.0, 0.0, 1.0]);
-        self.gui.draw(gpu, gui, target, clear);
+        self.gui
+            .get_or_insert_with(|| GuiPass::new(gpu, None))
+            .draw(gpu, gui, target, clear);
         Ok(world.is_some())
     }
 

@@ -87,6 +87,10 @@ different.
 - `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
   scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
   identical picture (`has_gpu`, `gpu_geometry_bytes`).
+- `torque-app`: `WorldView::released` and `released_with_extension` make a view that starts released (no `HdWorld`, no warm-up
+  thread, the GUI pass made at the first `draw`), for a game that draws the world with its own renderer; `restore_gpu` and
+  `adopt_gpu` build its first world. `GameApp::warming` (and `App::warming`) lets a game with its own warm-up worker say when
+  the window may save the pipeline cache.
 - `torque-render-scene`: `hd::ViewScene` (the scene a world view fills) lives here, free of wgpu, so a crate built on the scene
   types can implement it; `torque_render_hd::ext::ViewScene` re-exports it.
 - `torque-app`: `WorldView::adopt_gpu(world)` takes an `HdWorld` built and warmed on a worker thread in place of the view's own,

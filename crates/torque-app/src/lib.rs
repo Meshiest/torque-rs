@@ -99,6 +99,15 @@
 //!   [`GameApp::window_gpu`]'s (a browser's canvas asks for its own). Every default is what the window does for a game that
 //!   chooses nothing (`a_game_that_makes_no_choices_gets_the_windows_own`): a new value the window reads goes into
 //!   [`WindowChoices`] with such a default, a new callback onto [`GameApp`] and [`App`] alike.
+//! - A view that starts released ([`view::WorldView::released_with_extension`]) is `with_extension` minus what a release
+//!   drops: no `HdWorld`, no warm-up thread, and a GUI pass made at the first `draw` instead of with the view (the other
+//!   constructors still make both, so their start is unchanged). Its first world is built with the renderer's defaults
+//!   (`Carried::Defaults`, not a released world's `HdSettings`), by `restore_gpu` or `adopt_gpu`
+//!   (`a_view_that_starts_released_builds_no_world_and_draws_the_same_picture_after_a_restore`, in `tests/view_rebuild.rs`).
+//! - The native window saves the pipeline cache after the first frame where [`GameApp::warming`] is false (the view's own
+//!   warm-up by default; a game with its own compile worker answers for it) and again at the close; the decision is
+//!   `AppWindow::cache_due` (`the_cache_is_saved_once_the_game_says_its_warm_up_is_over`, in `window_tests.rs`). A new hook
+//!   goes on [`GameApp`] and [`App`] alike.
 //! - A client is made on the engine's script engine and runs the engine's client entry in `exec_entry` when a plugin set them
 //!   ([`slots::HostSlots`]), and over a game's own file host with [`ClientBuilder::from_engine_with_files`]; both
 //!   `from_engine` constructors share one body that is not generic over the file host. With none set the client is the same as
@@ -308,6 +317,11 @@ pub trait App {
         let _ = work;
     }
 
+    /// Whether the game is still compiling pipelines: [`GameApp::warming`], the view's own warm-up by default.
+    fn warming(&self, view: &WorldView) -> bool {
+        view.warming()
+    }
+
     /// The window's device and surface: [`GameApp::window_gpu`], the engine's choice by default.
     fn window_gpu(
         &mut self,
@@ -395,6 +409,16 @@ pub trait GameApp: 'static {
         let _ = work;
     }
 
+    /// Whether the game is still compiling pipelines (its own warm-up worker, beside the view's): the native window saves the
+    /// device's pipeline cache once this is false after a frame, and again at the close, so a crash after the warm-up keeps
+    /// what it compiled. The default is the view's own warm-up ([`WorldView::warming`]), which is over at once for a view
+    /// that starts released ([`WorldView::released_with_extension`]): a game with a worker of its own overrides this to
+    /// answer true until the worker is done.
+    /// A browser keeps no such cache; it never asks.
+    fn warming(&self, view: &WorldView<Self::Ext>) -> bool {
+        view.warming()
+    }
+
     /// The device and surface the window draws with, asked for once as a native window is made (a browser's canvas asks for
     /// its own without blocking and never calls this). The window configures the surface. The default is the engine's
     /// window order ([`torque_render_core::window::window_gpu`]: `WGPU_BACKEND`, then Vulkan first); a game picks its own
@@ -469,6 +493,10 @@ impl<A: App + 'static> GameApp for A {
 
     fn pass_work(&mut self, work: Duration) {
         App::pass_work(self, work);
+    }
+
+    fn warming(&self, view: &WorldView) -> bool {
+        App::warming(self, view)
     }
 
     fn window_gpu(

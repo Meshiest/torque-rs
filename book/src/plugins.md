@@ -802,6 +802,7 @@ default:
 | `window_choices()` | a `WindowChoices`, read as the window opens and every pass: `fresh_resolution` (start at the monitor's start size), `frame_cap_pref` (the global that holds the menus' frame cap), `may_grab` (whether the cursor may be held), `vsync` (the surface's present mode, set again when it changes) and `fps_update` (`$fps::real` and `$fps::virtual` counted each frame) |
 | `upkeep()` | called once a pass, after the clock's step |
 | `pass_work(work)` | the wall time the pass took, frames aside |
+| `warming(view)` | whether the game is still compiling pipelines, asked after each frame until it says no: the window then saves the device's pipeline cache (and again at the close). The default is `view.warming()`, the view's own warm-up, which a view that starts released does not have: a game with a compile worker of its own answers for it |
 | `window_gpu(window)` | the device and surface the window draws with (the engine's backend order unless you pick one, for example with `window_gpu_prefer` and the profile's display device) |
 
 ```rust

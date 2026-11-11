@@ -515,8 +515,7 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         view.report_warnings(self.game.host());
         // The warm-up's pipelines kept now, should the process not reach its close.
         #[cfg(not(target_arch = "wasm32"))]
-        if !self.cache_saved && !view.warming() {
-            self.cache_saved = true;
+        if Self::cache_due(&self.game, &mut self.cache_saved, view) {
             save_pipeline_cache(&surface.gpu, self.game.log_name());
         }
         #[cfg(target_arch = "wasm32")]
@@ -624,6 +623,17 @@ fn save_pipeline_cache(gpu: &Gpu, log_name: &str) {
 }
 
 impl<G: GameApp> AppWindow<G> {
+    /// Whether the pipeline cache is to be saved after this frame: once, at the first frame after the game says its warm-up
+    /// ([`GameApp::warming`]) is over. The close saves it again whatever this said.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn cache_due(game: &G, saved: &mut bool, view: &WorldView<G::Ext>) -> bool {
+        if *saved || game.warming(view) {
+            return false;
+        }
+        *saved = true;
+        true
+    }
+
     /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
     /// the device), then the device's pipeline cache is saved, then the surface and the device go, then the game. The device
     /// is let go here rather than at the process's end; the arena's ahead thread may still hold a clone for the buffers it is
