@@ -2,7 +2,7 @@
 //! they were that long ago (capped by `$Pref::Server::MaxRewindMs`, the pose too), and the history holds no more than the cap
 //! needs.
 
-mod figure;
+use crate::figure;
 
 use std::rc::Rc;
 

@@ -1,6 +1,6 @@
 //! The hostile-mod fuzz: random bytes, mutated valid zips, random file lists and random manifests through the zip reader, the
 //! package checks and the default layout's manifest parser. It must not panic, and what it accepts must be within the limits.
-//! `TORQUE_FUZZ_MODS` sets the number of cases (default 100,000, the full run).
+//! `TORQUE_FUZZ_MODS` sets the number of cases (default 2,000; 100,000 is the full run, `just fuzz-mods`).
 //!
 //! Memory is bounded by the limits the cases run under (a zip of at most 64 KiB, at most 1 MiB held for all of a mod, at
 //! most 64 KiB for a file): the test checks that every accepted package is inside them and that no read returns more than a
@@ -21,7 +21,7 @@ fn count() -> u64 {
     std::env::var("TORQUE_FUZZ_MODS")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(100_000)
+        .unwrap_or(2_000)
 }
 
 fn limits() -> ModLimits {

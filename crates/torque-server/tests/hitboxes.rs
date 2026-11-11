@@ -2,7 +2,7 @@
 //! one through the arm hits it, and the action, arm (look) and script threads move the parts. Without the field, or with a
 //! shape that has no LOS meshes, the upright box answers as before.
 
-mod figure;
+use crate::figure;
 
 use figure::{across, eval, game_server, ray, spawn};
 use torque_server::server::TICK_MS;

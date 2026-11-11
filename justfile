@@ -15,11 +15,30 @@ mod examples
 default:
     @just --list
 
+# Every local recipe builds with `--all-features`, as CI does: one feature set means one copy of each crate in the target folder
 build:
-    cargo build --workspace
+    cargo build --workspace --all-features
 
+# Every test (cargo-nextest, one process per test) and then the doc tests, which nextest does not run
 test:
-    cargo test --workspace --all-features
+    cargo nextest run --workspace --all-features --no-fail-fast
+    cargo test --workspace --all-features --doc
+
+# The quick profile of `.config/nextest.toml`: leaves out the fuzz, golden, hostile and sweep tests and the wire_golden program
+test-quick:
+    cargo nextest run --workspace --all-features --no-fail-fast --profile quick
+
+# One crate's tests, and the tests whose name holds `filter`: `just t torque-server ghosting`
+t crate *filter:
+    cargo nextest run -p {{crate}} --all-features --no-fail-fast {{filter}}
+
+# One crate type-checks, tests and benches included
+c crate:
+    cargo check -p {{crate}} --all-targets --all-features
+
+# One crate's clippy, with warnings as errors
+clip crate:
+    cargo clippy -p {{crate}} --all-targets --all-features -- -D warnings
 
 # The TrueType sweep under Miri (needs `rustup +nightly component add miri`): fontdue rasterizes with unchecked writes, which
 # only Miri or a sanitizer can see go wrong. `TORQUE_FUZZ_TTF` sets the case count.
@@ -137,8 +156,8 @@ test-engine *flags:
 # keep theirs); each run must end with 0 failures. The engine's half also runs the whole workspace (`test-engine`), so a test
 # of any crate that does not follow the protocol shows here. Extra flags go to cargo test (`--release`)
 net-matrix *flags:
-    $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
-    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    $env:TORQUE_NET_PROTOCOL = "tge"; cargo test -j4 {{net_matrix_packages}} --all-features {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
+    $env:TORQUE_NET_PROTOCOL = "engine"; cargo test -j4 {{net_matrix_packages}} --all-features {{flags}}; if ($LASTEXITCODE -ne 0) { exit 1 }; just examples headless; if ($LASTEXITCODE -ne 0) { exit 1 }
     just test-engine {{flags}}
 
 # Writes the C header of the native extension ABI (crates/torque-plugin-abi/include/torque_plugin.h) with cbindgen
@@ -315,3 +334,14 @@ bench-script allocator="":
     cargo run --release --jobs 4 {{ if allocator == "mimalloc" { "--manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml" } else { "-p torque-ts-vm --example bench" } }}
     cargo run --release --jobs 4 {{ if allocator == "mimalloc" { "--manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml" } else { "-p torque-ts-vm --example bench" } }} -- --classic
     cargo bench --jobs 4 -p torque-plugin-loader --bench native_call
+
+# The VM bench with the system allocator and then with mimalloc, one after the other, in the `dist` profile, to see what
+# mimalloc gives (adopt it in the examples' and the benches' binaries at 20% or better on the strings or objects workloads).
+# Takes the bench lock
+bench-mimalloc:
+    cargo run --profile dist --jobs 4 -p torque-ts-vm --example bench
+    cargo run --profile dist --jobs 4 --manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml
+
+# The hostile-mod fuzz at its full 100,000 cases (the default of `just test` is 2,000)
+fuzz-mods:
+    $env:TORQUE_FUZZ_MODS = "100000"; cargo nextest run -p torque-mods --test fuzz --release

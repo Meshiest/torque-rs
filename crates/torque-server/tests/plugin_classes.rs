@@ -4,7 +4,7 @@
 //! (a field sent only with its mask bit is kept until the next one), loses it when its ghosting is reset (the other keeps
 //! it) and when the object is deleted; a TGE client, which cannot read the record, is never sent it.
 
-mod net_client;
+use crate::net_client;
 
 use std::cell::RefCell;
 use std::net::SocketAddr;

@@ -83,6 +83,14 @@ zero_sized_map_values = "warn"
 exit = "warn"
 mem_forget = "warn"
 
+# Shipped builds, release CI jobs and the benches that want it (`cargo build --profile dist`): release, optimized across the crates
+# at the link (fat LTO) in one code generation unit. Slow to link, so `--release` stays the quick one for everyday runs. Panics
+# unwind: the asset loaders and the Ogg reader catch them by design, so there is no `panic = "abort"`.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+
 # The web builds' module (`web/build.mjs`): release, optimized across the crates at the link (thin LTO).
 [profile.web]
 inherits = "release"
@@ -101,12 +109,51 @@ debug = false
 inherits = "release"
 debug-assertions = true
 
+# Debug builds keep the line tables of our own crates (backtraces, a profiler) and no debug info for the dependencies: most
+# of a target folder's bytes were debug sections. A debugger session sets `CARGO_PROFILE_DEV_DEBUG=2`.
+[profile.dev]
+debug = "line-tables-only"
+
 # Debug builds (`cargo run`, `cargo test`) with the crates that make the examples' assets and their GPU state optimized: the
 # examples build their forests' interiors, their textures and the renderer's pipelines at every start, which unoptimized took
 # 25 s to the vehicle demo's menu. The engine's own crates stay unoptimized for debugging; the third-party ones (wgpu, naga,
 # png and the rest) are optimized too.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
+
+# The proc-macro chain (the macros and what they use) runs at build time, once: unoptimized it builds in a fraction of the time
+# and the `"*"` rule above would otherwise make it the longest chain of a cold build. Only the pure macro crates are listed:
+# `toml` and `winnow` also parse game.toml and the mods' manifests at run time, so they stay optimized.
+[profile.dev.package.proc-macro2]
+opt-level = 0
+
+[profile.dev.package.quote]
+opt-level = 0
+
+[profile.dev.package."syn@2"]
+opt-level = 0
+
+[profile.dev.package."syn@3"]
+opt-level = 0
+
+[profile.dev.package.proc-macro-crate]
+opt-level = 0
+
+[profile.dev.package.toml_edit]
+opt-level = 0
+
+[profile.dev.package.serde_derive]
+opt-level = 0
+
+[profile.dev.package.thiserror-impl]
+opt-level = 0
+
+[profile.dev.package.bytemuck_derive]
+opt-level = 0
+
+[profile.dev.package.zerocopy-derive]
+opt-level = 0
 
 [profile.dev.package.torque-example-assets]
 opt-level = 2

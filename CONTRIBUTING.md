@@ -8,11 +8,14 @@ follows.
 You need Rust (see `rust-version` in [Cargo.toml](Cargo.toml) for the oldest supported release),
 [just](https://github.com/casey/just), and for the guide [mdBook](https://rust-lang.github.io/mdBook/). The dependency
 check uses [cargo-deny](https://github.com/EmbarkStudios/cargo-deny). On Linux the `torque-audio/device` feature needs
-the ALSA headers (`libasound2-dev` on Debian and Ubuntu).
+the ALSA headers (`libasound2-dev` on Debian and Ubuntu). `just test` runs [cargo-nextest](https://nexte.st) (`cargo install cargo-nextest --locked`).
 
 ```
-just build      # build the workspace
+just build      # build the workspace (all features, as every recipe does)
 just test       # run the tests (all features)
+just t torque-server ghosting   # one crate's tests, those named like the filter
+just c torque-server            # one crate type-checks
+just clip torque-server         # one crate's clippy
 just check      # rustfmt and clippy, warnings as errors
 just doc        # API reference
 just book       # the guide, into target/book
@@ -37,6 +40,11 @@ CI (`.github/workflows/ci.yml`) runs on Linux and Windows and fails on any of:
 The `natives` tests compare the natives each example's and the app layer's script engines have with the snapshot files under
 `tests/natives/`. A change that adds, removes or alters a native fails them; `TORQUE_BLESS=1 cargo test --workspace
 --all-features --test natives` rewrites the snapshot files, and the diff is part of the change.
+
+Debug builds carry line tables for this workspace's crates and no debug info for dependencies; for a debugger session set
+`CARGO_PROFILE_DEV_DEBUG=2`. `cargo build --release` is the quick optimized build; `--profile dist` is release with fat LTO
+in one code generation unit, slow to link, for shipped builds, release CI jobs and the benches that want it. `just fuzz-mods`
+runs the hostile-mod fuzz at its full 100,000 cases.
 
 Run `just ci` before opening a pull request. Keep a pull request to one topic, and add a line to the `Unreleased`
 section of [CHANGELOG.md](CHANGELOG.md) when the change is visible to users of the crates.

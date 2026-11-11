@@ -1,0 +1,9 @@
+# cargo-nextest: `just test`, `just t <crate>` and CI's partitions all run the default profile.
+
+[profile.default]
+# A test past this is reported as slow (never stopped).
+slow-timeout = { period = "60s" }
+
+# `just test-quick`: everything but the long randomized and golden suites.
+[profile.quick]
+default-filter = "not test(/fuzz|golden|hostile|sweep/) and not binary(wire_golden)"

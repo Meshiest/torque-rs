@@ -263,15 +263,21 @@ pub const PROTOCOL_ENV: &str = "TORQUE_NET_PROTOCOL";
 /// The protocol [`ProtocolPlugins`] turns on: the one [`PROTOCOL_ENV`] names when it names one, else Torque's. In a browser,
 /// which has no environment, the build's (`TORQUE_NET_PROTOCOL` when it was compiled).
 pub fn protocol_from_env() -> ProtocolKind {
-    let named = if cfg!(target_arch = "wasm32") {
-        option_env!("TORQUE_NET_PROTOCOL").map(str::to_owned)
-    } else {
-        std::env::var(PROTOCOL_ENV).ok()
-    };
-    named
+    named_protocol()
         .as_deref()
         .and_then(ProtocolKind::from_label)
         .unwrap_or(ProtocolKind::Tge)
+}
+
+/// The build's choice: read at compile time, so only the browser build records the variable as an input of the compile.
+#[cfg(target_arch = "wasm32")]
+fn named_protocol() -> Option<String> {
+    option_env!("TORQUE_NET_PROTOCOL").map(str::to_owned)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn named_protocol() -> Option<String> {
+    std::env::var(PROTOCOL_ENV).ok()
 }
 
 /// Both protocol plugins, the one [`protocol_from_env`] picks on and the other added off, so `game.toml` or a game's own

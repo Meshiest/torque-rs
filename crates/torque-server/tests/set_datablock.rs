@@ -2,7 +2,7 @@
 //! new datablock's script callback run, a name that is no datablock fails with TGE's message and changes nothing, and a client
 //! that ghosts the object reads the new datablock.
 
-mod net_client;
+use crate::net_client;
 
 use std::cell::RefCell;
 use std::net::SocketAddr;

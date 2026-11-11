@@ -2,7 +2,7 @@
 //! its wall is out of a ray's reach, and a rewound shot (lag compensation) meets the wall as the live one does. A file that does
 //! not read fails the object's `onAdd`.
 
-mod figure;
+use crate::figure;
 
 use std::rc::Rc;
 
