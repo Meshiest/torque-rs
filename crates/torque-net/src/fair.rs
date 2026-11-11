@@ -96,8 +96,8 @@ impl RateWindow {
         true
     }
 
-    /// Whether `n` more units fit in the second at `now` (the window rolls first).
-    fn has_room(&mut self, now: u32, n: u32, limit: u32) -> bool {
+    /// Whether `n` more units fit in the second at `now` (the window rolls first), counting nothing.
+    pub fn has_room(&mut self, now: u32, n: u32, limit: u32) -> bool {
         self.roll(now);
         self.count.checked_add(n).is_some_and(|c| c <= limit)
     }

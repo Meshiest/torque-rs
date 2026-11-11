@@ -41,6 +41,7 @@ use quinn_proto::{
 };
 use rustls::pki_types::CertificateDer;
 use torque_net::engine::{ChannelBinding, LinkFacts, LinkKind, ServerIdentity};
+use torque_net::fair::NetworkKey;
 use torque_server::net::transport::{BindError, Recv, Transport};
 
 use crate::certs::{CertHash, Certificates, Rotation};
@@ -48,7 +49,7 @@ use crate::clock::{Clock, SystemClock};
 use crate::h3::{self, ALPN_H3, Driver, Outcome};
 use crate::identity::ServerKey;
 use crate::io::{Io, UdpIo};
-use crate::retry::{Load, RetryGate, network_of};
+use crate::retry::{Load, RetryGate};
 use crate::stand_in::{StandIns, is_reserved};
 use crate::tls::{ALPN, QUIC_MAX_DATAGRAM, QuicLimits, TlsError};
 
@@ -501,7 +502,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
 
     /// Validated handshakes in progress from `ip`, and from its network.
     fn in_progress_from(&self, ip: IpAddr) -> (usize, usize) {
-        let network = network_of(ip);
+        let network = NetworkKey::sharing(ip);
         self.conns
             .values()
             .filter(|c| !c.established && c.validated)
@@ -509,7 +510,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
                 let at = c.remote.ip();
                 (
                     same + usize::from(at == ip),
-                    near + usize::from(network_of(at) == network),
+                    near + usize::from(NetworkKey::sharing(at) == network),
                 )
             })
     }
@@ -518,7 +519,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
     /// oldest unvalidated handshake, whoever's (its address may be forged, and a forged one never finishes), else the oldest
     /// validated one from `ip` itself, else from its network. Never another address's validated handshake.
     fn oldest_handshake_near(&self, ip: IpAddr) -> Option<ConnectionHandle> {
-        let network = network_of(ip);
+        let network = NetworkKey::sharing(ip);
         let oldest = |keep: &dyn Fn(&Conn) -> bool| {
             self.conns
                 .iter()
@@ -528,7 +529,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
         };
         oldest(&|c| !c.validated)
             .or_else(|| oldest(&|c| c.validated && c.remote.ip() == ip))
-            .or_else(|| oldest(&|c| c.validated && network_of(c.remote.ip()) == network))
+            .or_else(|| oldest(&|c| c.validated && NetworkKey::sharing(c.remote.ip()) == network))
     }
 
     /// Drops a handshake that did not finish: the host never saw it, nothing waits for it to drain.
