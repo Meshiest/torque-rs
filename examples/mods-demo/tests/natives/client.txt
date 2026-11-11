@@ -446,6 +446,7 @@ queryLanServers 12..12 queryLanServers(...);
 queryMasterServer 11..11 queryMasterServer(...);
 querySingleServer 3..3 querySingleServer(address, flags);
 quit 1..1 quit() - asks the main loop to stop
+refreshRequiredMods 1..1 refreshRequiredMods() - reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
 registerFont 3..3 (string face, string path) - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
@@ -456,7 +457,7 @@ rpcToServer 2..* rpcToServer(name, fields..) - calls the client-to-server RPC `n
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
-serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
 setCameraMode 2..2 (name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
