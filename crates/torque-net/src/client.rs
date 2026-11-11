@@ -248,6 +248,7 @@ impl Client {
                                 server: *server,
                                 sequence: seq,
                                 challenge: digest,
+                                binding: None,
                             };
                             match source.make(&cx) {
                                 Ok(Some(block)) => self.fields.block = Some(Box::new(block)),

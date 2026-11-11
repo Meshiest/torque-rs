@@ -71,6 +71,13 @@
 //! `ClientBuilder::over_server` can make a client on its script engine: `run_ticks` is `Server::run_on` over the server it
 //! holds, the same main loop as [`server::GameServer::tick`] with the client's work before each tick. Nothing in this crate
 //! calls it, so a server alone ticks as before (torque-app's `client_over_server_tests.rs`).
+//!
+//! **The QUIC link is one more transport** (`quic` feature, native; [`transports::QuicServerTransportPlugin`], id `quic`,
+//! for [`server::Listen::Quic`]): `torque-net-quic`'s server endpoint under the same bind policy as UDP, on the identity key
+//! [`server::QuicListen::identity`] names (by default `identity.key` in the server's folder under the user's data folder,
+//! [`server::identity_path`], made on first start). A public bind is allowed there, since the link is encrypted and validates
+//! addresses; `plain_engine_refusal` stays what it was for plain UDP. Nothing of it reaches a browser build (torque-app's
+//! `tests/quic_link.rs`; `cargo tree -p torque-trace-hash --target wasm32-unknown-unknown` has no `quinn-proto`).
 
 pub mod cli;
 pub mod config;

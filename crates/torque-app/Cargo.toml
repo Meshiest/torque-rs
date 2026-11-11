@@ -52,6 +52,11 @@ png = "0.18"
 # The page bridge's JSON.
 serde_json = "1.0.140"
 
+# The QUIC link (the `quic` feature, never on the web): the client endpoint, the server's identity pinned or trusted on
+# first use.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+torque-net-quic = { path = "../torque-net-quic", optional = true }
+
 # In a browser: the canvas's device is asked for without blocking; the page's address and root element, a panic shown in its
 # console.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -80,6 +85,9 @@ webrtc = ["web", "torque-app-server/webrtc", "torque-server/webrtc", "torque-cli
 # Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
 # `net::web::p2p`) and a client's datagrams to it (torque-client's `net::room_join`).
 p2p = ["webrtc", "torque-app-server/p2p", "torque-server/p2p", "torque-client/p2p"]
+# Desktop players over QUIC: a server listening on the QUIC link (`Listen::Quic`) and a client's socket over it
+# (`QuicTarget`), the server known by the hash of its identity key.
+quic = ["torque-app-server/quic", "dep:torque-net-quic"]
 # The window opens the default sound card for the client's mixer (cpal; ALSA on Linux); without a device, or without this
 # feature, the mixer runs on the clock and nothing is heard.
 audio-device = ["torque-audio/device"]

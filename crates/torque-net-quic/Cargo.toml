@@ -1,0 +1,41 @@
+[package]
+name = "torque-net-quic"
+description = "The QUIC link of torque-rs's engine protocol: a quinn-proto endpoint driven by the transport pump, the server identity key and its pinning, the known-servers file and the ticket binding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "quic", "networking", "gamedev"]
+categories = ["network-programming", "game-development"]
+
+# Native only: nothing here builds for a browser (browsers get WebTransport through the page's API, later), and neither
+# torque-net nor the trace-hash harness depends on it. No async runtime: the endpoint is sans-IO and driven from the hosts'
+# non-blocking passes, the way the web transport drives str0m.
+
+[dependencies]
+# The link contract, the channel binding and the server identity the ticket context reads.
+torque-net = { path = "../torque-net" }
+# The server's `Transport` trait, its bind policy and `Recv`.
+torque-server = { path = "../torque-server" }
+# The client's `Datagrams` trait.
+torque-client = { path = "../torque-client" }
+# The QUIC state machines (RFC 9000, 9001, 9002, 9221): no sockets, no clock of their own, a seedable RNG. TLS through rustls
+# with the ring provider, the one provider the tree already has for TLS; no token log (tokens are checked by signature alone).
+quinn-proto = { version = "0.11.19", default-features = false, features = ["rustls-ring"] }
+# The TLS configs and the pinning verifier's types (the same version and provider as the web transport's).
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
+# The server identity key (ECDSA P-256, PKCS#8 PEM) and the self-signed certificate on it, signed with ring.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# The SHA-256 of a key's SubjectPublicKeyInfo (the identity) and the handshake rate counters' random key.
+ring = { version = "0.17", default-features = false }
+# The datagram buffers quinn-proto takes and hands out.
+bytes = "1.12"
+
+[dev-dependencies]
+# The deterministic pair test's engine sessions over the QUIC link against the memory link.
+torque-net = { path = "../torque-net" }
+
+[lints]
+workspace = true

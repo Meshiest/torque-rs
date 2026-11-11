@@ -86,6 +86,9 @@ fn the_group_registers_the_transports_of_the_build_by_id() {
     if cfg!(feature = "p2p") {
         expected.extend(["rooms", "relay"]);
     }
+    if cfg!(feature = "quic") {
+        expected.push("quic");
+    }
     assert_eq!(server_transport_ids(&engine(MinimalPlugins)), expected);
 }
 

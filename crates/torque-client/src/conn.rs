@@ -297,9 +297,14 @@ pub trait Link {
     fn recv(&mut self, wait: Duration) -> io::Result<Option<Vec<u8>>>;
 
     /// What the link guarantees and the largest datagram it takes, as engine mode reads it (plain UDP unless the link says
-    /// otherwise).
+    /// otherwise). Read again every pass: a secure link learns the server's identity when its handshake ends.
     fn kind(&self) -> net::engine::LinkKind {
         net::engine::LinkKind::PLAIN_UDP
+    }
+
+    /// The channel binding of a secure link, once its handshake is done (none on a link without one).
+    fn binding(&self) -> Option<net::engine::ChannelBinding> {
+        None
     }
 }
 
@@ -685,6 +690,10 @@ impl Link for InboxLink {
 
     fn kind(&self) -> net::engine::LinkKind {
         self.net.borrow().link_kind()
+    }
+
+    fn binding(&self) -> Option<net::engine::ChannelBinding> {
+        self.net.borrow().channel_binding()
     }
 }
 

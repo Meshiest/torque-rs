@@ -917,6 +917,7 @@ fn requiring_no_mods_puts_nothing_of_the_mods_on_the_wire_and_clients_join() {
             server: SERVER,
             sequence: 1,
             challenge: [1, 2, 3, 4],
+            binding: None,
         };
         assert!(plain.connect_block(&cx).unwrap().is_none());
     }

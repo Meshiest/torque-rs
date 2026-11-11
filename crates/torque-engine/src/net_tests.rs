@@ -80,6 +80,7 @@ fn cx() -> AuthContext {
         server: SocketAddr::from(([192, 0, 2, 1], 28_000)),
         sequence: 3,
         challenge: [9, 8, 7, 6],
+        binding: None,
     }
 }
 

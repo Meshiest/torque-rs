@@ -32,6 +32,7 @@
 //!     server: "192.0.2.1:28000".parse()?,
 //!     sequence: 1,
 //!     challenge: [1, 2, 3, 4],
+//!     binding: None,
 //! };
 //! let block = engine.connect_block(&cx)?.expect("a networked plugin sends a manifest");
 //! let manifest = block.manifest.expect("the manifest");

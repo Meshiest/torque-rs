@@ -42,6 +42,10 @@ serde = { version = "1.0.219", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 sha2 = "0.10"
 
+# The QUIC link (the `quic` feature, never on the web): the server endpoint, its identity key and the ticket binding.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+torque-net-quic = { path = "../torque-net-quic", optional = true }
+
 [features]
 # Browsers as players: a server listening on the web (`Listen::Web`).
 web = ["torque-server/web"]
@@ -50,6 +54,8 @@ webrtc = ["web", "torque-server/webrtc"]
 # Player-hosted games through a room service: a server on a player's host transport (`Listen::Bound` with torque-server's
 # `net::web::p2p`).
 p2p = ["webrtc", "torque-server/p2p"]
+# Desktop players over QUIC: a server listening on the QUIC link (`Listen::Quic`), with its identity key.
+quic = ["dep:torque-net-quic"]
 
 [dev-dependencies]
 # The AIPlayer test's floor and figure.

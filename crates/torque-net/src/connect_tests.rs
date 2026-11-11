@@ -10,6 +10,7 @@ fn cx() -> AuthContext {
         server: SocketAddr::from(([192, 0, 2, 1], 28_000)),
         sequence: 5,
         challenge: [1, 2, 3, 4],
+        binding: None,
     }
 }
 

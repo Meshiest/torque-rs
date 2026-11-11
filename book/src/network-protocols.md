@@ -59,8 +59,36 @@ is compiled.
 |---|---|---|---|---|
 | memory (tests, the trace hashes) | yes | in process | no | 64 KiB |
 | plain UDP | by the engine's cookie | no | the engine's backoff | 1,200 |
+| QUIC (desktop players, the `quic` feature) | QUIC's address validation, Retry under load | TLS 1.3 | QUIC's | the connection's, at most 1,200 |
 | WebRTC data channel (rooms, the relay) | ICE | DTLS | SCTP | 1,200 |
 | WebSocket (a game socket) | TCP | `wss` only | TCP | 1,200 |
+
+**The QUIC link.** A server listens on it with `Listen::Quic` (the `quic` feature, transport id `quic`, natively only), a
+client connects with a `QuicTarget`. The engine's datagrams ride QUIC DATAGRAM frames on one UDP socket; no streams are opened
+and no 0-RTT is accepted or sent (a connect carries a ticket and a password, and early data is replayable). A client whose
+address changes keeps its connection, and the server runs its per-address checks again for the new address when the connection
+switches to it (its first packet from there; quinn-proto reports no event for the path challenge completing). Only established
+connections count against the server's caps (256 in all, 16 per address); handshakes in progress are capped on their own (64,
+and a validated address may hold 4 of them, its network 16) and dropped if not finished within 5 seconds, so a flood of Initials
+from forged addresses can neither fill the server nor lock an address out. Unvalidated handshakes may hold at most half of those
+places (every unvalidated Initial past that gets a Retry), and at the cap a validated newcomer takes the place of the oldest
+unvalidated one, whoever's, else of a validated one from its own address or network only, never another's. Each connection's backlog for the host is capped in datagrams
+and bytes, and a datagram over 1,200 bytes is dropped on receipt. The server answers an unvalidated handshake with a Retry first, which costs it no state, under load (more than
+32 new handshakes a second in all, or 8 from one network), when the handshakes in progress are at their cap, when the address
+already holds a connection, or when the server is full; a validated handshake is refused when the server is full or its address
+holds its share. Connection ids are random: a peer's address is never a connection's identity. The host sees each connection
+at a stand-in address in `240.0.0.0/4` and counts it by its real address; each connection's datagrams wait for the host in a
+backlog of its own (256), so a flooding peer loses only its own.
+
+**Server identity and known servers.** A server has one long-lived ECDSA P-256 key, `identity.key` in its folder under the
+user's data folder, made on first start (a host may name another file or hand the key over). Its identity is the SHA-256 of the
+key's SubjectPublicKeyInfo, written `sha256:<64 hex digits>`, and it presents a self-signed certificate on that key. A client
+checks the key, never a certificate authority: given an identity (a listing, an invite, a typed hash) it refuses any other with
+a message naming both hashes; given none, it trusts the key it sees and remembers it for the address in `known_servers` under
+its data folder, one `host:port sha256:<hex>` line each (at most 1,024; at the cap a new server is refused with a message naming
+the file, and no pin is ever forgotten without the user), and refuses a later change with a message that names both hashes and
+the file. The signature over the handshake is verified against the pinned key
+either way.
 
 **Script commands are two RPCs.** `commandToServer` and `commandToClient` keep their natives, their callbacks (`serverCmd<Name>(%client, ..)`,
 `clientCmd<Name>(..)`), their tag expansion and their errors; only the carrier differs. Torque's protocol queues a command
@@ -97,20 +125,23 @@ server_commands_modes` runs one script suite in both and compares what the callb
 
 **Tickets are bound to the server's challenge.**
  A server with an auth provider answers every connect with a challenge, a
-nonce it draws for that session; the client's auth provider makes the ticket then, for the server's address, the challenge
-and the server identity the link verified, and the server checks it against the same. A ticket in the connect itself counts
+nonce it draws for that session; the client's auth provider makes the ticket then, for the server's address, the challenge,
+the server identity the link verified and, on QUIC, the connection's channel binding (the TLS exporter of RFC 8446 section
+7.5, label `EXPORTER-torque-auth`, 32 bytes, which both ends derive and no third party can), and the server checks it against
+the same. So a ticket relayed through another server fails there, whatever that server tells its own clients. A ticket in the connect itself counts
 for nothing, so a ticket captured on one connection fails on any other whatever the thief's own nonce. A ticket whose
 connection the scripts accepted is refused for two minutes after, by its provider's canonical token (`AuthProvider::ticket_id`),
 so a bearer token works at most once in any two minutes. What the server remembers is shared out: at most 64 tickets from one
 network and 16 for one identity in two minutes, and 32 accepted a second in all (the 4,096 it holds can then never fill), so a
 flood of valid tickets from one network locks out only that network. A server with no auth provider
-sends no challenge. The server identity is part of what a ticket is made for once a link verifies one (QUIC, later). Tickets are checked over unencrypted links too (the memory link, plain UDP, `ws`), all of
+sends no challenge. On the links without an identity or a binding (memory, plain UDP, WebRTC, WebSocket) the ticket context is
+exactly what it was before them. Tickets are checked over unencrypted links too (the memory link, plain UDP, `ws`), all of
 which listen on private addresses only; the server says so once on its console.
 
 **Plain UDP is for LAN and development only.** It has no encryption, so a server in the engine's protocol refuses to listen on plain UDP at an address outside the private set (10/8,
 172.16/12, 192.168/16, 169.254/16, 127/8): `GameServer::start_engine` fails with "0.0.0.0 is not a private address; the engine's
 protocol takes plain UDP on private addresses only (LAN and development)", and a server whose socket was bound to one anyway
-drops plain datagrams and warns once. An encrypted native link (QUIC) comes later; the link contract keeps it replaceable.
+drops plain datagrams and warns once. The QUIC link is the encrypted native one; it may listen on a public address.
 
 A plain link starts with a stateless cookie round trip: the client's `Hello` is padded to 1,200 bytes, the server answers with a
 cookie and keeps nothing, and every opening packet carries the cookie. A validated link starts with the connect itself.
@@ -182,15 +213,18 @@ lines. The `tge` lines never move.
   sessions with the per-source caps; `order.rs`, the wide packet numbers in send order; `bridge.rs`, the connect as the connect
   fields, block and ticket context both protocols judge; `link.rs`, the link contract and `LinkKind`.
 - `torque-server/src/net/engine.rs`: the server's host wiring (`EngineHost`), called from `pump.rs` (receive, `handle_request`,
-  the send pass) and `conn.rs` (the drop). `rpc.rs`: `RpcLanes`, the RPC lanes' carrier. `transport.rs`: `Transport::link_kind`
-  and `check_plain_engine_bind`.
+  the send pass) and `conn.rs` (the drop). `rpc.rs`: `RpcLanes`, the RPC lanes' carrier. `transport.rs`: `Transport::link_kind`,
+  `Transport::channel_binding` and `check_plain_engine_bind`.
+- `torque-net-quic`: the QUIC link (`server.rs`, `client.rs` over `quinn-proto`; `identity.rs`, the key and the identity hash;
+  `tls.rs`, the configs and the pinning verifier; `known.rs`, the known-servers file). `torque-app-server/src/transports.rs`
+  and `torque-app/src/transports.rs` register it as `quic`.
 - `torque-server/src/net/command_rpc.rs`: the two command RPCs and the inbox their handlers fill; `events.rs` (`EventLayer::encode_command`,
   `decode_command`) makes and reads a body against the connection's own tables of command tags; `pump.rs` (`run_command_bodies`) runs
   the commands as a packet's run; `rpc.rs` (`ServerRpc::send_command`, `ClientRpc::queue_command`) moves them; `cmdlimit.rs` holds the
   default limits. `torque-net/src/remote/body.rs`: the body's bytes and their hostile-input rules. `torque-client/src/conn.rs`:
   `command_to_server_rpc`, `receive_commands`.
 - `torque-client/src/conn/engine_wire.rs`: the client's session under `TgeFeed` (`tge.rs`: `over_engine`, `engine_pump`,
-  `engine_send`); `net.rs`: `Datagrams::link_kind`.
+  `engine_send`); `net.rs`: `Datagrams::link_kind`, `Datagrams::channel_binding`.
 - `torque-app-server/src/plugins.rs`: `EngineProtocolPlugin`, `ProtocolPlugins`, `set_protocol`, `ServerWiring` (untyped,
   with the typed attach of the server's net game); `server.rs`: the gate, the digests, the RPC lanes and the public-bind
   refusal at start; `net_game.rs`: the net game and codecs slots, `NetGameParts`, `RunServer`, the plugin-class warning.

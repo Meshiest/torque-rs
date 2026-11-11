@@ -210,7 +210,7 @@ fn refused(why: Option<CloseReason>, text: &str) {
 /// The shared secret's ticket for the server at `at` and challenge `n`.
 fn bound_ticket(at: SocketAddr, n: u64) -> Vec<u8> {
     SharedSecret::new(SECRET, "player")
-        .ticket(&ticket_context(at, n, None))
+        .ticket(&ticket_context(at, n, None, None))
         .expect("a ticket")
 }
 

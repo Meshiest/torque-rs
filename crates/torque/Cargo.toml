@@ -113,6 +113,8 @@ web = ["server", "client", "torque-server/web", "torque-client/web-socket", "tor
 webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc", "torque-app?/webrtc", "torque-app-server?/webrtc"]
 # Player-hosted games: a host found by room code through a room service (torque-rooms), joiners on data channels to it.
 p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p", "torque-app?/p2p", "torque-app-server?/p2p"]
+# Desktop players over QUIC: the server's QUIC endpoint and the client's connection to one, the server known by its key's hash.
+quic = ["torque-app?/quic", "torque-app-server?/quic"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]

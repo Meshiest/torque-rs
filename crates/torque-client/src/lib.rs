@@ -95,6 +95,11 @@
 //!   handshake extension pads its query requests so a server that bounds what it reflects answers in full
 //!   (`net::serverquery::tests::a_padded_request_reads_as_the_request_it_pads`); a room join refused `busy` is tried again
 //!   three times, backing off (`net::room_join::tests::busy_is_tried_again_three_times_backing_off_and_nothing_else_is`).
+//! - The engine-mode connect reads its link's kind and channel binding again every pass (`conn::Link::kind`,
+//!   `conn::Link::binding`, from [`net::Datagrams::link_kind`] and [`net::Datagrams::channel_binding`];
+//!   `conn::engine_wire::EngineWire::refresh`): a secure link (QUIC) learns the server's identity and derives its binding only
+//!   as its handshake ends, and the ticket that answers the server's challenge is made for both. A socket without them keeps
+//!   today's context bytes (torque-app's `tests/quic_link.rs`).
 
 pub mod actionmap;
 pub mod conn;

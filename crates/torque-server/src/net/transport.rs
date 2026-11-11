@@ -29,7 +29,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 
 use torque_net::cap::NET_MAX_DATAGRAM;
-use torque_net::engine::LinkKind;
+use torque_net::engine::{ChannelBinding, LinkKind};
 use torque_net::serverquery::{GAME_INFO_REQUEST, GAME_PING_REQUEST};
 
 use crate::platform::{Network, inet_addr};
@@ -127,6 +127,13 @@ pub trait Transport {
     /// relay) answers the stand-in, whose network then means nothing.
     fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
         peer.ip()
+    }
+    /// The channel binding of the secure link to `peer` ([`ChannelBinding`]: the TLS exporter both ends derive), mixed into
+    /// the ticket context so a ticket relayed through another server fails. None for a link without one (every link but
+    /// QUIC), whose ticket context is then the same as before bindings existed.
+    fn channel_binding(&self, peer: SocketAddr) -> Option<ChannelBinding> {
+        let _ = peer;
+        None
     }
 }
 

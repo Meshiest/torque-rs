@@ -269,6 +269,12 @@ pub trait Datagrams {
     fn link_kind(&self) -> net::engine::LinkKind {
         net::engine::LinkKind::PLAIN_UDP
     }
+    /// The channel binding of the socket's secure link ([`ChannelBinding`](net::engine::ChannelBinding)), once its handshake
+    /// is done: what a ticket is bound to beside the server's address, challenge and identity. None on a link without one
+    /// (every link but QUIC), whose ticket context is then the same as before bindings existed.
+    fn channel_binding(&self) -> Option<net::engine::ChannelBinding> {
+        None
+    }
 }
 
 /// The real sockets: the main one and, in [`NetPolicy::Lan`] on every address, the loopback twin.
@@ -435,6 +441,11 @@ impl ClientNet {
         self.socket
             .as_ref()
             .map_or(net::engine::LinkKind::PLAIN_UDP, |s| s.link_kind())
+    }
+
+    /// The channel binding of the socket's link ([`Datagrams::channel_binding`]); none with no socket.
+    pub fn channel_binding(&self) -> Option<net::engine::ChannelBinding> {
+        self.socket.as_ref().and_then(|s| s.channel_binding())
     }
 
     /// Sends `bytes` to `to` under the LAN rule and the internet's doors (see the module docs).

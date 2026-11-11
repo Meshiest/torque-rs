@@ -49,7 +49,7 @@ pub use framing::{
 };
 pub use gate::{Gate, GateConfig, GateOutcome};
 pub use lanes::{ACK_BITS, MESSAGE_WINDOW, PACKET_WINDOW, REORDER_THRESHOLD, SendError};
-pub use link::{Link, LinkFacts, LinkKind, NoRoom, ServerIdentity};
+pub use link::{ChannelBinding, Link, LinkFacts, LinkKind, NoRoom, ServerIdentity};
 pub use order::PacketOrder;
 pub use session::{
     CloseReason, Delivery, Event, LaneBudgets, LaneLimits, NoStreams, PacketFates, Polled, Session,

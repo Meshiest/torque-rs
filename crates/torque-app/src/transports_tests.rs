@@ -57,6 +57,10 @@ fn the_default_plugins_register_the_transports_of_the_build_on_both_sides() {
     if cfg!(feature = "p2p") {
         server.extend(["rooms", "relay"]);
     }
+    if cfg!(feature = "quic") {
+        server.push("quic");
+        client.push("quic");
+    }
     assert_eq!(server_transport_ids(&engine), server);
     assert_eq!(client_transport_ids(&engine), client);
 }

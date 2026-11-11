@@ -8,6 +8,7 @@
 //! | `RoomsServerTransportPlugin` | `rooms` | `torque.transport-rooms-server` | `p2p` feature, native | [`Listen::Bound`] with [`BoundTransport::ROOMS`]: a player's host found through a room service |
 //! | `RelayServerTransportPlugin` | `relay` | `torque.transport-relay-server` | `p2p` feature | [`Listen::Bound`] with [`BoundTransport::RELAY`]: a browser host's links, held by its page |
 //! | `InstantNetServerTransportPlugin` (torque-app) | `instant-net` | `torque.transport-instant-net-server` | - | [`Listen::Bound`] of an in-process network's transport: a harness's scripted session |
+//! | `QuicServerTransportPlugin` | `quic` | `torque.transport-quic-server` | `quic` feature, native | `Listen::Quic`: the QUIC link on one UDP socket, the server's identity key (`torque-net-quic`) |
 //!
 //! [`ServerTransportPlugins`] is the group of the ones a build has; [`MinimalPlugins`](crate::plugins::MinimalPlugins) has it.
 //!
@@ -35,6 +36,8 @@ use torque_server::net::transport::{
 use crate::server::Listen;
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
 use crate::server::WebListen;
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+use crate::server::{IdentitySource, QuicListen};
 
 /// The id of the transport a server listens on when its game does not say: UDP.
 pub const DEFAULT_TRANSPORT: &str = "udp";
@@ -173,6 +176,7 @@ fn builtin_server_plugin(id: &str) -> Option<&'static str> {
         "rooms" => "torque.transport-rooms-server (the `p2p` feature, not in a browser)",
         "relay" => "torque.transport-relay-server (the `p2p` feature)",
         "instant-net" => "torque.transport-instant-net-server (torque-app)",
+        "quic" => "torque.transport-quic-server (the `quic` feature, not in a browser)",
         _ => return None,
     })
 }
@@ -221,6 +225,8 @@ impl Listen {
             Listen::Memory(_) => "memory",
             #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
             Listen::Web { .. } => "web",
+            #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+            Listen::Quic { .. } => "quic",
             Listen::Bound(bound) => &bound.id,
             Listen::Custom(custom) => &custom.id,
         }
@@ -318,6 +324,43 @@ fn web_transport(
     Ok(transport)
 }
 
+/// The QUIC endpoint on `address` and `port` under the bind policy, on the identity key `quic` names (made on first start
+/// when it is a file that does not exist yet).
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+fn quic_transport(
+    address: Ipv4Addr,
+    port: u16,
+    public: bool,
+    quic: &QuicListen,
+) -> Result<SharedTransport, String> {
+    use torque_net_quic::{QuicServerTransport, ServerKey, SystemClock, UdpIo};
+    let policy = bind_policy(address, public)?;
+    let key = match &quic.identity {
+        IdentitySource::Key(key) => Rc::clone(key),
+        IdentitySource::File(path) => {
+            Rc::new(ServerKey::load_or_make(path).map_err(|e| e.to_string())?)
+        }
+        IdentitySource::Default => {
+            let path = crate::server::identity_path().ok_or(
+                "no data folder for the server's identity key: name the key file in QuicListen::identity",
+            )?;
+            Rc::new(ServerKey::load_or_make(&path).map_err(|e| e.to_string())?)
+        }
+    };
+    let mut server = QuicServerTransport::new(
+        UdpIo::new(policy),
+        SystemClock,
+        &key,
+        quic.limits.clone(),
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    server
+        .bind(IpAddr::V4(address), port)
+        .map_err(|e| format!("the server's socket: {e}"))?;
+    Ok(Rc::new(RefCell::new(server)))
+}
+
 /// UDP datagrams: one socket on the server's address, which the LAN list's pings and queries share. Registers `udp`.
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.transport-udp-server")]
@@ -385,6 +428,30 @@ impl Plugin for WebServerTransportPlugin {
     }
 }
 
+/// Desktop players over the QUIC link: one UDP socket, every connection encrypted and address-validated by QUIC, the server
+/// known by the hash of its identity key. Registers `quic`.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.transport-quic-server")]
+pub struct QuicServerTransportPlugin;
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl Plugin for QuicServerTransportPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.add_server_transport("quic", |listen| match listen {
+            Listen::Quic {
+                address,
+                port,
+                public,
+                quic,
+            } => Ok(ServerLink::new(quic_transport(
+                *address, *port, *public, quic,
+            )?)),
+            other => Err(wrong_request("quic", other)),
+        });
+    }
+}
+
 /// Takes a transport made and bound before the server starts, under `id`: the open function of a transport registered under
 /// `id` that takes only a [`Listen::Bound`] of that id.
 pub fn bound_transport(id: &'static str) -> impl Fn(&Listen) -> Result<ServerLink, String> {
@@ -431,7 +498,7 @@ impl Plugin for RelayServerTransportPlugin {
 }
 
 /// The server transports a build has: UDP (natively), the in-memory link, the web (`web` feature, natively), rooms (`p2p`
-/// feature, natively) and the relay (`p2p` feature).
+/// feature, natively), the relay (`p2p` feature) and QUIC (`quic` feature, natively).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ServerTransportPlugins;
 
@@ -447,6 +514,8 @@ impl PluginGroup for ServerTransportPlugins {
         let group = group.add(RoomsServerTransportPlugin);
         #[cfg(feature = "p2p")]
         let group = group.add(RelayServerTransportPlugin);
+        #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+        let group = group.add(QuicServerTransportPlugin);
         group
     }
 }

@@ -9,6 +9,7 @@
 //! | `RoomsClientTransportPlugin` | `rooms` | `torque.transport-rooms-client` | `p2p` feature, browser | `web_join::Target::Room`: a player's host, found by its room's code |
 //! | `RelayClientTransportPlugin` | `relay` | `torque.transport-relay-client` | `p2p` feature, browser | `web_join::Target::Local` and `Page`: the link the page holds |
 //! | [`InstantNetClientTransportPlugin`] | `instant-net` | `torque.transport-instant-net-client` | - | [`InstantNet`]: an in-process network every datagram crosses at once |
+//! | `QuicClientTransportPlugin` | `quic` | `torque.transport-quic-client` | `quic` feature, native | `QuicTarget`: a QUIC connection to a server's QUIC endpoint, its identity pinned or trusted on first use |
 //!
 //! [`ClientTransportPlugins`] is the group of the ones a build has; [`DefaultPlugins`](crate::plugins::DefaultPlugins) has it,
 //! with the server's ([`ServerTransportPlugins`]). The in-process network's pair ([`InstantNetClientTransportPlugin`],
@@ -217,6 +218,7 @@ fn builtin_client_plugin(id: &str) -> Option<&'static str> {
         "rooms" => "torque.transport-rooms-client (the `p2p` feature, in a browser)",
         "relay" => "torque.transport-relay-client (the `p2p` feature, in a browser)",
         "instant-net" => "torque.transport-instant-net-client",
+        "quic" => "torque.transport-quic-client (the `quic` feature, not in a browser)",
         _ => return None,
     })
 }
@@ -417,6 +419,85 @@ impl Plugin for WebClientTransportPlugin {
     }
 }
 
+// ---- quic
+// ----------------------------------------------------------------------------------------------------------------
+
+/// A server's QUIC endpoint, and how its key is checked.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuicTarget {
+    pub address: Ipv4Addr,
+    pub port: u16,
+    /// The server's identity (from a listing, an invite, a typed hash): the connection is refused if its key hashes to
+    /// anything else. None: the identity remembered for the address in the known-servers file, or the one presented,
+    /// trusted on first use and remembered.
+    pub identity: Option<torque_net_quic::ServerIdentity>,
+    /// The known-servers file (none: `known_servers` in the client's folder under the user's data folder,
+    /// [`known_servers_path`]).
+    pub known_servers: Option<std::path::PathBuf>,
+}
+
+/// Where the default known-servers file lives: `known_servers` in the client's folder under the user's data folder. None
+/// when the system gives no data folder.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub fn known_servers_path() -> Option<std::path::PathBuf> {
+    torque_app_server::uploads::data_dir().map(|data| {
+        data.join("torque-rs")
+            .join(torque_net_quic::KNOWN_SERVERS_FILE)
+    })
+}
+
+/// A QUIC connection to a server's QUIC endpoint: encrypted, the server's address validated and its key checked against
+/// [`QuicTarget::identity`] or the known servers. The socket names its server by the address dialed, so a ticket is made for
+/// it as on UDP, plus the link's channel binding. Registers `quic`, for [`QuicTarget`]; the link's state
+/// ([`torque_net_quic::QuicWatch`]: connected, the identity, a refusal's text) comes back in the [`LinkInfo`].
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+#[plugin(id = "torque.transport-quic-client")]
+pub struct QuicClientTransportPlugin;
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl Plugin for QuicClientTransportPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        engine.add_client_transport("quic", |target: &QuicTarget| {
+            use torque_net_quic::{QuicDatagrams, QuicLimits, SystemClock, Trust, client_socket};
+            let trust = match target.identity {
+                Some(identity) => Trust::Identity(identity),
+                None => Trust::Known(
+                    target
+                        .known_servers
+                        .clone()
+                        .or_else(known_servers_path)
+                        .ok_or("no data folder for the known servers file: give the server's identity or name the file")?,
+                ),
+            };
+            let loopback = target.address.is_loopback();
+            let bind = if loopback {
+                Ipv4Addr::LOCALHOST
+            } else {
+                Ipv4Addr::UNSPECIFIED
+            };
+            let io = client_socket(std::net::IpAddr::V4(bind))
+                .map_err(|e| format!("the client's socket: {e}"))?;
+            let socket = QuicDatagrams::connect(
+                io,
+                SystemClock,
+                SocketAddrV4::new(target.address, target.port),
+                trust,
+                &QuicLimits::default(),
+                None,
+            )?;
+            let watch = socket.watch();
+            let policy = if loopback {
+                NetPolicy::Loopback
+            } else {
+                NetPolicy::Internet
+            };
+            Ok(ClientLink::new(Box::new(socket), policy).with_extra(watch))
+        });
+    }
+}
+
 // ---- rooms and relay, in a browser
 // ----------------------------------------------------------------------------------------------------------------
 
@@ -482,8 +563,8 @@ impl Plugin for RelayClientTransportPlugin {
     }
 }
 
-/// The client transports a build has: UDP (natively), the in-memory link, the web (`web` feature), and in a browser with the
-/// `p2p` feature rooms and the relay.
+/// The client transports a build has: UDP (natively), the in-memory link, the web (`web` feature), QUIC (`quic` feature,
+/// natively), and in a browser with the `p2p` feature rooms and the relay.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ClientTransportPlugins;
 
@@ -499,6 +580,8 @@ impl PluginGroup for ClientTransportPlugins {
         let group = group
             .add(RoomsClientTransportPlugin)
             .add(RelayClientTransportPlugin);
+        #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+        let group = group.add(QuicClientTransportPlugin);
         group
     }
 }

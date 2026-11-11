@@ -121,6 +121,13 @@
 //!   object in both protocols, following it, stopped by `stopAudio`, the ghost's end or a new world
 //!   (`tests/shape_sounds.rs`). The sound card is opened by [`window::run`] alone, behind the `audio-device` feature; a
 //!   failure leaves the mixer on the clock and the game plays on.
+//! - The QUIC link (`quic` feature, native) is the client transport `quic` ([`transports::QuicClientTransportPlugin`], for
+//!   [`transports::QuicTarget`]): the socket names its server by the address dialed under [`torque_client::net::NetPolicy`]
+//!   `Loopback` or `Internet`, so the engine's ticket is made for that address as on UDP, plus the link's identity and
+//!   channel binding. The server's key is checked against the identity given, or trusted on first use and remembered in
+//!   `known_servers` under the user's data folder ([`transports::known_servers_path`]); the link's state comes back as a
+//!   `torque_net_quic::QuicWatch` in the [`transports::LinkInfo`] (`tests/quic_link.rs`: a pinned identity connects and gets
+//!   its ghosts, a wrong one is refused naming both hashes, a changed key is refused, a moved socket keeps its connection).
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.

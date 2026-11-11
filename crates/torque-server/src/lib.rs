@@ -61,6 +61,14 @@
 //! torque-app's `tests/server_commands.rs`); a held download progresses only at `ContentLimits::min_bytes_per_s`, counting the bytes of the runs it asked for that the link acknowledged
 //! (`progress_is_bytes_served_at_the_least_rate`). The whole receive path is fuzzed with a real client's mutated packets
 //! (`hostile_packets_of_an_established_connection_never_panic_the_server`, `TORQUE_FUZZ_SERVER`).
+//!
+//! **A link's facts and binding come from the transport, per peer** (`Transport::link_kind`, `Transport::peer_ip`,
+//! `Transport::channel_binding`): engine mode reads them when a datagram arrives and when it judges a connect, so a transport
+//! that names its peers by stand-in addresses (the web transport, the QUIC link in `torque-net-quic`) counts and binds them
+//! right. The engine's ticket context (`net::engine::Checks::context`) takes the peer's link kind (its server identity) and
+//! the transport's channel binding; a link without them (UDP, memory, web) gives the context the same bytes as before
+//! (torque-net's `bridge::tests::the_ticket_context_differs_per_challenge_server_identity_and_binding`; torque-app's
+//! `tests/quic_link.rs`, `a_ticket_is_bound_to_its_connections_channel_binding`).
 
 pub mod game;
 pub mod net;

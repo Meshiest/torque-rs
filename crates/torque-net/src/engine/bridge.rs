@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 
 use super::framing::{Connect, TableDigests, Versions};
-use super::link::ServerIdentity;
+use super::link::{ChannelBinding, ServerIdentity};
 use crate::connect::{AuthContext, ConnectBlock};
 use crate::handshake::ConnectFields;
 use crate::manifest::Manifest;
@@ -73,13 +73,15 @@ pub fn fields_of(connect: &Connect, profile: &HandshakeProfile) -> Result<Connec
 }
 
 /// What a ticket for the server at `server` is made for in the session the server challenged with `challenge`: the server's
-/// address, the challenge in place of TGE's, and the first eight bytes of the server's identity when the link verified one
-/// (none: zeros). The sequence TGE binds to is 0: the challenge is per session already.
+/// address, the challenge in place of TGE's, the first eight bytes of the server's identity when the link verified one
+/// (none: zeros), and the link's channel binding when it derives one (none: nothing, so the bytes are those of a link
+/// without one). The sequence TGE binds to is 0: the challenge is per session already.
 #[must_use]
 pub fn ticket_context(
     server: SocketAddr,
     challenge: u64,
     identity: Option<ServerIdentity>,
+    binding: Option<ChannelBinding>,
 ) -> AuthContext {
     let word = |b: &[u8]| u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
     let id = identity.map_or([0; 32], |i| i.0);
@@ -92,6 +94,7 @@ pub fn ticket_context(
             word(&id[..4]),
             word(&id[4..8]),
         ],
+        binding,
     }
 }
 
@@ -144,13 +147,25 @@ mod tests {
     }
 
     #[test]
-    fn the_ticket_context_differs_per_challenge_server_and_identity() {
+    fn the_ticket_context_differs_per_challenge_server_identity_and_binding() {
         let a: SocketAddr = "10.0.0.1:28000".parse().expect("an address");
         let b: SocketAddr = "10.0.0.2:28000".parse().expect("an address");
-        let cx = |s, c, i| ticket_context(s, c, i).encode();
-        assert_ne!(cx(a, 1, None), cx(a, 2, None));
-        assert_ne!(cx(a, 1, None), cx(b, 1, None));
-        assert_ne!(cx(a, 1, None), cx(a, 1 << 32, None));
-        assert_ne!(cx(a, 1, None), cx(a, 1, Some(ServerIdentity([9; 32]))));
+        let cx = |s, c, i, k| ticket_context(s, c, i, k).encode();
+        assert_ne!(cx(a, 1, None, None), cx(a, 2, None, None));
+        assert_ne!(cx(a, 1, None, None), cx(b, 1, None, None));
+        assert_ne!(cx(a, 1, None, None), cx(a, 1 << 32, None, None));
+        assert_ne!(
+            cx(a, 1, None, None),
+            cx(a, 1, Some(ServerIdentity([9; 32])), None)
+        );
+        let bound = Some(ChannelBinding([7; 32]));
+        assert_ne!(cx(a, 1, None, None), cx(a, 1, None, bound));
+        assert_ne!(
+            cx(a, 1, None, bound),
+            cx(a, 1, None, Some(ChannelBinding([8; 32])))
+        );
+        // A link without a binding writes exactly the bytes it wrote before bindings existed.
+        assert_eq!(cx(a, 1, None, None).len(), 1 + 4 + 2 + 4 + 16);
+        assert_eq!(cx(a, 1, None, bound).len(), 1 + 4 + 2 + 4 + 16 + 32);
     }
 }

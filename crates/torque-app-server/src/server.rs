@@ -74,6 +74,46 @@ pub struct WebListen {
     pub setup: torque_server::net::web::WebSetup,
 }
 
+/// The QUIC side of a server that desktop players join over the QUIC link (`Listen::Quic`).
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone)]
+pub struct QuicListen {
+    /// The server's identity key.
+    pub identity: IdentitySource,
+    /// The endpoint's caps and timeouts.
+    pub limits: torque_net_quic::QuicLimits,
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl Default for QuicListen {
+    fn default() -> QuicListen {
+        QuicListen {
+            identity: IdentitySource::Default,
+            limits: torque_net_quic::QuicLimits::default(),
+        }
+    }
+}
+
+/// Where a QUIC server's identity key comes from.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone)]
+pub enum IdentitySource {
+    /// `identity.key` in the server's data folder ([`identity_path`]), made on first start.
+    Default,
+    /// This file, made on first start.
+    File(std::path::PathBuf),
+    /// A key already loaded (a test's, or a host that keeps it elsewhere).
+    Key(Rc<torque_net_quic::ServerKey>),
+}
+
+/// Where the default identity key lives: `identity.key` in the server's folder under the user's data folder (the folder the
+/// upload staging is under). None when the system gives no data folder.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub fn identity_path() -> Option<std::path::PathBuf> {
+    crate::uploads::data_dir()
+        .map(|data| data.join("torque-rs").join(torque_net_quic::IDENTITY_FILE))
+}
+
 /// Where a server listens.
 #[derive(Debug, Clone)]
 pub enum Listen {
@@ -96,6 +136,16 @@ pub enum Listen {
         port: u16,
         public: bool,
         web: Rc<WebListen>,
+    },
+    /// The QUIC link on UDP `address`:`port` (0 takes any free one): desktop players, encrypted and address-validated by
+    /// QUIC, the server known by the hash of its key (`quic.identity`). `public` allows `0.0.0.0` as for UDP; a public
+    /// address is fine here, since the link brings its own security, where plain engine UDP is refused.
+    #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+    Quic {
+        address: Ipv4Addr,
+        port: u16,
+        public: bool,
+        quic: Rc<QuicListen>,
     },
     /// A transport the caller made and bound (a player's host found through a room service, torque-server's
     /// `net::web::p2p`, id `rooms`; a browser host's worker link, id `relay`).

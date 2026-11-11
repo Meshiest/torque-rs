@@ -32,6 +32,7 @@ use std::sync::Arc;
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::NET_STRING_BYTES;
+use crate::engine::ChannelBinding;
 use crate::handshake::{ConnectFields, siphash24};
 use crate::manifest::{MAX_MANIFEST_BYTES, Manifest, ManifestError};
 use crate::modsync::{MAX_SECTION_BYTES, ModsSection, RequiredMods};
@@ -330,6 +331,8 @@ impl ConnectBlock {
 ///   [`CHALLENGE_PERIOD_MS`](crate::handshake::CHALLENGE_PERIOD_MS) and twice that) and a server holding the same sequence is
 ///   not already serving that address. It opens a connection nobody can use (the replies go to the address that was forged), as the identity of that client. After
 ///   the window the digest is refused. A provider that needs more (a ticket that works once) must keep that state itself.
+/// - `binding` is the secure link's own value for this connection ([`ChannelBinding`]), when the link derives one (QUIC);
+///   none on the other links, whose context bytes are then exactly what they were without it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AuthContext {
     /// The address clients reach the server by.
@@ -338,6 +341,8 @@ pub struct AuthContext {
     pub sequence: u32,
     /// The challenge digest the server returned for that sequence.
     pub challenge: [u32; 4],
+    /// The link's channel binding, when it has one.
+    pub binding: Option<ChannelBinding>,
 }
 
 impl AuthContext {
@@ -359,6 +364,9 @@ impl AuthContext {
         out.extend_from_slice(&self.sequence.to_le_bytes());
         for word in self.challenge {
             out.extend_from_slice(&word.to_le_bytes());
+        }
+        if let Some(binding) = self.binding {
+            out.extend_from_slice(&binding.0);
         }
         out
     }

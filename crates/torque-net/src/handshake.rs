@@ -1158,6 +1158,7 @@ impl Server {
                 .unwrap_or_else(|| SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))),
             sequence: seq,
             challenge: digest,
+            binding: None,
         };
         let identity = match self
             .config

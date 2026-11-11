@@ -834,6 +834,8 @@ struct Checks {
     gate: Option<Arc<dyn ConnectGate>>,
     /// The address clients reach the server by: what a ticket is bound to.
     server: SocketAddr,
+    /// The transport, for the channel binding of a peer's link.
+    transport: SharedTransport,
     full: bool,
     allow: bool,
 }
@@ -849,25 +851,34 @@ impl Checks {
             server: config
                 .address
                 .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0))),
+            transport: Rc::clone(&sh.transport),
             full: sh.hs.len() >= config.max_connections(),
             allow: config.allow_connections,
         }
     }
 
-    /// The ticket context of the session challenged with `challenge`. The server's identity is none until a link verifies
-    /// one.
-    // TODO: bind to the server identity key's hash once the QUIC link verifies it (the client's link reports it in
-    // `LinkFacts::server_identity`).
-    fn context(&self, challenge: u64) -> AuthContext {
-        ticket_context(self.server, challenge, None)
+    /// The ticket context of the session with `addr` challenged with `challenge`: the server's address, the challenge, the
+    /// identity its link presented (the client verified the same one, or its connect never got this far) and the link's
+    /// channel binding, both none on a link without them.
+    fn context(&self, addr: SocketAddr, kind: LinkKind, challenge: u64) -> AuthContext {
+        let binding = self.transport.borrow().channel_binding(addr);
+        ticket_context(self.server, challenge, kind.facts.server_identity, binding)
     }
 
-    /// The connect gate's judgment of `fields` (with the ticket, if any) for the session challenged with `challenge`.
-    fn gated(&self, addr: SocketAddr, ip: IpAddr, fields: ConnectFields, challenge: u64) -> Judged {
+    /// The connect gate's judgment of `fields` (with the ticket, if any) for the session with `addr` on a link of `kind`,
+    /// challenged with `challenge`.
+    fn gated(
+        &self,
+        addr: SocketAddr,
+        ip: IpAddr,
+        kind: LinkKind,
+        fields: ConnectFields,
+        challenge: u64,
+    ) -> Judged {
         let identity = match self
             .gate
             .as_ref()
-            .map(|g| g.check(addr, &self.context(challenge), &fields))
+            .map(|g| g.check(addr, &self.context(addr, kind, challenge), &fields))
         {
             None => None,
             Some(Ok(identity)) => identity,
@@ -901,7 +912,7 @@ fn judge<G: NetGame>(
     };
     host.byte_rate = byte_rate_pref(vm);
 
-    let ip = host.table.peer(addr).map_or(addr.ip(), |p| p.ip);
+    let (ip, kind) = peer_ip_and_kind(host, addr);
     let limits = verified_limits(checks.per_source);
     if !checks.allow || host.requests.allow_within(limits, ip, now).is_err() {
         return Judged::Silent;
@@ -925,7 +936,7 @@ fn judge<G: NetGame>(
     }
     match host.auth {
         Auth::Challenge => challenge(host, addr, fields),
-        Auth::None => checks.gated(addr, ip, fields, 0),
+        Auth::None => checks.gated(addr, ip, kind, fields, 0),
     }
 }
 
@@ -975,7 +986,7 @@ fn judge_ticket<G: NetGame>(
         .gate
         .as_ref()
         .map_or_else(|| ticket.to_vec(), |g| g.ticket_id(ticket));
-    let ip = host.table.peer(addr).map_or(addr.ip(), |p| p.ip);
+    let (ip, kind) = peer_ip_and_kind(host, addr);
     if !ticket.is_empty() {
         if let Some(refused) = refusal(host.tickets.admit(&token, ip, now)) {
             return refused;
@@ -990,10 +1001,18 @@ fn judge_ticket<G: NetGame>(
     if let Some(block) = fields.block.as_mut() {
         block.ticket = (!ticket.is_empty()).then(|| ticket.to_vec());
     }
-    let judged = checks.gated(addr, ip, *fields, challenge);
+    let judged = checks.gated(addr, ip, kind, *fields, challenge);
     host.checked = (matches!(judged, Judged::Request(_)) && !ticket.is_empty())
         .then_some(Checked { token, ip });
     judged
+}
+
+/// The address the caps count the peer at `addr` by and the kind of its link, as the table has them (a peer the table does
+/// not hold is counted by its address on a plain link).
+fn peer_ip_and_kind(host: &EngineHost, addr: SocketAddr) -> (IpAddr, LinkKind) {
+    host.table
+        .peer(addr)
+        .map_or((addr.ip(), LinkKind::PLAIN_UDP), |p| (p.ip, p.kind))
 }
 
 /// The refusal of a ticket the cache does not admit.

@@ -4,7 +4,9 @@
 //!
 //! The connect is made when the feed first pumps (the block source, with the engine's manifest, is set after the feed is
 //! made). It carries no ticket: a server that checks tickets challenges the connect, and the ticket is made then, for the
-//! address dialed, the server's challenge and the identity the link verified ([`ticket_context`]). Each packet the
+//! address dialed, the server's challenge, the identity the link verified and the link's channel binding
+//! ([`ticket_context`]); the link's kind and binding are read again every pass, since a secure link learns them only as its
+//! handshake ends (before any answer of the server can arrive). Each packet the
 //! feed writes into gets a wide number in send order, and the fates come back in that order ([`PacketOrder`]), as the
 //! event queue and the upstream channels expect. The script callbacks are TGE mode's: the connect's start is the challenge
 //! (`ChallengeSent`), its answer (a cookie on a plain link, the first packet out on a validated one) the challenge's answer.
@@ -16,8 +18,8 @@ use net::cap::NET_MAX_DATAGRAM;
 use net::connect::{BlockSource, ConnectBlock, reason};
 use net::engine::bridge::{connect_of, ticket_context};
 use net::engine::{
-    CloseReason, Event, Link as EngineLink, LinkFacts, LinkKind, NoRoom, NoStreams, PacketOrder,
-    Session, SessionConfig, State, StreamLane, StreamSource,
+    ChannelBinding, CloseReason, Event, Link as EngineLink, LinkFacts, LinkKind, NoRoom, NoStreams,
+    PacketOrder, Session, SessionConfig, State, StreamLane, StreamSource,
 };
 use net::handshake::siphash24;
 use net::profile::HandshakeProfile;
@@ -156,7 +158,10 @@ pub struct EngineWire {
     /// The server's challenge, to answer once the events are drained.
     challenge: Option<u64>,
     session: Option<Session>,
+    /// The link's kind and channel binding as of the last pass: a secure link learns the server's identity and derives its
+    /// binding when its handshake ends, before any answer of the server can arrive.
     kind: LinkKind,
+    binding: Option<ChannelBinding>,
     order: PacketOrder,
     phase: Phase,
 }
@@ -166,6 +171,7 @@ impl EngineWire {
     pub fn new(start: EngineStart) -> EngineWire {
         EngineWire {
             kind: start.kind,
+            binding: None,
             server: start.server,
             source: None,
             challenge: None,
@@ -196,7 +202,12 @@ impl EngineWire {
             return Ok(());
         };
         let profile = HandshakeProfile::default();
-        let cx = ticket_context(start.server, 0, start.kind.facts.server_identity);
+        let cx = ticket_context(
+            start.server,
+            0,
+            self.kind.facts.server_identity,
+            self.binding,
+        );
         let block = match start.source.as_mut().map(|s| s.make(&cx)) {
             None | Some(Ok(None)) => None,
             // The ticket waits for the server's challenge.
@@ -225,6 +236,7 @@ impl EngineWire {
 
     /// The pump before the accept: the connect is made, then the session's `Hello` or openings go out as it times them.
     pub fn pump(&mut self, link: &mut dyn Link, now: u32, out: &mut Vec<WireEvent>) {
+        self.refresh(link);
         if let Err(why) = self.begin(now, out) {
             out.push(WireEvent::Ended(FeedEvent::Rejected(why)));
             return;
@@ -282,6 +294,7 @@ impl EngineWire {
         write: &mut dyn FnMut(u32, usize) -> Option<Vec<u8>>,
         out: &mut Vec<WireEvent>,
     ) {
+        self.refresh(link);
         let kind = self.kind;
         let Some(session) = self.session.as_mut() else {
             return;
@@ -303,13 +316,24 @@ impl EngineWire {
         }
     }
 
+    /// Reads the link's kind and channel binding again (module docs: a secure link learns them as its handshake ends).
+    fn refresh(&mut self, link: &dyn Link) {
+        self.kind = link.kind();
+        self.binding = link.binding();
+    }
+
     /// Answers the server's challenge with a ticket the block source makes for it (none: an empty answer, which a server
     /// that needs one refuses with its reason).
     fn answer(&mut self, out: &mut Vec<WireEvent>) {
         let Some(challenge) = self.challenge.take() else {
             return;
         };
-        let cx = ticket_context(self.server, challenge, self.kind.facts.server_identity);
+        let cx = ticket_context(
+            self.server,
+            challenge,
+            self.kind.facts.server_identity,
+            self.binding,
+        );
         let ticket = match self.source.as_mut().map(|s| s.make(&cx)) {
             None | Some(Ok(None)) => Vec::new(),
             Some(Ok(Some(block))) => block.ticket.unwrap_or_default(),
