@@ -110,6 +110,21 @@ its server in the page's worker then and takes the host into it, on the same pag
 or joining there, and both Esc menus offer "Invite players". The native builds and the local web builds keep their
 multiplayer.
 
+### Joining over WebTransport
+
+A page served by a dedicated server that listens on the QUIC link beside the web (`--transport web --webtransport`, the
+`quic` feature) joins it over a WebTransport session instead of a game socket: `web/webtransport.js` reads the server's
+`webtransport.json` (the QUIC port number, the path and the SHA-256 hashes of its short certificates), opens the session with
+`serverCertificateHashes` and `requireUnreliable: true`, and hands it to the game (`webTransportOpened`,
+`webTransportDatagram`, `webTransportEnded`; `torque::app::web_join::Target::WebTransport`). The page must be a secure
+context (`https`, or a loopback address) and the browser must have the API; otherwise, or if the session does not open within
+five seconds, the page says why on `data-torque-wt` and joins over its game socket and a data channel as before. On a local
+server open the page at `http://127.0.0.1:<port>`, not `localhost`: a browser may resolve the name to the IPv6 loopback,
+where the QUIC endpoint (IPv4 only) is not listening, and the page then falls back to its game socket. `?nowt` on the
+address skips the session. `data-torque-link` reads `webtransport` while the session carries the game, and
+`data-torque-rtc-in` counts its datagrams. `just examples level-demo office-web-check` runs this path in headless Chrome
+(`web/office-check.mjs ... wt`). See [Network protocols](network-protocols.md) for the server's side and the certificates.
+
 ### Invite links
 
 With no server of ours, two players trade connection codes by hand (`web/invites.js`, `web/codes.js`). "Host with a

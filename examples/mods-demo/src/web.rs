@@ -84,6 +84,9 @@ fn cache_name(target: &Target) -> Option<String> {
     match target {
         Target::Server(url) => torque::mods::server_name_of_url(url),
         Target::Room { url, code } => torque::mods::server_name_of_room(url, code),
+        Target::WebTransport => socket_url()
+            .ok()
+            .and_then(|url| torque::mods::server_name_of_url(&url)),
         Target::Local | Target::Page => None,
     }
 }
@@ -97,6 +100,7 @@ fn shown(target: &Target) -> String {
             rest.split('/').next().unwrap_or(rest).to_string()
         }
         Target::Local | Target::Page => "the host".to_string(),
+        Target::WebTransport => "the server, over WebTransport".to_string(),
     }
 }
 

@@ -70,11 +70,18 @@ pub type NetServer<G = TorqueNet> = Server<HostParts<G>>;
 pub struct WebListen {
     /// UDP on the same port number beside the web (desktop and browser players in one game); else no UDP socket is opened.
     pub udp: bool,
+    /// The QUIC link on the same port number beside the web instead of plain UDP (never both on one port): desktop players
+    /// over QUIC and, with its WebTransport sessions on, browsers over WebTransport, the page served by the web side
+    /// carrying what they need (`webtransport.json`: the QUIC port number, the path and the certificate hashes, kept current as the
+    /// certificates rotate).
+    #[cfg(feature = "quic")]
+    pub quic: Option<Rc<QuicListen>>,
     /// The files served (none: game sockets only, the page comes from another web server), TLS, and the limits.
     pub setup: torque_server::net::web::WebSetup,
 }
 
-/// The QUIC side of a server that desktop players join over the QUIC link (`Listen::Quic`).
+/// The QUIC side of a server that desktop players join over the QUIC link (`Listen::Quic`), and browsers over WebTransport
+/// sessions on the same endpoint when `web_transport` says so.
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
 #[derive(Debug, Clone)]
 pub struct QuicListen {
@@ -82,6 +89,9 @@ pub struct QuicListen {
     pub identity: IdentitySource,
     /// The endpoint's caps and timeouts.
     pub limits: torque_net_quic::QuicLimits,
+    /// WebTransport sessions on the endpoint (none: the raw protocol alone): which pages may open one, the path, and the
+    /// certificates browsers pin (rotating short ones by default).
+    pub web_transport: Option<torque_net_quic::WebTransportSetup>,
 }
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
@@ -90,6 +100,7 @@ impl Default for QuicListen {
         QuicListen {
             identity: IdentitySource::Default,
             limits: torque_net_quic::QuicLimits::default(),
+            web_transport: None,
         }
     }
 }
@@ -128,8 +139,8 @@ pub enum Listen {
     /// An in-memory transport bound at this address: a client in the same process reaches it through
     /// [`GameServer::memory_end`].
     Memory(SocketAddr),
-    /// HTTP and WebSocket on TCP `address`:`port` (0 takes any free one), and UDP on the same port when `web.udp` says so.
-    /// Without TLS the address must be a private one; `public` allows `0.0.0.0` as for UDP.
+    /// HTTP and WebSocket on TCP `address`:`port` (0 takes any free one), and UDP on the same port when `web.udp` says so
+    /// (or the QUIC link, `web.quic`). Without TLS the address must be a private one; `public` allows `0.0.0.0` as for UDP.
     #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
     Web {
         address: Ipv4Addr,

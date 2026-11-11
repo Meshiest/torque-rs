@@ -18,10 +18,19 @@ use torque_net::engine::ServerIdentity;
 use crate::clock::Clock;
 use crate::identity::{ServerKey, identity_of_certificate};
 
-/// The application protocol natives speak: the engine's datagrams straight on QUIC DATAGRAM frames. Provisional: the
-/// HTTP/3 WebTransport session that browsers need replaces it with `h3` (one session protocol for both), without changing
-/// the engine bytes.
+/// The application protocol natives speak by default: the engine's datagrams straight on QUIC DATAGRAM frames. Browsers,
+/// and a desktop asked to, speak `h3` instead ([`crate::h3::ALPN_H3`]): a WebTransport session whose datagrams carry the
+/// same engine bytes behind a one-byte prefix.
 pub const ALPN: &[u8] = b"torque-engine-raw-1";
+
+/// The most unread bytes a peer may have in flight on one stream: the HTTP/3 control, QPACK and CONNECT streams of a
+/// WebTransport session carry a few hundred bytes each, and nothing rides a stream after that.
+pub const STREAM_WINDOW: u32 = 16 << 10;
+/// The most unread stream bytes a peer may have in flight on a connection in all.
+pub const CONNECTION_WINDOW: u32 = 64 << 10;
+/// The streams a peer may open: the WebTransport session's three unidirectional (control, QPACK encoder, QPACK decoder)
+/// and, toward a server, its one CONNECT stream. A browser can open no WebTransport stream of its own past these.
+pub const PEER_UNI_STREAMS: u32 = 3;
 
 /// The largest engine datagram a QUIC link reports, whatever the path allows: the engine's own size on every other link.
 pub const QUIC_MAX_DATAGRAM: usize = 1_200;
@@ -85,14 +94,19 @@ impl Default for QuicLimits {
     }
 }
 
-/// The transport config of every connection: datagrams on, no streams (this crate carries the engine's datagrams only),
-/// bounded datagram buffers, one datagram per transmit.
+/// The transport config of every connection: datagrams on, only the streams a WebTransport session needs (a server takes
+/// the client's CONNECT stream and three unidirectional ones; a client takes the server's three and no bidirectional one),
+/// their windows small ([`STREAM_WINDOW`], [`CONNECTION_WINDOW`]), bounded datagram buffers, one datagram per transmit. A
+/// raw connection stops any stream its peer opens.
 #[must_use]
 pub fn transport_config(limits: &QuicLimits, client: bool) -> TransportConfig {
     let mut transport = TransportConfig::default();
     transport
-        .max_concurrent_bidi_streams(VarInt::from_u32(0))
-        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        .max_concurrent_bidi_streams(VarInt::from_u32(u32::from(!client)))
+        .max_concurrent_uni_streams(VarInt::from_u32(PEER_UNI_STREAMS))
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
+        .send_window(u64::from(CONNECTION_WINDOW))
         .datagram_receive_buffer_size(Some(limits.datagram_receive_buffer))
         .datagram_send_buffer_size(limits.datagram_send_buffer)
         .max_idle_timeout(IdleTimeout::try_from(limits.idle_timeout).ok())
@@ -127,7 +141,7 @@ impl fmt::Display for TlsError {
 impl std::error::Error for TlsError {}
 
 /// The server's QUIC config on `key`: TLS 1.3 only, the self-signed certificate, no client certificates, no early data,
-/// migration on, and the handshake tokens stamped by `clock`.
+/// migration on, and the handshake tokens stamped by `clock`. Natives alone: the raw ALPN.
 ///
 /// # Errors
 /// rustls refused the key or the certificate.
@@ -136,14 +150,29 @@ pub fn server_config(
     limits: &QuicLimits,
     clock: &dyn Clock,
 ) -> Result<ServerConfig, TlsError> {
+    server_config_with(key, vec![key.certificate().clone()], &[ALPN], limits, clock)
+}
+
+/// [`server_config`] presenting `chain` (its first certificate on `key`) and offering `alpns`, the raw one and `h3` for a
+/// server that takes WebTransport sessions.
+///
+/// # Errors
+/// rustls refused the key or the chain.
+pub fn server_config_with(
+    key: &ServerKey,
+    chain: Vec<CertificateDer<'static>>,
+    alpns: &[&[u8]],
+    limits: &QuicLimits,
+    clock: &dyn Clock,
+) -> Result<ServerConfig, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut tls = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|e| TlsError(e.to_string()))?
         .with_no_client_auth()
-        .with_single_cert(vec![key.certificate().clone()], key.private_key())
+        .with_single_cert(chain, key.private_key())
         .map_err(|e| TlsError(e.to_string()))?;
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = alpns.iter().map(|a| a.to_vec()).collect();
     // No 0-RTT: a connect carries a ticket and a password, and early data is replayable.
     tls.max_early_data_size = 0;
     let crypto = QuicServerConfig::try_from(tls).map_err(|e| TlsError(e.to_string()))?;
@@ -158,13 +187,15 @@ pub fn server_config(
     Ok(config)
 }
 
-/// The client's QUIC config: TLS 1.3 only, the server's key checked by `verifier`, no early data.
+/// The client's QUIC config: TLS 1.3 only, the server's key checked by `verifier`, no early data, speaking `alpn` (the
+/// raw one, or `h3` for a WebTransport session).
 ///
 /// # Errors
 /// rustls has no TLS 1.3 suite for QUIC (never with the ring provider).
 pub fn client_config(
     verifier: Arc<PinVerifier>,
     limits: &QuicLimits,
+    alpn: &[u8],
 ) -> Result<ClientConfig, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut tls = rustls::ClientConfig::builder_with_provider(provider)
@@ -173,7 +204,7 @@ pub fn client_config(
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_no_client_auth();
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     tls.enable_early_data = false;
     let crypto = QuicClientConfig::try_from(tls).map_err(|e| TlsError(e.to_string()))?;
     let mut config = ClientConfig::new(Arc::new(crypto));

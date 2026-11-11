@@ -456,6 +456,13 @@
       } catch (e) {
         console.warn(`the game's storage did not open: ${e?.message ?? e}`);
       }
+      // A page joining the server that served it (`?join`) opens a WebTransport session to it first, when the server and the
+      // browser have it (webtransport.js); else the game joins over its game socket.
+      if (new URLSearchParams(location.search).has('join')) {
+        const { joinOverWebTransport } = await import('./webtransport.js');
+        const why = await joinOverWebTransport(game);
+        if (why !== 'open') console.log(`WebTransport: ${why}; joining over the game socket`);
+      }
       game.startFetched();
     }
   }

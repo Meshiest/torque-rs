@@ -4,8 +4,10 @@
 //! the module carries its files, the list's cap, `readManifest`, `addFile` and `addFileDigest` for the files the page fetches
 //! by `files.json` ([`read_manifest`], [`add_file`], [`add_file_digest`]: a file is taken only when its size and hash are the
 //! list's; `addFileDigest` takes the hash the page computed with the browser's crypto, off the module's thread), the game's
-//! start (on the files fetched, [`take_fetched`], or on those the module carries) and the page bridge's
-//! ([`crate::page_bridge`]).
+//! start (on the files fetched, [`take_fetched`], or on those the module carries), the page bridge's
+//! ([`crate::page_bridge`]), and the page's WebTransport session to the server that served it (`webTransportOpened`,
+//! `webTransportDatagram`, `webTransportEnded`, from `web/webtransport.js`: [`web_transport_opened`] and the two with it,
+//! which hand it to [`crate::web_join`] in a build with the `p2p` feature and do nothing in one without).
 //!
 //! **The quality** is the page's to pick (its settings panel; Firefox starts at Medium until the player picks): the panel calls
 //! the script engine's `setRenderQuality` through the bridge ([`request_quality`]), and the window applies it at its next
@@ -352,6 +354,25 @@ macro_rules! web_exports {
                 }
             )?
 
+            /// The page's WebTransport session to the server that served it is open: the function that sends on it
+            /// (called with a `Uint8Array`), and the largest datagram it takes.
+            #[wasm_bindgen(js_name = webTransportOpened)]
+            pub fn web_transport_opened(sender: wasm_bindgen::JsValue, max_datagram: u32) {
+                $crate::web_page::web_transport_opened(sender, max_datagram)
+            }
+
+            /// A datagram for the client on the page's WebTransport session (false: dropped).
+            #[wasm_bindgen(js_name = webTransportDatagram)]
+            pub fn web_transport_datagram(bytes: &[u8]) -> bool {
+                $crate::web_page::web_transport_datagram(bytes)
+            }
+
+            /// The page's WebTransport session ended, for good: why, in a player's words.
+            #[wasm_bindgen(js_name = webTransportEnded)]
+            pub fn web_transport_ended(why: &str) {
+                $crate::web_page::web_transport_ended(why)
+            }
+
             #[wasm_bindgen(js_name = startFetched)]
             pub fn start_fetched() -> Result<(), String> {
                 $start_fetched()
@@ -383,6 +404,45 @@ macro_rules! web_exports {
             }
         }
     };
+}
+
+/// The page's WebTransport session to its server is open ([`crate::web_join::web_transport_opened`]); `sender` is the page's
+/// function that sends on it. Without the `p2p` feature a game joins no server from a page: nothing is kept.
+#[cfg(target_arch = "wasm32")]
+pub fn web_transport_opened(sender: wasm_bindgen::JsValue, max_datagram: u32) {
+    #[cfg(feature = "p2p")]
+    {
+        use wasm_bindgen::JsCast as _;
+        if let Ok(sender) = sender.dyn_into::<js_sys::Function>() {
+            crate::web_join::web_transport_opened(sender, max_datagram);
+        }
+    }
+    #[cfg(not(feature = "p2p"))]
+    let _ = (sender, max_datagram);
+}
+
+/// A datagram for the client on the page's WebTransport session ([`crate::web_join::web_transport_datagram`]); false:
+/// dropped, or no game here takes one.
+#[cfg(target_arch = "wasm32")]
+pub fn web_transport_datagram(bytes: &[u8]) -> bool {
+    #[cfg(feature = "p2p")]
+    {
+        crate::web_join::web_transport_datagram(bytes)
+    }
+    #[cfg(not(feature = "p2p"))]
+    {
+        let _ = bytes;
+        false
+    }
+}
+
+/// The page's WebTransport session ended ([`crate::web_join::web_transport_ended`]).
+#[cfg(target_arch = "wasm32")]
+pub fn web_transport_ended(why: &str) {
+    #[cfg(feature = "p2p")]
+    crate::web_join::web_transport_ended(why);
+    #[cfg(not(feature = "p2p"))]
+    let _ = why;
 }
 
 #[cfg(test)]

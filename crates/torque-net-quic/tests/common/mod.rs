@@ -6,7 +6,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
 use torque_net_quic::{
-    FakeClock, Pipe, PipeIo, QuicClient, QuicLimits, QuicServer, ServerKey, Trust,
+    Dial, FakeClock, Pipe, PipeIo, QuicClient, QuicLimits, QuicServer, ServerKey, SessionKind,
+    Trust, WebTransportSetup,
 };
 use torque_server::net::transport::{Recv, Transport};
 
@@ -90,15 +91,70 @@ impl World {
         }
     }
 
-    /// A client at `addr` connecting to the server.
+    /// A server that also takes WebTransport sessions under `setup`.
+    pub fn with_web_transport(limits: QuicLimits, seed: u64, setup: WebTransportSetup) -> World {
+        let key = ServerKey::generate().expect("a key");
+        let pipe = Pipe::new();
+        let clock = FakeClock::new();
+        let mut server = QuicServer::new(
+            pipe.end(),
+            clock.clone(),
+            &key,
+            limits.clone(),
+            Some(Rng::new(seed).seed32()),
+        )
+        .expect("a server endpoint");
+        server
+            .enable_web_transport(&key, setup)
+            .expect("WebTransport enabled");
+        server
+            .bind(IpAddr::V4(*SERVER.ip()), SERVER.port())
+            .expect("bound");
+        World {
+            pipe,
+            clock,
+            key,
+            server,
+            limits,
+        }
+    }
+
+    /// A client at `addr` connecting to the server on the raw protocol.
     pub fn client(&self, addr: SocketAddrV4, trust: Trust, seed: u64) -> Client {
-        QuicClient::connect(
+        self.client_with(addr, trust, seed, SessionKind::Raw)
+    }
+
+    /// A client at `addr` connecting to the server with a WebTransport session, as a page at `origin` would (none: a
+    /// native client).
+    pub fn web_client(&self, addr: SocketAddrV4, seed: u64, origin: Option<&str>) -> Client {
+        self.client_with(
+            addr,
+            Trust::Identity(self.key.identity()),
+            seed,
+            SessionKind::WebTransport(Dial {
+                authority: SERVER.to_string(),
+                path: "/".to_string(),
+                origin: origin.map(str::to_string),
+            }),
+        )
+    }
+
+    /// A client at `addr` connecting to the server, speaking `session` once connected.
+    pub fn client_with(
+        &self,
+        addr: SocketAddrV4,
+        trust: Trust,
+        seed: u64,
+        session: SessionKind,
+    ) -> Client {
+        QuicClient::connect_with(
             self.pipe.bound(SocketAddr::V4(addr)),
             self.clock.clone(),
             SERVER,
             trust,
             &self.limits,
             Some(Rng::new(seed).seed32()),
+            session,
         )
         .expect("a client endpoint")
     }

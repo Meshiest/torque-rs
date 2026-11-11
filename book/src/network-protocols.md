@@ -60,6 +60,7 @@ is compiled.
 | memory (tests, the trace hashes) | yes | in process | no | 64 KiB |
 | plain UDP | by the engine's cookie | no | the engine's backoff | 1,200 |
 | QUIC (desktop players, the `quic` feature) | QUIC's address validation, Retry under load | TLS 1.3 | QUIC's | the connection's, at most 1,200 |
+| WebTransport (browsers, on the QUIC endpoint) | QUIC's | TLS 1.3 | QUIC's | the connection's less the session's one-byte prefix, at most 1,199 |
 | WebRTC data channel (rooms, the relay) | ICE | DTLS | SCTP | 1,200 |
 | WebSocket (a game socket) | TCP | `wss` only | TCP | 1,200 |
 
@@ -77,8 +78,37 @@ and bytes, and a datagram over 1,200 bytes is dropped on receipt. The server ans
 32 new handshakes a second in all, or 8 from one network), when the handshakes in progress are at their cap, when the address
 already holds a connection, or when the server is full; a validated handshake is refused when the server is full or its address
 holds its share. Connection ids are random: a peer's address is never a connection's identity. The host sees each connection
-at a stand-in address in `240.0.0.0/4` and counts it by its real address; each connection's datagrams wait for the host in a
-backlog of its own (256), so a flooding peer loses only its own.
+at a stand-in address in `248.0.0.0/5` (the web transport's game sockets take `240.0.0.0/5`, so a server on both tells them
+apart) and counts it by its real address; each connection's datagrams wait for the host in a backlog of its own (256), so a
+flooding peer loses only its own.
+
+**WebTransport for browsers.** Browsers cannot open a QUIC connection of their own, but they can open a WebTransport session,
+which is HTTP/3 over QUIC: the same endpoint serves both when the listen says so (`QuicListen::web_transport`, or a web listen
+with `WebListen::quic`; a dedicated server's `--webtransport`). The server offers two ALPNs, the raw one for desktops and `h3`,
+and runs the least HTTP/3 a session needs (`torque-net-quic::h3`, sans-IO and fuzzed as hostile input): each side opens its
+control and QPACK streams and sends SETTINGS (extended CONNECT, HTTP datagrams, one WebTransport session); the client's one
+bidirectional stream carries a CONNECT with `:protocol webtransport`, which the server judges (the method, the scheme, the
+`:authority` an IP address, `localhost` or one of the server's own names, the path, and the page's `origin`: the server's own
+page by default, a list, or any; a request with no origin is a native client's) and answers `200`, or `400`, `403`, `404` or
+`421` and nothing is established. The engine's datagrams then ride the connection's DATAGRAM frames behind the session's
+quarter stream id (one byte), the same bytes as on the raw protocol; the server counts the connection, its backlog and its
+bytes exactly as a raw one. QPACK runs on the static table alone (no dynamic table is ever advertised, so a reference to one
+is an error), every frame, field section, name and value has a cap, a connection may open only the session's streams (one
+bidirectional, three unidirectional, 16 KiB windows each) and any other stream is stopped unread, and a connection that opens
+no session within the handshake timeout is closed. A desktop may speak the same session (`QuicTarget::web_transport`), so the
+native tests exercise the path browsers take.
+
+**Certificates browsers pin.** A browser with no certificate authority for the server takes its certificate by hash
+(`serverCertificateHashes`), which the W3C allows only for an ECDSA P-256 certificate valid for under two weeks in all. So a
+WebTransport server issues a short self-signed certificate on its identity key, valid thirteen days (backdated an hour for a
+browser's clock), and re-issues it every six days; it publishes the hash of the one it presents and of the one that takes
+over next, so a page loaded just before a rotation still joins after it (`torque-net-quic::certs`, tested over sixty fake
+days). The web transport serving the page puts them in `webtransport.json` beside it (the QUIC port number, the path and the hashes,
+written again at each rotation), and the page's `web/webtransport.js` opens the session with them and `requireUnreliable:
+true` (a browser that would fall back to HTTP/2, which carries no datagrams, fails instead), from a secure context only
+(`https`, or `localhost`); on any failure the page joins over its game socket and a data channel as before. Desktops never
+look at the dates: they pin the key. A server with a certificate authority's chain on its identity key can present that
+instead (`CertificateChoice::Chain`) and publishes no hash.
 
 **Server identity and known servers.** A server has one long-lived ECDSA P-256 key, `identity.key` in its folder under the
 user's data folder, made on first start (a host may name another file or hand the key over). Its identity is the SHA-256 of the
@@ -216,8 +246,12 @@ lines. The `tge` lines never move.
   the send pass) and `conn.rs` (the drop). `rpc.rs`: `RpcLanes`, the RPC lanes' carrier. `transport.rs`: `Transport::link_kind`,
   `Transport::channel_binding` and `check_plain_engine_bind`.
 - `torque-net-quic`: the QUIC link (`server.rs`, `client.rs` over `quinn-proto`; `identity.rs`, the key and the identity hash;
-  `tls.rs`, the configs and the pinning verifier; `known.rs`, the known-servers file). `torque-app-server/src/transports.rs`
-  and `torque-app/src/transports.rs` register it as `quic`.
+  `tls.rs`, the configs and the pinning verifier; `known.rs`, the known-servers file; `h3/`, the WebTransport session:
+  `frames.rs` the HTTP/3 frames and settings, `qpack.rs` and `huffman.rs` the field sections, `session.rs` the state machine
+  and the CONNECT's judge, `drive.rs` its driver on a connection; `certs.rs`, the rotating short certificates and their
+  hashes). `torque-app-server/src/transports.rs` and `torque-app/src/transports.rs` register it as `quic`;
+  `WebQuicTransport` there pairs it with the web transport and writes `webtransport.json`; `torque-app/src/web_join.rs` and
+  `web/webtransport.js` are the page's side.
 - `torque-server/src/net/command_rpc.rs`: the two command RPCs and the inbox their handlers fill; `events.rs` (`EventLayer::encode_command`,
   `decode_command`) makes and reads a body against the connection's own tables of command tags; `pump.rs` (`run_command_bodies`) runs
   the commands as a packet's run; `rpc.rs` (`ServerRpc::send_command`, `ClientRpc::queue_command`) moves them; `cmdlimit.rs` holds the

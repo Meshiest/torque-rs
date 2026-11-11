@@ -1,7 +1,9 @@
 //! The addresses game sockets go by: never a UDP peer's, and always the same IP for one peer.
 //!
-//! A game socket is named to the host by a stand-in address in `240.0.0.0/4` (reserved: no datagram comes from it, and a
-//! UDP datagram that claims it is dropped), so a socket and a UDP peer can never share an address. A peer address's
+//! A game socket is named to the host by a stand-in address in `240.0.0.0/5` (the lower half of the reserved
+//! `240.0.0.0/4`: no datagram comes from it, and a UDP datagram that claims any of the `/4` is dropped; the upper half,
+//! `248.0.0.0/5`, is the QUIC link's connections', so a server on both tells them apart), so a socket and a UDP peer can
+//! never share an address. A peer address's
 //! stand-in IP is fixed for the transport's life: a keyed hash of the peer's IP (the key is drawn when the transport is
 //! made), so every socket of one peer, now or after it reconnects, has the same stand-in IP, and the host's limits and
 //! the scripts' bans keyed by address hold for it as for a UDP peer. Two peers whose IPs hash alike share one stand-in IP
@@ -13,13 +15,18 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-/// The first address of the stand-in range (`240.0.0.0/4`).
+/// The first address of the stand-in range (`240.0.0.0/5`).
 pub const STAND_IN_NET: Ipv4Addr = Ipv4Addr::new(240, 0, 0, 0);
 /// The host bits of the stand-in range.
-const STAND_IN_MASK: u32 = (1 << 28) - 1;
+const STAND_IN_MASK: u32 = (1 << 27) - 1;
 
-/// Whether `addr` is a game socket's stand-in (`240.0.0.0/4`).
+/// Whether `addr` is a game socket's stand-in (`240.0.0.0/5`).
 pub fn is_stand_in(addr: SocketAddr) -> bool {
+    matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf8 == 240)
+}
+
+/// Whether `addr` is in the reserved range no peer sends from (`240.0.0.0/4`: these stand-ins and the QUIC link's).
+pub fn is_reserved(addr: SocketAddr) -> bool {
     matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf0 == 240)
 }
 
@@ -95,7 +102,16 @@ mod tests {
         let a1 = s.take(a);
         let a2 = s.take(a);
         let b1 = s.take(b);
-        assert!([a1, a2, b1].iter().all(|&x| is_stand_in(x)));
+        assert!(
+            [a1, a2, b1]
+                .iter()
+                .all(|&x| is_stand_in(x) && is_reserved(x))
+        );
+        assert!(
+            !is_stand_in("248.0.0.1:5".parse().expect("an address")),
+            "the QUIC link's half"
+        );
+        assert!(is_reserved("248.0.0.1:5".parse().expect("an address")));
         assert_eq!(a1.ip(), a2.ip(), "one stand-in IP per peer");
         assert_ne!(a1.port(), a2.port());
         assert_ne!(a1.ip(), b1.ip());

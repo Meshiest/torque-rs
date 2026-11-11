@@ -14,17 +14,18 @@ use std::time::Instant;
 use bytes::{Bytes, BytesMut};
 use quinn_proto::{
     Connection, ConnectionHandle, DatagramEvent, Endpoint, EndpointEvent, Event, SendDatagramError,
-    VarInt,
+    StreamEvent, VarInt,
 };
 use torque_client::net::Datagrams;
 use torque_net::engine::{ChannelBinding, LinkFacts, LinkKind, ServerIdentity};
 use torque_server::net::transport::BindError;
 
 use crate::clock::{Clock, SystemClock};
+use crate::h3::{self, ALPN_H3, Dial, Driver, Outcome};
 use crate::io::{Io, UdpIo};
 use crate::known::{KnownError, KnownServers};
 use crate::server::READS_PER_PASS;
-use crate::tls::{Expected, PinVerifier, QUIC_MAX_DATAGRAM, QuicLimits};
+use crate::tls::{ALPN, Expected, PinVerifier, QUIC_MAX_DATAGRAM, QuicLimits};
 
 const RECV_BYTES: usize = 1 << 16;
 
@@ -45,10 +46,20 @@ pub enum Trust {
     Known(PathBuf),
 }
 
+/// How a client speaks to the server once the handshake is done.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SessionKind {
+    /// The raw protocol: the engine's datagrams straight on DATAGRAM frames (desktops by default).
+    #[default]
+    Raw,
+    /// A WebTransport session over HTTP/3, as a browser opens one: the path browsers take, from a desktop.
+    WebTransport(Dial),
+}
+
 /// What the link is up to, as the client's host sees it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkState {
-    /// The handshake is done and datagrams flow.
+    /// The handshake is done (and the WebTransport session, if one was asked for) and datagrams flow.
     pub connected: bool,
     /// The server's identity: the one expected from the start, or the one seen and trusted on first use.
     pub identity: Option<ServerIdentity>,
@@ -77,6 +88,9 @@ pub struct QuicClient<I: Io, C: Clock> {
     endpoint: Endpoint,
     server: SocketAddrV4,
     conn: Option<(ConnectionHandle, Connection)>,
+    /// The WebTransport session asked for, until the handshake is done; then its driver.
+    dial: Option<Dial>,
+    session: Option<Driver>,
     verifier: Arc<PinVerifier>,
     known: Option<KnownServers>,
     binding: Option<ChannelBinding>,
@@ -110,6 +124,23 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
         limits: &QuicLimits,
         seed: Option<[u8; 32]>,
     ) -> Result<QuicClient<I, C>, String> {
+        QuicClient::connect_with(io, clock, server, trust, limits, seed, SessionKind::Raw)
+    }
+
+    /// [`QuicClient::connect`] speaking `session` once the handshake is done: the raw protocol, or a WebTransport session
+    /// (the connection is `connected` only once the server has taken the CONNECT).
+    ///
+    /// # Errors
+    /// As [`QuicClient::connect`].
+    pub fn connect_with(
+        io: I,
+        clock: C,
+        server: SocketAddrV4,
+        trust: Trust,
+        limits: &QuicLimits,
+        seed: Option<[u8; 32]>,
+        session: SessionKind,
+    ) -> Result<QuicClient<I, C>, String> {
         if io.local_addr().is_none() {
             return Err("the client's socket is not bound".to_string());
         }
@@ -128,8 +159,13 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
             }
         };
         let verifier = Arc::new(PinVerifier::new(SocketAddr::V4(server), expected));
-        let config =
-            crate::tls::client_config(Arc::clone(&verifier), limits).map_err(|e| e.to_string())?;
+        let dial = match session {
+            SessionKind::Raw => None,
+            SessionKind::WebTransport(dial) => Some(dial),
+        };
+        let alpn = if dial.is_some() { ALPN_H3 } else { ALPN };
+        let config = crate::tls::client_config(Arc::clone(&verifier), limits, alpn)
+            .map_err(|e| e.to_string())?;
         let mut endpoint = Endpoint::new(
             Arc::new(crate::tls::endpoint_config(seed)),
             None,
@@ -153,6 +189,8 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
             endpoint,
             server,
             conn: Some(conn),
+            dial,
+            session: None,
             verifier,
             known,
             binding: None,
@@ -281,8 +319,18 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
                         .ok()
                         .map(|()| ChannelBinding(binding));
                     let seen = self.verifier.seen();
+                    if let Some(dial) = self.dial.take() {
+                        match Driver::open(h3::Session::client(dial), conn, true) {
+                            Some(driver) => self.session = Some(driver),
+                            None => {
+                                lost = Some(
+                                    "the server allows no streams for the session".to_string(),
+                                );
+                            }
+                        }
+                    }
                     let mut state = self.watch.0.borrow_mut();
-                    state.connected = true;
+                    state.connected = self.session.is_none();
                     state.identity = seen.or(state.identity);
                     if let (Some(known), Some(id)) = (self.known.as_mut(), seen)
                         && self.verifier.expected().is_none()
@@ -294,8 +342,28 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
                     }
                 }
                 Event::ConnectionLost { reason } => lost = Some(reason.to_string()),
+                Event::Stream(event) => match &mut self.session {
+                    Some(driver) => driver.stream_event(conn, event),
+                    None => {
+                        if let StreamEvent::Opened { dir } = event {
+                            while let Some(id) = conn.streams().accept(dir) {
+                                let _ = conn.recv_stream(id).stop(VarInt::from_u32(0));
+                            }
+                        }
+                    }
+                },
                 Event::DatagramReceived => {
                     while let Some(data) = conn.datagrams().recv() {
+                        let data = match &self.session {
+                            Some(driver) => match driver.unwrap(&data) {
+                                Some(payload) => payload,
+                                None => {
+                                    self.inbox_dropped += 1;
+                                    continue;
+                                }
+                            },
+                            None => data,
+                        };
                         if data.len() > QUIC_MAX_DATAGRAM
                             || self.inbox.len() >= CLIENT_INBOX
                             || self.inbox_bytes + data.len() > CLIENT_INBOX_BYTES
@@ -307,7 +375,23 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
                         self.inbox.push_back(data);
                     }
                 }
-                Event::HandshakeDataReady | Event::Stream(_) | Event::DatagramsUnblocked => {}
+                Event::HandshakeDataReady | Event::DatagramsUnblocked => {}
+            }
+        }
+        if let Some(driver) = &mut self.session
+            && lost.is_none()
+        {
+            match driver.run(conn) {
+                Outcome::Quiet => {}
+                Outcome::Established => self.watch.0.borrow_mut().connected = true,
+                Outcome::Close { code, reason } => {
+                    conn.close(
+                        now,
+                        VarInt::from_u64(code).unwrap_or(VarInt::MAX),
+                        Bytes::copy_from_slice(reason.as_bytes()),
+                    );
+                    lost = Some(reason);
+                }
             }
         }
         loop {
@@ -344,7 +428,12 @@ impl<I: Io, C: Clock> Datagrams for QuicClient<I, C> {
         if conn.is_closed() {
             return false;
         }
-        match conn.datagrams().send(Bytes::copy_from_slice(bytes), false) {
+        let data = match &self.session {
+            Some(driver) if driver.established() => driver.wrap(bytes),
+            Some(_) => return false,
+            None => Bytes::copy_from_slice(bytes),
+        };
+        match conn.datagrams().send(data, false) {
             Ok(()) => {
                 let now = self.clock.now();
                 self.drive(now);
@@ -390,7 +479,8 @@ impl<I: Io, C: Clock> Datagrams for QuicClient<I, C> {
             max_datagram: self
                 .max_datagram
                 .unwrap_or(QUIC_MAX_DATAGRAM)
-                .min(QUIC_MAX_DATAGRAM),
+                .min(QUIC_MAX_DATAGRAM)
+                .saturating_sub(self.session.as_ref().map_or(0, Driver::prefix_len)),
         }
     }
 

@@ -4,11 +4,11 @@
 //! |--------|----|-----------|-------|------------|
 //! | [`UdpServerTransportPlugin`] | `udp` | `torque.transport-udp-server` | - | [`Listen::Udp`]: one UDP socket under the bind policy |
 //! | [`MemoryServerTransportPlugin`] | `memory` | `torque.transport-memory-server` | - | [`Listen::Memory`]: an in-process link, its other end [`GameServer::memory_end`](crate::server::GameServer::memory_end) |
-//! | `WebServerTransportPlugin` | `web` | `torque.transport-web-server` | `web` feature, native | `Listen::Web`: HTTP and WebSocket on one TCP port, UDP beside it or not |
+//! | `WebServerTransportPlugin` | `web` | `torque.transport-web-server` | `web` feature, native | `Listen::Web`: HTTP and WebSocket on one TCP port, UDP (or the QUIC link with WebTransport, `WebListen::quic`) beside it or not |
 //! | `RoomsServerTransportPlugin` | `rooms` | `torque.transport-rooms-server` | `p2p` feature, native | [`Listen::Bound`] with [`BoundTransport::ROOMS`]: a player's host found through a room service |
 //! | `RelayServerTransportPlugin` | `relay` | `torque.transport-relay-server` | `p2p` feature | [`Listen::Bound`] with [`BoundTransport::RELAY`]: a browser host's links, held by its page |
 //! | `InstantNetServerTransportPlugin` (torque-app) | `instant-net` | `torque.transport-instant-net-server` | - | [`Listen::Bound`] of an in-process network's transport: a harness's scripted session |
-//! | `QuicServerTransportPlugin` | `quic` | `torque.transport-quic-server` | `quic` feature, native | `Listen::Quic`: the QUIC link on one UDP socket, the server's identity key (`torque-net-quic`) |
+//! | `QuicServerTransportPlugin` | `quic` | `torque.transport-quic-server` | `quic` feature, native | `Listen::Quic`: the QUIC link on one UDP socket, the server's identity key (`torque-net-quic`), WebTransport sessions for browsers when `QuicListen::web_transport` says so |
 //!
 //! [`ServerTransportPlugins`] is the group of the ones a build has; [`MinimalPlugins`](crate::plugins::MinimalPlugins) has it.
 //!
@@ -25,10 +25,16 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr};
 use std::rc::Rc;
 
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder};
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+use torque_net::engine::{ChannelBinding, LinkKind};
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+use torque_server::net::transport::{BindError, Recv};
 use torque_server::net::transport::{
     BindPolicy, LanRules, MemoryEnd, MemoryTransport, SharedTransport, Transport, UdpTransport,
 };
@@ -297,7 +303,8 @@ fn udp_transport(address: Ipv4Addr, port: u16, public: bool) -> Result<SharedTra
     Ok(Rc::new(RefCell::new(udp)))
 }
 
-/// The web transport (and UDP beside it when `web.udp` says so) bound on `address` and `port` under the bind policy.
+/// The web transport (and UDP, or the QUIC link, beside it when `web.udp` or `web.quic` says so) bound on `address` and
+/// `port` under the bind policy.
 #[cfg(all(feature = "web", not(target_arch = "wasm32")))]
 fn web_transport(
     address: Ipv4Addr,
@@ -309,6 +316,21 @@ fn web_transport(
     let policy = bind_policy(address, public)?;
     let ip = IpAddr::V4(address);
     let site = WebTransport::new(policy, web.setup.clone());
+    #[cfg(feature = "quic")]
+    if let Some(quic) = &web.quic {
+        if web.udp {
+            return Err(
+                "the QUIC link and plain UDP never share a port: a web listen takes one of them"
+                    .to_string(),
+            );
+        }
+        let endpoint = quic_endpoint(policy, quic)?;
+        let mut transport = WebQuicTransport::new(MultiTransport::new(endpoint, site));
+        transport
+            .bind(ip, port)
+            .map_err(|e| format!("the server's socket: {e}"))?;
+        return Ok(Rc::new(RefCell::new(transport)));
+    }
     let transport: SharedTransport = if web.udp {
         Rc::new(RefCell::new(MultiTransport::new(
             UdpTransport::new(policy),
@@ -324,6 +346,124 @@ fn web_transport(
     Ok(transport)
 }
 
+/// The QUIC link and the web on one port number, the page served told what a browser needs for a WebTransport session:
+/// `webtransport.json` holds the QUIC port number, the CONNECT's path and the certificate hashes (`serverCertificateHashes`), written
+/// again whenever the hashes change (the certificates rotate every six days).
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+pub struct WebQuicTransport {
+    inner: torque_server::net::web::MultiTransport<torque_net_quic::QuicServerTransport>,
+    published: Option<Vec<torque_net_quic::CertHash>>,
+}
+
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+impl WebQuicTransport {
+    /// The file the page reads.
+    pub const FILE: &'static str = "webtransport.json";
+
+    pub fn new(
+        inner: torque_server::net::web::MultiTransport<torque_net_quic::QuicServerTransport>,
+    ) -> WebQuicTransport {
+        WebQuicTransport {
+            inner,
+            published: None,
+        }
+    }
+
+    /// The QUIC endpoint.
+    pub fn quic(&self) -> &torque_net_quic::QuicServerTransport {
+        self.inner.udp()
+    }
+
+    /// Writes `webtransport.json` when the hashes it carries are not the ones published.
+    fn publish(&mut self) {
+        let quic = self.inner.udp();
+        if !quic.web_transport_enabled() {
+            return;
+        }
+        let hashes = quic.certificate_hashes();
+        if self.published.as_ref() == Some(&hashes) {
+            return;
+        }
+        let Some(port) = quic.local_addr().map(|a| a.port()) else {
+            return;
+        };
+        let json = web_transport_json(port, "/", &hashes);
+        self.inner
+            .web_mut()
+            .set_file(WebQuicTransport::FILE, json.into_bytes());
+        self.published = Some(hashes);
+    }
+}
+
+/// `webtransport.json`: `{"port":28000,"path":"/","hashes":["<hex>",...]}`.
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+pub fn web_transport_json(port: u16, path: &str, hashes: &[torque_net_quic::CertHash]) -> String {
+    let hashes: Vec<String> = hashes.iter().map(|h| format!("\"{h}\"")).collect();
+    format!(
+        "{{\"port\":{port},\"path\":\"{}\",\"hashes\":[{}]}}",
+        path.replace(['"', '\\'], ""),
+        hashes.join(",")
+    )
+}
+
+#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
+impl Transport for WebQuicTransport {
+    fn bind(&mut self, ip: IpAddr, port: u16) -> Result<(), BindError> {
+        self.inner.bind(ip, port)?;
+        self.publish();
+        Ok(())
+    }
+
+    fn recv(&mut self, buf: &mut [u8]) -> Recv {
+        self.inner.recv(buf)
+    }
+
+    fn send_to(&mut self, to: SocketAddr, data: &[u8]) -> bool {
+        self.inner.send_to(to, data)
+    }
+
+    fn local_addr(&self) -> Option<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn is_real(&self) -> bool {
+        true
+    }
+
+    fn close(&mut self) {
+        self.inner.close();
+    }
+
+    fn service(&mut self) {
+        self.inner.service();
+        self.publish();
+    }
+
+    fn wants_service(&self) -> bool {
+        self.inner.wants_service()
+    }
+
+    fn take_gone(&mut self) -> Vec<SocketAddr> {
+        self.inner.take_gone()
+    }
+
+    fn status(&mut self) -> Vec<String> {
+        self.inner.status()
+    }
+
+    fn link_kind(&self, peer: SocketAddr) -> LinkKind {
+        self.inner.link_kind(peer)
+    }
+
+    fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
+        self.inner.peer_ip(peer)
+    }
+
+    fn channel_binding(&self, peer: SocketAddr) -> Option<ChannelBinding> {
+        self.inner.channel_binding(peer)
+    }
+}
+
 /// The QUIC endpoint on `address` and `port` under the bind policy, on the identity key `quic` names (made on first start
 /// when it is a file that does not exist yet).
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
@@ -333,8 +473,22 @@ fn quic_transport(
     public: bool,
     quic: &QuicListen,
 ) -> Result<SharedTransport, String> {
-    use torque_net_quic::{QuicServerTransport, ServerKey, SystemClock, UdpIo};
     let policy = bind_policy(address, public)?;
+    let mut server = quic_endpoint(policy, quic)?;
+    server
+        .bind(IpAddr::V4(address), port)
+        .map_err(|e| format!("the server's socket: {e}"))?;
+    Ok(Rc::new(RefCell::new(server)))
+}
+
+/// A QUIC endpoint under `policy` (not yet bound), on the identity key `quic` names, with its WebTransport sessions on when
+/// `quic.web_transport` says so.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+fn quic_endpoint(
+    policy: BindPolicy,
+    quic: &QuicListen,
+) -> Result<torque_net_quic::QuicServerTransport, String> {
+    use torque_net_quic::{QuicServerTransport, ServerKey, SystemClock, UdpIo};
     let key = match &quic.identity {
         IdentitySource::Key(key) => Rc::clone(key),
         IdentitySource::File(path) => {
@@ -355,10 +509,10 @@ fn quic_transport(
         None,
     )
     .map_err(|e| e.to_string())?;
-    server
-        .bind(IpAddr::V4(address), port)
-        .map_err(|e| format!("the server's socket: {e}"))?;
-    Ok(Rc::new(RefCell::new(server)))
+    if let Some(setup) = &quic.web_transport {
+        server.enable_web_transport(&key, setup.clone())?;
+    }
+    Ok(server)
 }
 
 /// UDP datagrams: one socket on the server's address, which the LAN list's pings and queries share. Registers `udp`.

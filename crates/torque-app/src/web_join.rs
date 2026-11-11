@@ -1,8 +1,11 @@
 //! A browser's way into a game (the `p2p` feature, built for the web): where the page's client finds its server, the
 //! link it opens to it, and that link's state written on the page.
 //!
-//! **Where** ([`Target`]): a server that served the page (a dedicated server on the web: `ws://<the page's host>/ws`,
-//! `wss://` on an `https` page, or `?server=<ws or wss URL>` when the page is served elsewhere; [`socket_url`]), a game a
+//! **Where** ([`Target`]): a server that served the page, over the WebTransport session the page opened to it when it
+//! could (`web/webtransport.js`: a secure page, the server's `webtransport.json`, a browser with the API; a
+//! [`WebTransportLink`], fed by [`web_transport_datagram`]), else its web transport (a dedicated server on the web:
+//! `ws://<the page's host>/ws`, `wss://` on an `https` page, or `?server=<ws or wss URL>` when the page is served elsewhere;
+//! [`socket_url`]), a game a
 //! player hosts, found by its code (`?room=<code>`) through the room service at `?rooms=<ws or wss URL>` (else the page's
 //! own host at `/ws`: the service serves the page; [`rooms_url`]), the server in this page's Web Worker (the host
 //! player's own game: [`LocalLink`], fed by [`local_datagram`]), or a player's host reached by an invite link, whose data
@@ -19,14 +22,15 @@
 //! What the page hands the client on its link is hostile as on UDP: it is held in a [`HeldDatagrams`] (none over the
 //! engine's most bytes for a datagram, the count and the bytes held capped).
 //!
-//! **The link** ([`Target::open`]): a game socket over WebSocket with a WebRTC data channel beside it when the server
-//! offers one, every datagram on the data channel to a player's host, or the local link to the worker. The client names
+//! **The link** ([`Target::open`]): the page's WebTransport session, a game socket over WebSocket with a WebRTC data channel
+//! beside it when the server offers one, every datagram on the data channel to a player's host, or the local link to the
+//! worker. The client names
 //! its server [`SERVER`] whatever it is: each link carries datagrams to its own server only. A link's [`LinkWatch`] says
 //! which way the datagrams go and why the link ended for good (the host left, the server closed the connection).
 //!
-//! **The page** ([`mark_link`]): the root element carries `data-torque-link` (`websocket`, `connecting` or
-//! `datachannel`), `data-torque-rtc-tried` and `data-torque-rtc-failed` (`1` once a data channel was tried, or failed or
-//! was refused), `data-torque-rtc-in` (the messages the channel brought), `data-torque-rtc-gap` (the longest time between
+//! **The page** ([`mark_link`]): the root element carries `data-torque-link` (`websocket`, `connecting`, `datachannel` or
+//! `webtransport`), `data-torque-rtc-tried` and `data-torque-rtc-failed` (`1` once a data channel was tried, or failed or
+//! was refused), `data-torque-rtc-in` (the messages the channel or the session brought), `data-torque-rtc-gap` (the longest time between
 //! two of them, in milliseconds, since the window was last reset) and `data-torque-ended` (why the link ended, empty
 //! while it holds).
 
@@ -39,6 +43,7 @@ use torque_client::net::held::HeldDatagrams;
 use torque_client::net::room_join::RoomDatagrams;
 use torque_client::net::web_rtc::{Link, LinkWatch, WebRtcDatagrams};
 use torque_client::net::web_socket::WebSocketDatagrams;
+use torque_net::engine::{LinkFacts, LinkKind};
 
 use crate::transports::{Connect, RelayTarget, RoomTarget, WebTarget};
 use crate::web_page::mark;
@@ -63,6 +68,10 @@ thread_local! {
     static LINK: RefCell<Local> = RefCell::default();
     /// The state of the link to a player's host the page holds: a new one for each switch to it.
     static PAGE_LINK: RefCell<LinkWatch> = RefCell::default();
+    /// The WebTransport session the page opened to the server that served it ([`Target::WebTransport`]).
+    static WEB_TRANSPORT: RefCell<Local> = RefCell::default();
+    /// Its state: none until the page says the session is open; the largest datagram it takes.
+    static WEB_TRANSPORT_LINK: RefCell<Option<(LinkWatch, usize)>> = const { RefCell::new(None) };
     /// A switch the page asked for, not yet taken by the game.
     static SWITCH: Cell<Option<Mode>> = const { Cell::new(None) };
 }
@@ -76,6 +85,50 @@ pub fn local_datagram(bytes: &[u8]) -> bool {
 /// A datagram for the client on the page's data channel to a player's host. False: dropped (as [`local_datagram`]).
 pub fn link_datagram(bytes: &[u8]) -> bool {
     LINK.with_borrow_mut(|l| l.held.push(bytes))
+}
+
+/// The page's WebTransport session to the server that served it is open ([`Target::WebTransport`]): `sender` sends the
+/// client's datagrams on it (called with a `Uint8Array`), each of at most `max_datagram` bytes. Before the game starts: the
+/// join then takes the session over the game socket.
+pub fn web_transport_opened(sender: js_sys::Function, max_datagram: u32) {
+    WEB_TRANSPORT.with_borrow_mut(|l| {
+        l.sender = Some(sender);
+        l.held = HeldDatagrams::default();
+    });
+    let watch: LinkWatch = Rc::default();
+    watch.borrow_mut().link = Link::WebTransport;
+    WEB_TRANSPORT_LINK.with_borrow_mut(|w| *w = Some((watch, max_datagram as usize)));
+}
+
+/// A datagram for the client on the page's WebTransport session. False: dropped (as [`local_datagram`]).
+pub fn web_transport_datagram(bytes: &[u8]) -> bool {
+    WEB_TRANSPORT_LINK.with_borrow(|w| {
+        if let Some((watch, _)) = w {
+            watch.borrow_mut().messages_in += 1;
+        }
+    });
+    WEB_TRANSPORT.with_borrow_mut(|l| l.held.push(bytes))
+}
+
+/// The page's WebTransport session ended, for good: `why`, in a player's words (its first 200 characters).
+pub fn web_transport_ended(why: &str) {
+    WEB_TRANSPORT.with_borrow_mut(|l| l.sender = None);
+    WEB_TRANSPORT_LINK.with_borrow(|w| {
+        if let Some((watch, _)) = w {
+            let mut watch = watch.borrow_mut();
+            if watch.ended.is_none() {
+                watch.ended = Some(why.chars().take(200).collect());
+            }
+        }
+    });
+}
+
+/// Whether the page opened a WebTransport session to its server.
+pub fn web_transport_open() -> bool {
+    WEB_TRANSPORT_LINK.with_borrow(|w| {
+        w.as_ref()
+            .is_some_and(|(watch, _)| watch.borrow().ended.is_none())
+    })
 }
 
 /// The page's data channel to a player's host opened ([`Target::Page`]).
@@ -248,9 +301,44 @@ impl Datagrams for PageLink {
     }
 }
 
+/// The client's link to the server that served the page: the WebTransport session the page opened to it.
+pub struct WebTransportLink;
+
+impl Datagrams for WebTransportLink {
+    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
+        send_on(&WEB_TRANSPORT, to, bytes)
+    }
+
+    fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
+        recv_on(&WEB_TRANSPORT)
+    }
+
+    fn port(&self) -> u16 {
+        0
+    }
+
+    /// QUIC under the session: the server's address validated, TLS 1.3, QUIC's congestion control; the browser verified
+    /// the certificate's hash, but the page's client has no identity to pin (the server's transport says the same of it,
+    /// with its identity). Datagrams are what the session takes, at most the engine's 1,200.
+    fn link_kind(&self) -> LinkKind {
+        let max = WEB_TRANSPORT_LINK.with_borrow(|w| w.as_ref().map_or(0, |(_, max)| *max));
+        LinkKind {
+            facts: LinkFacts {
+                validated: true,
+                secure: true,
+                congestion_controlled: true,
+                server_identity: None,
+            },
+            max_datagram: max.clamp(1, LinkKind::WEB_RTC.max_datagram),
+        }
+    }
+}
+
 /// Where the page's game is (module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
+    /// The server that served the page, over the WebTransport session the page opened to it.
+    WebTransport,
     /// A server's web transport at this `ws://` or `wss://` URL.
     Server(String),
     /// A player's host, by its room's `code`, found through the room service at `url`.
@@ -265,6 +353,17 @@ impl Target {
     /// A new link to the game (the join, and each join after).
     pub fn open(&self) -> Result<(Box<dyn Datagrams>, LinkWatch), String> {
         match self {
+            Target::WebTransport => {
+                let watch = WEB_TRANSPORT_LINK
+                    .with_borrow(|w| w.as_ref().map(|(watch, _)| Rc::clone(watch)))
+                    .ok_or("the page opened no WebTransport session")?;
+                if watch.borrow().ended.is_some() {
+                    return Err(
+                        "the WebTransport session ended: load the page again to join".into(),
+                    );
+                }
+                Ok((Box::new(WebTransportLink), watch))
+            }
             Target::Server(url) => {
                 let socket = WebRtcDatagrams::new(WebSocketDatagrams::open(url, SERVER)?);
                 let watch = socket.watch();
@@ -291,7 +390,7 @@ impl Target {
         match self {
             Target::Server(_) => "web",
             Target::Room { .. } => "rooms",
-            Target::Local | Target::Page => "relay",
+            Target::Local | Target::Page | Target::WebTransport => "relay",
         }
     }
 
@@ -310,13 +409,15 @@ impl Target {
             )?,
             Target::Local => client.connect_dyn("relay", &RelayTarget::Local)?,
             Target::Page => client.connect_dyn("relay", &RelayTarget::Page)?,
+            Target::WebTransport => client.connect_dyn("relay", &RelayTarget::WebTransport)?,
         };
         info.take::<LinkWatch>()
             .ok_or_else(|| format!("the {} transport gave no link state", self.transport_id()))
     }
 
     /// The game the page's address asks to join: `?room=<code>` a player's (Err: not a [`room_code`]), else with `?join` (or `?server=`) the server
-    /// that served the page (or `?server=`'s); none asked, or the page is one to be played alone (its root element's
+    /// that served the page (over the WebTransport session the page opened to it, if it did, else its web transport; or
+    /// `?server=`'s); none asked, or the page is one to be played alone (its root element's
     /// `data-torque-solo="1"`: a site with no game server).
     pub fn from_page() -> Result<Option<Target>, String> {
         if solo_page() {
@@ -329,6 +430,9 @@ impl Target {
             }));
         }
         if query("join").is_some() || query("server").is_some() {
+            if web_transport_open() {
+                return Ok(Some(Target::WebTransport));
+            }
             return socket_url().map(|url| Some(Target::Server(url)));
         }
         Ok(None)

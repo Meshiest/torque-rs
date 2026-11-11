@@ -13,25 +13,37 @@
 //! - Both ends derive a [`ChannelBinding`] (the TLS exporter, RFC 8446 section 7.5) once the handshake is done, and the hosts
 //!   mix it, with the identity, into the ticket context: a ticket relayed to another server fails.
 //!
+//! - Browsers join over a WebTransport session on the same endpoint ([`QuicServer::enable_web_transport`]): the least HTTP/3
+//!   a session needs ([`h3`]), the server's short certificates and their hashes ([`certs`]), and a desktop may open the same
+//!   session ([`SessionKind::WebTransport`]).
+//!
 //! No async runtime: quinn-proto is sans-IO, and the hosts' non-blocking passes drive it (the server's receive pass and
-//! waits, the client's socket reads), as the web transport drives str0m. No streams this crate (`max_concurrent_*_streams`
-//! 0), no 0-RTT (early data is replayable, and a connect carries a ticket and a password), the fixed bit always set
-//! (`grease_quic_bit` off), migration on. The ALPN is the provisional [`ALPN`] for natives; the HTTP/3 WebTransport session
-//! browsers need replaces it with `h3` later without changing the engine's bytes.
+//! waits, the client's socket reads), as the web transport drives str0m. Only the session's streams (one bidirectional toward
+//! a server, three unidirectional each way, small windows), no 0-RTT (early data is replayable, and a connect carries a
+//! ticket and a password), the fixed bit always set (`grease_quic_bit` off), migration on. Two ALPNs: [`ALPN`] for the raw
+//! protocol natives speak by default, and `h3` for a WebTransport session, whose datagrams carry the same engine bytes behind
+//! a one-byte prefix.
 //!
 //! # Maintaining
 //!
 //! **Module map.** `identity`: the key, its file, the certificate and the identity hash (a bounded DER walk finds the
 //! SubjectPublicKeyInfo). `tls`: the rustls and quinn configs ([`QuicLimits`], [`transport_config`], [`endpoint_config`]) and
 //! the client's [`PinVerifier`]. `known`: the known-servers file. `io`: the socket trait ([`Io`]) with the UDP socket and the
-//! test pipe. `clock`: the clock trait with the system's and the fake one. `stand_in`: the connections' stand-in addresses.
-//! `retry`: the handshake rate gate. `server`, `client`: the two endpoints.
+//! test pipe. `clock`: the clock trait with the system's and the fake one (the wall clock dates the certificates). `stand_in`:
+//! the connections' stand-in addresses (`248.0.0.0/5`; the web transport's are `240.0.0.0/5`). `retry`: the handshake rate
+//! gate. `certs`: the rotating short certificates, their hashes and a DER's validity. `h3`: the WebTransport session
+//! (`frames`, `qpack`, `huffman`, `session`, and `drive`, which runs a session on a connection). `server`, `client`: the two
+//! endpoints.
 //!
 //! **Flow.** Server: `Transport::recv` with an empty inbox (or `service`) runs `QuicServer::pump`: the socket's datagrams go to
 //! `Endpoint::handle`; a new handshake is decided in `incoming` (refuse, Retry, ignore, accept); a connection's datagram goes
 //! to its `Connection`, then `drive` moves it along (endpoint events, its events, transmits, the next timeout) and application
 //! datagrams land in the inbox under the connection's stand-in. `send_to` queues a DATAGRAM frame and drives the connection
-//! at once. The client mirrors it in `QuicClient::pump` and `drive`, with the verifier's result read at `Connected`.
+//! at once. The client mirrors it in `QuicClient::pump` and `drive`, with the verifier's result read at `Connected`. A
+//! connection that negotiated `h3` gets an `h3::Driver` at `Connected`: stream events go to it, it reads the peer's streams
+//! into the session and carries out its actions after each event loop, datagrams are wrapped and unwrapped through it, and
+//! the host sees the connection's datagrams only once the session is established (a connection with none by the handshake
+//! timeout is closed). `pump` also rotates the certificates when they are due.
 //!
 //! **Invariants and their tests.**
 //! - A datagram the AEAD does not accept never reaches the host: of the bit-flipped datagrams the fuzz delivers, none
@@ -64,16 +76,29 @@
 //! - Both ends derive the same channel binding, and it differs per connection (`tests/pair.rs`).
 //! - An engine session pair over the QUIC link (fake clock, seeded RNG, lossless pipe) delivers the same events as over the
 //!   memory link (`tests/pair.rs`).
+//! - A WebTransport session is established only by a CONNECT that judges well (the authority one of the server's hosts, the
+//!   origin allowed, the path the setup's); hostile HTTP/3 never panics, never makes the server write more than a few
+//!   hundred bytes, and never holds more than the caps per stream (`h3::session::tests`, `tests/h3_fuzz.rs`,
+//!   `TORQUE_FUZZ_H3`); a session's datagrams and a raw client's flow beside each other, a page from elsewhere is refused
+//!   with 403, and a connection with no session is closed at the handshake timeout (`tests/web_transport.rs`).
+//! - Every short certificate is under two weeks in all as its DER says, is valid when presented, and the hash presented was
+//!   published before the last rotation (`certs::tests`, `tests/web_transport.rs`).
+//! - A peer's streams never grow the session's state past `MAX_PEER_STREAMS`, and a stopped stream is forgotten as it is
+//!   stopped (`h3::session::tests::the_peers_misbehavior_closes_the_connection_with_the_right_code`).
 //!
 //! **Extension points.** [`QuicServer::set_address_check`] (a ban list checked on every handshake and migration); [`Io`] and
-//! [`Clock`] for another socket or clock; [`QuicLimits`] for the caps. A WebTransport session (`h3`) goes beside the raw ALPN
-//! in `tls` and a session layer between the connection and the inbox.
+//! [`Clock`] for another socket or clock; [`QuicLimits`] for the caps; [`WebTransportSetup`] for the pages allowed, the
+//! path and the certificates (a certificate authority's chain instead of the rotation); `h3::Setup::hosts` for the server's
+//! names.
 //!
-//! **Checks.** `cargo test -p torque-net-quic` (the fuzz smoke at its default); `TORQUE_FUZZ_QUIC=100000 cargo test -p
-//! torque-net-quic --release --test quic_fuzz`; `cargo clippy -p torque-net-quic --all-targets -- -D warnings`;
+//! **Checks.** `cargo test -p torque-net-quic` (the fuzz smokes at their defaults); `TORQUE_FUZZ_QUIC=100000 cargo test -p
+//! torque-net-quic --release --test quic_fuzz`; `TORQUE_FUZZ_H3=100000 cargo test -p torque-net-quic --release --test
+//! h3_fuzz`; `cargo clippy -p torque-net-quic --all-targets -- -D warnings`;
 //! `cargo tree --workspace --all-features -i tokio` prints nothing; `cargo tree -i aws-lc-rs` shows only str0m's path.
 
+pub mod certs;
 pub mod clock;
+pub mod h3;
 pub mod identity;
 pub mod io;
 pub mod known;
@@ -84,15 +109,19 @@ pub mod tls;
 mod client;
 mod server;
 
+pub use certs::{CertHash, Certificates, Rotation};
 pub use client::{
-    CLIENT_INBOX, CLIENT_INBOX_BYTES, LinkState, QuicClient, QuicDatagrams, QuicWatch, Trust,
-    client_socket,
+    CLIENT_INBOX, CLIENT_INBOX_BYTES, LinkState, QuicClient, QuicDatagrams, QuicWatch, SessionKind,
+    Trust, client_socket,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use h3::{ALPN_H3, Dial, Origins, Setup as WebTransportSession};
 pub use identity::{IDENTITY_FILE, IdentityError, ServerKey, identity_of_certificate};
 pub use io::{Flight, Io, Pipe, PipeIo, UdpIo};
 pub use known::{KNOWN_SERVERS_FILE, KnownError, KnownServers};
-pub use server::{Counters, QuicServer, QuicServerTransport, READS_PER_PASS};
+pub use server::{
+    CertificateChoice, Counters, QuicServer, QuicServerTransport, READS_PER_PASS, WebTransportSetup,
+};
 pub use tls::{
     ALPN, PinVerifier, QUIC_MAX_DATAGRAM, QuicLimits, endpoint_config, transport_config,
 };

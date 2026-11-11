@@ -169,6 +169,12 @@ impl ServerKey {
         &self.cert
     }
 
+    /// The key pair itself, for signing a certificate on it.
+    #[must_use]
+    pub(crate) fn pair(&self) -> &KeyPair {
+        &self.pair
+    }
+
     /// The private key, for the TLS config.
     #[must_use]
     pub fn private_key(&self) -> PrivateKeyDer<'static> {
@@ -193,11 +199,11 @@ pub fn identity_of_spki(spki: &[u8]) -> ServerIdentity {
     ServerIdentity(out)
 }
 
-const DER_SEQUENCE: u8 = 0x30;
-const DER_CONTEXT_0: u8 = 0xa0;
+pub(crate) const DER_SEQUENCE: u8 = 0x30;
+pub(crate) const DER_CONTEXT_0: u8 = 0xa0;
 
 /// One DER element at the start of `input`: its tag, its value and what follows it. None when the bytes are not one.
-fn der_element(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+pub(crate) fn der_element(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
     let (&tag, rest) = input.split_first()?;
     let (&first, rest) = rest.split_first()?;
     let (len, rest) = if first < 0x80 {

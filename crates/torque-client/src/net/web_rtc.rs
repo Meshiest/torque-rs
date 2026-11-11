@@ -50,6 +50,8 @@ pub enum Link {
     Connecting,
     /// The data channel.
     Channel,
+    /// A WebTransport session the page opened to the server (torque-app's `web_join`): no game socket at all.
+    WebTransport,
 }
 
 impl Link {
@@ -58,6 +60,7 @@ impl Link {
             Link::Socket => "websocket",
             Link::Connecting => "connecting",
             Link::Channel => "datachannel",
+            Link::WebTransport => "webtransport",
         }
     }
 }

@@ -8,6 +8,8 @@ use quinn_proto::{StdSystemTime, TimeSource};
 /// Where an endpoint reads the time: every `now` quinn-proto is handed, and the wall-clock source its tokens are stamped by.
 pub trait Clock {
     fn now(&self) -> Instant;
+    /// The wall clock: what certificates are dated by and rotated on.
+    fn wall(&self) -> SystemTime;
     /// The wall-clock source the server's handshake tokens are stamped and checked by (the same clock, so a token's age
     /// moves with the test's steps).
     fn time_source(&self) -> Arc<dyn TimeSource>;
@@ -20,6 +22,10 @@ pub struct SystemClock;
 impl Clock for SystemClock {
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    fn wall(&self) -> SystemTime {
+        SystemTime::now()
     }
 
     fn time_source(&self) -> Arc<dyn TimeSource> {
@@ -67,6 +73,10 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now(&self) -> Instant {
         self.base + self.elapsed()
+    }
+
+    fn wall(&self) -> SystemTime {
+        self.wall + self.elapsed()
     }
 
     fn time_source(&self) -> Arc<dyn TimeSource> {

@@ -1,5 +1,6 @@
-//! The addresses connections go by toward the host: one stand-in in `240.0.0.0/4` per connection, never a peer's own
-//! address (a QUIC connection is its connection ids, and a peer's address may move). The stand-in IP is a keyed hash of the
+//! The addresses connections go by toward the host: one stand-in in `248.0.0.0/5` per connection (the upper half of the
+//! reserved `240.0.0.0/4`; the lower half is the web transport's game sockets', so a server on both tells them apart),
+//! never a peer's own address (a QUIC connection is its connection ids, and a peer's address may move). The stand-in IP is a keyed hash of the
 //! peer's IP, fixed for the endpoint's life, so the host's per-address limits and the scripts' bans keyed by address hold
 //! for a peer's connections as for a UDP client; each connection has its own port.
 
@@ -7,13 +8,20 @@ use std::collections::HashSet;
 use std::hash::{BuildHasher, RandomState};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-/// The first address of the stand-in range (`240.0.0.0/4`).
-pub const STAND_IN_NET: Ipv4Addr = Ipv4Addr::new(240, 0, 0, 0);
-const STAND_IN_MASK: u32 = (1 << 28) - 1;
+/// The first address of the stand-in range (`248.0.0.0/5`).
+pub const STAND_IN_NET: Ipv4Addr = Ipv4Addr::new(248, 0, 0, 0);
+const STAND_IN_MASK: u32 = (1 << 27) - 1;
 
-/// Whether `addr` is a connection's stand-in (`240.0.0.0/4`).
+/// Whether `addr` is a connection's stand-in (`248.0.0.0/5`).
 #[must_use]
 pub fn is_stand_in(addr: SocketAddr) -> bool {
+    matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf8 == 248)
+}
+
+/// Whether `addr` is in the reserved range no peer sends from (`240.0.0.0/4`: this crate's stand-ins and the web
+/// transport's).
+#[must_use]
+pub fn is_reserved(addr: SocketAddr) -> bool {
     matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf0 == 240)
 }
 
@@ -65,5 +73,11 @@ mod tests {
         s.give_back(a1);
         assert_eq!(s.take(a).ip(), a1.ip());
         assert!(!is_stand_in("127.0.0.1:5".parse().expect("an address")));
+        assert!(
+            !is_stand_in("240.0.0.1:5".parse().expect("an address")),
+            "the web's half"
+        );
+        assert!(is_reserved("240.0.0.1:5".parse().expect("an address")));
+        assert!(is_reserved(a1));
     }
 }

@@ -96,9 +96,9 @@ site-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node web/site-check.mjs "{{web_target}}/site" "{{web_target}}/site-check"
 
-# The web pages' loading display, settings, script bridge, browser host and connection codes, tested in Node (no browser)
+# The web pages' loading display, settings, script bridge, browser host, connection codes and WebTransport join, tested in Node (no browser)
 web-unit:
-    node --test web/loading.test.mjs web/settings.test.mjs web/bridge.test.mjs web/host.test.mjs web/files.test.mjs web/codes.test.mjs web/invites.test.mjs
+    node --test web/loading.test.mjs web/settings.test.mjs web/bridge.test.mjs web/host.test.mjs web/files.test.mjs web/codes.test.mjs web/invites.test.mjs web/webtransport.test.mjs
 
 # Fails when any script in the repository could open a browser other than through `launchGuarded` (web/guard.mjs), whose pages
 # cannot take the pointer lock: a lock confines the real cursor in headless Chrome on Windows

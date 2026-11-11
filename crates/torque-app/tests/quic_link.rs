@@ -1,6 +1,7 @@
 //! The QUIC link end to end on real sockets (loopback, port 0): an engine-mode server on `Listen::Quic` and a client over
 //! `quic` connect and exchange ghosts; the server's identity pinned, wrong, and trusted on first use then changed; a ticket
-//! bound to one connection's channel binding refused on another; a client whose socket moves keeps its connection.
+//! bound to one connection's channel binding refused on another; a client whose socket moves keeps its connection; a
+//! desktop asked to speak WebTransport (the path browsers take) joins a server that takes sessions.
 
 #![cfg(feature = "quic")]
 
@@ -82,6 +83,17 @@ impl Plugin for TicketAuth {
 
 /// A server of `engine` on the QUIC link at `port` (0: any), on `key`.
 fn start(engine: &Engine, files: &GameFiles, key: &Rc<ServerKey>, port: u16) -> GameServer {
+    start_with(engine, files, key, port, false)
+}
+
+/// [`start`], taking WebTransport sessions too when `web_transport` says so.
+fn start_with(
+    engine: &Engine,
+    files: &GameFiles,
+    key: &Rc<ServerKey>,
+    port: u16,
+    web_transport: bool,
+) -> GameServer {
     GameServer::start_engine(
         engine,
         files.mem_files(),
@@ -93,6 +105,7 @@ fn start(engine: &Engine, files: &GameFiles, key: &Rc<ServerKey>, port: u16) -> 
                 quic: Rc::new(QuicListen {
                     identity: IdentitySource::Key(Rc::clone(key)),
                     limits: QuicLimits::default(),
+                    web_transport: web_transport.then(torque_net_quic::WebTransportSetup::default),
                 }),
             },
             globals: &[],
@@ -162,7 +175,46 @@ fn target(at: SocketAddrV4, identity: Option<ServerIdentity>) -> QuicTarget {
         port: at.port(),
         identity,
         known_servers: None,
+        web_transport: false,
     }
+}
+
+#[test]
+fn a_desktop_asked_to_speaks_webtransport_and_gets_its_ghosts_as_over_the_raw_protocol() {
+    let files = files();
+    let engine = engine(&files, Nothing);
+    let key = Rc::new(ServerKey::generate().expect("a key"));
+    let mut server = start_with(&engine, &files, &key, 0, true);
+    let at = addr_of(&server);
+    let mut over_session = target(at, Some(key.identity()));
+    over_session.web_transport = true;
+    let (mut page, watch) = client(&engine, &files, &over_session);
+    assert!(
+        run_until(&mut server, &mut page, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.ghost_count() >= 1
+        }),
+        "server {:?}; client {:?}; link {:?}",
+        server.drain_log(),
+        page.client_log,
+        watch.state()
+    );
+    let state = watch.state();
+    assert!(state.connected && state.error.is_none(), "{state:?}");
+    assert_eq!(page.global("$Accepted"), "1");
+    let status = server.transport_status().join("\n");
+    assert!(
+        status.contains("webtransport: 1 sessions, 0 failed"),
+        "{status}"
+    );
+    // A raw desktop joins the same server beside it.
+    let (mut raw, raw_watch) = client(&engine, &files, &target(at, Some(key.identity())));
+    assert!(
+        run_until(&mut server, &mut raw, 600, |_, c| c.ghost_count() >= 1),
+        "{:?}",
+        raw_watch.state()
+    );
+    let status = server.transport_status().join("\n");
+    assert!(status.contains("2 established now"), "{status}");
 }
 
 #[test]

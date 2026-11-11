@@ -26,7 +26,8 @@
 // build that packs the files; `--keep-pack` does that without `--dev`, and `--repack` packs again with it. Without these flags the build is the release one: the pack always made again, thin LTO, wasm-opt.
 //
 // The folder, served as it is: index.html, files.js, loading.js, settings.js, bridge.js, host.js and host-worker.js (a
-// browser host), codes.js and invites.js (games joined by invite links), game.js, game_bg.wasm, and files.json with
+// browser host), codes.js and invites.js (games joined by invite links), webtransport.js (the session to the server that
+// served the page), game.js, game_bg.wasm, and files.json with
 // game.pack when fetched.
 // The target folder is CARGO_TARGET_DIR's, else the workspace's `target`. wasm-bindgen's command line, at the version
 // Cargo.lock names, is installed into <target>/web-tools at first.
@@ -164,7 +165,7 @@ if (opt !== '0' && spawnSync(opt, ['--version'], { encoding: 'utf8' }).status ==
 } else if (!dev) {
   console.log('wasm-opt not found: the module is not optimized further (install binaryen for a faster one)');
 }
-const pages = ['files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js', 'codes.js', 'invites.js'];
+const pages = ['files.js', 'loading.js', 'settings.js', 'bridge.js', 'host.js', 'host-worker.js', 'codes.js', 'invites.js', 'webtransport.js'];
 for (const page of pages) copyFileSync(join(root, 'web', page), join(out, page));
 // The page, marked to be played alone with `--solo`.
 const html = readFileSync(join(root, 'web', 'index.html'), 'utf8');

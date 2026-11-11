@@ -7,9 +7,9 @@
 //! | [`MemoryClientTransportPlugin`] | `memory` | `torque.transport-memory-client` | - | [`MemoryTarget`]: an in-memory socket linked to a server in this process |
 //! | `WebClientTransportPlugin` | `web` | `torque.transport-web-client` | `web` feature | `WebTarget`: a game socket over WebSocket (a data channel beside it with the `webrtc` feature) |
 //! | `RoomsClientTransportPlugin` | `rooms` | `torque.transport-rooms-client` | `p2p` feature, browser | `web_join::Target::Room`: a player's host, found by its room's code |
-//! | `RelayClientTransportPlugin` | `relay` | `torque.transport-relay-client` | `p2p` feature, browser | `web_join::Target::Local` and `Page`: the link the page holds |
+//! | `RelayClientTransportPlugin` | `relay` | `torque.transport-relay-client` | `p2p` feature, browser | `web_join::Target::Local`, `Page` and `WebTransport`: the links the page holds |
 //! | [`InstantNetClientTransportPlugin`] | `instant-net` | `torque.transport-instant-net-client` | - | [`InstantNet`]: an in-process network every datagram crosses at once |
-//! | `QuicClientTransportPlugin` | `quic` | `torque.transport-quic-client` | `quic` feature, native | `QuicTarget`: a QUIC connection to a server's QUIC endpoint, its identity pinned or trusted on first use |
+//! | `QuicClientTransportPlugin` | `quic` | `torque.transport-quic-client` | `quic` feature, native | `QuicTarget`: a QUIC connection to a server's QUIC endpoint, its identity pinned or trusted on first use; a WebTransport session on it when asked |
 //!
 //! [`ClientTransportPlugins`] is the group of the ones a build has; [`DefaultPlugins`](crate::plugins::DefaultPlugins) has it,
 //! with the server's ([`ServerTransportPlugins`]). The in-process network's pair ([`InstantNetClientTransportPlugin`],
@@ -435,6 +435,9 @@ pub struct QuicTarget {
     /// The known-servers file (none: `known_servers` in the client's folder under the user's data folder,
     /// [`known_servers_path`]).
     pub known_servers: Option<std::path::PathBuf>,
+    /// Open a WebTransport session on the connection, as a browser does (the server must take them), instead of the raw
+    /// protocol: one round trip more at connect, the same engine bytes.
+    pub web_transport: bool,
 }
 
 /// Where the default known-servers file lives: `known_servers` in the client's folder under the user's data folder. None
@@ -479,13 +482,24 @@ impl Plugin for QuicClientTransportPlugin {
             };
             let io = client_socket(std::net::IpAddr::V4(bind))
                 .map_err(|e| format!("the client's socket: {e}"))?;
-            let socket = QuicDatagrams::connect(
+            let server = SocketAddrV4::new(target.address, target.port);
+            let session = if target.web_transport {
+                torque_net_quic::SessionKind::WebTransport(torque_net_quic::Dial {
+                    authority: server.to_string(),
+                    path: "/".to_string(),
+                    origin: None,
+                })
+            } else {
+                torque_net_quic::SessionKind::Raw
+            };
+            let socket = QuicDatagrams::connect_with(
                 io,
                 SystemClock,
-                SocketAddrV4::new(target.address, target.port),
+                server,
                 trust,
                 &QuicLimits::default(),
                 None,
+                session,
             )?;
             let watch = socket.watch();
             let policy = if loopback {
@@ -517,6 +531,8 @@ pub enum RelayTarget {
     Local,
     /// A player's host the page reached by an invite link: the page holds the data channel.
     Page,
+    /// The server that served the page, over the WebTransport session the page opened to it.
+    WebTransport,
 }
 
 /// A player's host found through a room service by its code: every datagram goes on the data channel to it. The link's state
@@ -542,8 +558,9 @@ impl Plugin for RoomsClientTransportPlugin {
     }
 }
 
-/// The links a browser's page holds: to the server in its worker (a host player's own client), or to a player's host reached
-/// by an invite link. Registers `relay`, for [`RelayTarget`]; the link's state comes back in the [`LinkInfo`].
+/// The links a browser's page holds: to the server in its worker (a host player's own client), to a player's host reached
+/// by an invite link, or to the server that served the page over a WebTransport session. Registers `relay`, for
+/// [`RelayTarget`]; the link's state comes back in the [`LinkInfo`].
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.transport-relay-client")]
@@ -556,6 +573,7 @@ impl Plugin for RelayClientTransportPlugin {
             let (socket, watch) = match target {
                 RelayTarget::Local => crate::web_join::Target::Local,
                 RelayTarget::Page => crate::web_join::Target::Page,
+                RelayTarget::WebTransport => crate::web_join::Target::WebTransport,
             }
             .open()?;
             Ok(ClientLink::new(socket, NetPolicy::Loopback).with_extra(watch))

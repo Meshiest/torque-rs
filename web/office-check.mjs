@@ -5,11 +5,14 @@
 // the download can be over within a frame or two), enter the office, show the consent prompt, run the catalog in its Worker
 // once Allow is pressed, and put a chair down from the catalog's Chair card. No console error may show.
 //
-// Usage: node office-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room]
+// Usage: node office-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room|wt]
 // - `join`: the server on UDP and the web (`--transport both`) serves the page; the page joins on its game socket.
 // - `rtc`: the same with `--webrtc`: the datagrams (the download among them) must go on the data channel.
 // - `room`: a room service (`torque-rooms`, serving the page) and `office-server --room`; the page joins by the room's code
 //   on a data channel.
+// - `wt`: the server on the web with the QUIC link beside it (`--transport web --webtransport`): the page (on the loopback
+//   address, a secure context) opens a WebTransport session with the server's certificate hashes and the datagrams must go
+//   on it; no game socket is opened.
 // Pictures: <screenshot>-download.png (the join screen), <screenshot>-consent.png (the prompt), <screenshot>-catalog.png (the
 // catalog open in the office), <screenshot>.png (the office a few seconds after the chair was put down). The native programs are built in release by cargo here (CARGO_TARGET_DIR's target folder).
 // TORQUE_WEB_TOOLS and CHROME as `check.mjs` reads them.
@@ -24,8 +27,8 @@ import { fileURLToPath } from 'node:url';
 import { launchGuarded, noLock } from './guard.mjs';
 
 const [folder, out, seconds = '120', mode = 'join'] = process.argv.slice(2);
-if (!folder || !out || !['join', 'rtc', 'room'].includes(mode)) {
-  console.error('usage: node office-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room]');
+if (!folder || !out || !['join', 'rtc', 'room', 'wt'].includes(mode)) {
+  console.error('usage: node office-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room|wt]');
   process.exit(2);
 }
 const here = dirname(fileURLToPath(import.meta.url));
@@ -87,6 +90,8 @@ const state = (page) =>
       props: Number(r.dataset.torqueProps ?? 0),
       figure: r.dataset.torqueFigure === '1',
       link: r.dataset.torqueLink ?? '',
+      wt: r.dataset.torqueWt ?? '',
+      rtcIn: Number(r.dataset.torqueRtcIn ?? 0),
       status: r.dataset.torqueStatus ?? '',
       error: r.dataset.torqueError ?? '',
     };
@@ -147,12 +152,15 @@ try {
     console.log(`room service ${roomsAt}, room ${code}`);
     url = `${pageAt}?room=${code.toLowerCase()}`;
   } else {
+    const transport = mode === 'wt' ? ['--transport', 'web', '--webtransport', '--identity', join(resolve(folder), '..', 'office-check-identity.key')] : ['--transport', 'both'];
     const server = start(
       'office-server',
-      ['--transport', 'both', '--port', '0', '--web-root', resolve(folder), ...(mode === 'rtc' ? ['--webrtc'] : [])],
+      [...transport, '--port', '0', '--web-root', resolve(folder), ...(mode === 'rtc' ? ['--webrtc'] : [])],
       'server',
     );
     url = /browsers join (\S+)/.exec(await server.until(/browsers join (https?:\/\/\S+)/, 60_000))[1];
+    // The page must be a secure context for WebTransport: plain http on the loopback address is one. (Not `localhost`: the
+    // browser may resolve it to the IPv6 loopback, where no server listens.)
     console.log(`office-server serves ${url}`);
   }
   browser = await launchGuarded({
@@ -190,7 +198,14 @@ try {
   if (s.total === 0 || s.received !== s.total) problems.push(`the download did not finish (${s.received} of ${s.total})`);
   if (!s.joins.includes('downloading')) problems.push(`the join never showed the download (${s.joins.join(', ')})`);
   if (s.realm !== 'asking') throw new Error(`the player was not asked about the server's scripts (${JSON.stringify(s)})`);
-  if (mode !== 'join' && s.link !== 'datachannel') problems.push(`the datagrams go on ${s.link || 'nothing'}, not the data channel`);
+  if (mode === 'rtc' || mode === 'room') {
+    if (s.link !== 'datachannel') problems.push(`the datagrams go on ${s.link || 'nothing'}, not the data channel`);
+  } else if (mode === 'wt') {
+    if (s.wt !== 'open') problems.push(`the WebTransport session did not open (${s.wt || 'nothing said'})`);
+    if (s.link !== 'webtransport') problems.push(`the datagrams go on ${s.link || 'nothing'}, not the WebTransport session`);
+    if (s.rtcIn === 0) problems.push('no datagram came over the WebTransport session');
+    console.log(`WebTransport carried ${s.rtcIn} datagrams so far`);
+  }
   // The prompt ignores the pointer for its first half second.
   await pause(1500);
   await writeFile(`${stem}-consent.png`, await page.screenshot());

@@ -28,14 +28,18 @@ quinn-proto = { version = "0.11.19", default-features = false, features = ["rust
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std"] }
 # The server identity key (ECDSA P-256, PKCS#8 PEM) and the self-signed certificate on it, signed with ring.
 rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
-# The SHA-256 of a key's SubjectPublicKeyInfo (the identity) and the handshake rate counters' random key.
+# The SHA-256 of a key's SubjectPublicKeyInfo (the identity) and of the short certificates browsers pin.
 ring = { version = "0.17", default-features = false }
+# rcgen dates a certificate's validity with `time::OffsetDateTime`: the short certificates' thirteen days are set through it.
+time = { version = "0.3.55", default-features = false }
 # The datagram buffers quinn-proto takes and hands out.
 bytes = "1.12"
 
 [dev-dependencies]
 # The deterministic pair test's engine sessions over the QUIC link against the memory link.
 torque-net = { path = "../torque-net" }
+# The web transport beside the QUIC link on one transport (`MultiTransport`), as a server with a page runs them.
+torque-server = { path = "../torque-server", features = ["web"] }
 
 [lints]
 workspace = true

@@ -14,6 +14,13 @@
 //! address only: a private address that a router maps 1:1 to a public one serves plain `http` and `ws` to the internet,
 //! so use TLS there.
 //!
+//! **WebTransport** (`--webtransport`, with `--transport web` or `both`, the `quic` feature): the QUIC link listens on the
+//! UDP port of the same number as the web, with WebTransport sessions on, instead of plain UDP (desktops join over QUIC,
+//! browsers over WebTransport; a browser without it, or on a page that is not a secure context, stays on its game socket
+//! and a data channel). The page is told what it needs in `webtransport.json` (the QUIC port number, the path, the rotating certificate
+//! hashes); the server's identity key is `identity.key` in its data folder, or `--identity <file>`. A page served by
+//! another web server joins only from an `--allow-origin`; `--web-host` names count for the CONNECT's authority too.
+//!
 //! **Data channels** (`--webrtc`, with `--transport web` or `both`): browsers get a WebRTC data channel beside their game
 //! socket, on a UDP port of its own (`--rtc-port <port>`, default the game's port number plus one; 0 any free one). Its
 //! candidates are the bind address and each `--rtc-public-ip <address>`. A public server (`--bind 0.0.0.0`) needs
@@ -35,9 +42,11 @@ use std::time::Duration;
 use torque_server::net::transport::{BindPolicy, LanRules, SharedTransport, Transport};
 use torque_server::net::web::p2p::{P2pHost, P2pSetup};
 use torque_server::net::web::rtc::RtcSetup;
-use torque_server::net::web::{Access, Origins, Tls, TlsFiles, WebFiles, WebSetup};
+use torque_server::net::web::{Access, Origins as Origins_, Tls, TlsFiles, WebFiles, WebSetup};
 
 use crate::cli::Args;
+#[cfg(feature = "quic")]
+use crate::server::QuicListen;
 use crate::server::{GameServer, Listen, WebListen, lan_addresses};
 use crate::transports::BoundTransport;
 
@@ -117,9 +126,27 @@ pub fn web_listen(transports: Transports, bind: Bind, setup: WebSetup) -> Listen
             public: bind.public,
             web: Rc::new(WebListen {
                 udp: transports == Transports::Both,
+                #[cfg(feature = "quic")]
+                quic: None,
                 setup,
             }),
         },
+    }
+}
+
+/// A server on the web at `bind` with the QUIC link beside it instead of plain UDP (`quic`: its identity key, its caps and
+/// its WebTransport sessions), whatever `transports` says of UDP.
+#[cfg(feature = "quic")]
+pub fn web_quic_listen(bind: Bind, setup: WebSetup, quic: Rc<QuicListen>) -> Listen {
+    Listen::Web {
+        address: bind.address,
+        port: bind.port,
+        public: bind.public,
+        web: Rc::new(WebListen {
+            udp: false,
+            quic: Some(quic),
+            setup,
+        }),
     }
 }
 
@@ -173,6 +200,8 @@ pub struct WebFlags {
     rtc_loss: u8,
     rtc_stats: bool,
     room: Option<String>,
+    webtransport: bool,
+    identity: Option<PathBuf>,
 }
 
 impl WebFlags {
@@ -195,6 +224,8 @@ impl WebFlags {
             "--rtc-loss" => self.rtc_loss = args.number::<u8>(arg)?.min(100),
             "--rtc-stats" => self.rtc_stats = true,
             "--room" => self.room = Some(args.value(arg, "a room service's ws:// URL")?),
+            "--webtransport" => self.webtransport = true,
+            "--identity" => self.identity = Some(args.dir(arg)?),
             _ => return Ok(false),
         }
         Ok(true)
@@ -225,6 +256,15 @@ impl WebFlags {
             return Err(
                 "--room hosts over data channels alone: leave out --transport and --webrtc".into(),
             );
+        }
+        if self.webtransport && self.transports == Transports::Udp {
+            return Err("--webtransport puts the QUIC link beside the web: add --transport web or --transport both".into());
+        }
+        if self.identity.is_some() && !self.webtransport {
+            return Err("--identity names the QUIC link's key: add --webtransport".into());
+        }
+        if cfg!(not(feature = "quic")) && self.webtransport {
+            return Err("--webtransport needs the `quic` feature of this build".into());
         }
         if self.cert.is_some() != self.key.is_some() {
             return Err("--tls-cert and --tls-key go together".into());
@@ -260,6 +300,7 @@ impl WebFlags {
             transports: self.transports,
             scheme: "http",
             webrtc: self.webrtc,
+            webtransport: self.webtransport,
             rtc_lan_only: false,
             rtc_stats: self.rtc_stats,
             public: bind.public,
@@ -300,11 +341,11 @@ impl WebFlags {
         };
         let mut access = self.access.clone();
         access.origins = if self.origins.iter().any(|o| o == "*") {
-            Origins::Any
+            Origins_::Any
         } else if self.origins.is_empty() {
-            Origins::SameHost
+            Origins_::SameHost
         } else {
-            Origins::List(self.origins.clone())
+            Origins_::List(self.origins.clone())
         };
         let rtc = if self.webrtc {
             let port = match self.rtc_port {
@@ -331,6 +372,30 @@ impl WebFlags {
         } else {
             None
         };
+        #[cfg(feature = "quic")]
+        let quic = self.webtransport.then(|| {
+            use torque_net_quic::{Origins, WebTransportSession, WebTransportSetup};
+            let origins = match &access.origins {
+                Origins_::Any => Origins::Any,
+                Origins_::List(list) => Origins::List(list.clone()),
+                Origins_::SameHost => Origins::SameHost,
+            };
+            Rc::new(QuicListen {
+                identity: match &self.identity {
+                    Some(path) => crate::server::IdentitySource::File(path.clone()),
+                    None => crate::server::IdentitySource::Default,
+                },
+                limits: torque_net_quic::QuicLimits::default(),
+                web_transport: Some(WebTransportSetup {
+                    session: WebTransportSession {
+                        origins,
+                        path: "/".to_string(),
+                        hosts: access.hosts.clone(),
+                    },
+                    certificates: torque_net_quic::CertificateChoice::Rotating,
+                }),
+            })
+        });
         let setup = WebSetup {
             files,
             tls,
@@ -338,6 +403,11 @@ impl WebFlags {
             rtc,
             ..WebSetup::default()
         };
+        #[cfg(feature = "quic")]
+        if let Some(quic) = quic {
+            served.listen = web_quic_listen(bind, setup, quic);
+            return Ok(served);
+        }
         served.listen = web_listen(self.transports, bind, setup);
         Ok(served)
     }
@@ -354,6 +424,7 @@ pub struct Served {
     transports: Transports,
     scheme: &'static str,
     webrtc: bool,
+    webtransport: bool,
     rtc_lan_only: bool,
     rtc_stats: bool,
     public: bool,
@@ -389,6 +460,12 @@ impl Served {
         out.push(format!("{name} on {addr}, map {map}"));
         if self.transports != Transports::Udp {
             out.push(format!("browsers join {}://{addr}{page}", self.scheme));
+        }
+        if self.webtransport {
+            out.push(format!(
+                "WebTransport and QUIC on udp {addr}: browsers on a secure page join over WebTransport, desktops over the QUIC link"
+            ));
+            out.extend(server.transport_status());
         }
         if self.webrtc {
             out.extend(server.transport_status());

@@ -45,15 +45,23 @@ office-web-rooms port="28100" *args:
     cargo run -p torque-rooms --release -- --port {{port}} --web-root "{{web_target}}/web/level-demo" {{args}}
 
 # The office's browser checks (build first with `office-web`, or `node web/build.mjs level-demo --client-scripts`): the office
-# server, and headless Chrome from the cursor guard joining it over its game socket, over a WebRTC data channel, and by a
-# room's code: the join screen with the catalog part way, the consent prompt, Allow, the catalog run in the page's Worker and a
-# chair put down from it; no console error. Pictures into the target folder's `web`
+# server, and headless Chrome from the cursor guard joining it over its game socket, over a WebRTC data channel, by a
+# room's code, and over a WebTransport session on the QUIC link (`--webtransport`, the `quic` feature): the join screen with
+# the catalog part way, the consent prompt, Allow, the catalog run in the page's Worker and a chair put down from it; no
+# console error. Pictures into the target folder's `web`
 office-web-check:
     just --justfile ../../justfile web-guard-test
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-join.png" 120 join
     node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-rtc.png" 120 rtc
     node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-room.png" 120 room
+    node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-wt.png" 120 wt
+
+# The WebTransport check alone (as `office-web-check`'s last line)
+office-web-check-wt:
+    just --justfile ../../justfile web-guard-test
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    node ../../web/office-check.mjs "{{web_target}}/web/level-demo" "{{web_target}}/web/office-wt.png" 120 wt
 
 # The office played with others, drawn offscreen into `dir` (no window): the menu, the list of matches, the join screen with
 # the catalog part way down, the consent prompt, the catalog with a second player's plant, and the office

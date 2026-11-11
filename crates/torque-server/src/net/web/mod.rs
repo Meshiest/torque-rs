@@ -58,14 +58,14 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, TcpListener};
 
 use torque_net::cap::{NET_LIMITER_ENTRIES, NET_MAX_DATAGRAM, NET_PACKETS_PER_CONN_PER_S};
-use torque_net::engine::LinkKind;
+use torque_net::engine::{ChannelBinding, LinkKind};
 use web_time::{Duration, Instant};
 
 use super::transport::{BindError, BindPolicy, PolicyRefusal, Recv, Transport, UdpTransport};
 use conn::{Conn, Pass};
 pub use http::{Access, Origins, WEB_SOCKET_PATH, WebFiles, accept_key};
 use stand_in::StandIns;
-pub use stand_in::{STAND_IN_NET, is_stand_in};
+pub use stand_in::{STAND_IN_NET, is_reserved, is_stand_in};
 pub use tls::{Tls, TlsFiles};
 
 /// The caps and timeouts of a web transport's connections (module docs). The defaults match UDP's per-connection caps.
@@ -232,6 +232,14 @@ impl WebTransport {
 
     pub fn counters(&self) -> WebCounters {
         self.counters
+    }
+
+    /// Adds (or replaces) a served file (`webtransport.json`: what a page needs to open a WebTransport session, which
+    /// changes as the server's certificates rotate). Nothing when no files are served.
+    pub fn set_file(&mut self, path: &str, bytes: Vec<u8>) {
+        if let Some(files) = &mut self.setup.files {
+            files.insert(path, bytes);
+        }
     }
 
     /// The connections open (HTTP and game sockets).
@@ -609,17 +617,19 @@ impl Transport for WebTransport {
     }
 }
 
-/// UDP and the web on one address and port (module docs). Game sockets go by stand-in addresses no UDP peer has
-/// ([`stand_in`]): a datagram goes to the web when its address is a stand-in and to UDP otherwise, and a UDP datagram that
-/// claims a stand-in address is dropped, so a socket and a UDP peer never share an address.
-pub struct MultiTransport {
-    udp: UdpTransport,
+/// A datagram transport (UDP, or the QUIC link) and the web on one address and port (module docs). Game sockets go by
+/// stand-in addresses no UDP peer has ([`stand_in`]): a datagram goes to the web when its address is a game socket's
+/// stand-in and to the datagram transport otherwise, and a UDP datagram that claims any reserved address is dropped, so a
+/// socket and a UDP peer never share an address. The QUIC link's own stand-ins are in the other half of the reserved
+/// range, so they go to it.
+pub struct MultiTransport<D: Transport = UdpTransport> {
+    udp: D,
     web: WebTransport,
     web_first: bool,
 }
 
-impl MultiTransport {
-    pub fn new(udp: UdpTransport, web: WebTransport) -> MultiTransport {
+impl<D: Transport> MultiTransport<D> {
+    pub fn new(udp: D, web: WebTransport) -> MultiTransport<D> {
         MultiTransport {
             udp,
             web,
@@ -631,19 +641,36 @@ impl MultiTransport {
         &self.web
     }
 
-    pub fn udp(&self) -> &UdpTransport {
+    pub fn web_mut(&mut self) -> &mut WebTransport {
+        &mut self.web
+    }
+
+    /// The datagram side (UDP, or the QUIC link).
+    pub fn udp(&self) -> &D {
         &self.udp
+    }
+
+    pub fn udp_mut(&mut self) -> &mut D {
+        &mut self.udp
     }
 
     fn recv_udp(&mut self, buf: &mut [u8]) -> Recv {
         match self.udp.recv(buf) {
-            Recv::Datagram { from, .. } if is_stand_in(from) => Recv::Skipped,
+            // A real peer in the reserved range is a forgery; a QUIC connection's stand-in is in the other half and passes.
+            Recv::Datagram { from, .. } if is_reserved(from) && !is_quic_stand_in(from) => {
+                Recv::Skipped
+            }
             got => got,
         }
     }
 }
 
-impl Transport for MultiTransport {
+/// Whether `addr` is in the half of the reserved range the QUIC link's connections go by (`248.0.0.0/5`).
+fn is_quic_stand_in(addr: SocketAddr) -> bool {
+    matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf8 == 248)
+}
+
+impl<D: Transport> Transport for MultiTransport<D> {
     fn bind(&mut self, ip: IpAddr, port: u16) -> Result<(), BindError> {
         // Port 0: the system's free UDP port, then the same TCP port (taken again on a clash).
         for _ in 0..8 {
@@ -695,11 +722,20 @@ impl Transport for MultiTransport {
         }
     }
 
+    /// The datagram side's answer for its own peers: the QUIC link's stand-ins map to real addresses there.
     fn peer_ip(&self, peer: SocketAddr) -> IpAddr {
         if is_stand_in(peer) {
             self.web.peer_ip(peer)
         } else {
-            peer.ip()
+            self.udp.peer_ip(peer)
+        }
+    }
+
+    fn channel_binding(&self, peer: SocketAddr) -> Option<ChannelBinding> {
+        if is_stand_in(peer) {
+            self.web.channel_binding(peer)
+        } else {
+            self.udp.channel_binding(peer)
         }
     }
 
@@ -716,19 +752,26 @@ impl Transport for MultiTransport {
         self.web.close();
     }
 
+    /// Both sides: the QUIC link's connections move along between ticks too.
     fn service(&mut self) {
+        self.udp.service();
         self.web.service();
     }
 
     fn wants_service(&self) -> bool {
-        self.web.wants_service()
+        self.udp.wants_service() || self.web.wants_service()
     }
 
+    /// Both sides' peers that ended: a QUIC connection's stand-in is reported like a game socket's.
     fn take_gone(&mut self) -> Vec<SocketAddr> {
-        self.web.take_gone()
+        let mut gone = self.udp.take_gone();
+        gone.extend(self.web.take_gone());
+        gone
     }
 
     fn status(&mut self) -> Vec<String> {
-        self.web.status()
+        let mut lines = self.udp.status();
+        lines.extend(self.web.status());
+        lines
     }
 }

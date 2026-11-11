@@ -34,19 +34,23 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
+use quinn_proto::crypto::rustls::HandshakeData;
 use quinn_proto::{
     ConnectionHandle, DatagramEvent, Endpoint, EndpointEvent, Event, Incoming, SendDatagramError,
-    VarInt,
+    StreamEvent, VarInt,
 };
+use rustls::pki_types::CertificateDer;
 use torque_net::engine::{ChannelBinding, LinkFacts, LinkKind, ServerIdentity};
 use torque_server::net::transport::{BindError, Recv, Transport};
 
+use crate::certs::{CertHash, Certificates, Rotation};
 use crate::clock::{Clock, SystemClock};
+use crate::h3::{self, ALPN_H3, Driver, Outcome};
 use crate::identity::ServerKey;
 use crate::io::{Io, UdpIo};
 use crate::retry::{Load, RetryGate, network_of};
-use crate::stand_in::{StandIns, is_stand_in};
-use crate::tls::{QUIC_MAX_DATAGRAM, QuicLimits, TlsError};
+use crate::stand_in::{StandIns, is_reserved};
+use crate::tls::{ALPN, QUIC_MAX_DATAGRAM, QuicLimits, TlsError};
 
 /// The most datagrams one pass reads from the socket.
 pub const READS_PER_PASS: usize = 256;
@@ -58,6 +62,35 @@ const RECV_BYTES: usize = 1 << 16;
 const CLOSE_ADDRESS_REFUSED: u32 = 1;
 /// The application error code a connection that finished its handshake into a full server (or a full address) is closed with.
 const CLOSE_FULL: u32 = 2;
+/// The application error code a WebTransport connection whose session was not established in time is closed with.
+const CLOSE_NO_SESSION: u32 = 3;
+
+/// What a server takes WebTransport sessions with ([`QuicServer::enable_web_transport`]).
+#[derive(Debug, Clone, Default)]
+pub struct WebTransportSetup {
+    /// The pages allowed and the path a CONNECT must name.
+    pub session: h3::Setup,
+    /// The certificates presented to everyone: rotating short ones (browsers pin their hashes), or a certificate
+    /// authority's chain on the identity key.
+    pub certificates: CertificateChoice,
+}
+
+/// Which certificates a WebTransport server presents.
+#[derive(Debug, Clone, Default)]
+pub enum CertificateChoice {
+    /// Short self-signed certificates on the identity key, re-issued every six days ([`crate::certs::Rotation`]).
+    #[default]
+    Rotating,
+    /// This chain, whose first certificate is on the identity key.
+    Chain(Vec<CertificateDer<'static>>),
+}
+
+/// The WebTransport side of a server: the session setup, the certificates and the key they are signed with.
+struct WebTransport {
+    setup: h3::Setup,
+    certificates: Certificates,
+    key: ServerKey,
+}
 
 /// What the server has done so far.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -88,6 +121,14 @@ pub struct Counters {
     pub closed_on_migration: u64,
     /// Connections that ended, whichever way.
     pub closed: u64,
+    /// WebTransport sessions established.
+    pub sessions: u64,
+    /// Connections that spoke `h3` and whose session failed, was refused or did not come in time.
+    pub sessions_failed: u64,
+    /// Datagrams of an `h3` connection outside its session (before it was established, or another quarter stream id).
+    pub session_dropped: u64,
+    /// Short certificates re-issued.
+    pub certificates_rotated: u64,
 }
 
 struct Conn {
@@ -101,6 +142,9 @@ struct Conn {
     timeout: Option<Instant>,
     /// The handshake is done: the connection counts against the caps and its address holds it.
     established: bool,
+    /// The WebTransport session of a connection that speaks `h3` (none on the raw protocol), and when it must be
+    /// established by.
+    session: Option<(Driver, Instant)>,
     /// The peer proved its address with a token before the handshake began (an unvalidated handshake's address may be
     /// forged: it holds no share and is the first to make room).
     validated: bool,
@@ -133,6 +177,7 @@ pub struct QuicServer<I: Io, C: Clock> {
     /// stand-in the host still has as a live peer).
     released: Vec<SocketAddr>,
     address_check: Option<Box<dyn Fn(IpAddr) -> bool>>,
+    web_transport: Option<WebTransport>,
     counters: Counters,
     buf: Vec<u8>,
     recv_buf: Vec<u8>,
@@ -182,10 +227,97 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             gone: Vec::new(),
             released: Vec::new(),
             address_check: None,
+            web_transport: None,
             counters: Counters::default(),
             buf: Vec::with_capacity(RECV_BYTES),
             recv_buf: vec![0; RECV_BYTES],
         })
+    }
+
+    /// Takes WebTransport sessions (`h3`) beside the raw protocol, presenting `setup`'s certificates to everyone: rotating
+    /// short self-signed ones on `key` (the same key as [`QuicServer::new`] was given), whose hashes
+    /// ([`QuicServer::certificate_hashes`]) browsers pin, or a chain. Before [`Transport::bind`].
+    ///
+    /// # Errors
+    /// The key is not the one this server was made on, the chain is not on it, or a certificate could not be signed.
+    pub fn enable_web_transport(
+        &mut self,
+        key: &ServerKey,
+        setup: WebTransportSetup,
+    ) -> Result<(), String> {
+        if key.identity() != self.identity {
+            return Err(
+                "the WebTransport certificates must be on the server's own identity key"
+                    .to_string(),
+            );
+        }
+        // The rotation signs new certificates on the key for as long as the server runs.
+        let key = ServerKey::from_pkcs8_pem(&key.to_pkcs8_pem()).map_err(|e| e.to_string())?;
+        let certificates = match setup.certificates {
+            CertificateChoice::Rotating => Certificates::Rotating(
+                Rotation::new(&key, self.clock.wall()).map_err(|e| e.to_string())?,
+            ),
+            CertificateChoice::Chain(chain) => {
+                Certificates::chain(&key, chain).map_err(|e| e.to_string())?
+            }
+        };
+        self.web_transport = Some(WebTransport {
+            setup: setup.session,
+            certificates,
+            key,
+        });
+        self.refresh_server_config()
+    }
+
+    /// Hands the endpoint a server config presenting the certificates of now; connections already made keep theirs.
+    fn refresh_server_config(&mut self) -> Result<(), String> {
+        let Some(wt) = &self.web_transport else {
+            return Ok(());
+        };
+        let config = crate::tls::server_config_with(
+            &wt.key,
+            wt.certificates.presented(),
+            &[ALPN, ALPN_H3],
+            &self.limits,
+            &self.clock,
+        )
+        .map_err(|e| e.to_string())?;
+        self.endpoint.set_server_config(Some(Arc::new(config)));
+        Ok(())
+    }
+
+    /// Re-issues the short certificate when its rotation is due.
+    fn rotate_certificates(&mut self) {
+        let now = self.clock.wall();
+        let rotated = match &mut self.web_transport {
+            Some(WebTransport {
+                certificates: Certificates::Rotating(rotation),
+                key,
+                ..
+            }) if rotation.due(now) => rotation.rotate(key, now).unwrap_or(false),
+            _ => false,
+        };
+        if rotated {
+            // A config that cannot be made leaves the one presented in place, still valid for a week.
+            let _ = self.refresh_server_config();
+            self.counters.certificates_rotated += 1;
+        }
+    }
+
+    /// The SHA-256 hashes of the certificates browsers may pin (`serverCertificateHashes`): the one presented now and the
+    /// next, in that order; none without WebTransport, or with a certificate authority's chain.
+    #[must_use]
+    pub fn certificate_hashes(&self) -> Vec<CertHash> {
+        self.web_transport
+            .as_ref()
+            .map(|wt| wt.certificates.hashes())
+            .unwrap_or_default()
+    }
+
+    /// Whether this server takes WebTransport sessions.
+    #[must_use]
+    pub fn web_transport_enabled(&self) -> bool {
+        self.web_transport.is_some()
     }
 
     /// Refuses handshakes from, and closes connections that move to, an address `check` says no to (a ban list).
@@ -243,7 +375,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             let Some((len, from)) = self.io.recv(&mut self.recv_buf) else {
                 break;
             };
-            if from.is_ipv6() || is_stand_in(from) {
+            if from.is_ipv6() || is_reserved(from) {
                 self.counters.stray += 1;
                 continue;
             }
@@ -291,6 +423,55 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
         for ch in stale {
             self.drop_handshake(ch);
         }
+        let late: Vec<ConnectionHandle> = self
+            .conns
+            .iter()
+            .filter(|(_, c)| {
+                !c.gone
+                    && c.session
+                        .as_ref()
+                        .is_some_and(|(d, by)| !d.established() && *by <= now)
+            })
+            .map(|(&ch, _)| ch)
+            .collect();
+        for ch in late {
+            if let Some(c) = self.conns.get_mut(&ch) {
+                Self::close_conn(
+                    c,
+                    &mut self.gone,
+                    &mut self.counters,
+                    now,
+                    u64::from(CLOSE_NO_SESSION),
+                    "no WebTransport session in time",
+                );
+                self.counters.sessions_failed += 1;
+            }
+            self.drive(ch, now);
+        }
+        self.rotate_certificates();
+    }
+
+    /// Closes connection `c` with `code` and `reason` and tells the host it is gone (a local close raises no event of its
+    /// own).
+    fn close_conn(
+        c: &mut Conn,
+        gone: &mut Vec<SocketAddr>,
+        counters: &mut Counters,
+        now: Instant,
+        code: u64,
+        reason: &str,
+    ) {
+        if c.gone {
+            return;
+        }
+        c.conn.close(
+            now,
+            VarInt::from_u64(code).unwrap_or(VarInt::MAX),
+            Bytes::copy_from_slice(reason.as_bytes()),
+        );
+        c.gone = true;
+        gone.push(c.stand_in);
+        counters.closed += 1;
     }
 
     /// Whether `ip` may hold one more established connection: under its share, and not banned.
@@ -461,6 +642,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
                         binding: None,
                         timeout: None,
                         established: false,
+                        session: None,
                         validated,
                         opened: now,
                         queued: 0,
@@ -551,7 +733,48 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
                     self.established += 1;
                     *self.per_ip.entry(c.remote.ip()).or_insert(0) += 1;
                     self.counters.established += 1;
+                    let h3 = c
+                        .conn
+                        .crypto_session()
+                        .handshake_data()
+                        .and_then(|d| d.downcast::<HandshakeData>().ok())
+                        .is_some_and(|d| d.protocol.as_deref() == Some(ALPN_H3));
+                    if h3 {
+                        let now = self.clock.now();
+                        let setup = self
+                            .web_transport
+                            .as_ref()
+                            .map(|wt| wt.setup.clone())
+                            .unwrap_or_default();
+                        match Driver::open(h3::Session::server(setup), &mut c.conn, false) {
+                            Some(driver) => {
+                                c.session = Some((driver, now + self.limits.handshake_timeout));
+                            }
+                            None => {
+                                Self::close_conn(
+                                    c,
+                                    &mut self.gone,
+                                    &mut self.counters,
+                                    now,
+                                    h3::frames::error::H3_STREAM_CREATION_ERROR,
+                                    "the client allows no streams for the session",
+                                );
+                                self.counters.sessions_failed += 1;
+                            }
+                        }
+                    }
                 }
+                Event::Stream(event) => match &mut c.session {
+                    Some((driver, _)) => driver.stream_event(&mut c.conn, event),
+                    None => {
+                        // The raw protocol has no streams: whatever the peer opens is stopped unread.
+                        if let StreamEvent::Opened { dir } = event {
+                            while let Some(id) = c.conn.streams().accept(dir) {
+                                let _ = c.conn.recv_stream(id).stop(VarInt::from_u32(0));
+                            }
+                        }
+                    }
+                },
                 Event::ConnectionLost { .. } => {
                     if !c.gone {
                         c.gone = true;
@@ -566,6 +789,17 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
                             self.counters.inbox_dropped += 1;
                             continue;
                         }
+                        let data = match &c.session {
+                            // A session's datagram carries its quarter stream id; anything else is not the engine's.
+                            Some((driver, _)) => match driver.unwrap(&data) {
+                                Some(payload) => payload,
+                                None => {
+                                    self.counters.session_dropped += 1;
+                                    continue;
+                                }
+                            },
+                            None => data,
+                        };
                         if data.len() > QUIC_MAX_DATAGRAM
                             || c.queued >= self.limits.inbox_per_connection
                             || c.queued_bytes + data.len() > self.limits.inbox_bytes_per_connection
@@ -581,7 +815,22 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
                         self.counters.datagrams_in += 1;
                     }
                 }
-                Event::HandshakeDataReady | Event::Stream(_) | Event::DatagramsUnblocked => {}
+                Event::HandshakeDataReady | Event::DatagramsUnblocked => {}
+            }
+        }
+        if let Some((driver, _)) = &mut c.session
+            && !c.gone
+        {
+            match driver.run(&mut c.conn) {
+                Outcome::Quiet => {}
+                Outcome::Established => self.counters.sessions += 1,
+                Outcome::Close { code, reason } => {
+                    let now = self.clock.now();
+                    if !driver.established() {
+                        self.counters.sessions_failed += 1;
+                    }
+                    Self::close_conn(c, &mut self.gone, &mut self.counters, now, code, &reason);
+                }
             }
         }
         drained
@@ -697,7 +946,13 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
         if c.gone || c.conn.is_closed() {
             return false;
         }
-        match c.conn.datagrams().send(Bytes::copy_from_slice(data), false) {
+        let data = match &c.session {
+            Some((driver, _)) if driver.established() => driver.wrap(data),
+            // No session yet: the host's packet waits, as with no room.
+            Some(_) => return false,
+            None => Bytes::copy_from_slice(data),
+        };
+        match c.conn.datagrams().send(data, false) {
             Ok(()) => {
                 self.counters.datagrams_out += 1;
                 let now = self.clock.now();
@@ -744,35 +999,54 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
 
     fn status(&mut self) -> Vec<String> {
         let c = self.counters;
-        vec![format!(
-            "quic: {} connections ({} established now, {} established in all, {} closed), handshakes {} accepted, {} retried, {} refused, {} ignored, {} dropped; {} datagrams in, {} out, {} dropped at the inbox, {} stray; {} migrations ({} refused)",
-            self.conns.len(),
-            self.established,
-            c.established,
-            c.closed,
-            c.accepted,
-            c.retried,
-            c.refused,
-            c.ignored,
-            c.handshakes_dropped,
-            c.datagrams_in,
-            c.datagrams_out,
-            c.inbox_dropped,
-            c.stray,
-            c.migrations,
-            c.closed_on_migration
-        )]
+        vec![
+            format!(
+                "quic: {} connections ({} established now, {} established in all, {} closed), handshakes {} accepted, {} retried, {} refused, {} ignored, {} dropped; {} datagrams in, {} out, {} dropped at the inbox, {} stray; {} migrations ({} refused)",
+                self.conns.len(),
+                self.established,
+                c.established,
+                c.closed,
+                c.accepted,
+                c.retried,
+                c.refused,
+                c.ignored,
+                c.handshakes_dropped,
+                c.datagrams_in,
+                c.datagrams_out,
+                c.inbox_dropped,
+                c.stray,
+                c.migrations,
+                c.closed_on_migration
+            ),
+            format!(
+                "webtransport: {} sessions, {} failed, {} datagrams outside a session, {} certificates rotated{}",
+                c.sessions,
+                c.sessions_failed,
+                c.session_dropped,
+                c.certificates_rotated,
+                if self.web_transport.is_some() {
+                    ""
+                } else {
+                    " (off)"
+                }
+            ),
+        ]
     }
 
     /// Every peer is a QUIC connection: its address validated, TLS 1.3 on the wire, QUIC's congestion control, this server's
     /// identity presented. Datagrams are the connection's current size, at most [`QUIC_MAX_DATAGRAM`].
     fn link_kind(&self, peer: SocketAddr) -> LinkKind {
-        let max = self
+        let conn = self
             .by_stand_in
             .get(&peer)
-            .and_then(|ch| self.conns.get(ch))
+            .and_then(|ch| self.conns.get(ch));
+        let max = conn
             .and_then(|c| c.max_datagram)
             .unwrap_or(QUIC_MAX_DATAGRAM);
+        // A session's quarter stream id rides inside the datagram.
+        let prefix = conn
+            .and_then(|c| c.session.as_ref())
+            .map_or(0, |(d, _)| d.prefix_len());
         LinkKind {
             facts: LinkFacts {
                 validated: true,
@@ -780,7 +1054,7 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
                 congestion_controlled: true,
                 server_identity: Some(self.identity),
             },
-            max_datagram: max.min(QUIC_MAX_DATAGRAM),
+            max_datagram: max.min(QUIC_MAX_DATAGRAM).saturating_sub(prefix),
         }
     }
 
