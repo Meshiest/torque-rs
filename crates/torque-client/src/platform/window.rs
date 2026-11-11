@@ -202,7 +202,9 @@ pub trait WindowGame {
     /// The pass's upkeep after the step and before the cursor and the screen mode are looked at.
     fn upkeep(&mut self) {}
 
-    /// Draws a frame: None when none was presented, else whether it drew a world (the frames are capped while none is).
+    /// Draws a frame: None when none was presented, else whether it drew a world (the frames are capped while none is). The
+    /// window sets [`ClientHost::draw_each_tick`] off, so the frame draws the canvas ([`ClientHost::draw_frame`]), which is
+    /// also what runs a control's `onRender`.
     fn draw(&mut self) -> Result<Option<bool>, String>;
 
     /// The frame cap's pref ([`frame_cap::cap_of`]; None: the display's refresh).
@@ -327,8 +329,15 @@ pub fn spawn<G: WindowGame + 'static>(game: G, event_loop: EventLoop<()>) {
     event_loop.spawn_app(app);
 }
 
-fn window_app<G: WindowGame>(game: G, event_loop: &EventLoop<()>) -> WindowApp<G> {
+/// The window draws the canvas itself, once a frame ([`WindowGame::draw`]), so the host's clock does not lay it out and draw
+/// it again in every pass.
+fn prepare_host<G: WindowGame>(game: &mut G) {
+    game.host().draw_each_tick = false;
+}
+
+fn window_app<G: WindowGame>(mut game: G, event_loop: &EventLoop<()>) -> WindowApp<G> {
     event_loop.set_control_flow(ControlFlow::Poll);
+    prepare_host(&mut game);
     WindowApp {
         game,
         window: None,

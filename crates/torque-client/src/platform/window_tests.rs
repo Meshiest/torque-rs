@@ -1,5 +1,5 @@
 use super::*;
-use crate::screen::TgeScreen;
+use crate::screen::{self, TgeScreen};
 
 #[test]
 fn full_screen_takes_the_monitors_mode_of_that_size_nearest_the_rate() {
@@ -130,6 +130,7 @@ mod frame_input {
         }
 
         fn draw(&mut self) -> Result<Option<bool>, String> {
+            self.0.draw_frame();
             Ok(None)
         }
 
@@ -261,6 +262,31 @@ mod frame_input {
         clock_pass(&mut game, &mut owed, 16.0);
         assert!(assets.changed().is_empty());
         assert_eq!(resets.0.get(), 2);
+    }
+
+    #[test]
+    fn the_window_lays_out_and_draws_the_canvas_once_per_frame() {
+        let (mut host, _) = host();
+        let gui = host.gui.clone();
+        screen::register(host.server.vm_mut(), &gui, &host.client);
+        host.server
+            .vm_mut()
+            .eval(
+                b"createCanvas(\"test\"); new GuiControl(Content) { extent = \"640 480\"; };
+                  Canvas.setContent(Content);",
+            )
+            .unwrap();
+        let mut game = Fake(host);
+        prepare_host(&mut game);
+        let mut owed = 0.0;
+        // Two seconds at 144 frames a second: about 62 ticks of 32 ms, 288 frames.
+        let frame_ms = 1000.0 / 144.0;
+        for _ in 0..288 {
+            clock_pass(&mut game, &mut owed, frame_ms);
+            game.draw().unwrap();
+        }
+        assert!(game.0.server.vm().sim_time() >= 1_900, "the clock ran");
+        assert_eq!(game.0.cache.canvas_draws, 288, "one canvas draw a frame");
     }
 
     #[test]

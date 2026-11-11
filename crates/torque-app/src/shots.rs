@@ -33,6 +33,8 @@ impl<G: GameApp> Seat<G> {
     /// `game` drawn at `size` on `gpu`.
     pub fn new(mut game: G, gpu: &Gpu, size: (u32, u32)) -> Result<Seat<G>, String> {
         game.host().surface_size(size);
+        // The seat's frames draw the canvas ([`GameApp::frame`]); the clock does not draw it again in every pass.
+        game.host().draw_each_tick = false;
         let mut view = game.view(gpu);
         view.attach_to(game.host());
         // The emitter kinds run by the frame's step, not by how long the machine took to draw it.

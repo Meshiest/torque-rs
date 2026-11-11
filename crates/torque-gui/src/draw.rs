@@ -525,6 +525,8 @@ pub struct DrawCache {
     layer: Option<LayerMemo>,
     /// How many frames drew the server layer from what it drew before.
     pub layer_replays: u64,
+    /// How many canvas frames [`draw_canvas`] walked with this cache.
+    pub canvas_draws: u64,
     /// The sheet texture the last glyph of the last run was drawn from.
     sheet_hint: Option<SheetHint>,
     /// How many of the GUI's registered TrueType faces ([`crate::faces`]) the fonts have taken.
@@ -827,6 +829,7 @@ impl DrawCache {
             saved_color: [0; 4],
             layer: None,
             layer_replays: 0,
+            canvas_draws: 0,
             sheet_hint: None,
             faces_taken: 0,
         }
@@ -2535,6 +2538,7 @@ impl Walk<'_> {
 
 /// `GuiCanvas::renderFrame` as a draw list (see the module docs). Runs no script; the callbacks it asks for are in the frame.
 pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
+    cache.canvas_draws += 1;
     cache.chunked.begin_frame();
     cache.textures.begin_frame();
     cache.realm_decode_left = MAX_REALM_DECODE_FRAME;

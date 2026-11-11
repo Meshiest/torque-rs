@@ -215,6 +215,12 @@ impl WebDevice {
 }
 
 impl<G: GameApp> AppWindow<G> {
+    /// A frame with nothing to show yet (no surface or view, or still loading): the canvas still lays out and runs its first
+    /// `onRender`s, as the main loop's per-pass draw did before the window drew once a frame; the draws are dropped.
+    fn idle_frame(&mut self) {
+        let _ = self.game.host().draw_frame();
+    }
+
     /// The window's surface and the game's view on its device.
     #[cfg(not(target_arch = "wasm32"))]
     fn made(&mut self, surface: WindowSurface) {
@@ -360,15 +366,22 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         #[cfg(target_arch = "wasm32")]
         {
             if self.web_device()? {
+                self.idle_frame();
                 return Ok(None);
             }
             if self.view.is_none() && self.surface.is_some() {
                 self.make_view();
+                self.idle_frame();
                 return Ok(None);
             }
             if self.load.waits(self.game.loading()) {
+                self.idle_frame();
                 return Ok(None);
             }
+        }
+        if self.surface.is_none() || self.view.is_none() {
+            self.idle_frame();
+            return Ok(None);
         }
         let (Some(surface), Some(view)) = (self.surface.as_mut(), self.view.as_mut()) else {
             return Ok(None);
