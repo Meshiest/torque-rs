@@ -22,15 +22,15 @@ physics none 34ce915c49a2fd14
 # Players' and vehicles' boxes are kinematic bodies of the props' world: a crate falls onto a figure, not through it.
 props-drop tge 7447efc2cab8db1c
 # Joints between props (tether, winch, weld, hinge) and a Player's grapple; the figure's box is a kinematic body of the
-# props' world.
-props-joints tge 8b5a56153052676e
+# props' world. The grapple's hold point swings with the view's pitch and clears the holder's box.
+props-joints tge 88698c2255dd3d65
 # carry: the figure walks a crate held on a grapple past two others; the client predicts the crate with the figure's own moves, and the grapple pulls it by the pair's reduced mass.
 carry tge f7c0ef4cd6a55e3d
 # projectile-props: the figure holds a crate among four others while its own shots and blasts hit it; the client makes a hit's push at the move of the hit.
 # The figure's box is a kinematic body of the props' world, which the crates around it meet.
 projectile-props tge f5be5e5c2ceb0604
 # The fold of the plugin scenarios: props-drop, props-joints, carry and projectile-props.
-plugins tge e43f138fb2c89d6d
+plugins tge 0fa934d7a63e7ba3
 # The scene hierarchy (on in engine mode): a moving root, three levels of children on nodes and origins, a Player child,
 # reparents with both keep modes. The engine's protocol sends the links to clients, so every local
 # pose is rounded to the wire's steps on the server (1/1024 units, 15-bit rotation parts) and the worlds move by that much.
