@@ -336,13 +336,15 @@ pub trait IntoNative<M> {
     fn into_native(self) -> TypedNative;
 }
 
-/// Whether a development command may run: always in a debug build, else when [`DEV_PREF`] is true.
-fn dev_allowed(vm: &Vm) -> bool {
+/// Whether development work may run: always in a debug build, else when [`DEV_PREF`] is true. The gate of a `dev` native,
+/// of the asset watcher's hot reload ([`Assets::hot_reload_on`](crate::assets::Assets::hot_reload_on)) and of a server's
+/// shape reload.
+pub fn dev_allowed(vm: &Vm) -> bool {
     dev_allowed_in(vm, cfg!(debug_assertions))
 }
 
-/// [`dev_allowed`] in a debug build or not.
-pub(crate) fn dev_allowed_in(vm: &Vm, debug_build: bool) -> bool {
+/// [`dev_allowed`] for a debug build (`debug_build` true: always) or a release build (only with [`DEV_PREF`] true).
+pub fn dev_allowed_in(vm: &Vm, debug_build: bool) -> bool {
     debug_build
         || vm
             .global(DEV_PREF)

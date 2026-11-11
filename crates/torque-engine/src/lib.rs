@@ -73,6 +73,10 @@
 //! error, never a deleted datablock (`the_refresh_hook_runs_with_the_fields_as_they_are_now_and_a_failure_is_an_error` in
 //! `class_tests.rs`). A class with datablock users and neither hook is warned about once by the server's drain.
 //!
+//! **One dev gate.** [`script::dev_allowed`] (a debug build, or `$Pref::Dev` true) is the gate of a `dev` native, of
+//! [`Assets::hot_reload_on`] and of a server's shape reload (torque-server's tick), and [`assets::HOT_RELOAD_INTERVAL_MS`] is
+//! the one interval both watchers poll at: a change to either reaches every watcher.
+//!
 //! A native, global or pref that writes or deletes files, runs code from text, changes the engine as a whole (mods, limits,
 //! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on
 //! [`function`]): the extensions' call policy reads it, and torque-plugin-loader's

@@ -65,6 +65,20 @@
 //! Extension points: a game chains its refresh with [`behaviour::chain`] on its datablock class; the drain's caps are
 //! [`scene::refresh::MAX_REFRESHES_PER_DRAIN`] and [`scene::refresh::DRAIN_WORK`]. Check: `cargo test -p torque-game --lib refresh`
 //! and `cargo test -p torque-server --test main datablock_reload`.
+//!
+//! **Shape reload** ([`shapes::reload`]). The server's tick calls [`shapes::reload::poll`] with the dev gate and the asset
+//! watcher's interval; a poll reads each kept shape's file change time (the `watched` table beside the kept set, bounded by it),
+//! reads and parses a changed file again through the loader's own `read_file` and `finish_load` (same charges, same error
+//! lines), swaps the kept entry, points every `ShapeBaseData` resource on that path at the new shape and marks it preloaded
+//! ([`scene::refresh::mark_preloaded`]) for the drain that follows. Invariants, held by torque-server's `tests/shape_reload.rs`:
+//! - a changed file reaches its objects within one interval and one tick (`twenty_changed_shape_files...`);
+//! - with the gate off, 0 change-time reads and 0 reloads, at the polls and at the loads (`nothing_is_read_or_reloaded...`):
+//!   a load records a time only while `Shapes::watching` is on, which only a poll with the gate on sets;
+//! - a file that fails to load keeps the old shape and prints once until its time moves again (`a_file_that_no_longer_parses...`);
+//!   so does one the per-file budget cannot pay for (`a_shape_too_large_for_the_budget...`): a host budget's refusal is sticky,
+//!   so each file gets its own.
+//!
+//! Each reload runs under [`shapes::reload::RELOAD_WORK`], at most [`shapes::reload::MAX_RELOADS_PER_POLL`] a poll. Check: `cargo test -p torque-server --test main shape_reload`.
 
 pub mod behaviour;
 pub mod charge;

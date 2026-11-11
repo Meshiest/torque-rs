@@ -236,6 +236,14 @@ impl KeptShape {
     }
 }
 
+/// What a read of a shape file gives ([`Shapes::read_file`]).
+enum FileBytes {
+    /// The file's bytes.
+    Bytes(Vec<u8>),
+    /// No bytes: what the load is instead.
+    Instead(Loaded),
+}
+
 /// What a load found.
 #[derive(Debug, Clone)]
 pub enum Loaded {
@@ -312,6 +320,19 @@ pub struct Shapes {
     game: RefCell<Option<Box<dyn std::any::Any>>>,
     /// The values the datablocks compute at add and preload time (the packers' view reads them).
     values: DbValues,
+    /// The shape files a server watches for a change ([`reload`]): what the polls and, while [`watching`](Self::watching)
+    /// is on, the loads record.
+    watched: RefCell<HashMap<Vec<u8>, reload::Watched>>,
+    /// Whether a load records its file's change time: on once a poll ran with hot reload on, off again when one ran with it
+    /// off, so a server that never polls never reads a change time.
+    watching: Cell<bool>,
+    /// The simulation time of the last poll.
+    last_poll: Cell<Option<u32>>,
+    /// [`set_hot_reload`](Self::set_hot_reload)'s override of the poll's gate.
+    hot_reload: Cell<Option<bool>>,
+    reload_stats: Cell<reload::Stats>,
+    /// The work one file's reload may take ([`reload::RELOAD_WORK`]; a test lowers it).
+    reload_work: Cell<u64>,
 }
 
 impl Default for Shapes {
@@ -325,6 +346,12 @@ impl Default for Shapes {
             game: RefCell::default(),
             reads: Cell::new(0),
             values: DbValues::default(),
+            watched: RefCell::default(),
+            watching: Cell::new(false),
+            last_poll: Cell::new(None),
+            hot_reload: Cell::new(None),
+            reload_stats: Cell::default(),
+            reload_work: Cell::new(reload::RELOAD_WORK),
         }
     }
 }
@@ -480,24 +507,44 @@ impl Shapes {
         if let Some(kept) = known {
             return Ok(Loaded::Shape(kept));
         }
+        let bytes = match self.read_file(vm, path)? {
+            FileBytes::Bytes(bytes) => bytes,
+            FileBytes::Instead(loaded) => return Ok(loaded),
+        };
+        // A watching server records the file's change time with the shape (dev only: nothing is charged).
+        let watch = self.watching.get().then(|| key.clone());
+        let loaded = self.finish_load(vm, key, bytes)?;
+        if let Some(key) = watch
+            && matches!(loaded, Loaded::Shape(_))
+        {
+            self.watch_file(vm, key, path);
+        }
+        Ok(loaded)
+    }
+
+    /// The bytes of the shape file at `path`: one `stat`, the payment, one `read` (each charged as the VM's file natives
+    /// are). [`FileBytes::Instead`] carries what the load is instead of a shape: `Failed` for a file that is not there or a
+    /// folder the resource manager refuses (its error printed), `Unread` for one over the read bound or that the host did not
+    /// give.
+    fn read_file(&self, vm: &mut Vm, path: &[u8]) -> Result<FileBytes, VmError> {
         let len = match charged_host(vm, |host| host.stat(path))? {
             FileStat::Found { len } => len,
-            FileStat::Missing => return Ok(Loaded::Failed),
+            FileStat::Missing => return Ok(FileBytes::Instead(Loaded::Failed)),
             FileStat::Refused(refusal) => {
                 vm.report_refusal(path, refusal)?;
-                return Ok(Loaded::Failed);
+                return Ok(FileBytes::Instead(Loaded::Failed));
             }
         };
         if len > MAX_READ_BYTES {
-            return Ok(Loaded::Unread);
+            return Ok(FileBytes::Instead(Loaded::Unread));
         }
         // The file is read whole by the host: pay for it before it is asked.
         pay(vm, WORK_PER_STEP.saturating_add(len))?;
         let FileRead::Found(bytes) = charged_host(vm, |host| host.read(path))? else {
-            return Ok(Loaded::Unread);
+            return Ok(FileBytes::Instead(Loaded::Unread));
         };
         self.reads.set(self.reads.get().saturating_add(1));
-        self.finish_load(vm, key, bytes)
+        Ok(FileBytes::Bytes(bytes))
     }
 
     /// What [`load_shape`](Self::load_shape) does with the bytes of a shape file it read: the version, the parse, the facts,
@@ -1050,6 +1097,9 @@ impl KeptShape {
         }
     }
 }
+
+#[path = "shapes_reload.rs"]
+pub mod reload;
 
 #[cfg(test)]
 #[path = "shapes_tests.rs"]

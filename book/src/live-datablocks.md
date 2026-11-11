@@ -46,6 +46,28 @@ edited datablock. The engine's tests hold that over hundreds of seeded edits of 
 What a written `shapeFile` does: nothing until the datablock is declared again. The file is read by `preload`, which a field
 write does not run; a redeclare with the new name does.
 
+## Server shape reload
+
+A development server watches the shape files it loaded. The gate is the asset watcher's: a debug build, or `$Pref::Dev` set
+to 1 in a release build. Once per asset-watcher interval (250 ms of the server's clock) the tick looks at the change time of
+every kept shape's file; a file whose time moved since it was read is read and parsed again, the new shape replaces the kept
+one, and every `ShapeBaseData` whose `shapeFile` is that path takes it and is marked *preloaded*, so the same tick's drain
+runs the heavy refresh for its objects: a new shape instance, object box and collision hulls, the script threads kept by
+sequence name and position. Saving a `.dts` an object stands on changes the object within one interval and one tick, with
+no script run and no redeclare.
+
+- A file that no longer loads, is gone, or is too large to read and parse within one reload's budget keeps the old shape and
+  prints one error line; it is tried again only when its change time moves again.
+- With the gate off nothing reads a change time and nothing is reloaded: a release server with `$Pref::Dev` unset does none of
+  this work, and the files are only ever read on the server (a client reloads its own assets through the asset watcher).
+- Only a datablock that holds the shape as its resource (the `ShapeBaseData` family) is refreshed. An image's, an explosion's,
+  a tire's or a constructor's shape is replaced in the kept set and is what the next load finds; a `TSShapeConstructor`'s
+  imported sequences are not imported again into a reloaded base shape (declare the constructor again).
+- Bounds: one change-time read per kept shape per poll; a poll reloads at most 64 files (the rest at the next poll), each
+  under one tick's pass of host work (a `.dts` of a few MB; a larger one is given up with a line). A reload costs what a load
+  costs.
+- A datablock no object uses is not marked: the next object built on it takes the new shape.
+
 ## Which classes
 
 The engine's classes under `GameBaseData` (ShapeBase and StaticShape, Item, Player, Camera, the vehicles, Projectile) refresh

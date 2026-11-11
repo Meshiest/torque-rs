@@ -838,6 +838,15 @@ impl<N: NetParts> Server<N> {
                 let process = this.state.borrow().process.clone();
                 let first_tick = this.ticks;
                 this.ticks = this.ticks.saturating_add(u64::from(steps_in_batch));
+                // A development server (the asset watcher's gate) looks at its shape files once per interval: a changed one is
+                // read again and its datablocks marked for the drain (`torque_game::shapes::reload`).
+                let dev = torque_engine::script::dev_allowed(&this.vm);
+                let reload_errors = torque_game::shapes::reload::poll(
+                    &mut this.vm,
+                    dev,
+                    torque_engine::assets::HOT_RELOAD_INTERVAL_MS,
+                );
+                this.keep_errors(reload_errors);
                 // The datablocks the scripts changed since the last tick refresh their users, once for the batch, before any
                 // object steps (`torque_game::scene::refresh`).
                 let refresh_errors = torque_game::scene::refresh::drain(&mut this.vm);

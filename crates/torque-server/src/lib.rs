@@ -60,6 +60,10 @@
 //! with the game classes and moves a datablock's user count in `GameBase::onAdd` and `onRemove`, and `net/datablocks.rs` chains
 //! the key behavior onto `SimDataBlock` instead of replacing it, so the redeclare mark the game classes put there stays. A host
 //! that replaces `GameBase`'s behavior keeps the counts or loses the refresh (`tests/datablock_reload.rs`).
+//! Right before the drain the tick polls the shape files (`torque_game::shapes::reload::poll`, gated by
+//! `torque_engine::script::dev_allowed` and paced by `torque_engine::assets::HOT_RELOAD_INTERVAL_MS` on the simulation clock):
+//! a changed `.dts` marks its datablocks preloaded for that same drain. A release server with `$Pref::Dev` unset reads no file
+//! time there (`tests/shape_reload.rs`).
 //!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one

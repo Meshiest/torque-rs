@@ -37,6 +37,9 @@ different.
   `GameConnection::onDataBlocksUpdated(%client, %count)`, never `onDataBlocksDone` again); a client runs `onDataBlocksChanged()`
   after a round when it defines it, caps its datablocks at `$Pref::Client::MaxDataBlocks` under the wire's id range and
   rate-limits bodies after its first download. TGE sends datablocks only at a mission's start.
+- A development server (a debug build, or `$Pref::Dev`) reloads a shape whose `.dts` changed on disk and refreshes the objects of
+  every datablock on it at the next tick (box, hulls, threads kept), where TGE reads a shape once per mission; a file that no
+  longer loads keeps the old shape. Off, nothing reads a file time.
 
 #### Mods
 

@@ -177,6 +177,12 @@ impl EngineClass for MarkPreloaded {
     }
 }
 
+/// A host changed what `db`'s preload made (its shape file was read again, [`crate::shapes::reload`]): marked
+/// [`DatablockChange::Preloaded`] as a redeclare is, so the next drain runs the heavy refresh for its users.
+pub fn mark_preloaded(vm: &Vm, db: ObjId) {
+    mark(vm, db, DatablockChange::Preloaded);
+}
+
 /// The object `user` took `db` as its datablock (`GameBase::onAdd`, `setDataBlock`): `db` counts it, and it remembers which
 /// datablock counts it ([`user_removed`] takes it off that one, whatever its `dataBlock` field says then). A datablock it was
 /// counted on before is let go of first.

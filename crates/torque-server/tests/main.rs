@@ -20,6 +20,7 @@ mod projectile;
 mod rtc;
 mod server;
 mod set_datablock;
+mod shape_reload;
 mod tge_transform_masks;
 #[cfg(feature = "web")]
 mod web;
