@@ -223,6 +223,17 @@ impl<'a> Kept<'a> {
             .map(|e| e.nodes.as_slice())
             .filter(|n| !n.is_empty())
     }
+
+    /// When the kept build `stamp` is another ghost's than `ghost` (one build drawn for every ghost of a shape posed the same,
+    /// [`lookup`]): its call's label, which its draws' labels name, and the label `ghost`'s own call has in its place. None when
+    /// it is `ghost`'s, or its label does not name its ghost (the same label for every ghost).
+    pub fn relabel(&self, stamp: u64, ghost: u32) -> Option<(&'a str, String)> {
+        let c = self.cache;
+        let at = c.stamps.get(&stamp).filter(|at| at.0 != ghost)?;
+        let e = c.entries.get(at)?;
+        let (before, after) = around_number(at.0, &e.label)?;
+        Some((e.label.as_str(), format!("{before} {ghost} {after}")))
+    }
 }
 
 /// `f` with every kept build's draws at hand ([`Kept::draws`]), as [`with_draws`] for many stamps at once.
@@ -362,9 +373,14 @@ pub fn lookup(
     })
 }
 
-/// `label` of a build of ghost `owner` around the ghost's number (the moving shapes' labels name it once, between spaces:
-/// `StaticShape 7 path`, `image 0 of Player 7 path`): the text before it and the text after, or the whole label and "".
+/// `label` of a build of ghost `owner` around the ghost's number ([`around_number`]), or the whole label and "".
 fn shared_label(owner: u32, label: &str) -> (&str, &str) {
+    around_number(owner, label).unwrap_or((label, ""))
+}
+
+/// `label` of a build of ghost `owner` around the ghost's number (the moving shapes' labels name it once, between spaces:
+/// `StaticShape 7 path`, `image 0 of Player 7 path`): the text before it and the text after; none when it is not there.
+fn around_number(owner: u32, label: &str) -> Option<(&str, &str)> {
     use std::io::Write as _;
     let mut buf = [0u8; 12];
     let len = {
@@ -372,11 +388,9 @@ fn shared_label(owner: u32, label: &str) -> (&str, &str) {
         let _ = write!(at, " {owner} ");
         12 - at.len()
     };
-    let number = std::str::from_utf8(&buf[..len]).unwrap_or(" ");
-    match label.find(number) {
-        Some(at) => (&label[..at], &label[at + len..]),
-        None => (label, ""),
-    }
+    let number = std::str::from_utf8(&buf[..len]).ok()?;
+    let at = label.find(number)?;
+    Some((&label[..at], &label[at + len..]))
 }
 
 /// A build's label (its ghost's number left out) and key as [`Cache::by_content`] keys it, one hash of both (the entry found is

@@ -679,6 +679,36 @@ fn ghosts_of_one_shape_posed_the_same_share_one_kept_build() {
 }
 
 #[test]
+fn ghosts_sharing_a_kept_build_have_their_draws_named_as_their_own_builds_name_them() {
+    let (w, files) = crowd(3, false);
+    let draws = || with_nodes(true, || draws_of(&w, &files, &(), ShapeSelect::All, None).0);
+    let built = draws();
+    let shared = crate::shapecache::with_cache(draws);
+    let stamps: std::collections::BTreeSet<u64> =
+        shared.calls.values().flatten().map(|c| c.stamp).collect();
+    assert_eq!(stamps.len(), 1, "one build for the three");
+    let labels = |objects: Vec<crate::hd::DynamicObject>| -> Vec<(u32, Vec<String>)> {
+        objects
+            .into_iter()
+            .map(|o| (o.ghost, o.draws.into_iter().map(|d| d.label).collect()))
+            .collect()
+    };
+    let objects = |shaped: &ShapeDraws, kept| {
+        labels(crate::hd::objects::objects_of(
+            &w,
+            shaped,
+            &[],
+            &mut [],
+            kept,
+        ))
+    };
+    let mut kept = HashMap::new();
+    let from_shared = objects(&shared, Some(&mut kept));
+    assert_eq!(from_shared.len(), 3);
+    assert_eq!(from_shared, objects(&built, None));
+}
+
+#[test]
 fn the_control_objects_shape_loads_whatever_the_parse_budget_has_left() {
     crate::shapes::clear_loaded();
     let (mut w, files) = crowd(300, true);

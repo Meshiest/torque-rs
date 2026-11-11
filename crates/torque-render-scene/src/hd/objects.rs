@@ -30,13 +30,15 @@ pub struct KeptObject {
 /// A ghost's draws in a [`ShapeDraws`]: whether it has translucency, its opaque draws, its translucent entries.
 type GhostDraws<'a> = (bool, Vec<&'a Draw>, Vec<&'a [Draw]>);
 
-/// One draw a fresh object converts: the fixed-function draw, its texture map (none: the frame's `local`), and for a kept build in its
-/// meshes' own space its vertices' meshes and its call's first place in the object's.
+/// One draw a fresh object converts: the fixed-function draw, its texture map (none: the frame's `local`), for a kept build in its
+/// meshes' own space its vertices' meshes and its call's first place in the object's, and for another ghost's kept build the
+/// labels its draw's label names in place of the object's (in `labels`, [`crate::shapecache::Kept::relabel`]).
 #[derive(Clone, Copy)]
 struct Source<'a> {
     draw: &'a Draw,
     map: Option<usize>,
     nodes: Option<(&'a [u16], u32)>,
+    label: Option<usize>,
 }
 
 impl<'a> Source<'a> {
@@ -45,6 +47,7 @@ impl<'a> Source<'a> {
             draw,
             map: None,
             nodes: None,
+            label: None,
         }
     }
 }
@@ -61,6 +64,7 @@ enum Made<'a> {
     Fresh {
         sources: Vec<Source<'a>>,
         maps: Vec<Vec<usize>>,
+        labels: Vec<(&'a str, String)>,
         player: bool,
         stamp: Option<u64>,
     },
@@ -191,6 +195,7 @@ fn objects_with<W: ShapeWorld + ?Sized>(
                 let mut front: Vec<Source<'_>> = Vec::new();
                 let mut back: Vec<Source<'_>> = Vec::new();
                 let mut maps: Vec<Vec<usize>> = Vec::new();
+                let mut labels: Vec<(&str, String)> = Vec::new();
                 if calls.is_empty() {
                     front.extend(opaque.iter().map(|d| Source::of(d)));
                     for ds in &translucent_entries {
@@ -232,10 +237,15 @@ fn objects_with<W: ShapeWorld + ?Sized>(
                             maps.push(map);
                             maps.len() - 1
                         });
+                        let label = cache.relabel(c.stamp, ghost).map(|l| {
+                            labels.push(l);
+                            labels.len() - 1
+                        });
                         into.extend(kept.iter().enumerate().map(|(k, d)| Source {
                             draw: d,
                             map,
                             nodes: nodes.and_then(|(n, b)| n.get(k).map(|n| (n.as_slice(), b))),
+                            label,
                         }));
                     }
                 }
@@ -250,6 +260,7 @@ fn objects_with<W: ShapeWorld + ?Sized>(
                 Made::Fresh {
                     sources,
                     maps,
+                    labels,
                     player,
                     stamp: keeping.then(crate::shapecache::next_stamp),
                 }
@@ -349,6 +360,7 @@ fn make_object(
         Made::Fresh {
             sources,
             maps,
+            labels,
             player,
             stamp,
         } => {
@@ -357,6 +369,12 @@ fn make_object(
                 .map(|s| {
                     let textures = s.map.map_or(local, |m| maps[m].as_slice());
                     let mut h = HdDraw::from_fixed(s.draw, material::KIND_SHAPE, textures);
+                    // Another ghost's build: its draws named as this ghost's own build names them.
+                    if let Some((from, to)) = s.label.map(|i| &labels[i])
+                        && let Some(at) = h.label.find(from)
+                    {
+                        h.label.replace_range(at..at + from.len(), to);
+                    }
                     if is_shadow_body(&s.draw.label) {
                         h = h.with_material(material::SHADOW_ONLY);
                     }

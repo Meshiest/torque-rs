@@ -21,7 +21,8 @@
 //! velocities (no physics, as TGE's warp), by the update's age as well (measured from how far ahead of each update the
 //! vehicle is drawn, eased over updates, at most [`MAX_UPDATE_AGE`]: the whole ticks coasted, the rest a lead along its
 //! velocity), and the drawn pose's offset from where it was going to that shrinks each tick ([`GHOST_OFFSET_KEEP`]; past
-//! [`GHOST_SNAP`] it is drawn there at once). Values that are not finite are left out or undone ([`GhostVehicle::tick`]).
+//! [`GHOST_SNAP`] it is drawn there at once; when the last move's prediction ends within [`GHOST_REST_SNAP`] of its state, it is
+//! drawn there). Values that are not finite are left out or undone ([`GhostVehicle::tick`]).
 //!
 //! Credit: follows TGE's vehicles and Player as Torque3D carries them (MIT: `T3D/vehicles/vehicle.cpp`,
 //! `T3D/vehicles/wheeledVehicle.cpp`, each Copyright (c) 2012 GarageGames, LLC; `T3D/player.cpp` and `T3D/shapeBase.cpp` (its
@@ -1076,20 +1077,40 @@ pub fn vehicle_view(m: &Matrix, shape: &ClientShape) -> collide::ObjectView {
 // ---- the vehicles nobody on this client drives
 
 /// A ghost's warp state (`mDelta` as the engine keeps it, module docs): the frame fraction, the warp's ticks and count, the
-/// offset of the drawn pose from the state at the warp's first tick, the rotations it turns between, the ticks left to run the
-/// last move; and the updates' age (seconds, eased over updates), the whole ticks of it run at the warp's first tick and the
-/// rest the drawn pose leads the state by along its velocity.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// offset of the drawn pose from the state at the warp's first tick and the turn of the drawn rotation from the state's (a
+/// quaternion relative to the state's rotation, none by default), the ticks left to run the last move; and the updates' age
+/// (seconds, eased over updates), the whole ticks of it run at the warp's first tick and the rest the drawn pose leads the state
+/// by along its velocity.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Warp {
     pub dt: f32,
     pub ticks: i32,
     pub count: i32,
     pub offset: F3,
-    pub rot: [[f32; 4]; 2],
+    pub turn: [f32; 4],
     pub prediction: i32,
     pub age: Option<f32>,
     pub catch_up: i32,
     pub lead: f32,
+}
+
+/// No turn.
+const NO_TURN: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+
+impl Default for Warp {
+    fn default() -> Warp {
+        Warp {
+            dt: 0.0,
+            ticks: 0,
+            count: 0,
+            offset: [0.0; 3],
+            turn: NO_TURN,
+            prediction: 0,
+            age: None,
+            catch_up: 0,
+            lead: 0.0,
+        }
+    }
 }
 
 /// `sMaxPredictionTicks`: a ghost runs its last move this many ticks after an update.
@@ -1102,6 +1123,9 @@ pub const GHOST_OFFSET_KEEP: f32 = 0.7;
 /// The farthest (units) a ghost's drawn pose eases to its state from; past it (a teleport, a hostile update) it is drawn there
 /// at once.
 pub const GHOST_SNAP: f32 = 10.0;
+/// The farthest (units) a ghost is drawn from its state when its last move's prediction ends for it to be drawn at its state
+/// (a jump too small to see; one still moving keeps its lead).
+pub const GHOST_REST_SNAP: f32 = 1e-3;
 /// The oldest an update is taken to be (seconds): no ghost is run on further than this past its update, besides its prediction.
 pub const MAX_UPDATE_AGE: f32 = 0.1;
 /// The share of each update's measured age taken into the eased age.
@@ -1197,7 +1221,6 @@ impl GhostVehicle {
     pub fn released(body: DrivenVehicle, dt: f32) -> GhostVehicle {
         let warp = Warp {
             dt,
-            rot: [body.v.s.rigid.ang_pos; 2],
             prediction: body.ghost_prediction,
             ..Warp::default()
         };
@@ -1248,7 +1271,6 @@ impl GhostVehicle {
             });
         if let Some((pose, pos)) = pose {
             self.warp.prediction = MAX_PREDICTION_TICKS;
-            self.warp.rot[0] = s.rigid.ang_pos;
             let r = &mut s.rigid;
             r.lin_pos = pos;
             r.ang_pos = pose.rotation;
@@ -1302,7 +1324,6 @@ impl GhostVehicle {
                 w.lead = age - w.catch_up as f32 * TICK_S;
                 w.count = 0;
                 w.ticks = GHOST_WARP_TICKS;
-                w.rot = [s.delta_rot[1], s.rigid.ang_pos];
             } else {
                 s.delta_pos = s.rigid.lin_pos;
                 self.warp.dt = 0.0;
@@ -1312,7 +1333,7 @@ impl GhostVehicle {
                 self.warp.count = 0;
                 // Drawn at the update's pose: no offset left of an earlier update's warp.
                 self.warp.offset = [0.0; 3];
-                self.warp.rot[0] = [0.0, 0.0, 0.0, 1.0];
+                self.warp.turn = NO_TURN;
                 let (p, q) = (s.rigid.lin_pos, s.rigid.ang_pos);
                 s.set_position(p, &q, &mut host);
             }
@@ -1416,16 +1437,16 @@ impl GhostVehicle {
                 // the state's rotation a tick before to the drawn one (the state turns on by its own this tick). Past
                 // `GHOST_SNAP`, none.
                 w.offset = std::array::from_fn(|i| from_pos[i] + vel[i] * TICK_S - led[i]);
-                w.rot[0] = quat_mul(&quat_inverse(&before), &from_rot);
+                w.turn = quat_mul(&quat_inverse(&before), &from_rot);
                 let far = len3(w.offset);
                 if far.is_nan() || far > GHOST_SNAP {
                     w.offset = [0.0; 3];
-                    w.rot[0] = [0.0, 0.0, 0.0, 1.0];
+                    w.turn = NO_TURN;
                 }
             }
             let left = GHOST_OFFSET_KEEP.powi(w.count);
             s.delta_pos = std::array::from_fn(|i| led[i] + w.offset[i] * left);
-            let turn = quat_slerp([0.0, 0.0, 0.0, 1.0], w.rot[0], left);
+            let turn = quat_slerp(NO_TURN, w.turn, left);
             s.delta_rot = [from_rot, quat_mul(&q, &turn)];
             s.delta_pos_vec = std::array::from_fn(|i| from_pos[i] - s.delta_pos[i]);
             return;
@@ -1441,17 +1462,23 @@ impl GhostVehicle {
             w.lead,
             GHOST_OFFSET_KEEP.powi(w.count.min(64)),
             w.offset,
-            w.rot[0],
+            w.turn,
         );
         let mv = s.last_move;
         let _ = vehicle::tick::process_tick_rest(&mut self.body.v, &db, Some(&mv), &mut host);
         let s = &mut *self.body.v.s;
         let (p, vel, q) = (s.rigid.lin_pos, s.rigid.lin_vel, s.rigid.ang_pos);
         s.delta_pos = std::array::from_fn(|i| p[i] + vel[i] * lead + offset[i] * keep);
-        s.delta_rot = [
-            from_rot,
-            quat_mul(&q, &quat_slerp([0.0, 0.0, 0.0, 1.0], turn, keep)),
-        ];
+        s.delta_rot = [from_rot, quat_mul(&q, &quat_slerp(NO_TURN, turn, keep))];
+        // The prediction's last tick: the state stays where it is from here on, so a vehicle drawn within `GHOST_REST_SNAP`
+        // of it (one at rest, led by its creep) is drawn there, with no offset left.
+        let off: F3 = std::array::from_fn(|i| s.delta_pos[i] - p[i]);
+        if w.prediction < 1 && len3(off) < GHOST_REST_SNAP {
+            w.offset = [0.0; 3];
+            w.turn = NO_TURN;
+            s.delta_pos = p;
+            s.delta_rot[1] = q;
+        }
         s.delta_pos_vec = std::array::from_fn(|i| from_pos[i] - s.delta_pos[i]);
     }
 

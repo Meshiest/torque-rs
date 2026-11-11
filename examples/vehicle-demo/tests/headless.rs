@@ -2311,6 +2311,102 @@ fn a_warp_or_first_sight_update_draws_another_players_buggy_at_its_pose_with_no_
     a.key(Key::W, false);
 }
 
+/// How far the pose `index`'s ghost on `game` is drawn at at its tick is from its collided pose (its state's position and
+/// rotation): the distance and the largest difference of the rotations' components (the quaternions on the same side).
+fn drawn_from_collided(game: &VehicleDemo, index: u32) -> (f32, f32) {
+    let st = game.client.host.client.borrow();
+    let c = st.conn.conn.as_ref().expect("the connection");
+    let s = &c
+        .predict
+        .ghost_vehicles
+        .get(&index)
+        .expect("the ghost")
+        .body
+        .v
+        .s;
+    let (p, q, r) = (s.delta_pos, s.delta_rot[1], &s.rigid);
+    let side = (0..4).map(|i| q[i] * r.ang_pos[i]).sum::<f32>().signum();
+    let turn = (0..4)
+        .map(|i| (q[i] - side * r.ang_pos[i]).abs())
+        .fold(0.0, f32::max);
+    (apart(p, r.lin_pos), turn)
+}
+
+#[test]
+fn a_buggy_at_rest_after_its_driver_gets_out_or_a_correction_is_drawn_at_its_collided_pose() {
+    use torque::client::predict::ClientCollision;
+    use torque::client::records::EngineRecord as _;
+    let mut a = host();
+    let mut b = join(&mut a);
+    get_in(&mut [&mut a, &mut b], 0);
+    let (ga, gb) = (a.buggy_ghost().unwrap(), b.buggy_ghost().unwrap());
+    // A turn first, so the buggy rests at a rotation of its own; then the brake, and out once it is at rest.
+    a.key(Key::W, true);
+    a.key(Key::A, true);
+    frames_both(&mut a, &mut b, 1500);
+    a.key(Key::W, false);
+    a.key(Key::A, false);
+    a.key(Key::Space, true);
+    frames_both(&mut a, &mut b, 2500);
+    a.key(Key::Space, false);
+    press(&mut a, Key::E);
+    // Its driver's client draws it as a ghost again from where it was, turned as it is.
+    let mut worst = 0.0f32;
+    for _ in 0..3000 / 16 {
+        frames_both(&mut a, &mut b, 16);
+        let released = a
+            .client
+            .host
+            .client
+            .borrow()
+            .conn
+            .conn
+            .as_ref()
+            .is_some_and(|c| c.predict.ghost_vehicles.contains_key(&ga));
+        if released {
+            worst = worst.max(drawn_from_collided(&a, ga).1);
+        }
+    }
+    assert!(!a.seated());
+    assert!(
+        worst > 0.0 && worst < 1e-3,
+        "left by its driver: turned {worst} from its state"
+    );
+    let (far, turn) = drawn_from_collided(&a, ga);
+    assert!(
+        far < 1e-4 && turn < 1e-4,
+        "left by its driver: drawn {far} and {turn} from its collided pose"
+    );
+    // The other client's ghost corrected half a unit aside while at rest, then the server's updates as they come.
+    let (rec, at) = b
+        .with_world(|w| {
+            w.vehicle_updates
+                .iter()
+                .rev()
+                .filter(|u| u.index == gb)
+                .find_map(|u| Some((u.record.vehicle()?, u.position?)))
+        })
+        .flatten()
+        .expect("an update of the buggy");
+    {
+        let mut st = b.client.host.client.borrow_mut();
+        let c = st.conn.conn.as_mut().expect("the connection");
+        let g = c.predict.ghost_vehicles.get_mut(&gb).expect("the ghost");
+        g.unpack(
+            &rec,
+            Some([at[0] + 0.5, at[1], at[2]]),
+            true,
+            &mut ClientCollision::empty(),
+        );
+    }
+    frames_both(&mut a, &mut b, 3000);
+    let (far, turn) = drawn_from_collided(&b, gb);
+    assert!(
+        far < 1e-4 && turn < 1e-4,
+        "corrected: drawn {far} and {turn} from its collided pose"
+    );
+}
+
 /// R far from the start puts a new figure beside the buggy: the camera cuts there, at the eyes and behind, standing or
 /// crouched, never drawn on the way between nor anywhere else while the new figure is on its way (across the ground: the new
 /// figure may go on into its pose there).
