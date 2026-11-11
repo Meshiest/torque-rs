@@ -68,6 +68,13 @@ different.
   check on every read and least-recently-used cap, at most 128 MiB), so a reload finds the mods; it falls back to memory when the
   browser gives no storage or the page does not name the server (`ModsPlugin::cache_server`: a browser's link has one address for
   every server). `web_exports!` takes an optional async `prepare` the page awaits before it starts the game.
+- Late content: a required mod's files can change while clients play. `refreshRequiredMods()` re-reads the mods and, like
+  `enableMod` and `disableMod`, sends every connected client the new offer on the mods channel (no new message); the client
+  fetches what it lacks under what is left of its connection's caps (downloaded, assembled, mounted and base bytes all count
+  across offers), keeps what it has by hash, drops the mounts of mods no longer listed, takes a repeated offer once and at most
+  64 late offers, and says ready again; the server holds each such client's live datablock rounds until that ready word,
+  under the join's time and idle limits, so a datablock that names a file a client lacks is never sent to it. TGE moves content
+  only before a mission.
 
 #### Rendering
 

@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-316 entries in 1 namespace.
+317 entries in 1 namespace.
 
 ## Global
 
@@ -595,6 +595,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: 2; client*
 - `quit()` - asks the main loop to stop
   *arguments: none; server and client*
+- `refreshRequiredMods()` - reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
+  *arguments: none; server and client*
 - `registerFont(string face, string path)` - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
   *arguments: 2; client*
 - `reloadDataBlocks(file [, removeMissing])` - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
@@ -817,7 +819,7 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: at least 3; server and client*
 - `serverCmdTorqueModsGet(client, modIndex, file, start, count)` - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
   *arguments: 5; server and client*
-- `serverCmdTorqueModsReady(client)` - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+- `serverCmdTorqueModsReady(client)` - a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
   *arguments: 1; server and client*
 - `setCameraMode(name)` - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
   *arguments: 1; client*

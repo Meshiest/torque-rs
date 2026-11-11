@@ -88,6 +88,23 @@
 //!   (`a_database_that_refuses_writes_leaves_a_cache_that_works_for_the_session`). A new kind of backing implements [`Backing`] and
 //!   takes the same tests; `web/soccer-check.mjs` runs the real one (a reload with nothing to download, a changed entry downloaded
 //!   again).
+//! - Content changes mid-game go the same way as at the accept. `Mods::refresh_content` (`refreshRequiredMods()`) reads the
+//!   mods' folders and zips again through the mount table's read-through (so a mod's current copy never shadows the files it
+//!   is read from), re-mounts the mods whose content hash moved and rebuilds the required list; `enableMod`/`disableMod` rebuild
+//!   it too. A changed offer message is a new generation, sent to every connection that takes content and is not fetching (one
+//!   that is gets it with its ready word), each held as a late `Serving` the host hears of through `ContentServer::take_late`.
+//!   The client takes an offer in its `Done` phase as a late one: a repeat (same bytes) costs nothing and is not answered, the
+//!   mods whose hash it has stay, the rest are fetched under what is left of the connection's caps (`spent_bytes`,
+//!   `spent_files`: every offer of the connection counts against one `DownloadLimits`; so do the bytes assembled and mounted,
+//!   `MAX_ASSEMBLED_MULTIPLE` times the cap in all, and the older copies read, `MAX_CONNECTION_BASE_BYTES`), at most
+//!   `MAX_LATE_OFFERS` offers a connection, the download mounts of mods a later offer drops go, and a script path is refused as
+//!   at the accept (`a_late_offer_fetches_only_what_is_new_and_the_ready_word_goes_again`,
+//!   `a_run_of_late_offers_under_the_cap_stops_at_the_connections_assembled_cap`, `a_mod_a_later_offer_drops_loses_its_mount`,
+//!   `the_files_cap_counts_an_offers_mods_together`; a held client is served from the layout it was offered, so a mod re-read
+//!   or enabled mid-download leaves its download whole, `a_download_in_flight_survives_a_change_of_the_servers_content` in `tests/late_offer.rs`;
+//!   `a_repeated_offer_costs_nothing_and_is_not_answered_again`, `late_offers_are_held_to_what_the_connections_caps_have_left`,
+//!   `a_connection_takes_a_bounded_number_of_late_offers`, `a_script_in_a_late_offer_is_refused_as_at_the_accept`; the whole
+//!   flow with the live datablock rounds held back is `tests/late_offer.rs`).
 //! - A scan of the mods folder visits a bounded number of entries of every kind and keeps at most 64 warnings
 //!   (`a_mod_of_many_empty_folders_is_skipped_quickly_with_one_warning`, `the_warnings_of_a_scan_are_capped`); download
 //!   places are shared out per network (`one_network_holds_at_most_two_download_places` in minimal-engine's tests).
@@ -138,6 +155,8 @@ pub use package::{MAX_PATH_LEN, ModError, ModLimits, ModPackage, RATIO_FLOOR};
 pub use plan::ModSide;
 pub use plugin::{EngineMods, ModsConfig, ModsPlugin, ModsRegistry};
 pub use share::{ModShare, ModShareDefault, Share};
-pub use transfer::{CHANNEL, CacheChoice, DownloadLimits, GET_RPC, ModsChannel, ModsGet};
+pub use transfer::{
+    CHANNEL, CacheChoice, DownloadLimits, GET_RPC, MAX_LATE_OFFERS, ModsChannel, ModsGet,
+};
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use web_cache::{WEB_CACHE_BYTES, open_browser_cache};

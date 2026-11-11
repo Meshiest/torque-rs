@@ -302,6 +302,7 @@ mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
 purgeResources 1..1 Purge resources from the resource manager.
 quit 1..1 quit() - asks the main loop to stop
+refreshRequiredMods 1..1 refreshRequiredMods() - reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
 reloadDataBlocks 2..3 reloadDataBlocks(file [, removeMissing]) - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
 removeDataBlock 2..3 removeDataBlock(datablock [, fallback | "deleteUsers"]) - removes a datablock no object or datablock uses; with a fallback datablock of its class moves its users and references to that first; with "deleteUsers" deletes its users first. False, with the reason printed, when it stays
 removeField 3..3 removeField(text, index) - the text without that field
@@ -312,7 +313,7 @@ restWords 2..2 restWords(text) - the text after its first space
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
-serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced

@@ -88,6 +88,21 @@ struct State {
     required: Vec<RequiredMod>,
     /// What the server serves for that list.
     served: Option<Rc<Served>>,
+    /// Counts the offers a server has made: it moves when the offer message changes, and a connected client whose offer is
+    /// an older one is sent the current one (a late offer) as soon as it is not fetching.
+    offer_generation: u64,
+    /// The connections that take content, by connection object, with the offer each was last sent. Entries of connections
+    /// the hub no longer knows are dropped whenever the table is walked, so it holds at most the accepted connections.
+    clients: HashMap<ObjId, Client>,
+    /// The connections a late offer went to since the host last asked ([`Mods::take_late`]).
+    late_starts: Vec<ObjId>,
+}
+
+/// A connection that takes content.
+struct Client {
+    conn: ConnId,
+    /// The offer generation it was last sent.
+    offered: u64,
 }
 
 /// The mods of a script engine. `Mods::of(&vm)` finds them.
@@ -134,6 +149,12 @@ struct Serving {
     progress: u64,
     /// The bytes of the runs queued for the client.
     served: u64,
+    /// The client is connected and playing; the offer went mid-game. Its ready word ends the serving at once (nothing of the
+    /// host's waits to run).
+    late: bool,
+    /// The offer this client was sent: its requests name mods and files of this layout, whatever the server serves since (a
+    /// mod re-read or enabled mid-download changes the server's layout, not the client's download).
+    layout: Option<Rc<Served>>,
 }
 
 /// How many times a client may ask for the same run (a repeat is for a run that was lost to a refusal, which does not happen on a
@@ -476,6 +497,9 @@ impl Mods {
                 contents: HashMap::new(),
                 required: Vec::new(),
                 served: None,
+                offer_generation: 0,
+                clients: HashMap::new(),
+                late_starts: Vec::new(),
             }),
         });
         let layer = Rc::clone(&table);
@@ -1207,11 +1231,167 @@ impl Mods {
         let served = self.serve(&mut list);
         let mut state = self.state.borrow_mut();
         state.required = list.clone();
+        // A changed offer message is a new generation: the connected clients are sent it.
+        let changed = state.served.as_ref().map(|s| &s.message[..])
+            != served.as_ref().map(|s| &s.message[..]);
         state.served = served.map(Rc::new);
+        if changed {
+            state.offer_generation += 1;
+        }
         drop(state);
         if let Some(handle) = vm.extension::<RequiredMods>() {
             handle.set(list);
         }
+        if changed && let Some(hub) = vm.extension::<ChannelHub>() {
+            self.offer_late(&hub);
+        }
+    }
+
+    /// Reads the mods' folders and zips again and takes each loaded mod's files as they are now: a mod whose content changed
+    /// (a file added, changed or removed) is re-mounted with the new files, the required list follows, and the connected
+    /// clients are sent the new offer (a late offer). The number of loaded mods whose content changed. A mod's load rules
+    /// (`requires`, order) are read at the start only: a manifest changed here updates what is served, not what is loaded.
+    /// Scripts: `refreshRequiredMods()`.
+    pub fn refresh_content(&self, vm: &mut Vm) -> usize {
+        let rules = Rules::of(&self.engine);
+        let mut notes = Notes::default();
+        let mut budget = Budget::new(&self.limits);
+        // The mounts are read through while the scan runs, so a mod's current copy never shadows the files it is read from.
+        let mut found: Vec<Found> = Vec::new();
+        {
+            let _through = self.table.read_through();
+            for root in rules.layout.roots(&self.engine) {
+                found.extend(scan(
+                    &root,
+                    vm.file_host(),
+                    rules.names.as_ref(),
+                    &self.limits,
+                    &mut budget,
+                    &mut notes,
+                ));
+            }
+        }
+        let mut changed = 0;
+        for item in found {
+            let Ok(package) = item.package else { continue };
+            let candidate = Candidate {
+                raw: &item.raw,
+                kind: item.kind,
+                name: &item.name,
+                source: &item.source,
+                package: &package,
+            };
+            let Ok(Some(mut info)) = rules.layout.recognize(&candidate, &rules.stages) else {
+                continue;
+            };
+            if info.check().is_err() {
+                continue;
+            }
+            tidy_scripts(&mut info, &package, &rules.stages);
+            if self.replace_package(info, package) {
+                changed += 1;
+            }
+        }
+        for warning in notes.warnings {
+            vm.warn(warning);
+        }
+        self.refresh_required(vm);
+        changed
+    }
+
+    /// Puts `package` under the loaded mod `info` names, when its content differs from the mount's; whether it did.
+    fn replace_package(&self, info: ModInfo, package: ModPackage) -> bool {
+        let key = info.id.to_ascii_lowercase();
+        let mut state = self.state.borrow_mut();
+        let Some(entry) = state
+            .entries
+            .iter_mut()
+            .find(|e| e.mount.is_some() && e.summary.info.id.eq_ignore_ascii_case(&info.id))
+        else {
+            return false;
+        };
+        let Some(old) = entry.mount.clone() else {
+            return false;
+        };
+        let hidden = hidden_of(&info);
+        let before = summarize(&old.package, &hidden_of(&entry.summary.info));
+        let after = summarize(&package, &hidden);
+        if before == after {
+            return false;
+        }
+        let mount = Rc::new(Mount::new(info.id.clone(), MountKind::Mod, package, hidden));
+        mount.enabled.set(old.enabled.get());
+        entry.summary.files = mount.package.len();
+        entry.summary.bytes = mount.package.unpacked_bytes();
+        entry.summary.info = info;
+        entry.mount = Some(Rc::clone(&mount));
+        state.contents.remove(&key);
+        drop(state);
+        self.table.replace(&old, mount)
+    }
+
+    /// Sends the current offer to every connected client that takes content and is not fetching now (one that is gets it
+    /// with its ready word, [`Mods::mark_ready`]), and holds each for its ready word.
+    fn offer_late(&self, hub: &ChannelHub) {
+        let targets: Vec<(ObjId, ConnId)> = {
+            let serving = self.serving.borrow();
+            let mut state = self.state.borrow_mut();
+            let generation = state.offer_generation;
+            state
+                .clients
+                .retain(|obj, c| hub.object_of(c.conn) == Some(*obj));
+            state
+                .clients
+                .iter()
+                .filter(|(obj, c)| c.offered != generation && !serving.contains_key(obj))
+                .map(|(obj, c)| (*obj, c.conn))
+                .collect()
+        };
+        for (obj, conn) in targets {
+            self.send_late(hub, obj, conn);
+        }
+    }
+
+    /// Queues the current offer for connected client `obj` and holds it as a late download: it is served what it asks for and
+    /// freed by its ready word; the host hears of it through [`Mods::take_late`].
+    fn send_late(&self, hub: &ChannelHub, obj: ObjId, conn: ConnId) {
+        let (layout, generation) = {
+            let state = self.state.borrow();
+            (state.served.clone(), state.offer_generation)
+        };
+        let (message, blocks) = match &layout {
+            Some(s) => (Arc::clone(&s.message), s.blocks),
+            None => (Arc::from(encode_offer(&[])), 0),
+        };
+        let Ok(offer) = hub.send_shared_with_handle(conn, CHANNEL, Kind::Snapshot, message) else {
+            // The connection is going, or its channel is full of what it never took: the next offer, if any, finds it or not.
+            return;
+        };
+        self.serving.borrow_mut().insert(
+            obj,
+            Serving {
+                conn,
+                offer: Some(offer),
+                requests: 0,
+                asked: HashMap::new(),
+                max_requests: blocks.saturating_add(8),
+                ready: false,
+                progress: 0,
+                served: 0,
+                late: true,
+                layout,
+            },
+        );
+        let mut state = self.state.borrow_mut();
+        if let Some(client) = state.clients.get_mut(&obj) {
+            client.offered = generation;
+        }
+        state.late_starts.push(obj);
+    }
+
+    /// The connections a late offer went to since the last call (the host holds them as it held them at the accept).
+    pub(crate) fn take_late(&self) -> Vec<ObjId> {
+        std::mem::take(&mut self.state.borrow_mut().late_starts)
     }
 
     /// The offer and the content of `list`'s served mods. A mod whose offer would take the message past its cap is no longer
@@ -1307,6 +1487,22 @@ impl Mods {
         let offer = hub
             .send_shared_with_handle(conn, CHANNEL, Kind::Snapshot, message)
             .map_err(|e| format!("The server could not queue its mods for you ({e:?})."))?;
+        {
+            // The connection takes content: a later offer finds it here. Connections gone since are dropped first, so the
+            // table holds the accepted connections at most.
+            let mut state = self.state.borrow_mut();
+            let generation = state.offer_generation;
+            state
+                .clients
+                .retain(|o, c| hub.object_of(c.conn) == Some(*o));
+            state.clients.insert(
+                obj,
+                Client {
+                    conn,
+                    offered: generation,
+                },
+            );
+        }
         // With nothing required the client has its (empty) list and nothing holds its join.
         if self.state.borrow().required.is_empty() {
             return Ok(false);
@@ -1322,6 +1518,8 @@ impl Mods {
                 ready: false,
                 progress: 0,
                 served: 0,
+                late: false,
+                layout: served,
             },
         );
         Ok(true)
@@ -1335,7 +1533,7 @@ impl Mods {
         obj: ObjId,
         request: Request,
     ) -> Result<(), &'static str> {
-        let (conn, offer_handle) = {
+        let (conn, offer_handle, layout) = {
             let mut serving = self.serving.borrow_mut();
             let held = serving.get_mut(&obj).ok_or("Unexpected mod request.")?;
             held.requests += 1;
@@ -1350,14 +1548,10 @@ impl Mods {
             if *again > MAX_ASKS {
                 return Err("Too many mod requests.");
             }
-            (held.conn, held.offer)
+            (held.conn, held.offer, held.layout.clone())
         };
-        let served = self
-            .state
-            .borrow()
-            .served
-            .clone()
-            .ok_or("Unexpected mod request.")?;
+        // The layout the client was offered, not the server's current one: a mod changed mid-download changes nothing here.
+        let served = layout.ok_or("Unexpected mod request.")?;
         let offer = served
             .offers
             .get(request.mod_index as usize)
@@ -1404,11 +1598,31 @@ impl Mods {
         Ok(())
     }
 
-    /// A held client says it has what the server requires.
-    pub(crate) fn mark_ready(&self, obj: ObjId) {
-        if let Some(held) = self.serving.borrow_mut().get_mut(&obj) {
+    /// A held client says it has what the server requires. A late download ends here; and a client whose offer is older than
+    /// the current one is sent the current one now, through `hub`.
+    pub(crate) fn mark_ready(&self, hub: Option<&ChannelHub>, obj: ObjId) {
+        let late = {
+            let mut serving = self.serving.borrow_mut();
+            let Some(held) = serving.get_mut(&obj) else {
+                return;
+            };
             held.ready = true;
             held.progress += 1;
+            held.late
+        };
+        if late {
+            self.end_serving(obj);
+        }
+        let next = {
+            let state = self.state.borrow();
+            state
+                .clients
+                .get(&obj)
+                .filter(|c| c.offered != state.offer_generation)
+                .map(|c| c.conn)
+        };
+        if let (Some(hub), Some(conn)) = (hub, next) {
+            self.send_late(hub, obj, conn);
         }
     }
 

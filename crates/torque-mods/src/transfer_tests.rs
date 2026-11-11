@@ -93,6 +93,17 @@ impl Rig {
     fn join(&self, mods: &[ModOffer], content: &[Files]) -> u64 {
         self.d.reset();
         self.d.receive(&encode_offer(mods));
+        self.serve(content)
+    }
+
+    /// Hands the connected client the offer `mods` again (a late offer) and serves what it asks for; the bytes sent.
+    fn late(&self, mods: &[ModOffer], content: &[Files]) -> u64 {
+        self.d.receive(&encode_offer(mods));
+        self.serve(content)
+    }
+
+    /// Serves the runs the client asks for from `content` until it says ready or stops asking; the bytes sent.
+    fn serve(&self, content: &[Files]) -> u64 {
         let mut sent = 0;
         for _ in 0..10_000 {
             match self.d.next_command() {
@@ -1004,4 +1015,258 @@ fn client_script_content_with_more_files_than_the_realm_takes_is_refused() {
     )
     .expect("mounts");
     assert!(r.table.client_scripts("big", owner, &offer.hash).is_none());
+}
+
+// ---- late offers
+
+#[test]
+fn a_late_offer_fetches_only_what_is_new_and_the_ready_word_goes_again() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(std::slice::from_ref(&v1), std::slice::from_ref(&c1));
+    assert_eq!(r.d.next_command(), None, "ready went once");
+    r.d.take_events();
+    let mut next = files(1);
+    next.push(("art/new.bin".to_string(), pattern(2_000, 77)));
+    let (v2, c2) = offered("props", "1.1", &next, true);
+    let sent = r.late(&[v2], &[c2]);
+    assert_eq!(sent, 2_000, "the new file alone");
+    assert_eq!(r.d.phase(), Phase::Done, "{:?}", r.failed());
+    assert!(r.table.is_server_file(b"art/new.bin"));
+    assert!(r.table.is_server_file(b"art/big.bin"));
+    assert_eq!(r.d.progress(), (2_000, 2_000, 1, 1));
+    let events = r.d.take_events();
+    assert!(events.contains(&Event::Started {
+        mods: 1,
+        bytes: 2_000
+    }));
+    assert!(events.contains(&Event::Done));
+}
+
+#[test]
+fn a_repeated_offer_costs_nothing_and_is_not_answered_again() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(std::slice::from_ref(&v1), &[c1]);
+    r.d.take_events();
+    let before = r.d.progress();
+    let message = encode_offer(std::slice::from_ref(&v1));
+    for _ in 0..1_000 {
+        r.d.receive(&message);
+    }
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert_eq!(r.d.next_command(), None, "no ready word, no request");
+    assert!(r.d.take_events().is_empty(), "scripts hear nothing");
+    assert_eq!(r.d.progress(), before);
+    assert_eq!(
+        r.d.inner.borrow().late_offers,
+        0,
+        "a repeat is not an offer"
+    );
+}
+
+#[test]
+fn a_late_offer_of_what_the_connection_has_reads_nothing_and_says_ready() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(std::slice::from_ref(&v1), &[c1]);
+    r.d.take_events();
+    // The same content under another version: the message differs, the hash does not.
+    let (same, _) = offered("props", "1.0.1", &files(1), true);
+    let sent = r.late(&[same], &[]);
+    assert_eq!(sent, 0);
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert!(
+        r.d.take_events().is_empty(),
+        "nothing to fetch: scripts hear nothing"
+    );
+    assert_eq!(r.d.progress(), (0, 0, 0, 0));
+    assert_eq!(r.d.next_command(), None, "the ready word went in `late`");
+    assert!(r.table.is_server_file(b"art/big.bin"), "the mount stays");
+}
+
+#[test]
+fn late_offers_are_held_to_what_the_connections_caps_have_left() {
+    let mut caps = caps(true);
+    caps.limits.total_bytes = 200_000;
+    let r = rig(caps);
+    let first: Files = vec![("art/a.bin".to_string(), pattern(150_000, 1))];
+    let (v1, c1) = offered("props", "1.0", &first, true);
+    assert_eq!(r.join(&[v1], &[c1]), 150_000);
+    let mut second = first;
+    second.push(("art/b.bin".to_string(), pattern(100_000, 2)));
+    let (v2, c2) = offered("props", "1.1", &second, true);
+    let sent = r.late(&[v2], &[c2]);
+    assert_eq!(sent, 0, "refused before anything is asked for");
+    assert_eq!(r.d.phase(), Phase::Failed);
+    let why = r.failed().expect("a reason");
+    assert!(
+        why.contains("needs 97.7 KiB of your 195.3 KiB download limit"),
+        "{why}"
+    );
+    assert!(!r.table.provides("art/b.bin"));
+    assert!(
+        !r.table.provides("art/a.bin"),
+        "a failed connection keeps no mount"
+    );
+}
+
+#[test]
+fn a_connection_takes_a_bounded_number_of_late_offers() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(&[v1], &[c1]);
+    r.d.take_events();
+    // Each offer differs (another version), none asks for anything, and scripts hear of none of them.
+    for n in 0..MAX_LATE_OFFERS {
+        let (same, _) = offered("props", &format!("2.{n}"), &files(1), true);
+        r.late(&[same], &[]);
+        assert_eq!(r.d.phase(), Phase::Done, "offer {n}: {:?}", r.failed());
+    }
+    assert!(r.d.take_events().is_empty());
+    let (one_more, _) = offered("props", "3.0", &files(1), true);
+    r.late(&[one_more], &[]);
+    assert_eq!(r.d.phase(), Phase::Failed);
+    assert!(
+        r.failed()
+            .is_some_and(|why| why.contains("changed its mods too many times"))
+    );
+}
+
+#[test]
+fn a_script_in_a_late_offer_is_refused_as_at_the_accept() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(&[v1], &[c1]);
+    let mut next = files(1);
+    next.push(("scripts/evil.cs".to_string(), b"$pwned = 1;".to_vec()));
+    let (v2, c2) = offered("props", "1.1", &next, true);
+    assert_eq!(r.late(&[v2], &[c2]), 0);
+    assert_eq!(r.d.phase(), Phase::Failed);
+    assert!(
+        r.failed()
+            .is_some_and(|why| why.contains("a server sends content, never scripts"))
+    );
+    assert!(!r.table.provides("scripts/evil.cs"));
+}
+
+#[test]
+fn a_late_offer_matched_by_an_installed_copy_drops_the_stale_download_mount() {
+    let r = rig(caps(true));
+    let (v1, c1) = offered("props", "1.0", &files(1), true);
+    r.join(&[v1], &[c1]);
+    assert!(r.table.is_server_file(b"art/big.bin"));
+    // The player installs the mod's next version; the server moves to it too.
+    let next = files(2);
+    let installed: Rc<dyn LocalSource> =
+        Rc::new(Installed(vec![("props".to_string(), next.clone())]));
+    r.d.set_local(Rc::downgrade(&installed));
+    let (v2, _) = offered("props", "1.1", &next, true);
+    assert_eq!(r.late(&[v2], &[]), 0, "the installed copy is the content");
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert!(
+        !r.table.provides("art/big.bin"),
+        "the download mount of the older copy is gone"
+    );
+}
+
+#[test]
+fn a_run_of_late_offers_under_the_cap_stops_at_the_connections_assembled_cap() {
+    let mut caps = caps(true);
+    caps.limits.total_bytes = 100_000;
+    let r = rig(caps);
+    // The player has the mod installed; each offer lists its one file under a new path, so every offer is a new hash built
+    // whole from the installed copy: 0 bytes transferred, 60,000 assembled and mounted each time.
+    let bytes = pattern(60_000, 5);
+    let installed: Rc<dyn LocalSource> = Rc::new(Installed(vec![(
+        "props".to_string(),
+        vec![("art/a0.bin".to_string(), bytes.clone())],
+    )]));
+    r.d.set_local(Rc::downgrade(&installed));
+    let version = |n: usize| -> (ModOffer, Files) {
+        offered(
+            "props",
+            &format!("1.{n}"),
+            &vec![(format!("art/a{n}.bin"), bytes.clone())],
+            true,
+        )
+    };
+    let (v0, _) = version(0);
+    assert_eq!(r.join(&[v0], &[]), 0, "the installed copy is the content");
+    let mut taken = 0;
+    for n in 1..20 {
+        let (v, _) = version(n);
+        assert_eq!(r.late(&[v], &[]), 0, "nothing is ever transferred");
+        if r.d.phase() == Phase::Failed {
+            break;
+        }
+        taken += 1;
+        assert!(r.table.is_server_file(format!("art/a{n}.bin").as_bytes()));
+    }
+    // The first offer was the installed copy itself and assembled nothing; 60,000 a late offer against four times the
+    // 100,000 cap: six fit, the seventh is refused.
+    assert_eq!(taken, 6, "six late offers fit");
+    assert_eq!(r.d.phase(), Phase::Failed);
+    let why = r.failed().expect("a reason");
+    assert!(
+        why.contains("is over your download limit (97.7 KiB)"),
+        "{why}"
+    );
+    assert!(
+        !r.table.provides("art/a7.bin") && !r.table.provides("art/a6.bin"),
+        "nothing past the cap is mounted, and a failed connection keeps no mount"
+    );
+    assert!(r.d.inner.borrow().base_bytes <= MAX_CONNECTION_BASE_BYTES);
+}
+
+#[test]
+fn a_mod_a_later_offer_drops_loses_its_mount() {
+    let r = rig(caps(true));
+    let (props, c1) = offered("props", "1.0", &files(1), true);
+    let extra_files: Files = vec![("art/extra.bin".to_string(), pattern(2_000, 8))];
+    let (extra, c2) = offered("extra", "1.0", &extra_files, true);
+    r.join(&[props.clone(), extra], &[c1, c2]);
+    assert!(r.table.is_server_file(b"art/extra.bin"));
+    // The server stops requiring `extra`: its content is no longer this server's.
+    assert_eq!(r.late(&[props], &[]), 0);
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert!(
+        !r.table.provides("art/extra.bin"),
+        "the dropped mod's mount is gone"
+    );
+    assert!(r.table.is_server_file(b"art/big.bin"), "the kept mod stays");
+    assert_eq!(r.d.next_command(), None, "the ready word went in `late`");
+}
+
+#[test]
+fn the_files_cap_counts_an_offers_mods_together() {
+    let mut caps = caps(true);
+    caps.limits.files = 10;
+    let r = rig(caps);
+    let six = |seed: u8| -> Files {
+        (0..6)
+            .map(|n| (format!("f/{seed}-{n}.bin"), pattern(100, seed + n)))
+            .collect()
+    };
+    let (a, ca) = offered("a", "1.0", &six(1), true);
+    let (b, cb) = offered("b", "1.0", &six(2), true);
+    // One mod of six files fits; two of them are twelve files from one server, over the cap of ten (a second client, so the
+    // first mod is not in a cache that would count its files as nothing).
+    assert_eq!(
+        r.join(std::slice::from_ref(&a), std::slice::from_ref(&ca)),
+        600
+    );
+    assert_eq!(r.d.phase(), Phase::Done);
+    let fresh = rig(caps);
+    assert_eq!(
+        fresh.join(&[a, b], &[ca, cb]),
+        0,
+        "refused before a request"
+    );
+    assert_eq!(fresh.d.phase(), Phase::Failed);
+    let why = fresh.failed().expect("a reason");
+    assert!(
+        why.starts_with("The mod b 1.0") && why.contains("is over your download limits"),
+        "{why}"
+    );
 }

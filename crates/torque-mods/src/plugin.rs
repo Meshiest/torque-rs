@@ -254,6 +254,7 @@ impl Plugin for ModsPlugin {
             crate::natives::get_required_mod_count,
             crate::natives::get_required_mod_list,
             crate::natives::get_required_mod_field,
+            crate::natives::refresh_required_mods,
             crate::natives::get_mod_download_state,
             crate::natives::get_mod_download_progress,
             crate::natives::clear_mod_download_cache,

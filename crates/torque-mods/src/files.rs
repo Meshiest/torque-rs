@@ -139,6 +139,18 @@ impl Mount {
 pub(crate) struct Table {
     mounts: RefCell<Vec<Rc<Mount>>>,
     generation: Cell<u64>,
+    /// The file layer answers from the files under the mounts alone: set while the mods' folders are read again, so a mod's
+    /// current copy never shadows the files it is read from.
+    read_through: Cell<bool>,
+}
+
+/// The table reads through to the files under the mounts until this is dropped ([`Table::read_through`]).
+pub(crate) struct ReadThrough<'a>(&'a Table);
+
+impl Drop for ReadThrough<'_> {
+    fn drop(&mut self) {
+        self.0.set_read_through(false);
+    }
 }
 
 /// Where a path is found.
@@ -164,6 +176,29 @@ impl Table {
             self.bump();
         }
         removed
+    }
+
+    /// Puts `new` where `old` is, keeping the order of the mounts; false when `old` is not there.
+    pub(crate) fn replace(&self, old: &Rc<Mount>, new: Rc<Mount>) -> bool {
+        let mut mounts = self.mounts.borrow_mut();
+        let Some(slot) = mounts.iter_mut().find(|m| Rc::ptr_eq(m, old)) else {
+            return false;
+        };
+        *slot = new;
+        drop(mounts);
+        self.bump();
+        true
+    }
+
+    /// Makes the file layer read the files under the mounts only ([`ModFiles`]) while the guard lives.
+    pub(crate) fn read_through(&self) -> ReadThrough<'_> {
+        self.set_read_through(true);
+        ReadThrough(self)
+    }
+
+    fn set_read_through(&self, on: bool) {
+        self.read_through.set(on);
+        self.bump();
     }
 
     pub(crate) fn bump(&self) {
@@ -403,11 +438,19 @@ impl ModFiles {
             listed: RefCell::new(None),
         }
     }
+
+    /// The mount that serves `path`, unless the table reads through to the files under the mounts.
+    fn find(&self, path: &[u8]) -> Option<Hit> {
+        if self.table.read_through.get() {
+            return None;
+        }
+        self.table.find(path)
+    }
 }
 
 impl FileHost for ModFiles {
     fn read(&self, path: &[u8]) -> FileRead {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(hit) => hit
                 .mount
                 .package
@@ -418,7 +461,7 @@ impl FileHost for ModFiles {
     }
 
     fn read_prefix(&self, path: &[u8], max: usize) -> FileRead {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(hit) => hit
                 .mount
                 .package
@@ -429,7 +472,7 @@ impl FileHost for ModFiles {
     }
 
     fn stat(&self, path: &[u8]) -> FileStat {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(hit) => hit
                 .mount
                 .package
@@ -440,28 +483,28 @@ impl FileHost for ModFiles {
     }
 
     fn stat_without_look_up(&self, path: &[u8]) -> FileStat {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(_) => self.stat(path),
             None => self.inner.stat_without_look_up(path),
         }
     }
 
     fn is_archive_entry(&self, path: &[u8]) -> bool {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(hit) => hit.mount.package.is_zip(),
             None => self.inner.is_archive_entry(path),
         }
     }
 
     fn real_path(&self, path: &[u8]) -> Option<Vec<u8>> {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(_) => None,
             None => self.inner.real_path(path),
         }
     }
 
     fn modified(&self, path: &[u8]) -> Option<u64> {
-        match self.table.find(path) {
+        match self.find(path) {
             Some(_) => None,
             None => self.inner.modified(path),
         }
@@ -469,6 +512,9 @@ impl FileHost for ModFiles {
 
     fn files(&self) -> Rc<Vec<Vec<u8>>> {
         let under = self.inner.files();
+        if self.table.read_through.get() {
+            return under;
+        }
         let generation = self.table.generation();
         if let Some(listed) = self.listed.borrow().as_ref()
             && listed.generation == generation
@@ -501,7 +547,7 @@ impl FileHost for ModFiles {
     }
 
     fn copy(&self, from: &[u8], to: &[u8]) -> bool {
-        match self.table.find(from) {
+        match self.find(from) {
             // A server's file copied to a script's name would be a script a server sent: refused, whatever the client's
             // scripts ask.
             Some(hit)

@@ -10,6 +10,12 @@
 //! takes a block now and then to look busy stalls), or does not finish within [`ContentLimits::total_ms`], is dropped; a server
 //! already holding [`ContentLimits::max_clients`] such connections, or [`ContentLimits::per_network_clients`] from the new one's
 //! network (an IPv4 /24, an IPv6 /64), refuses it with `Server busy, try again.`.
+//!
+//! **Late content.** A game whose content changes while clients play (a mod's files re-read, a mod enabled) sends them more
+//! to fetch and tells the host through [`ContentServer::take_late`]. The host holds such a connection as it held it at the
+//! accept (the burst, the same time and idle limits, dropped with the reason when it stalls), takes every command from it
+//! (the player keeps playing), never runs `onConnect` again, and starts no live datablock round on it until
+//! [`ContentServer::is_ready`] says so: a datablock whose files the client lacks is never sent ([`content_ready`]).
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -100,11 +106,25 @@ pub trait ContentServer {
 
     /// The client is gone or released: forget it.
     fn end(&self, vm: &Vm, obj: ObjId);
+
+    /// The connections the game sent new content to since the last call, mid-game (their `begin` is long over): the host
+    /// holds each as it held it at the accept (module docs) until [`is_ready`](Self::is_ready). Nothing, for a game whose
+    /// content never changes.
+    fn take_late(&self, _vm: &Vm) -> Vec<ObjId> {
+        Vec::new()
+    }
 }
 
 /// The server's script engine's [`ContentServer`], an extension of it.
 #[derive(Clone)]
 pub struct ContentServerSlot(pub Rc<dyn ContentServer>);
+
+/// Whether connection object `obj` has the content the server requires now: true with no content server, else what it says.
+/// A live datablock round waits for this ([`ConnDatablocks::hold_for_content`](super::datablocks::ConnDatablocks::hold_for_content)).
+pub fn content_ready(vm: &Vm, obj: ObjId) -> bool {
+    vm.extension::<ContentServerSlot>()
+        .is_none_or(|server| server.0.is_ready(vm, obj))
+}
 
 #[cfg(test)]
 mod tests {

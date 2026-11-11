@@ -60,7 +60,9 @@ use torque_ts_vm::vm::{CommandSource, Vm, VmError};
 use super::NetGame;
 use super::channels::ChannelHub;
 use super::cmdlimit::Admission;
-use super::conn::{DeleteMode, delete_connection, join_client_group, register_candidate};
+use super::conn::{
+    DeleteMode, connection_of, delete_connection, join_client_group, register_candidate,
+};
 use super::content::ContentServerSlot;
 use super::events::EventLayer;
 use super::ghosts::GhostHub;
@@ -646,15 +648,13 @@ pub(super) fn handle_request<G: NetGame>(
                             if let Some(c) = sh.hs.connection_mut(conn) {
                                 c.protocol.set_burst(true);
                             }
-                            sh.awaiting.push(Awaiting {
+                            sh.awaiting.push(Awaiting::joining(
                                 conn,
                                 obj,
-                                args: request.fields.args.clone(),
-                                since: now,
+                                request.fields.args.clone(),
+                                now,
                                 limits,
-                                seen: 0,
-                                moved: now,
-                            });
+                            ));
                         }
                         send_reply(shared, request.addr, &reply);
                         return;
@@ -757,9 +757,15 @@ fn run_on_connect<G: NetGame>(
     true
 }
 
-/// Whether `obj` is held and `name` is not a command the content server takes from a held client.
+/// Whether `obj` is held before its join and `name` is not a command the content server takes from a held client. A client
+/// held for late content is playing: every command of it runs.
 fn held_command_refused<G: NetGame>(vm: &Vm, shared: &Shared<G>, obj: ObjId, name: &[u8]) -> bool {
-    if !shared.borrow().awaiting.iter().any(|a| a.obj == obj) {
+    if !shared
+        .borrow()
+        .awaiting
+        .iter()
+        .any(|a| a.obj == obj && !a.late)
+    {
         return false;
     }
     vm.extension::<ContentServerSlot>()
@@ -778,13 +784,14 @@ fn content_busy<G: NetGame>(vm: &Vm, shared: &Shared<G>, request: &PendingReques
         let wants = sh.hs.config().gate.as_ref().is_some_and(|gate| {
             gate.matches_channels(&request.fields) && gate.mods_support(&request.fields).is_some()
         });
-        let from_network = sh
-            .awaiting
-            .iter()
+        // The places are the joining clients': a player sent content mid-game holds none.
+        let joining = sh.awaiting.iter().filter(|a| !a.late);
+        let from_network = joining
+            .clone()
             .filter_map(|a| sh.hs.connection(a.conn))
             .filter(|c| NetworkKey::of(c.ip) == network)
             .count();
-        (sh.awaiting.len(), from_network, wants)
+        (joining.count(), from_network, wants)
     };
     wants
         && server.0.holds(vm)
@@ -792,21 +799,60 @@ fn content_busy<G: NetGame>(vm: &Vm, shared: &Shared<G>, request: &PendingReques
             || from_network >= server.0.limits(vm).per_network_clients.get())
 }
 
-/// Runs `onConnect` of the connections whose client says it has what the server requires, and drops the ones that took too long,
-/// stood still, or are gone.
+/// Holds the connections the content server sent content to mid-game ([`ContentServer::take_late`]): each goes into the
+/// waiting list as a late entry, in a burst, with its live datablock rounds held until it is ready. A connection the host does
+/// not know, or one held already, is left as it is.
+///
+/// [`ContentServer::take_late`]: super::content::ContentServer::take_late
+fn begin_late<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, server: &ContentServerSlot, now: u32) {
+    let started = server.0.take_late(vm);
+    if started.is_empty() {
+        return;
+    }
+    let limits = server.0.limits(vm);
+    let mut sh = shared.borrow_mut();
+    for obj in started {
+        let Some(conn) = connection_of(&sh, obj) else {
+            continue;
+        };
+        if sh.awaiting.iter().any(|a| a.obj == obj) {
+            continue;
+        }
+        if let Some(c) = sh.hs.connection_mut(conn) {
+            c.protocol.set_burst(true);
+        }
+        sh.events.hold_datablocks(conn);
+        sh.awaiting.push(Awaiting::late(conn, obj, now, limits));
+    }
+}
+
+/// Lets a held connection go on: `onConnect` for a joining client; for a client sent content mid-game only the burst ends
+/// (the live datablock rounds that waited start in this tick's [`EventLayer::poll_datablock_holds`]).
+fn release_held<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, entry: &Awaiting) {
+    if let Some(c) = shared.borrow_mut().hs.connection_mut(entry.conn) {
+        c.protocol.set_burst(false);
+    }
+    if !entry.late {
+        run_on_connect(vm, shared, entry.obj, &entry.args);
+    }
+}
+
+/// Runs `onConnect` of the connections whose client says it has what the server requires (or, for a client sent content
+/// mid-game, lets its live datablock rounds go), and drops the ones that took too long, stood still, or are gone.
 fn poll_content<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
+    let server = vm.extension::<ContentServerSlot>();
+    if let Some(server) = &server {
+        begin_late(vm, shared, server, now);
+    }
     if shared.borrow().awaiting.is_empty() {
         return;
     }
-    let Some(server) = vm.extension::<ContentServerSlot>() else {
+    let Some(server) = server else {
         // The game took its content server away: nobody waits for it.
         let waiting = std::mem::take(&mut shared.borrow_mut().awaiting);
         for entry in waiting {
-            if let Some(c) = shared.borrow_mut().hs.connection_mut(entry.conn) {
-                c.protocol.set_burst(false);
-            }
             if vm.objects().contains(entry.obj) {
-                run_on_connect(vm, shared, entry.obj, &entry.args);
+                release_held(vm, shared, &entry);
             }
         }
         return;
@@ -820,10 +866,7 @@ fn poll_content<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
         }
         if server.0.is_ready(vm, entry.obj) {
             server.0.end(vm, entry.obj);
-            if let Some(c) = shared.borrow_mut().hs.connection_mut(entry.conn) {
-                c.protocol.set_burst(false);
-            }
-            run_on_connect(vm, shared, entry.obj, &entry.args);
+            release_held(vm, shared, &entry);
             continue;
         }
         // Progress is what was served since the last mark, at the least rate the limits ask for: a client that takes a
@@ -1524,6 +1567,9 @@ fn build_packet<G: NetGame>(
 pub fn timeouts<G: NetGame>(vm: &mut Vm, shared: &Shared<G>, now: u32) {
     shared.borrow_mut().set_now(now);
     poll_content(vm, shared, now);
+    // The live rounds held for a connection's content start once its content server says it is ready.
+    let layer = shared.borrow().events.clone();
+    layer.poll_datablock_holds(vm);
     let events = {
         let mut sh = shared.borrow_mut();
         sh.set_now(now);

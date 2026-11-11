@@ -280,10 +280,19 @@ pub(crate) fn serve_get(vm: &mut Vm, obj: ObjId, request: Request) {
     }
 }
 
-/// a client says it has every mod the server requires, mounted (the server then lets its join go on)
+/// a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
 #[function(name = "serverCmdTorqueModsReady")]
 pub(crate) fn server_cmd_ready(vm: VmMut, client: &str) {
     if let (Some(obj), Some(mods)) = (find_net_connection(&vm, client.as_bytes()), Mods::of(&vm)) {
-        mods.mark_ready(obj);
+        mods.mark_ready(vm.extension::<ChannelHub>().as_deref(), obj);
     }
+}
+
+/// reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
+#[function(name = "refreshRequiredMods", effects = "engine")]
+pub(crate) fn refresh_required_mods(mut vm: VmMut) -> i32 {
+    let Some(mods) = Mods::of(&vm) else {
+        return 0;
+    };
+    i32::try_from(mods.refresh_content(&mut vm)).unwrap_or(i32::MAX)
 }

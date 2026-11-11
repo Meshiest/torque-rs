@@ -40,6 +40,9 @@ web-sys = { version = "0.3", features = ["Event", "IdbDatabase", "IdbFactory", "
 [dev-dependencies]
 # The tests' zips are written with the same crate the reader uses.
 zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# `tests/late_offer.rs` runs a whole server and its clients over the memory transport (the same way the wire goldens do).
+torque = { path = "../torque", default-features = false, features = ["app", "mods"] }
+torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
 # A second layout's manifest format.
 serde_json = "1.0.140"
 

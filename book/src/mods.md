@@ -215,6 +215,15 @@ A player's word that it has the mods (`serverCmdTorqueModsReady`) is taken as gi
 holding a player only keeps an honest client from joining before its content is mounted. A modified client can join without
 the mods, and the server's scripts must not count on a client having them.
 
+The content can change while players are in. `refreshRequiredMods()` reads the mods' folders and zips again and serves each
+loaded mod's files as they are now (it returns how many mods' content changed); that, `enableMod` and `disableMod` send every
+connected player the new offer, a **late offer**, which the player matches and fetches as at the join, under what is left of its
+caps for this server, and answers with its ready word again. The player keeps playing meanwhile, held only as far as the datablocks
+go: a live datablock round ([Live datablocks](live-datablocks.md), "Late content") waits for the ready word, so a datablock that
+names a new file never reaches a player who lacks it. A player whose late download stalls is dropped under the same `idle_seconds`
+and `seconds` as a joining one; a player sent the same offer twice takes it once; a player takes at most 64 late offers from one
+connection.
+
 In the engine's protocol a mod of 316 KB (a 250 KB file and 24 small ones) takes 39 ticks of the server, 1.25 seconds, against
 38 for its bytes at the default byte rate; at a packet a tick, with three runs asked for at a time, it took about 1,100. The mods
 demo's soccer mod (67 KB in 28 files) arrives in about 0.4 seconds over UDP or a WebSocket on the loopback address, where it took

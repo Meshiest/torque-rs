@@ -425,8 +425,12 @@ pub struct ConnDatablocks {
     sent: HashMap<ObjId, i32>,
     /// A mission chain has ended (its done message was posted): live rounds may start.
     mission_done: bool,
-    /// A live round was asked for while a chain ran: it starts when the chain ends (every ask until then is this one).
+    /// A live round was asked for while a chain ran, or while the connection's content was still arriving: it starts when
+    /// both are over (every ask until then is this one).
     live_pending: bool,
+    /// The connection is being sent content it lacks (a late offer): no live round starts until its content server says it
+    /// is ready ([`hold_for_content`](Self::hold_for_content)), so a datablock whose files the client lacks never goes out.
+    content_held: bool,
     /// The sequence the next live round's done message carries: -1, then down, so a script's mission sequence (0 and up)
     /// never matches it.
     live_seq: i32,
@@ -461,7 +465,8 @@ pub enum Transmit {
 pub enum LiveRound {
     /// A round started: the datablocks it sends.
     Started(usize),
-    /// A chain is active (the mission's, or a round): the round starts when it ends.
+    /// A chain is active (the mission's, or a round), or the connection's content is still arriving: the round starts when
+    /// that ends.
     Queued,
     /// Nothing changed since the connection was last sent its datablocks: nothing goes out.
     Nothing,
@@ -579,9 +584,38 @@ impl ConnDatablocks {
         self.chain.as_ref().is_some_and(Chain::is_live)
     }
 
-    /// A live round waits for the chain's end.
+    /// A live round waits for the chain's end, or for the connection's content.
     pub fn live_pending(&self) -> bool {
         self.live_pending
+    }
+
+    /// Holds the live rounds: the connection is being sent content, and a round asked for now (or one that waits for the
+    /// chain's end) starts only after [`release_content`](Self::release_content).
+    pub fn hold_for_content(&mut self) {
+        self.content_held = true;
+    }
+
+    /// Whether live rounds wait for the connection's content.
+    pub fn content_held(&self) -> bool {
+        self.content_held
+    }
+
+    /// The connection has its content: the round that waited for it starts now, unless a chain runs (it follows that chain).
+    /// The events to post; the group positions looked at are owed to [`take_scan`](Self::take_scan).
+    pub fn release_content(
+        &mut self,
+        objects: &Objects,
+        keys: &DatablockKeys,
+        classes: &Rc<NetClasses>,
+        codecs: &dyn NetCodecs,
+    ) -> Vec<DbPost> {
+        self.content_held = false;
+        if !self.live_pending || self.chain.is_some() || !self.mission_done {
+            return Vec::new();
+        }
+        let (_, events, scanned) = self.start_live(objects, keys, classes, codecs);
+        self.scan_owed = self.scan_owed.saturating_add(scanned);
+        events
     }
 
     /// Whether a mission chain has ended on this connection (live rounds may start).
@@ -620,6 +654,11 @@ impl ConnDatablocks {
         }
         if !self.mission_done {
             return (LiveRound::NotReady, Vec::new(), 0);
+        }
+        // Content on its way: the round goes once the client has it, so no datablock names a file the client lacks.
+        if self.content_held {
+            self.live_pending = true;
+            return (LiveRound::Queued, Vec::new(), 0);
         }
         self.start_live(objects, keys, classes, codecs)
     }
@@ -808,8 +847,9 @@ impl ConnDatablocks {
                 self.scan_owed = self.scan_owed.saturating_add(scanned);
                 out.extend(events);
             }
-            // The round that waited, unless the queued call made a chain (it follows that one).
-            if self.chain.is_none() && self.live_pending {
+            // The round that waited, unless the queued call made a chain (it follows that one) or the connection's content
+            // is still arriving (it follows the content).
+            if self.chain.is_none() && self.live_pending && !self.content_held {
                 let (_, events, scanned) = self.start_live(objects, keys, classes, codecs);
                 self.scan_owed = self.scan_owed.saturating_add(scanned);
                 out.extend(events);

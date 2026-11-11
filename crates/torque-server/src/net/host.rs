@@ -387,20 +387,59 @@ pub struct ConnRec<C> {
     pub game: C,
 }
 
-/// A connection held in a downloading state: its `onConnect` waits until its content is delivered.
+/// A connection held in a downloading state: its `onConnect` waits until its content is delivered, or, for a client sent
+/// content mid-game (`late`), its live datablock rounds do.
 #[derive(Debug, Clone)]
 pub struct Awaiting {
     pub conn: ConnId,
     pub obj: ObjId,
-    /// The connect arguments `onConnect` is called with.
+    /// The connect arguments `onConnect` is called with (none for a late download).
     pub args: Vec<Vec<u8>>,
-    /// The network time of the accept.
+    /// The network time of the accept, or of the late download's start.
     pub since: u32,
     /// What the host holds the client to.
     pub limits: super::content::ContentLimits,
     /// The game's progress count when last looked at, and the network time it last changed.
     pub seen: u64,
     pub moved: u32,
+    /// The client is connected and playing; the content came later ([`super::content::ContentServer::take_late`]). Its
+    /// commands all run, it holds no place among the joining clients, and `onConnect` never runs again for it.
+    pub late: bool,
+}
+
+impl Awaiting {
+    /// A client held before its join at network time `now`, with the connect arguments its `onConnect` takes.
+    pub fn joining(
+        conn: ConnId,
+        obj: ObjId,
+        args: Vec<Vec<u8>>,
+        now: u32,
+        limits: super::content::ContentLimits,
+    ) -> Awaiting {
+        Awaiting {
+            conn,
+            obj,
+            args,
+            since: now,
+            limits,
+            seen: 0,
+            moved: now,
+            late: false,
+        }
+    }
+
+    /// A connected client held for content sent mid-game, from network time `now`.
+    pub fn late(
+        conn: ConnId,
+        obj: ObjId,
+        now: u32,
+        limits: super::content::ContentLimits,
+    ) -> Awaiting {
+        Awaiting {
+            late: true,
+            ..Awaiting::joining(conn, obj, Vec::new(), now, limits)
+        }
+    }
 }
 
 /// The state the passes and the natives share (`Rc<RefCell<..>>`: never borrowed across script).

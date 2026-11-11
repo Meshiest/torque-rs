@@ -112,6 +112,14 @@
 //! (torque-trace-hash's `wire_golden` in both protocols); `tests/datablock_live.rs` has the chain (one body per edit, the
 //! order, an edit during a download, loss, the callbacks) and torque-test-app's `server_datablock_live` whole clients in
 //! both protocols with their caps.
+//!
+//! **A live round waits for a connection's content** (`net::content`, `net::datablocks`): the game's `ContentServer` names
+//! the connections it sent content to mid-game (`take_late`), and the host holds each as it held it at the accept (a late
+//! `Awaiting`: the burst, the same idle and total limits, dropped with the reason when it stalls, every command still taken,
+//! no second `onConnect`) and sets `ConnDatablocks::hold_for_content`, which makes a round asked for (or one waiting for a
+//! chain's end) wait until `content_ready` says the connection has what it needs; `poll_datablock_holds` releases it once a
+//! tick. So a datablock whose files the client lacks is never sent, and a client that never says ready is dropped by the same
+//! timeouts a joining one is. torque-mods' `tests/late_offer.rs` runs it over the memory transport with loss.
 
 pub mod game;
 pub mod net;

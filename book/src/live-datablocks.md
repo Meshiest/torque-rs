@@ -218,6 +218,40 @@ A server, honest or not, cannot grow or busy a client's datablocks without bound
 
 The counts are in the client state's `datablocks_refused`.
 
+## Late content
+
+A datablock declared mid-game often names a file: a shape, a texture, a sound. A client that lacks the file shows nothing for
+it, so a round never sends such a datablock to a client before the client has the file. The files come the way a required mod's
+content does at a join ([Mods](mods.md), "Servers that require mods"): the server's offer, the client's download, its ready word.
+
+```
+// The server's files gained a sound in the mod `props`; its clients get the file, then the datablock.
+refreshRequiredMods();
+datablock AudioProfile(Alarm) { filename = "mods/props/sounds/alarm.ogg"; };
+updateDataBlocks();
+```
+
+`refreshRequiredMods()` reads the mods' folders and zips again and takes each loaded mod's files as they are now; it returns how
+many mods' content changed. When the server's offer changed for it (or for an `enableMod` or `disableMod`), every connected
+client that takes content is sent the new offer on the mods channel, a **late offer**, and is held as a joining client is: in a
+burst, under the same time and idle limits, dropped with the reason when it stalls. Nothing of the game stops for it: the player
+keeps playing, its commands all run and `onConnect` never runs again. What waits is the live round: a round asked for while a
+client's content is on its way starts when the client's ready word comes, and the round's `onDataBlocksUpdated` with it. A client
+whose content never changed on the server is not held at all.
+
+The client matches a late offer as it matched the first: a mod whose hash it has already stays as it is and costs nothing; a mod
+the player installed since serves in place of a downloaded copy; the rest is built from what it has and fetched block by block
+under what is left of the connection's caps. Every offer of one connection counts against the same `DownloadLimits`: the bytes
+downloaded, and the bytes assembled and mounted (four times the download cap in all) and read from older copies, so late offers
+cannot take more than the first could; a late offer over what is left is refused with the reason, nothing of it is mounted, and
+the client leaves. A mod a later offer no longer lists is no longer this server's content: its download mount goes. An offer repeated byte for byte is taken once (nothing is read, matched or answered), a connection
+takes at most 64 late offers, and a script path in a late offer is refused as at the join. The client's `onModDownloadStarted`,
+`onModDownloadProgress` and `onModDownloadDone` run for a late offer that fetches something, and not at all for one that does not.
+
+Late content works in both protocols (the mods channel and the ready command are the same); a late download runs at the burst's
+speed, the engine protocol's many packets a tick or Torque's one. A local client over its server's script engine shares the
+server's files and needs none of this.
+
 ## Reloading a file
 
 A datablock edited in its script file reaches a running server by running the file again. `reloadDataBlocks(%file

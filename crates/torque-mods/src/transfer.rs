@@ -17,6 +17,13 @@
 //! naming the mod, its version and size.
 //!
 //! Content only: the files mount as a server's files, which are never read as script, and a script path in an offer is refused.
+//!
+//! **Late offers.** A server whose content changes mid-game (a mod's files re-read, a mod enabled) sends its offer again on
+//! the same channel. The client, in its `Done` phase, matches it as at the accept, keeps the mods whose hash it has already,
+//! fetches the rest under what is left of the connection's caps (every offer of the connection counts against the same
+//! [`DownloadLimits`], so late offers cannot take more than the first could), mounts, and says `TorqueModsReady` again. An
+//! offer repeated byte for byte is taken once ([`Downloads::receive`] compares its hash before anything is read), and a
+//! connection takes at most [`MAX_LATE_OFFERS`] of them.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -286,6 +293,19 @@ pub(crate) trait LocalSource {
 /// it downloads is the budget, and this its ceiling.
 pub const MAX_BASE_BYTES: u64 = 64 << 20;
 
+/// The most late offers a connection takes: a server's content changes a few times in a session, not hundreds. The next one
+/// ends the connection with the reason.
+pub const MAX_LATE_OFFERS: u32 = 64;
+
+/// The bytes a connection's offers may have the client assemble, and mount, in all: this many times its download cap
+/// ([`DownloadLimits::total_bytes`]), since an update built from older copies downloads little of what it mounts. Every offer
+/// of the connection counts, so a run of late offers under the cap one at a time ends at the same place one offer would.
+pub const MAX_ASSEMBLED_MULTIPLE: u64 = 4;
+
+/// The most bytes of older copies a connection's offers may have the client read to build from, in all (four times
+/// [`MAX_BASE_BYTES`]); past it an offer is built from nothing and downloads whole.
+pub const MAX_CONNECTION_BASE_BYTES: u64 = MAX_BASE_BYTES * 4;
+
 /// What the client sends the server next.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Command {
@@ -333,6 +353,22 @@ struct Inner {
     started: Option<u32>,
     /// The bytes received when scripts were last told of the progress.
     reported: Option<u64>,
+    /// The bytes and files the offers of this connection committed it to downloading, together: a late offer is held to
+    /// what is left of the caps.
+    spent_bytes: u64,
+    spent_files: usize,
+    /// The bytes of the mods the offers of this connection had the client assemble (listed for download, whatever matched),
+    /// mount (assembled or loaded from the cache) and read as older copies to build from, together: each late offer is held
+    /// to what is left of [`MAX_ASSEMBLED_MULTIPLE`] times the download cap, and of [`MAX_CONNECTION_BASE_BYTES`].
+    assembled_bytes: u64,
+    mounted_bytes: u64,
+    base_bytes: u64,
+    /// The hash of the last offer message taken: the same message again costs nothing.
+    last_offer: Option<Hash>,
+    /// The late offers taken on this connection (at most [`MAX_LATE_OFFERS`]).
+    late_offers: u32,
+    /// The offer in hand asked for nothing: scripts hear nothing of it.
+    quiet: bool,
 }
 
 impl Inner {
@@ -361,6 +397,23 @@ pub(crate) struct Downloads {
 
 pub(crate) fn mount_name(id: &str) -> String {
     format!("download:{id}")
+}
+
+/// The bytes of `files` together.
+fn bytes_of(files: &[(String, Vec<u8>)]) -> u64 {
+    files
+        .iter()
+        .map(|(_, d)| u64::try_from(d.len()).unwrap_or(u64::MAX))
+        .fold(0, u64::saturating_add)
+}
+
+/// The reason a mod past the connection's assembled or mounted bytes is refused with.
+fn over_limit(item: &ModOffer, total_bytes: u64) -> String {
+    format!(
+        "The mod {} is over your download limit ({}).",
+        named(item),
+        size_text(total_bytes)
+    )
 }
 
 fn named(offer: &ModOffer) -> String {
@@ -401,6 +454,14 @@ impl Downloads {
                 ready_sent: false,
                 started: None,
                 reported: None,
+                spent_bytes: 0,
+                spent_files: 0,
+                assembled_bytes: 0,
+                mounted_bytes: 0,
+                base_bytes: 0,
+                last_offer: None,
+                late_offers: 0,
+                quiet: false,
             }),
         }
     }
@@ -456,6 +517,14 @@ impl Downloads {
         inner.ready_sent = false;
         inner.started = None;
         inner.reported = None;
+        inner.spent_bytes = 0;
+        inner.spent_files = 0;
+        inner.assembled_bytes = 0;
+        inner.mounted_bytes = 0;
+        inner.base_bytes = 0;
+        inner.last_offer = None;
+        inner.late_offers = 0;
+        inner.quiet = false;
     }
 
     /// The connection ended: what it mounted goes.
@@ -580,11 +649,13 @@ impl Downloads {
     /// A message arrived whole.
     pub(crate) fn receive(&self, data: &[u8]) {
         let result = match self.phase() {
-            Phase::Waiting if is_offer(data) => self.on_offer(data),
+            Phase::Waiting if is_offer(data) => self.on_offer(data, false),
             Phase::Downloading if is_data(data) => self.on_data(data),
             Phase::Waiting | Phase::Downloading => {
                 Err("The server sent a message out of turn.".to_string())
             }
+            // Everything is mounted and the server offers again: its content changed (a late offer).
+            Phase::Done if is_offer(data) => self.on_offer(data, true),
             Phase::Done | Phase::Failed | Phase::Idle => return,
         };
         if let Err(reason) = result {
@@ -617,45 +688,98 @@ impl Downloads {
             .scope()
             .owner
             .map(|server| MountOrigin { server, hash, way });
+        let bytes = bytes_of(&files);
         mount_content(&self.table, &self.mod_limits, &name, files, origin)
             .map_err(|e| format!("The mod {id} could not be mounted: {e}."))?;
         let mut inner = self.inner.borrow_mut();
+        inner.mounted_bytes = inner.mounted_bytes.saturating_add(bytes);
         if !inner.mounted.contains(&name) {
             inner.mounted.push(name);
         }
         Ok(())
     }
 
-    fn on_offer(&self, data: &[u8]) -> Result<(), String> {
+    /// An offer arrived: the server's required mods, at the accept (`late` false) or mid-game, once the server's content
+    /// changed. A late offer keeps the mods whose hash the connection has already, and is held to what is left of the caps
+    /// after the offers before it.
+    fn on_offer(&self, data: &[u8], late: bool) -> Result<(), String> {
+        let key = file_hash(data);
+        // The same offer again is taken once: nothing is read, matched or answered for a repeat.
+        if self.inner.borrow().last_offer == Some(key) {
+            return Ok(());
+        }
         let offer =
             decode_offer(data, &OfferCaps::of(&self.mod_limits)).map_err(|e| e.to_string())?;
         let mut inner = self.inner.borrow_mut();
+        if late {
+            inner.late_offers += 1;
+            if inner.late_offers > MAX_LATE_OFFERS {
+                return Err("The server changed its mods too many times.".to_string());
+            }
+        }
+        inner.last_offer = Some(key);
         let caps = inner.caps;
         let content_caps = self.content_caps(&caps);
+        // What the connection's caps have left after the offers before this one.
+        let left_bytes = caps.limits.total_bytes.saturating_sub(inner.spent_bytes);
+        let left_files = caps.limits.files.saturating_sub(inner.spent_files);
+        let assembled_cap = caps
+            .limits
+            .total_bytes
+            .saturating_mul(MAX_ASSEMBLED_MULTIPLE);
+        let left_assembled = assembled_cap.saturating_sub(inner.assembled_bytes);
+        // What the connection will have mounted with this offer's mods: the cache's loads and the assembled ones.
+        let mut mounted = inner.mounted_bytes;
+        // The files of this offer's mods to fetch, together: the cap is the server's, not a mod's.
+        let mut files_fetched = 0usize;
         let local = inner.local.as_ref().and_then(Weak::upgrade);
         let mut jobs: Vec<Option<Job>> = Vec::with_capacity(offer.len());
         let mut cached: Vec<(String, Hash, Way, Files)> = Vec::new();
+        // Download mounts an installed copy makes stale.
+        let mut unmount: Vec<String> = Vec::new();
         let (mut transfer, mut assembled) = (0u64, 0u64);
-        // The cache's heads are read once an offer, and the older copies loaded to build from are bounded in all: twice what
-        // the offer would download, so an offer cannot make the client read and hash its whole cache.
-        let heads = inner.cache.heads(64);
+        // The cache's heads are read once an offer, and only for an offer with a mod to match, and the older copies loaded
+        // to build from are bounded in all: twice what the offer would download, so an offer cannot make the client read and
+        // hash its whole cache (and a connection takes [`MAX_LATE_OFFERS`] offers, so neither can a run of them).
+        let mut heads = None;
         let download_total: u64 = offer
             .iter()
             .filter(|i| i.download)
             .map(ModOffer::bytes)
             .fold(0, u64::saturating_add);
-        let mut base_budget = download_total.saturating_mul(2).min(MAX_BASE_BYTES);
+        let mut base_budget = download_total
+            .saturating_mul(2)
+            .min(MAX_BASE_BYTES)
+            .min(MAX_CONNECTION_BASE_BYTES.saturating_sub(inner.base_bytes));
+        let base_before = base_budget;
         for item in &offer {
+            // What this connection has at that very hash stays as it is: nothing is read.
+            if late
+                && inner
+                    .offer
+                    .iter()
+                    .any(|o| o.hash == item.hash && o.id.eq_ignore_ascii_case(&item.id))
+            {
+                jobs.push(None);
+                continue;
+            }
             // By package hash: an installed or cached copy of this very content needs nothing.
             if local
                 .as_ref()
                 .and_then(|l| l.hash_of(&item.id))
                 .is_some_and(|h| h == item.hash)
             {
+                if late {
+                    unmount.push(mount_name(&item.id));
+                }
                 jobs.push(None);
                 continue;
             }
             if let Some((files, own)) = inner.cache.load_entry(&item.hash, &content_caps) {
+                mounted = mounted.saturating_add(bytes_of(&files));
+                if mounted > assembled_cap {
+                    return Err(over_limit(item, caps.limits.total_bytes));
+                }
                 let way = if own { Way::OwnCache } else { Way::SharedCache };
                 cached.push((item.id.clone(), item.hash, way, files));
                 jobs.push(None);
@@ -673,8 +797,9 @@ impl Downloads {
                     named(item)
                 ));
             }
+            files_fetched = files_fetched.saturating_add(item.files.len());
             if item.bytes() > caps.limits.mod_bytes as u64
-                || item.files.len() > caps.limits.files
+                || files_fetched > left_files
                 || item
                     .files
                     .iter()
@@ -685,21 +810,16 @@ impl Downloads {
                     named(item)
                 ));
             }
+            // What the connection assembles and mounts, every offer together, stays within the multiple of the cap.
             assembled = assembled.saturating_add(item.bytes());
-            if assembled > caps.limits.total_bytes.saturating_mul(4) {
-                return Err(format!(
-                    "The mod {} is over your download limit ({}).",
-                    named(item),
-                    size_text(caps.limits.total_bytes)
-                ));
+            mounted = mounted.saturating_add(item.bytes());
+            if assembled > left_assembled || mounted > assembled_cap {
+                return Err(over_limit(item, caps.limits.total_bytes));
             }
             // The older copies this one may be built from: the installed mod of that id, and the cache's entries of it.
             let mut bases: Vec<Vec<(String, Vec<u8>)>> = Vec::new();
             let mut take_base = |files: Files, budget: &mut u64| {
-                let size = files
-                    .iter()
-                    .map(|(_, d)| u64::try_from(d.len()).unwrap_or(u64::MAX))
-                    .fold(0, u64::saturating_add);
+                let size = bytes_of(&files);
                 if size <= *budget {
                     *budget -= size;
                     bases.push(files);
@@ -712,6 +832,7 @@ impl Downloads {
             {
                 take_base(files, &mut base_budget);
             }
+            let heads = heads.get_or_insert_with(|| inner.cache.heads(64));
             let older = heads
                 .iter()
                 .filter(|(id, _, _)| id == &item.id)
@@ -743,7 +864,7 @@ impl Downloads {
                 })
                 .sum();
             transfer = transfer.saturating_add(missing);
-            if transfer > caps.limits.total_bytes {
+            if transfer > left_bytes {
                 return Err(format!(
                     "The mod {} needs {} of your {} download limit.",
                     named(item),
@@ -780,14 +901,44 @@ impl Downloads {
                 }
             }
         }
-        inner.fetching = jobs.iter().flatten().count();
+        // A mod the server no longer lists is no longer this server's content: its download mount goes.
+        if late {
+            for gone in inner
+                .offer
+                .iter()
+                .filter(|o| !offer.iter().any(|n| n.id.eq_ignore_ascii_case(&o.id)))
+            {
+                unmount.push(mount_name(&gone.id));
+            }
+        }
+        let fetching = jobs.iter().flatten().count();
+        inner.spent_bytes = inner.spent_bytes.saturating_add(transfer);
+        inner.spent_files = inner.spent_files.saturating_add(files_fetched);
+        inner.assembled_bytes = inner.assembled_bytes.saturating_add(assembled);
+        inner.base_bytes = inner.base_bytes.saturating_add(base_before - base_budget);
+        inner.fetching = fetching;
         inner.total_bytes = transfer;
+        inner.fetched_bytes = 0;
+        inner.mounted_mods = 0;
         inner.todo = todo;
         inner.offer = offer;
         inner.jobs = jobs;
-        let (mods, bytes) = (inner.fetching, transfer);
-        inner.events.push_back(Event::Started { mods, bytes });
+        // The ready word goes again once this offer is mounted, and the download's clock starts afresh.
+        inner.ready_sent = false;
+        inner.started = None;
+        inner.reported = None;
+        inner.quiet = late && fetching == 0 && cached.is_empty();
+        if !inner.quiet {
+            inner.events.push_back(Event::Started {
+                mods: fetching,
+                bytes: transfer,
+            });
+        }
         drop(inner);
+        for name in unmount {
+            self.table.remove_server(&name);
+            self.inner.borrow_mut().mounted.retain(|m| *m != name);
+        }
         for (id, hash, way, files) in cached {
             self.mount(&id, hash, way, files)?;
         }
@@ -824,7 +975,9 @@ impl Downloads {
             inner.phase = Phase::Downloading;
         } else {
             inner.phase = Phase::Done;
-            inner.events.push_back(Event::Done);
+            if !inner.quiet {
+                inner.events.push_back(Event::Done);
+            }
         }
     }
 
@@ -1084,6 +1237,10 @@ impl ContentServer for ModsContentServer {
         if let Some(mods) = Mods::of(vm) {
             mods.end_serving(obj);
         }
+    }
+
+    fn take_late(&self, vm: &Vm) -> Vec<ObjId> {
+        Mods::of(vm).map_or_else(Vec::new, |mods| mods.take_late())
     }
 }
 

@@ -46,6 +46,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use super::codecs::NetCodecs;
+use super::content::content_ready;
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::control::ControlState;
@@ -643,6 +644,11 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
             if c.queue.is_closed() {
                 continue;
             }
+            // A connection still being sent content (a late offer) gets the round once it has it: a datablock whose files
+            // the client lacks is never sent.
+            if !content_ready(vm, c.obj) {
+                c.datablocks.hold_for_content();
+            }
             let (what, events, looked) =
                 c.datablocks
                     .request_live(vm.objects(), &st.keys, &st.classes, &*st.codecs);
@@ -653,6 +659,33 @@ impl<H: GameEvents, S: GhostGame> EventLayer<H, S> {
             c.datablocks.post_or_hold(&mut c.queue, events);
         }
         (reached, scanned)
+    }
+
+    /// Holds `conn`'s live rounds until its content server says it is ready ([`ConnDatablocks::hold_for_content`]): the host
+    /// calls it when the game sends a connected client content mid-game.
+    pub fn hold_datablocks(&self, conn: ConnId) {
+        if let Some(c) = self.state.borrow_mut().conns.get_mut(&conn) {
+            c.datablocks.hold_for_content();
+        }
+    }
+
+    /// Starts the live rounds that waited for a connection's content, on every connection whose content server now says it
+    /// is ready ([`ConnDatablocks::release_content`]); the connections released. Run once a tick by the host.
+    pub fn poll_datablock_holds(&self, vm: &Vm) -> usize {
+        let mut guard = self.state.borrow_mut();
+        let st = &mut *guard;
+        let mut released = 0;
+        for c in st.conns.values_mut() {
+            if !c.datablocks.content_held() || c.queue.is_closed() || !content_ready(vm, c.obj) {
+                continue;
+            }
+            let events =
+                c.datablocks
+                    .release_content(vm.objects(), &st.keys, &st.classes, &*st.codecs);
+            c.datablocks.post_or_hold(&mut c.queue, events);
+            released += 1;
+        }
+        released
     }
 
     /// The key `id` was last sent with to `conn`, when a body of it was ([`ConnDatablocks::sent_key`]).
