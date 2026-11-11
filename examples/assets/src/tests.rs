@@ -531,9 +531,11 @@ fn the_textures_decode_with_the_engines_reader() {
 
 #[test]
 fn the_kit_is_the_same_on_every_run_and_every_file_is_named_once() {
-    let (a, b) = (crate::all().unwrap(), crate::all().unwrap());
+    // Made twice, and read back from the cache: the same bytes each time (the cache's own tests make it across processes).
+    let (a, b) = (crate::make().unwrap(), crate::make().unwrap());
     assert_eq!(a, b);
-    let mut names: Vec<_> = a.iter().map(|x| x.name).collect();
+    assert_eq!(a, crate::all().unwrap());
+    let mut names: Vec<_> = a.iter().map(|x| x.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), 28 + 10 + crate::trees::chunks().len());
@@ -1299,9 +1301,9 @@ fn the_forest_builds_and_stays_within_its_triangle_budget() {
     assert!(triangles < 400_000, "{triangles}");
     names.sort();
     names.dedup();
-    let kit: Vec<_> = crate::all().unwrap().iter().map(|a| a.name).collect();
+    let kit: Vec<String> = crate::all().unwrap().into_iter().map(|a| a.name).collect();
     for m in names {
-        assert!(kit.contains(&format!("{m}.png").as_str()), "{m}");
+        assert!(kit.contains(&format!("{m}.png")), "{m}");
     }
 }
 

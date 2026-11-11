@@ -105,7 +105,8 @@ pub struct Stats {
     pub escape_keys: u64,
     /// Events dropped because the queue was full.
     pub dropped_events: u64,
-    /// The `Vm::charge_work` units the applier's flushes were charged (the resizes their ops made).
+    /// The `Vm::charge_work` units the applier's flushes were charged (the bytes of their records, and the resizes their ops
+    /// made).
     pub apply_work: u64,
     /// Resizes of the layout's containers the applier left to the frame's layout check instead of laying out at once.
     pub deferred_layouts: u64,

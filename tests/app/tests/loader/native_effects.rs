@@ -21,8 +21,8 @@ use torque_plugin_gui_layout::GuiLayoutPlugin;
 use torque_plugin_loader::call_policy::{
     CallKind, CallPolicy, DENIED_EFFECTS, DenyCodeAndFiles, PolicyCall, TGE_EFFECTS,
 };
-use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::PropPredictionPlugin;
+use torque_plugin_props::{JointRopePlugin, PropsPlugin};
 use torque_plugin_rope::RopePlugin;
 use torque_plugin_tcp::TcpPlugin;
 use torque_ts_vm::host::MemFiles;
@@ -41,7 +41,7 @@ fn for_each_script_engine(mut each: impl FnMut(&Vm)) {
             .add_plugins(ZoomPlugin)
             .add_plugins(HostingPlugin::default())
             .add_plugins(RopePlugin::default())
-            .add_plugins(PropsPlugin)
+            .add_plugins((PropsPlugin, JointRopePlugin))
             .add_plugins(PropPredictionPlugin::default())
             .add_plugins(GuiLayoutPlugin)
             .add_plugins(TcpPlugin::default());

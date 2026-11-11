@@ -44,7 +44,7 @@
 //!   `budget::many_resizes_of_a_nested_container_are_laid_out_once_a_frame_and_charged_to_the_realm`); a flush is checked whole
 //!   before any of it applies, and its `net` ops never leave when its `ui` ops are refused
 //!   (`budget::a_flush_whose_last_op_is_forged_applies_nothing_and_sends_nothing`). A set costs the host what it carries,
-//!   not the size of the control it changes (`budget::a_storm_of_selections_on_a_full_list_stays_within_its_budget`).
+//!   not the size of the control it changes (`budget::a_storm_of_selections_on_a_full_list_costs_what_the_sets_carry`).
 //! - Shift+Escape ends the realm for the connection and remembers nothing; the chip's "Turn off for this server" remembers
 //!   Never (`consent::shift_escape_ends_the_realm_for_the_connection_only_and_the_chip_remembers_never`).
 //! - Before the player's answer nothing of the realm exists: no instance, no file read, no control, no guest started

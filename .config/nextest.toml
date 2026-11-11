@@ -7,3 +7,15 @@ slow-timeout = { period = "60s" }
 # `just test-quick`: everything but the long randomized and golden suites.
 [profile.quick]
 default-filter = "not test(/fuzz|golden|hostile|sweep/) and not binary(wire_golden)"
+
+# The client-script host's shared cases (`tests/cases.rs`, feature `cases`) include the deadline cases: a guest's entry must be
+# stopped by the wall clock within twice its 250 ms deadline, which is what those cases are about and cannot be counted as
+# work. They hold whenever the realm gets the processor; on a machine shared with the other test binaries they do not. So
+# that one binary takes every test thread while it runs, and nothing else runs beside it.
+[test-groups]
+alone = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary_id(torque-client-script-host::cases)'
+test-group = 'alone'
+threads-required = 'num-test-threads'

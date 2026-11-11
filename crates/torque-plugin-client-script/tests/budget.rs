@@ -11,6 +11,7 @@ use torque_client_script_format::ui::{Kind, Prop, PropValue, write_props};
 use torque_client_script_format::{Grants, Tier, Writer, op};
 use torque_client_script_host::FrameBudget;
 use torque_plugin_client_script::{Choices, ConsentAnswer, RealmState, Setting};
+use torque_ts_vm::vm::WORK_PER_STEP;
 
 fn record(out: &mut Writer, kind: u8, body: impl FnOnce(&mut Writer)) {
     let mark = out.begin(Tier::Ui.id(), kind);
@@ -90,6 +91,15 @@ fn churn(next: &mut u32, rounds: u32, count: u32) -> Vec<u8> {
         *next += count + 1;
     }
     out.into_bytes()
+}
+
+/// Budgets no clock reaches (an hour a frame, an hour an entry): every flush applies whole in the frame it comes and no
+/// piece of ops is a strike, so a test counts the work the host did, not how long the machine took over it.
+fn no_clock(w: &mut World) {
+    w.realms.settings.budget = FrameBudget::ApplyOnly {
+        cap: Duration::from_secs(3600),
+    };
+    w.realms.settings.long_entry = Duration::from_secs(3600);
 }
 
 fn first_flush() -> Vec<u8> {
@@ -200,13 +210,7 @@ fn many_resizes_of_a_nested_container_are_laid_out_once_a_frame_and_charged_to_t
         }
         flushes.push(out.into_bytes());
     }
-    // The whole frame for the realm, so that a debug build applies a flush in a few frames.
-    let mut w = running(true, flushes, |w| {
-        w.realms.settings.budget = FrameBudget::Shared {
-            max: Duration::from_secs(1),
-            share: 1.0,
-        };
-    });
+    let mut w = running(true, flushes, no_clock);
     assert_eq!(w.realms.state(), RealmState::Running);
     client_frame(&mut w);
     let mut before = w.gui.client_script_stats();
@@ -235,68 +239,53 @@ fn many_resizes_of_a_nested_container_are_laid_out_once_a_frame_and_charged_to_t
     assert_eq!(w.gui.take_client_script_owed(), Duration::ZERO);
 }
 
-/// A frame's realm time (the realms' frame: the entry, the whole-flush check and the applying) for `frames` frames.
-fn realm_times(w: &mut World, frames: usize) -> Vec<Duration> {
-    (0..frames)
-        .map(|_| {
-            let started = std::time::Instant::now();
-            w.frame();
-            let took = started.elapsed();
-            w.gui.frame(&mut w.vm);
-            took
-        })
-        .collect()
-}
+/// The most `Vm::charge_work` units one `set` of a list's selection may cost the applier: its record's own bytes (about a
+/// dozen), nothing of the list's rows (reading the 1,024 rows would be 16,384 units a set, `rows_work`).
+const SET_WORK: u64 = WORK_PER_STEP;
 
-/// 1,500 `set{selected}` a frame on a list of 1,024 rows: a set costs the host what it carries, not the list's rows, so no
-/// frame holds the realm past three budgets, and once the slow rule is on it averages under one. Natively and with the web's
-/// budget (the guest's time is the scripted runner's, none). The budgets are a debug build's.
+/// 1,500 `set{selected}` a frame on a list of 1,024 rows, for 120 frames: a set costs the host what it carries, not the
+/// list's rows, so the storm applies whole frame by frame under the host's work budget (`MAX_FRAME_WORK` a flush) and is
+/// charged at most [`SET_WORK`] a set. Counted in work units, not time: a loaded machine changes nothing here.
 #[test]
-fn a_storm_of_selections_on_a_full_list_stays_within_its_budget() {
-    let budget = Duration::from_millis(15);
-    for setting in [
-        FrameBudget::Shared {
-            max: budget,
-            share: 1.0,
-        },
-        FrameBudget::ApplyOnly { cap: budget },
-    ] {
+fn a_storm_of_selections_on_a_full_list_costs_what_the_sets_carry() {
+    let mut out = Writer::new();
+    root(&mut out);
+    let rows: Vec<String> = (0..1024).map(|i| format!("row {i:011}")).collect();
+    create(
+        &mut out,
+        2,
+        1,
+        Kind::List,
+        &[(Prop::Rows, PropValue::Rows(rows))],
+    );
+    let mut flushes = vec![out.into_bytes()];
+    for frame in 0..120 {
         let mut out = Writer::new();
-        root(&mut out);
-        let rows: Vec<String> = (0..1024).map(|i| format!("row {i:011}")).collect();
-        create(
-            &mut out,
-            2,
-            1,
-            Kind::List,
-            &[(Prop::Rows, PropValue::Rows(rows))],
-        );
-        let mut flushes = vec![out.into_bytes()];
-        for frame in 0..120 {
-            let mut out = Writer::new();
-            for k in 0..1_500u32 {
-                record(&mut out, op::ui::SET, |w| {
-                    w.u32(2);
-                    let selected = PropValue::Int(1 + (frame + k) % 2);
-                    write_props(w, [(Prop::Selected, &selected)].into_iter());
-                });
-            }
-            flushes.push(out.into_bytes());
+        for k in 0..1_500u32 {
+            record(&mut out, op::ui::SET, |w| {
+                w.u32(2);
+                let selected = PropValue::Int(1 + (frame + k) % 2);
+                write_props(w, [(Prop::Selected, &selected)].into_iter());
+            });
         }
-        let mut w = running(false, flushes, |w| {
-            w.realms.settings.budget = setting;
-            w.realms.settings.long_entry = Duration::from_secs(1);
-        });
-        assert_eq!(w.realms.state(), RealmState::Running);
-        let times = realm_times(&mut w, 120);
-        assert_eq!(w.realms.state(), RealmState::Running, "{setting:?}");
-        let worst = times.iter().max().copied().unwrap_or_default();
-        assert!(
-            worst <= budget * 3,
-            "{setting:?}: a frame held the realm {worst:?}"
-        );
-        let late = &times[60..];
-        let mean = late.iter().sum::<Duration>() / late.len() as u32;
-        assert!(mean <= budget, "{setting:?}: {mean:?} a frame on average");
+        flushes.push(out.into_bytes());
     }
+    let mut w = running(false, flushes, no_clock);
+    assert_eq!(w.realms.state(), RealmState::Running);
+    // The list and its rows are made before the count starts: the storm is the sets alone.
+    client_frame(&mut w);
+    let before = w.gui.client_script_stats();
+    for _ in 0..120 {
+        client_frame(&mut w);
+    }
+    assert_eq!(w.realms.state(), RealmState::Running);
+    let after = w.gui.client_script_stats();
+    let sets = after.applied_records - before.applied_records;
+    assert!(sets >= 1_500 * 100, "the storm applied ({sets} sets)");
+    let work = after.apply_work - before.apply_work;
+    assert!(
+        work <= sets * SET_WORK,
+        "{work} work units for {sets} sets: {} a set",
+        work / sets
+    );
 }

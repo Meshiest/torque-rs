@@ -25,15 +25,14 @@ fn client_listing() -> PathBuf {
     })
 }
 
-/// The server's list: the rope plugin's networked functions are in `server-rope.txt` (the `rope` feature), the default list is
-/// `server.txt`. The demo speaks the engine's protocol whatever `TORQUE_NET_PROTOCOL` says, so both have the scene hierarchy's
-/// natives, and the props' (`prop*`, `joint*`). The props' `jointRope` is there when the props have their `rope` feature, which a
-/// build can have on without the demo's (another crate asks for it): that list is `server-joint-rope.txt`.
+/// The server's list: the rope plugin's networked functions and the props' `jointRope` are in `server-rope.txt` (the `rope`
+/// feature), the default list is `server.txt`. The demo speaks the engine's protocol whatever `TORQUE_NET_PROTOCOL` says, so
+/// both have the scene hierarchy's natives, and the props' (`prop*`, `joint*`).
 fn server_listing() -> PathBuf {
-    listing(match (cfg!(feature = "rope"), torque_plugin_props::ROPE) {
-        (true, _) => "server-rope.txt",
-        (false, true) => "server-joint-rope.txt",
-        (false, false) => "server.txt",
+    listing(if cfg!(feature = "rope") {
+        "server-rope.txt"
+    } else {
+        "server.txt"
     })
 }
 
@@ -62,7 +61,7 @@ fn the_office_engines_client_and_server_have_these_natives() {
     use torque_example_level_demo::office::{ServerScripts, office_engine, start_office};
     use torque_plugin_client_script::Choices;
 
-    if cfg!(feature = "rope") || torque_plugin_props::ROPE {
+    if cfg!(feature = "rope") {
         return;
     }
     let engine = office_engine(

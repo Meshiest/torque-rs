@@ -49,8 +49,8 @@ propApplyImpulse(%crate, "0 40 0");
 - Joints between props, the world and players: `jointTether` (hard, or a spring past its length), `jointWinch`, `jointWeld`,
   `jointHinge` (limits, a motor) and `jointGrapple` (a Player held to a point or a prop inside its own tick, so its client
   predicts it exactly) and `jointHold` (a prop a player carries in front of it, its client predicting it), breakable, with their setters, getters and `jointCheck` for a game's own commands; the `Joint` ghost
-  class and each client's book (`ClientJoints`). With feature `rope`, `jointRope` makes a networked rope that follows a joint
-  and pulls on nothing.
+  class and each client's book (`ClientJoints`). With feature `rope`, a game that adds `JointRopePlugin` beside the rope
+  plugin has `jointRope`, a networked rope that follows a joint and pulls on nothing.
 
 ## In the scene hierarchy
 

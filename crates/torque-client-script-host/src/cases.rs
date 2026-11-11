@@ -643,10 +643,6 @@ pub const CASES: &[Case] = &[
     },
 ];
 
-/// The longest a frame's entry of a realm at its step caps may take: a frame budget (2 ms of steps) and room for a
-/// loaded machine.
-const AT_CAPS: Duration = Duration::from_millis(8);
-
 /// The base, `ui` and `net`.
 const UI_NET: Grants = Grants(0b111);
 
@@ -1094,14 +1090,23 @@ fn a_call_of_an_rpc_not_marked_for_the_realm_is_answered_refused() -> Vec<Action
 
 fn a_guest_at_its_step_caps_every_frame_is_struck_off() -> Vec<Action> {
     vec![
-        // Each frame's callback would take 190,000 steps (about 20 ms): the caps stop it at a frame's budget.
+        // Each frame's callback would loop 190,000 times (a step each, about 20 ms): the caps stop it at a frame's steps.
+        // The callback says how far the last one got, so the check counts the work the caps let through, not the time it
+        // took (a loaded machine stretches that).
         Action::open(
             0,
             Guest::Realm,
             Grants(1),
             &[(
                 "main.lua",
-                "realm.onFrame(function() local x = 0 for i = 1, 190000 do x = x + i end end)",
+                r#"
+n = 0
+realm.onFrame(function()
+  if n > 0 then realm.log("loops " .. n) end
+  n = 0
+  for i = 1, 190000 do n = n + 1 end
+end)
+"#,
             )],
         ),
         Action::Frames { slot: 0, count: 40 },
@@ -1111,17 +1116,19 @@ fn a_guest_at_its_step_caps_every_frame_is_struck_off() -> Vec<Action> {
                 slot.stop().is_some_and(|(s, _)| *s == Stop::Strikes),
                 "struck off",
             )?;
+            let logs = &slot.effects().logs;
             expect(
-                slot.effects().logs.iter().any(|l| l.contains("steps")),
+                logs.iter().any(|l| l.contains("steps")),
                 "for running out of steps",
             )?;
-            let longest = slot
-                .session
-                .as_ref()
-                .map_or(Duration::MAX, Session::longest_entry);
+            let loops: Vec<u64> = logs
+                .iter()
+                .filter_map(|l| l.strip_prefix("loops ")?.parse().ok())
+                .collect();
+            expect(!loops.is_empty(), "it said how far a frame's loop got")?;
             expect(
-                longest <= AT_CAPS,
-                &format!("its entries stayed short (the longest {longest:?})"),
+                loops.iter().all(|&n| n <= u64::from(2 * FRAME_STEPS)),
+                &format!("each frame's loop was cut at the frame's steps ({loops:?})"),
             )
         }),
     ]

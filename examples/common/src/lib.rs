@@ -46,7 +46,7 @@ impl KitAssets {
     pub fn new() -> io::Result<KitAssets> {
         let files = torque_example_assets::all()?
             .into_iter()
-            .map(|a| (kit_path(a.name), a.bytes))
+            .map(|a| (kit_path(&a.name), a.bytes))
             .collect();
         Ok(KitAssets { files })
     }

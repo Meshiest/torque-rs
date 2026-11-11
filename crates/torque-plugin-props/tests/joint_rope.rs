@@ -12,7 +12,7 @@ use torque_engine::{Engine, EngineBuilder};
 use torque_plugin_props::joints::KindId;
 use torque_plugin_props::joints::records::{EndWire, FlagsWire, InitWire, JointGhost, LengthWire};
 use torque_plugin_props::joints::rope::{DRIVER, JointRopeDriver};
-use torque_plugin_props::{ClientJoints, PropsPlugin};
+use torque_plugin_props::{ClientJoints, JointRopePlugin};
 use torque_plugin_rope::{RopeDriver, RopeDrivers, RopeParams, RopePlugin, RopeShared, RopeWorld};
 use torque_ts_vm::vm::Vm;
 
@@ -111,7 +111,7 @@ fn engine(files: &torque_app::GameFiles) -> Engine {
     let config = torque_app::config::GameConfig::load(files).expect("game.toml");
     let mut builder = EngineBuilder::new();
     builder
-        .add_plugins((DefaultPlugins, PropsPlugin, RopePlugin::default()))
+        .add_plugins((DefaultPlugins, JointRopePlugin, RopePlugin::default()))
         .config(&config);
     builder.build().expect("the engine builds")
 }
@@ -185,7 +185,7 @@ fn another_plugins_driver_under_the_joints_name_is_warned_about() {
     builder
         .add_plugins((
             DefaultPlugins,
-            PropsPlugin,
+            JointRopePlugin,
             RopePlugin::default().with_driver("Joint", Other),
         ))
         .config(&config);

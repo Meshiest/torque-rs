@@ -113,9 +113,10 @@ pub(crate) fn engine_of(
     engine.add_plugins((PropsPlugin, PropPredictionPlugin::default()));
     engine.add_plugins(level);
     #[cfg(feature = "rope")]
-    engine.add_plugins(
+    engine.add_plugins((
         torque_plugin_rope::RopePlugin::default().with_frame_anchors(crate::ropes::Mounts),
-    );
+        torque_plugin_props::JointRopePlugin,
+    ));
     #[cfg(feature = "smooth-prediction")]
     engine.add_plugins(
         torque_plugin_smooth_prediction::SmoothPredictionPlugin::optional(

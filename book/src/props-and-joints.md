@@ -392,7 +392,7 @@ them back if it comes back under the same key within `$Pref::Props::OrphanSecond
 Lengths are at most 200 units and a winch's rate 20 units a second; springs, forces, torques and motor speeds are held to their
 ranges. A value a script gives that is not a finite number is refused.
 
-**Ropes that follow joints.** With the plugin's `rope` feature and the rope plugin on both sides, `jointRope(j, ropeData)` makes a
+**Ropes that follow joints.** With `JointRopePlugin` (the `rope` feature) and the rope plugin on both sides, `jointRope(j, ropeData)` makes a
 networked rope that shows a joint: its ends are where the joint's are as each client draws them, its length is the joint's, and it
 is drawn straight while the joint is at its limit. It pulls on nothing: the joint does. It goes with the joint. Each client's rope
 follows the rope driver `joint`, asked about the client's own ghost of the joint, so only the rope and its driver's name

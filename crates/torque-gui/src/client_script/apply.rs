@@ -420,6 +420,9 @@ impl Realm {
             }
             match tier {
                 Tier::Ui => {
+                    // A record costs the host what it carries, beside the work its op does: a set of one prop is its few
+                    // bytes, whatever the size of the control it changes.
+                    vm.charge_work(record.body.len() as u64);
                     self.apply_ui(vm, gui, &record, &mut applied)?;
                     gui.0.borrow_mut().client_script.stats.applied_records += 1;
                 }

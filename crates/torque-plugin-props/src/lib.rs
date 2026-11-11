@@ -444,10 +444,6 @@
 //! `projectile-props` and `hierarchy-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
 //! --bench step` and the `replay-bench` of torque-trace-hash (native and wasm32) under the bench lock.
 
-/// Whether this build has the `rope` feature (`jointRope`, joints drawn as ropes). Features are unified over a build, so a crate that
-/// lists the plugin's natives reads this to know which list it is looking at.
-pub const ROPE: bool = cfg!(feature = "rope");
-
 pub mod client;
 pub mod data;
 pub mod frozen;
@@ -466,6 +462,8 @@ pub mod world;
 use std::rc::Rc;
 
 use torque_collide::source::PluginCollision;
+#[cfg(feature = "rope")]
+use torque_engine::Requires;
 use torque_engine::{
     ClientStage, ClientTick, EngineBuilder, Plugin, PluginId, Replicate, ServerStage, ServerTick,
 };
@@ -592,8 +590,6 @@ impl Plugin for PropsPlugin {
             fresh.reset();
             Ok(())
         });
-        #[cfg(feature = "rope")]
-        joints::rope::register(engine, &joints);
         let (fresh, fresh_joints) = (book, joints);
         engine.client(ClientStage::Classes, move |_, _| {
             fresh.0.borrow_mut().clear();
@@ -620,3 +616,27 @@ impl Plugin for PropsPlugin {
     }
 }
 // ANCHOR_END: build
+
+/// `jointRope` on the server and the joints' rope driver on each client (the `rope` feature), for a game that adds it
+/// beside [`PropsPlugin`] (required: added when missing) and the rope plugin. Cargo unifies features over a build, so what
+/// a game's scripts can call comes with a plugin the game adds, never with the feature alone: a game without this plugin has
+/// the same natives in every build.
+#[cfg(feature = "rope")]
+#[derive(Clone, Copy, Debug, Default, PluginId)]
+#[plugin(id = "torque.props.rope")]
+pub struct JointRopePlugin;
+
+#[cfg(feature = "rope")]
+impl Plugin for JointRopePlugin {
+    fn requires(&self, requires: &mut Requires) {
+        requires.plugin::<PropsPlugin>();
+    }
+
+    fn build(&self, engine: &mut EngineBuilder) {
+        let joints = engine
+            .resource::<ClientJoints>()
+            .cloned()
+            .expect("the props plugin, built first, inserted its joints");
+        joints::rope::register(engine, &joints);
+    }
+}

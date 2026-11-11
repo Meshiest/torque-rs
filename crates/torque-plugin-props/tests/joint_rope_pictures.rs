@@ -12,7 +12,7 @@ use rig::{Rig, files};
 use torque_app::config::EngineConfig;
 use torque_app::plugins::DefaultPlugins;
 use torque_engine::{Engine, EngineBuilder};
-use torque_plugin_props::PropsPlugin;
+use torque_plugin_props::JointRopePlugin;
 use torque_plugin_rope::{RopePlugin, RopeShared};
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::Eye;
@@ -21,7 +21,7 @@ fn engine(files: &torque_app::GameFiles) -> Engine {
     let config = torque_app::config::GameConfig::load(files).expect("game.toml");
     let mut builder = EngineBuilder::new();
     builder
-        .add_plugins((DefaultPlugins, PropsPlugin, RopePlugin::default()))
+        .add_plugins((DefaultPlugins, JointRopePlugin, RopePlugin::default()))
         .config(&config);
     builder.build().expect("the engine builds")
 }

@@ -7,9 +7,14 @@
 //! `.png`. The valley ([`valley`]: a terrain with a lake and woods, and its ground's textures) is made only by a game that asks
 //! for it ([`valley::files`]).
 //!
-//! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`write_all`] at
-//! start-up (a few kilobytes, a millisecond), or `just examples assets write <dir>` (the `make-example-assets` tool) writes them
-//! once. The output is the same on every run, so nothing goes stale and no generated file sits in the history.
+//! **Made at run time, not kept in the repository.** The code is the source of the assets; an example calls [`all`] at
+//! start-up, or `just examples assets write <dir>` (the `make-example-assets` tool) writes them once. The output is the same
+//! on every run, so nothing goes stale and no generated file sits in the history.
+//!
+//! Making the kit takes half a second to a second and a half (the interiors' CSG, BSP and lightmaps, the forest's squares),
+//! so in a development build [`all`] keeps it under the build folder ([`cache`]: `<target>/example-kit/<key>/`, the key a
+//! digest of the code that makes it) and reads it back; [`make`] always makes it afresh. `TORQUE_KIT_CACHE` names another
+//! folder (any build) or turns the cache off (`0`).
 //!
 //! Every shape is checked by the tests against torque-shapes' reader: the bytes parse back to the model that was written,
 //! every mesh's bounds are the ones its vertices give, the preload finds the nodes and details a game looks up (`eye`, `cam`,
@@ -17,6 +22,7 @@
 
 pub use torque_shape_builder as builder;
 pub mod buggy;
+pub mod cache;
 pub mod gait;
 pub mod interiors;
 pub mod poses;
@@ -35,7 +41,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
     /// The file name (no folder).
-    pub name: &'static str,
+    pub name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -45,15 +51,21 @@ pub fn glb_of(model: &torque_shapes::Model) -> io::Result<Vec<u8>> {
     torque_import::gltf::write_glb(&layer).map_err(io::Error::other)
 }
 
-/// Every asset of the kit, shapes first (the cube, the figure and the pistol also as `.glb`).
+/// Every asset of the kit, shapes first (the cube, the figure and the pistol also as `.glb`): read from the [`cache`] when
+/// it holds the kit of this code, else made ([`make`]) and kept there.
 pub fn all() -> io::Result<Vec<Asset>> {
-    let shape = |name, model: &torque_shapes::Model| Asset {
-        name,
+    cache::read_or_make()
+}
+
+/// Every asset of the kit made afresh from its code, in [`all`]'s order.
+pub fn make() -> io::Result<Vec<Asset>> {
+    let shape = |name: &str, model: &torque_shapes::Model| Asset {
+        name: name.into(),
         bytes: torque_shapes::write::write_dts(model),
     };
-    let glb = |name, model: &torque_shapes::Model| -> io::Result<Asset> {
+    let glb = |name: &str, model: &torque_shapes::Model| -> io::Result<Asset> {
         Ok(Asset {
-            name,
+            name: name.into(),
             bytes: glb_of(model)?,
         })
     };
@@ -69,127 +81,126 @@ pub fn all() -> io::Result<Vec<Asset>> {
         shape("buggy.dts", &buggy::buggy()),
         shape("buggy_wheel.dts", &buggy::wheel()),
         Asset {
-            name: "hills.ter",
+            name: "hills.ter".into(),
             bytes: terrain::hills(),
         },
         Asset {
-            name: "arena.dif",
+            name: "arena.dif".into(),
             bytes: interiors::arena_dif()?,
         },
         Asset {
-            name: "keep.dif",
+            name: "keep.dif".into(),
             bytes: interiors::keep_dif()?,
         },
         Asset {
-            name: "yard.dif",
+            name: "yard.dif".into(),
             bytes: interiors::yard_dif()?,
         },
         Asset {
-            name: "grid.png",
+            name: "grid.png".into(),
             bytes: textures::grid()?,
         },
         Asset {
-            name: "arena_floor.png",
+            name: "arena_floor.png".into(),
             bytes: textures::grid_tinted(textures::SAND)?,
         },
         Asset {
-            name: "arena_wall.png",
+            name: "arena_wall.png".into(),
             bytes: textures::grid_tinted(textures::SLATE)?,
         },
         Asset {
-            name: "figure.png",
+            name: "figure.png".into(),
             bytes: textures::figure()?,
         },
         Asset {
-            name: "pistol.png",
+            name: "pistol.png".into(),
             bytes: textures::pistol()?,
         },
         Asset {
-            name: "projectile.png",
+            name: "projectile.png".into(),
             bytes: textures::projectile()?,
         },
         Asset {
-            name: "spark.png",
+            name: "spark.png".into(),
             bytes: textures::spark()?,
         },
         Asset {
-            name: "hole.png",
+            name: "hole.png".into(),
             bytes: textures::hole()?,
         },
         Asset {
-            name: "hole2.png",
+            name: "hole2.png".into(),
             bytes: textures::hole_of(2)?,
         },
         Asset {
-            name: "hole3.png",
+            name: "hole3.png".into(),
             bytes: textures::hole_of(3)?,
         },
         Asset {
-            name: "flare_star.png",
+            name: "flare_star.png".into(),
             bytes: textures::flare_star()?,
         },
         Asset {
-            name: "smoke.png",
+            name: "smoke.png".into(),
             bytes: textures::smoke()?,
         },
         Asset {
-            name: "checker.png",
+            name: "checker.png".into(),
             bytes: textures::checker()?,
         },
         Asset {
-            name: "buggy.png",
+            name: "buggy.png".into(),
             bytes: textures::buggy()?,
         },
         Asset {
-            name: "track.png",
+            name: "track.png".into(),
             bytes: textures::track()?,
         },
         Asset {
-            name: "dirt.png",
+            name: "dirt.png".into(),
             bytes: textures::dirt()?,
         },
         Asset {
-            name: "tree_bark.png",
+            name: "tree_bark.png".into(),
             bytes: textures::bark()?,
         },
         Asset {
-            name: "tree_bark_red.png",
+            name: "tree_bark_red.png".into(),
             bytes: textures::red_bark()?,
         },
         Asset {
-            name: "tree_bark_birch.png",
+            name: "tree_bark_birch.png".into(),
             bytes: textures::birch_bark()?,
         },
         Asset {
-            name: "tree_pine.png",
+            name: "tree_pine.png".into(),
             bytes: textures::foliage(textures::PINE, 101)?,
         },
         Asset {
-            name: "tree_fir.png",
+            name: "tree_fir.png".into(),
             bytes: textures::foliage(textures::FIR, 113)?,
         },
         Asset {
-            name: "tree_leaves.png",
+            name: "tree_leaves.png".into(),
             bytes: textures::foliage(textures::LEAVES, 131)?,
         },
         Asset {
-            name: "tree_leaves_dark.png",
+            name: "tree_leaves_dark.png".into(),
             bytes: textures::foliage(textures::LEAVES_DARK, 141)?,
         },
         Asset {
-            name: "tree_leaves_light.png",
+            name: "tree_leaves_light.png".into(),
             bytes: textures::foliage(textures::LEAVES_LIGHT, 151)?,
         },
         Asset {
-            name: trees::LINEUP_FILE,
+            name: trees::LINEUP_FILE.into(),
             bytes: trees::lineup_dif()?,
         },
     ];
-    out.extend(
-        trees::chunk_difs()?
-            .into_iter()
-            .map(|(name, bytes)| Asset { name, bytes }),
-    );
+    out.extend(trees::chunk_difs()?.into_iter().map(|(name, bytes)| Asset {
+        name: name.into(),
+        bytes,
+    }));
     Ok(out)
 }
 
@@ -199,7 +210,7 @@ pub fn write_all(dir: &Path) -> io::Result<Vec<PathBuf>> {
     all()?
         .into_iter()
         .map(|a| {
-            let path = dir.join(a.name);
+            let path = dir.join(&a.name);
             std::fs::write(&path, &a.bytes)?;
             Ok(path)
         })
