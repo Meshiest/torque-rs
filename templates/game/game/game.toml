@@ -1,0 +1,7 @@
+# How the engine runs this game; every key is optional.
+
+[game]
+name = "My game"
+# The scripts a server and a client run first.
+server = "server.cs"
+client = "client.cs"

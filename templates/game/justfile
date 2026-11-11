@@ -1,0 +1,20 @@
+set windows-shell := ["powershell", "-NoProfile", "-Command"]
+
+default:
+    @just --list
+
+# The game in a window, with a server of its own
+run:
+    cargo run
+
+# A dedicated server on 127.0.0.1:28000 (`just server 28001` for another port)
+server *args:
+    cargo run -- server {{args}}
+
+# A client with no window: joins the server, plays for five seconds and prints what the client's script said
+client *args:
+    cargo run -- client {{args}}
+
+# A client joins a server and leaves, in one process and with no window
+test:
+    cargo test

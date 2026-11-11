@@ -17,5 +17,7 @@ A game registers its own systems with the engine (console classes and functions,
 file formats, resource loaders) and changes engine behaviour only through those hooks. Tools are build-time features,
 so a shipping build carries none of them.
 
+To start a game of your own, copy `templates/game`: a server, a client and their scripts in about a hundred lines.
+
 The API reference is generated with `cargo doc`; run `just doc` to build it. The [roadmap](roadmap.md) lists what is
 planned.

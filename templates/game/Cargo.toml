@@ -1,0 +1,10 @@
+[package]
+name = "torque-game-template"
+description = "The smallest game on the engine: a dedicated server and a client that connect over the loopback address"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# The engine is not on crates.io: once this folder is copied out, point `torque` at a git or path source and keep the `app` feature.
+[dependencies]
+torque = { path = "../../crates/torque", default-features = false, features = ["app"] }

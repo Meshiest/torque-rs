@@ -119,8 +119,8 @@ pub mod web_join;
 pub mod web_page;
 pub mod window;
 
-use torque_render_core::Gpu;
-use torque_render_scene::source::Eye;
+pub use torque_render_core::Gpu;
+pub use torque_render_scene::source::Eye;
 
 use torque_client::conn::ConnGame;
 use torque_client::conn::tge::TgeConn;

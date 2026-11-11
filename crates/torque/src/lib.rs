@@ -53,9 +53,38 @@
 //!   the world view under the GUI and offscreen pictures (over `torque-render-core`, `torque-render-hd`,
 //!   `torque-render-scene` and winit; the `torque-app` crate).
 //!
+//! `torque::prelude` re-exports what a small game needs, so its `main.rs` has one import; `templates/game` in the repository is
+//! such a game, the smallest one to copy.
+//!
 //! The examples in this crate's `examples/` folder run headless: `cargo run -p torque --example script` (also `shape`,
 //! `collide` and `net`). The `torque-example-minimal` crate (`examples/minimal`) holds a dedicated server and a client built
 //! on this crate, which connect over the loopback address (see the guide's "Server and client" chapter).
+
+/// What a small game imports with one `use torque::prelude::*;`: the engine builder and plugins, a game's files and config,
+/// the dedicated server's start-up, and with the `app` features the default plugins and the client. Each name is also at its
+/// own path; a game that wants more reaches for those.
+pub mod prelude {
+    #[cfg(feature = "engine")]
+    pub use crate::engine::{ClientStage, Engine, EngineBuilder, Plugin, PluginId};
+
+    #[cfg(feature = "app-server")]
+    pub use crate::app_server::config::{EngineConfig, GameConfig};
+    #[cfg(feature = "app-server")]
+    pub use crate::app_server::files::GameFiles;
+    #[cfg(feature = "app-server")]
+    pub use crate::app_server::run::{Dedicated, DedicatedRunnerPlugin, EngineDedicated};
+    #[cfg(feature = "app-server")]
+    pub use crate::app_server::server::{GameServer, Listen, ServerStart};
+
+    #[cfg(feature = "app-core")]
+    pub use crate::app::App;
+    #[cfg(feature = "app-core")]
+    pub use crate::app::client::{ClientBuilder, ClientNet, GameClient};
+    #[cfg(feature = "app-core")]
+    pub use crate::app::plugins::{DefaultPlugins, WindowRunnerPlugin};
+    #[cfg(feature = "app-core")]
+    pub use crate::app::run::EngineRun;
+}
 
 #[cfg(feature = "script")]
 pub mod script {

@@ -4446,6 +4446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "torque-game-template"
+version = "0.1.0"
+dependencies = [
+ "torque",
+]
+
+[[package]]
 name = "torque-ghost-world"
 version = "0.1.0"
 dependencies = [
