@@ -67,8 +67,8 @@ and the NetString events of its new tags in order; the engine's protocol has no 
 built-in RPC `torque.command` (a client's) or `torque.command.client` (a server's), whose single field is the command with the
 texts of its tags. A tag's text travels with every command that names it, so a command that is dropped at a limit leaves no
 later one with a slot that means nothing. A script sees the same argument count, the same tagged strings (`detag` gives the
-same text), the same order and the same `%client` in both protocols (`cargo test -p torque-server --test commands_modes` runs
-one script suite in both and compares what the callbacks logged). What differs:
+same text), the same order and the same `%client` in both protocols (`cargo test -p torque-test-app --test
+server_commands_modes` runs one script suite in both and compares what the callbacks logged). What differs:
 
 - **Limits.** A command is a client's input, so the server holds it twice. The RPC's own bucket (1,024 a second, burst 1,024,
   outside the connection's bucket for plugin RPCs) only bounds what a body costs to read; a call over it is dropped and counted

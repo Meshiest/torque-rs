@@ -3,6 +3,7 @@
 //! `clientScriptOnMessage`, the server's `clientScriptSend` arrives in the realm as an event, and the player's answer is
 //! heard in `clientScriptOnStatus`, each as text the server's script reads and never runs.
 
+#[path = "../../../../crates/torque-plugin-client-script/tests/common/mod.rs"]
 mod common;
 
 use std::cell::RefCell;

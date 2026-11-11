@@ -78,9 +78,9 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
-//! - Every native a full engine registers is in the reviewed list `tests/natives/effects.txt` with the effects it declares,
-//!   and every one with a files, code, engine or permissions effect is refused to a script language
-//!   (`every_native_that_writes_or_evaluates_is_denied_to_languages`). A new native fails it until it is decided.
+//! - Every native a full engine registers is in the reviewed list `tests/app/tests/loader/natives/effects.txt` (torque-test-app's
+//!   `loader_native_effects`, as it needs a whole client) with the effects it declares, and every one with a files, code, engine
+//!   or permissions effect is refused to a script language (`every_native_that_writes_or_evaluates_is_denied_to_languages`). A new native fails it until it is decided.
 //! - A name with a NUL byte on the policy path (a call's namespace and name, a global's name, the names a `schedule`, a
 //!   bind or a variable-writing native takes) is refused whatever the policy, as the engine keeps a name only up to its NUL
 //!   (`lua_cannot_write_engine_globals` in torque-plugin-lua).

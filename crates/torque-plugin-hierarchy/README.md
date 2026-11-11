@@ -27,4 +27,5 @@ each child on its parent.
 In the default plugin groups and on in engine mode; Torque's protocol leaves it out (`HierarchyPlugin::always()` turns it on
 there too). The tree is `torque-hierarchy`; the scene's seam is torque-game's `scene::links`. The book's "Scene hierarchy"
 chapter has the model; the crate docs end with a "Maintaining" section. `cargo test -p torque-plugin-hierarchy --test server`
-runs the server's checks, `--test net` the network's, `--test ride` and `--test turret` the prediction's.
+runs the server's checks, `--test ride` and `--test turret` the prediction's; the network's, which need a whole client, are
+`cargo test -p torque-test-app --test hierarchy_net` (tests/app).

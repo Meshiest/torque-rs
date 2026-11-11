@@ -102,9 +102,9 @@ splits, one `onReceive` at a time, each line an `onLine`. The end of a connectio
 - A hostile peer never stalls a pass: a line that never ends, an endless stream, a slow drip, a flood of empty lines
   (`tests/hostile.rs`, each pass timed).
 - HTTPS checks the certificate (`tests/https.rs`: a trusted test root passes, no roots fails as `onConnectFailed`).
-- Both sides tick their own sockets (`tests/sides.rs`, a real server and client).
+- Both sides tick their own sockets (torque-test-app's `tcp_sides`, a real server and client).
 - The pages of the script reference list the classes (`just script-reference-check`), and the methods that reach the network
-  declare `Effects::NETWORK` (torque-plugin-loader's `native_effects` test).
+  declare `Effects::NETWORK` (torque-test-app's `loader_native_effects` test).
 
 **Extension points.** `TcpPlugin::with_limits`, `with_resolver` (a test's or a game's own lookups) and `with_tls_config` (a
 game's own roots, built with `client_config`). `poll` is public for a host that runs its own loop. A new callback is a

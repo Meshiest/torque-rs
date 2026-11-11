@@ -9,5 +9,5 @@ build:
 
 # The sample extension's picture compiled in (`<dir>/compiled`) and loaded as a library (`<dir>/loaded`), then shots-diff
 shots $TORQUE_NATIVE_EXT_SHOTS="target/native-ext-shots":
-    cargo test --manifest-path ../../Cargo.toml -p torque-plugin-loader --features render --test pictures
+    cargo test --manifest-path ../../Cargo.toml -p torque-test-app --features render --test loader_pictures
     just --justfile ../justfile --working-directory ../.. shots-diff "{{TORQUE_NATIVE_EXT_SHOTS}}/compiled" "{{TORQUE_NATIVE_EXT_SHOTS}}/loaded"

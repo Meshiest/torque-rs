@@ -4633,11 +4633,9 @@ name = "torque-plugin-client-script"
 version = "0.1.0"
 dependencies = [
  "png",
- "torque",
  "torque-client-script-format",
  "torque-client-script-host",
  "torque-engine",
- "torque-example-minimal-engine",
  "torque-fonts",
  "torque-ghosts",
  "torque-gui",
@@ -4655,10 +4653,8 @@ version = "0.1.0"
 dependencies = [
  "gilrs",
  "js-sys",
- "torque-app",
  "torque-client",
  "torque-engine",
- "torque-ts-vm",
  "wasm-bindgen",
  "web-sys",
 ]
@@ -4668,11 +4664,9 @@ name = "torque-plugin-gui-layout"
 version = "0.1.0"
 dependencies = [
  "taffy",
- "torque-app",
  "torque-client-script-format",
  "torque-engine",
  "torque-gui",
- "torque-render-core",
  "torque-ts-vm",
 ]
 
@@ -4680,9 +4674,7 @@ dependencies = [
 name = "torque-plugin-hierarchy"
 version = "0.1.0"
 dependencies = [
- "torque-app",
  "torque-app-server",
- "torque-client",
  "torque-collide",
  "torque-engine",
  "torque-example-assets",
@@ -4692,8 +4684,6 @@ dependencies = [
  "torque-hierarchy",
  "torque-net",
  "torque-plugin-props",
- "torque-render-core",
- "torque-render-scene",
  "torque-server",
  "torque-shapes",
  "torque-trace-hash",
@@ -4714,14 +4704,9 @@ dependencies = [
  "torque-app-server",
  "torque-engine",
  "torque-plugin-abi",
- "torque-plugin-gui-layout",
- "torque-plugin-props",
- "torque-plugin-rope",
  "torque-plugin-sdk",
- "torque-plugin-tcp",
  "torque-render-core",
  "torque-render-hd",
- "torque-render-scene",
  "torque-ts-vm",
  "wasm-bindgen",
 ]
@@ -4802,7 +4787,6 @@ dependencies = [
  "rcgen 0.13.2",
  "rustls",
  "rustls-native-certs",
- "torque-app",
  "torque-engine",
  "torque-ts-vm",
 ]
@@ -4905,8 +4889,6 @@ dependencies = [
  "rustls",
  "sha1",
  "str0m",
- "torque-app",
- "torque-client",
  "torque-collide",
  "torque-engine",
  "torque-game",
@@ -4944,6 +4926,41 @@ dependencies = [
  "criterion",
  "stats_alloc",
  "torque-collide",
+]
+
+[[package]]
+name = "torque-test-app"
+version = "0.1.0"
+dependencies = [
+ "torque",
+ "torque-app",
+ "torque-client",
+ "torque-client-script-format",
+ "torque-client-script-host",
+ "torque-collide",
+ "torque-engine",
+ "torque-example-assets",
+ "torque-example-minimal-engine",
+ "torque-game",
+ "torque-ghost-world",
+ "torque-ghosts",
+ "torque-gui",
+ "torque-mods",
+ "torque-net",
+ "torque-plugin-client-script",
+ "torque-plugin-gamepad",
+ "torque-plugin-gui-layout",
+ "torque-plugin-hierarchy",
+ "torque-plugin-loader",
+ "torque-plugin-props",
+ "torque-plugin-rope",
+ "torque-plugin-sdk",
+ "torque-plugin-tcp",
+ "torque-render-core",
+ "torque-render-scene",
+ "torque-server",
+ "torque-shapes",
+ "torque-ts-vm",
 ]
 
 [[package]]

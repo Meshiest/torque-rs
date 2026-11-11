@@ -1,5 +1,7 @@
 //! What the loader's tests share: the sample extension built on its own (examples/native-extension), folders to load it
 //! from, and the same plugin compiled into the engine.
+//! tests/app (`torque-test-app`) also compiles this file through `#[path]`: a new dev-dependency here must be added there too, it
+//! relies on tests/app sitting as deep as crates/<name> (`CARGO_MANIFEST_DIR/../..`), and `render` reads that crate's feature.
 
 #![allow(dead_code)]
 

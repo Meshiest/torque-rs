@@ -39,7 +39,7 @@
 //! block's mask bits (`torque_ghosts::block::BLOCK_MASK`) and never keeps them; without a writer `TgeSource` packs, scopes, ranks
 //! and stamps exactly as before (the `tge` lines of `just trace-hash`, the wire goldens). With one, its links' revision moves
 //! the source's `scope_stamp`, so a settled query never misses a relative that was just linked
-//! (torque-plugin-hierarchy's `tests/net.rs`).
+//! (torque-test-app's `hierarchy_net`).
 //!
 //! **A command in the engine's protocol costs what a packet's costs** (`net::command_rpc`): the RPC's bucket bounds what a body costs to
 //! read, a body that is not one ends the connection, every command goes through the same gates and limits as a packet's

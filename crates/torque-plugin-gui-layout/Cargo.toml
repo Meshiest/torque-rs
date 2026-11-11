@@ -23,10 +23,5 @@ torque-engine = { path = "../torque-engine" }
 torque-gui = { path = "../torque-gui" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
-[dev-dependencies]
-# The tests' clients (the GUI plugin gives each its controls) and the offscreen pictures.
-torque-app = { path = "../torque-app", features = ["renderer"] }
-torque-render-core = { path = "../torque-render-core" }
-
 [lints]
 workspace = true

@@ -8,6 +8,7 @@
 // The panicking pass is linked in through its entry point.
 #![allow(unsafe_code)]
 
+#[path = "../../../../crates/torque-plugin-loader/tests/common/mod.rs"]
 mod common;
 
 use std::path::PathBuf;

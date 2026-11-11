@@ -1,5 +1,5 @@
 //! Every native a full engine registers, with the effects it declares, against the reviewed list in
-//! `tests/natives/effects.txt`; and the call policy against those effects.
+//! `tests/loader/natives/effects.txt`; and the call policy against those effects.
 //!
 //! A new native, or one whose effects changed, fails this test until its line is in the list. Before adding it, decide:
 //! a native that opens, writes or deletes files, runs code from text or a function it names, switches mods, deletes every
@@ -112,7 +112,7 @@ fn every_native_that_writes_or_evaluates_is_denied_to_languages() {
         .map(|(shown, effects)| format!("{shown} {effects}\n"))
         .collect();
     check_listing(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/natives/effects.txt"),
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/loader/natives/effects.txt"),
         &listing,
     );
 }

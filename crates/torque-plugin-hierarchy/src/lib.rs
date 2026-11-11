@@ -106,7 +106,7 @@
 //! for a Player that sends no position. A peer of Torque's own gets the data of a server with no hierarchy, bit for bit:
 //! `a_torque_peer_gets_the_control_data_of_a_server_without_the_hierarchy`.
 //!
-//! **Network invariants**, in `tests/net.rs` and `tests/net_fuzz.rs`:
+//! **Network invariants**, in torque-test-app's `hierarchy_net` (tests/app: it needs a whole client) and `tests/net_fuzz.rs`:
 //! - A client draws every child within a millimetre of the server's world over 600 ticks with a fifth of the datagrams lost:
 //!   `every_childs_client_world_is_within_a_millimetre_of_the_servers_under_loss`; the renderer as well:
 //!   `the_renderer_draws_each_child_where_the_server_has_it`.
@@ -131,7 +131,8 @@
 //!   `a_childs_first_record_ahead_of_its_parents_is_linked_once_the_parent_is_scoped` (`ObjectSource::marks_on_ghost`).
 //! - A parent's first record ranks ahead of its children's, its later updates get no more (`first_record_bonus`; torque-net's
 //!   `a_first_record_bonus_counts_for_the_first_record_alone`).
-//! - `tests/pictures.rs` draws a three-level hierarchy offscreen (`TORQUE_HIERARCHY_PICTURES=<folder>` keeps the PNGs).
+//! - torque-test-app's `hierarchy_pictures` draws a three-level hierarchy offscreen (`TORQUE_HIERARCHY_PICTURES=<folder>`
+//!   keeps the PNGs).
 //!
 //! **Anchors on children.** A rope end hung from a child ghost follows `ClientWorld::world_pose` (through the client's
 //! `ClientGhostLookup`): `torque-plugin-rope`'s `tests/hierarchy_anchor.rs`. A joint's anchor on a Player child is where the
@@ -172,10 +173,11 @@
 //! A class adds its own rule with `torque_game::scene::links::add_child_rule`; the first refusal is the link's. Tests:
 //! `refused_class` (a rule's two reasons), `a_prop_may_be_a_child_and_a_parent`.
 //!
-//! **Checks.** `cargo test -p torque-plugin-hierarchy`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p
+//! **Checks.** `cargo test -p torque-plugin-hierarchy`; `cargo test -p torque-test-app --test hierarchy_net --test
+//! hierarchy_pictures`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p
 //! torque-plugin-hierarchy --release --test net_fuzz`; `cargo clippy -p torque-plugin-hierarchy --all-targets -- -D
-//! warnings`; `just trace-hash` (the `tge` lines unchanged); the wire goldens; the native effects listing of
-//! torque-plugin-loader.
+//! warnings`; `just trace-hash` (the `tge` lines unchanged); the wire goldens; the native effects listing
+//! (torque-test-app's `loader_native_effects`).
 
 pub mod natives;
 pub mod server;

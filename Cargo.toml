@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "examples/*", "templates/*", "tests/web/*"]
+members = ["crates/*", "examples/*", "templates/*", "tests/app", "tests/web/*"]
 # The examples' pictures (`examples/README.md`'s), not a crate; the native extension sample, the C header's generator and the
 # Lua extension, each built on its own (their own workspaces). The Lua extension builds Luau's C++ sources, so it stays out
 # of this workspace: `cargo build` here, with any features, needs no C++ compiler.

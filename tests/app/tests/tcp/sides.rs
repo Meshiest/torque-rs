@@ -1,5 +1,6 @@
 //! The plugin in a real server and a real client: both have the classes, and their own ticks service the sockets.
 
+#[path = "../../../../crates/torque-plugin-tcp/tests/common/mod.rs"]
 mod common;
 
 use std::net::{Ipv4Addr, SocketAddr};

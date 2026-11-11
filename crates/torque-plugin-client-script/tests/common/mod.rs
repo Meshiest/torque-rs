@@ -1,5 +1,6 @@
 //! The tests' client and server, joined by the RPC lanes (no network): a client script engine with a GUI, a `ClientRpc` and a
 //! `Realms`, a server script engine, and one server-side `RpcLink` standing for the client's connection.
+//! tests/app (`torque-test-app`) also compiles this file through `#[path]`: a new dev-dependency here must be added there too.
 #![allow(dead_code)]
 
 use std::cell::{Cell, RefCell};

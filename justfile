@@ -206,9 +206,9 @@ client-script-test:
     cargo test -p torque-plugin-client-script
     cargo test -p torque-mods client_script
     cargo test -p torque-gui client_script
-    cargo test -p torque-plugin-gui-layout --test realm
-    cargo clippy -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout --all-targets -- -D warnings
-    cargo fmt -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout --check
+    cargo test -p torque-test-app --test gui_layout_realm --test client_script_end_to_end
+    cargo clippy -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout -p torque-test-app --all-targets -- -D warnings
+    cargo fmt -p torque-client-script-format -p torque-plugin-client-script -p torque-mods -p torque-gui -p torque-plugin-gui-layout -p torque-test-app --check
 
 # The SHA-256 of the realm guest `lua-client-web` built, and the line a release adds to ACCEPTED_CLIENT_GUESTS (the engine runs
 # only guests it lists)
@@ -238,7 +238,7 @@ client-script-fuzz:
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-plugin-client-script -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-gui client_script -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-client-script-format -- --nocapture
-    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-plugin-gui-layout --test realm -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-test-app --test gui_layout_realm --test client_script_end_to_end -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script hostile_lua -- --nocapture
 
 # The time a realm costs a frame (crates/torque-plugin-client-script/tests/bench.rs): the real guest under Wasmtime in a client's

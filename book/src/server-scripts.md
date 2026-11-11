@@ -181,9 +181,9 @@ The justfile's `client-script-check` is the whole suite, and its output is the e
 - **Authority** (`tests/authority.rs`): a hostile realm that makes no calls leaves the bytes the client sends the server over 600
   frames, and the server's script state, equal to an idle realm's, for every set of granted abilities; one that makes calls changes
   the server only inside the handlers the game registered, which the test counts.
-- **End to end** (`tests/end_to_end.rs`): a whole server and client of the engine's own over the memory transport: a realm's message
-  arrives in `clientScriptOnMessage` as text that nothing runs, `clientScriptSend` arrives in the realm, and the answer is heard in
-  `clientScriptOnStatus`.
+- **End to end** (torque-test-app's `client_script_end_to_end`): a whole server and client of the engine's own over the memory
+  transport: a realm's message arrives in `clientScriptOnMessage` as text that nothing runs, `clientScriptSend` arrives in the
+  realm, and the answer is heard in `clientScriptOnStatus`.
 - **Fuzzing** (seeded, `TORQUE_CLIENT_SCRIPT_FUZZ` set for the full counts): the message decoder 1,000,000 cases both ways, the
   Lua-to-arguments converter 300,000, the rich-text reader 300,000, the format's props reader 300,000 and the applier 100,000 sequences (with and without a layout, half
   the controls containers), and a seeded run of random container ops against the layout plugin's real classes, all with no panic and every

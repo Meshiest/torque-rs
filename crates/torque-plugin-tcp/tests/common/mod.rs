@@ -1,5 +1,6 @@
 //! What the loopback tests share: a script engine with the plugin, a pump that ticks it until a condition holds, and peers on
 //! 127.0.0.1 at ports the system picks. No test reaches past the loopback.
+//! tests/app (`torque-test-app`) also compiles this file through `#[path]`: a new dev-dependency here must be added there too.
 
 #![allow(dead_code, reason = "each test file uses its own part of the helpers")]
 

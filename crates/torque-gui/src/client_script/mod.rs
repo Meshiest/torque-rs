@@ -141,7 +141,7 @@
 //! - Without a layout a container is a transparent group that places nothing and writes no field, and with one it is invisible to
 //!   drawing and input (it has no `NodeState`, so no hit and no quad):
 //!   `client_script_without_a_layout_a_container_is_a_plain_group`, `client_script_a_container_is_transparent_to_input_and_adds_no_look`.
-//!   The layout plugin's own tests drive the real classes (`torque-plugin-gui-layout`, `tests/realm.rs`).
+//!   The layout plugin's own tests drive the real classes (torque-test-app's `gui_layout_realm`).
 //! - The caps hold, per control and in all: `client_script_the_caps_hold`, `client_script_images_and_text_are_counted_across_the_realm`.
 //! - The realm's controls look as they did, and a frame drawn from kept draws is the list a cache that drew nothing draws, after
 //!   every kind of change: `the_realm_controls_look_as_pinned` and `the_realm_containers_look_as_pinned` (a pinned hash of a software

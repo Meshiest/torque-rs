@@ -1,0 +1,172 @@
+[package]
+name = "torque-test-app"
+description = "The server's and the plugins' tests that need a whole client (torque-app), so those crates' own tests build without wgpu"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "test"]
+categories = ["game-development"]
+
+# Only tests: each one drives a real server and client from torque-app (`DefaultPlugins`, `ClientBuilder`, `GameServer`) or
+# draws offscreen, so it lives here rather than in the crate it checks. A crate's tests that need no client stay in that crate.
+# The tests are grouped by that crate, one folder each, and named after it (`hierarchy_net`, `loader_native_effects`).
+autotests = false
+
+[features]
+# The native extension loader's render passes and its pictures test (`loader_pictures`), which builds the sample extension
+# (examples/native-extension) with its own cargo.
+render = ["dep:torque-plugin-loader"]
+
+[dependencies]
+# Only for `render`: the loader with its render passes (the tests' loader is the dev-dependency below).
+torque-plugin-loader = { path = "../../crates/torque-plugin-loader", optional = true, features = ["render"] }
+
+[dev-dependencies]
+# The client and server of every test, and the offscreen pictures.
+torque-app = { path = "../../crates/torque-app" }
+torque-client = { path = "../../crates/torque-client" }
+torque-collide = { path = "../../crates/torque-collide" }
+torque-engine = { path = "../../crates/torque-engine", features = ["testing"] }
+torque-game = { path = "../../crates/torque-game" }
+torque-ghost-world = { path = "../../crates/torque-ghost-world" }
+torque-gui = { path = "../../crates/torque-gui" }
+torque-net = { path = "../../crates/torque-net" }
+torque-render-core = { path = "../../crates/torque-render-core" }
+torque-render-scene = { path = "../../crates/torque-render-scene" }
+torque-server = { path = "../../crates/torque-server" }
+torque-shapes = { path = "../../crates/torque-shapes" }
+torque-ts-vm = { path = "../../crates/torque-ts-vm" }
+# The hierarchy's network tests' world: the floor, the figure and the cube.
+torque-example-assets = { path = "../../examples/assets" }
+# The plugins under test, and every plugin with natives for the loader's list of them.
+torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad" }
+torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
+torque-plugin-hierarchy = { path = "../../crates/torque-plugin-hierarchy" }
+torque-plugin-loader = { path = "../../crates/torque-plugin-loader" }
+torque-plugin-props = { path = "../../crates/torque-plugin-props", features = ["rope"] }
+torque-plugin-rope = { path = "../../crates/torque-plugin-rope" }
+torque-plugin-sdk = { path = "../../crates/torque-plugin-sdk" }
+torque-plugin-tcp = { path = "../../crates/torque-plugin-tcp" }
+# The client-script end-to-end test: the engine's own server and client over the memory transport, with the realm's host.
+torque = { path = "../../crates/torque", default-features = false, features = ["app", "mods"] }
+torque-client-script-format = { path = "../../crates/torque-client-script-format" }
+torque-client-script-host = { path = "../../crates/torque-client-script-host", features = [
+    "ui",
+    "net",
+    "unreviewed-tiers",
+    "wasmtime",
+] }
+torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
+torque-ghosts = { path = "../../crates/torque-ghosts" }
+torque-mods = { path = "../../crates/torque-mods" }
+torque-plugin-client-script = { path = "../../crates/torque-plugin-client-script" }
+
+# torque-server: script commands between a real client and a real server, in both network protocols.
+[[test]]
+name = "server_commands_modes"
+path = "tests/server/commands_modes.rs"
+
+# torque-plugin-tcp: both sides tick their own sockets.
+[[test]]
+name = "tcp_sides"
+path = "tests/tcp/sides.rs"
+
+# torque-plugin-gui-layout: the GUI plugin's controls on a client, its pictures and the realm's containers.
+[[test]]
+name = "gui_layout"
+path = "tests/gui_layout/layout.rs"
+
+[[test]]
+name = "gui_layout_pictures"
+path = "tests/gui_layout/pictures.rs"
+
+[[test]]
+name = "gui_layout_realm"
+path = "tests/gui_layout/realm.rs"
+
+# torque-plugin-loader: every native a full engine registers, and the sample extension's render passes drawn.
+[[test]]
+name = "loader_native_effects"
+path = "tests/loader/native_effects.rs"
+
+[[test]]
+name = "loader_pictures"
+path = "tests/loader/pictures.rs"
+required-features = ["render"]
+
+# torque-plugin-hierarchy: the network's invariants and a three-level hierarchy drawn.
+[[test]]
+name = "hierarchy_net"
+path = "tests/hierarchy/net.rs"
+
+[[test]]
+name = "hierarchy_pictures"
+path = "tests/hierarchy/pictures.rs"
+
+# torque-plugin-gamepad: a script bound to the fake pads on a client.
+[[test]]
+name = "gamepad_bind"
+path = "tests/gamepad/bind.rs"
+
+[[test]]
+name = "gamepad_sampled"
+path = "tests/gamepad/sampled.rs"
+
+# torque-plugin-client-script: a realm's messages end to end.
+[[test]]
+name = "client_script_end_to_end"
+path = "tests/client_script/end_to_end.rs"
+
+[lints.rust]
+# The workspace's, with `unsafe_code` at `deny`, not `forbid`: `loader_pictures` allows it for the extension entry point it
+# links in (`torque_plugin_sdk::init_fn!`).
+unsafe_code = "deny"
+non_ascii_idents = "forbid"
+explicit_outlives_requirements = "warn"
+keyword_idents = { level = "warn", priority = -1 }
+meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unit_bindings = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
+unused_macro_rules = "warn"
+
+[lints.clippy]
+# Left-over debugging and placeholders.
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# Idioms.
+checked_conversions = "warn"
+cloned_instead_of_copied = "warn"
+explicit_into_iter_loop = "warn"
+filter_map_next = "warn"
+flat_map_option = "warn"
+get_unwrap = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+invalid_upcast_comparisons = "warn"
+manual_assert = "warn"
+manual_is_variant_and = "warn"
+manual_ok_or = "warn"
+mut_mut = "warn"
+needless_bitwise_bool = "warn"
+ref_binding_to_reference = "warn"
+ref_option_ref = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+should_panic_without_expect = "warn"
+stable_sort_primitive = "warn"
+string_add_assign = "warn"
+string_lit_chars_any = "warn"
+unnecessary_join = "warn"
+unnecessary_self_imports = "warn"
+unnested_or_patterns = "warn"
+verbose_file_reads = "warn"
+zero_sized_map_values = "warn"
+# Process control belongs to the host, never to a library.
+exit = "warn"
+mem_forget = "warn"
