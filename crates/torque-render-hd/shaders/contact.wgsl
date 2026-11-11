@@ -22,22 +22,8 @@
 const CONTACT_LENGTH: f32 = 0.6;
 const CONTACT_THICKNESS: f32 = 0.1;
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 fn size() -> vec2<i32> {
     return vec2<i32>(textureDimensions(depth));
-}
-
-// The view-space point at pixel `px` with reversed depth `d`.
-fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
-    let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
-    let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
-    return p.xyz / p.w;
 }
 
 fn depth_at(px: vec2<i32>) -> f32 {

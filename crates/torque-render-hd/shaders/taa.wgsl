@@ -88,13 +88,6 @@ struct TaaOut {
     @location(1) shown: vec4<f32>,
 };
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 fn to_ycocg(c: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(
         0.25 * c.r + 0.5 * c.g + 0.25 * c.b,

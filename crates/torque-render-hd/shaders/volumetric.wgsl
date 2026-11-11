@@ -26,13 +26,6 @@
 @group(2) @binding(3) var transmittance_lut: texture_2d<f32>;
 @group(2) @binding(4) var sky_linear: sampler;
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 // The world point of an internal pixel at reversed depth d (the unjittered inverse: half a pixel off at most).
 fn world_at(px: vec2<f32>, d: f32) -> vec3<f32> {
     let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);

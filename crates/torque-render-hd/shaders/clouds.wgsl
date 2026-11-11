@@ -161,13 +161,6 @@ const ELEMENT_BEND: f32 = 3.0;
 // about x - 0.08 (element_present).
 const ELEMENT_PATCHES: vec4<f32> = vec4<f32>(0.18, 0.32, 0.7, 0.86);
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 fn cloud_remap(v: f32, lo: f32, hi: f32) -> f32 {
     return (v - lo) / max(hi - lo, 1e-5);
 }

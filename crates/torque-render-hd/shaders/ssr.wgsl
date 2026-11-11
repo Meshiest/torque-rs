@@ -32,20 +32,6 @@
 
 const HIZ_TOP: i32 = 7;
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-// The view-space point at internal pixel `px` (continuous) with reversed depth `d`.
-fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
-    let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
-    let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
-    return p.xyz / p.w;
-}
-
 // A view-space point in internal pixels and reversed depth.
 fn to_screen(p: vec3<f32>) -> vec3<f32> {
     let c = frame.proj * vec4<f32>(p, 1.0);

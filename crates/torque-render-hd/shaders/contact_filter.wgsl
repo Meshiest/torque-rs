@@ -46,20 +46,6 @@ fn tent_at(x: i32, y: i32, penumbra: f32) -> f32 {
     return select(1.0, 0.5, ax == RADIUS) * select(1.0, 0.5, ay == RADIUS);
 }
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-// The view-space point at pixel position `px` with reversed depth `d`.
-fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
-    let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
-    let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
-    return p.xyz / p.w;
-}
-
 fn view_normal(px: vec2<i32>) -> vec3<f32> {
     return normalize((frame.view * vec4<f32>(oct_decode(textureLoad(normals, px, 0).xy), 0.0)).xyz);
 }

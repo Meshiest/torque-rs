@@ -20,20 +20,6 @@ const RADIUS: i32 = 2;
 const PLANE_TOL: vec2<f32> = vec2<f32>(0.01, 0.004);
 const NORMAL_COS: vec2<f32> = vec2<f32>(0.8, 0.95);
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
-// The view-space point at pixel position `px` with reversed depth `d`.
-fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
-    let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
-    let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
-    return p.xyz / p.w;
-}
-
 // The internal pixel AO texel `t` stands for (the top left of its block).
 fn rep(t: vec2<i32>) -> vec2<i32> {
     let scale = i32(max(frame.ao.w, 1.0));

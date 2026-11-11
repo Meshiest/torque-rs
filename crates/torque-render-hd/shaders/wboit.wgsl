@@ -17,13 +17,6 @@ struct Composite {
 @group(0) @binding(2) var accum_tex: texture_2d<f32>;
 @group(0) @binding(3) var reveal_tex: texture_2d<f32>;
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 fn to_gamma(c: vec3<f32>) -> vec3<f32> {
     let x = max(c, vec3<f32>(0.0));
     return select(1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - 0.055, x * 12.92, x <= vec3<f32>(0.0031308));

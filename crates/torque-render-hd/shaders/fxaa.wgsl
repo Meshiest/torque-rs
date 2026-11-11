@@ -16,13 +16,6 @@ const EDGE_REL: f32 = 0.125;
 const SUBPIXEL: f32 = 0.75;
 const SEARCH: u32 = 8u;
 
-@vertex
-fn vs_full(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
-    let x = f32((i << 1u) & 2u);
-    let y = f32(i & 2u);
-    return vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-}
-
 fn luma_of(c: vec3<f32>) -> f32 {
     let l = dot(max(c, vec3<f32>(0.0)), vec3<f32>(0.2126, 0.7152, 0.0722));
     return sqrt(l / (1.0 + l));

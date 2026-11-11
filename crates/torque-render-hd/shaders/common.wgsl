@@ -147,6 +147,13 @@ fn linear_depth(d: f32) -> f32 {
     return n * f / (n + d * (f - n));
 }
 
+// The view-space point at pixel position `px` (continuous, internal pixels) with reversed depth `d`.
+fn view_point(px: vec2<f32>, d: f32) -> vec3<f32> {
+    let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
+    let p = frame.inv_proj * vec4<f32>(ndc, d, 1.0);
+    return p.xyz / p.w;
+}
+
 // Octahedral encoding (the inverse of oct_decode).
 fn oct_encode(n: vec3<f32>) -> vec2<f32> {
     let l1 = abs(n.x) + abs(n.y) + abs(n.z);

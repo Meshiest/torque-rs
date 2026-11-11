@@ -3,7 +3,7 @@
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 31] = [
+pub const FILES: [(&str, &str); 32] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
@@ -50,6 +50,10 @@ pub const FILES: [(&str, &str); 31] = [
         include_str!("../shaders/shadowcommon.wgsl"),
     ),
     ("sunshadow.wgsl", include_str!("../shaders/sunshadow.wgsl")),
+    (
+        "fullscreen.wgsl",
+        include_str!("../shaders/fullscreen.wgsl"),
+    ),
 ];
 
 /// An extension's WGSL, composed into the renderer's modules: its uniforms' blocks, its hooks and its own entry points (the
@@ -237,6 +241,8 @@ impl Permutation {
             file("shadowcommon.wgsl"),
             ext.common
         );
+        // The full-target triangle's vertex entry point, for the passes that draw one.
+        let full = file("fullscreen.wgsl");
         // The surface helpers and the extension's hooks come before the forward pass's functions.
         let forward = &format!(
             "{}\n{}\n{}\n{}\n{}",
@@ -279,55 +285,60 @@ impl Permutation {
                 file("water.wgsl")
             ),
             Permutation::Hiz => file("hiz.wgsl").to_string(),
-            Permutation::Ssr => format!("{}\n{}", common, file("ssr.wgsl")),
+            Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),
             Permutation::Down => file("down.wgsl").to_string(),
             Permutation::Clusters => format!("{}\n{}", common, file("clusters.wgsl")),
-            Permutation::Tonemap => file("tonemap.wgsl").to_string(),
+            Permutation::Tonemap => format!("{}\n{}", full, file("tonemap.wgsl")),
             Permutation::Shadow { unclipped } => format!(
                 "const UNCLIPPED: bool = {unclipped};\n{}\n{}",
                 file("shadow.wgsl"),
                 ext.shadow
             ),
             Permutation::Contact => format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
                 common,
+                full,
                 file("sunshadow.wgsl"),
                 file("contact.wgsl")
             ),
             Permutation::ContactFilter => {
-                format!("{}\n{}", common, file("contact_filter.wgsl"))
+                format!("{}\n{}\n{}", common, full, file("contact_filter.wgsl"))
             }
             Permutation::Ao { gtao } => format!(
-                "const GTAO: bool = {gtao};\n{}\n{}",
+                "const GTAO: bool = {gtao};\n{}\n{}\n{}",
                 common,
+                full,
                 file("ao.wgsl")
             ),
-            Permutation::AoFilter => format!("{}\n{}", common, file("ao_filter.wgsl")),
-            Permutation::Taa => format!("{}\n{}", common, file("taa.wgsl")),
-            Permutation::Fxaa => file("fxaa.wgsl").to_string(),
+            Permutation::AoFilter => format!("{}\n{}\n{}", common, full, file("ao_filter.wgsl")),
+            Permutation::Taa => format!("{}\n{}\n{}", common, full, file("taa.wgsl")),
+            Permutation::Fxaa => format!("{}\n{}", full, file("fxaa.wgsl")),
             Permutation::Atmosphere => {
                 format!("{}\n{}", file("skycommon.wgsl"), file("atmosphere.wgsl"))
             }
             Permutation::Sky => format!(
-                "{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
                 common,
+                full,
                 file("skycommon.wgsl"),
                 file("sky.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::Volumetric => format!(
-                "{}\n{}\n{}\n{}",
+                "{}\n{}\n{}\n{}\n{}",
                 common,
+                full,
                 file("skycommon.wgsl"),
                 file("volumetric.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::Bloom => file("bloom.wgsl").to_string(),
             Permutation::Exposure => file("exposure.wgsl").to_string(),
-            Permutation::Wboit => file("wboit.wgsl").to_string(),
+            Permutation::Wboit => format!("{}\n{}", full, file("wboit.wgsl")),
             Permutation::Clouds => format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
                 common,
+                full,
                 file("skycommon.wgsl"),
                 file("clouds.wgsl")
             ),
