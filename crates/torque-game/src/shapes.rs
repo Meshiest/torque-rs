@@ -811,7 +811,7 @@ enum OnFailure {
 }
 
 /// The behaviour of one shape class: its preload loads the shape its field names. `on_add` is another behaviour
-/// of the same class (a class has one), run first.
+/// of the same class (a class has one), run first; its `preload` runs after the shape's (a redeclare's checks again).
 struct ShapeLoad {
     field: &'static [u8],
     shapes: Rc<Shapes>,
@@ -839,7 +839,11 @@ impl EngineClass for ShapeLoad {
             .shapes
             .load_named(vm, id, self.field)
             .map_err(PreloadError::Vm)?;
-        self.after_load(vm, id, &path, loaded)
+        self.after_load(vm, id, &path, loaded)?;
+        match &self.on_add {
+            Some(behaviour) => behaviour.preload(vm, id),
+            None => Ok(()),
+        }
     }
 }
 
@@ -984,7 +988,10 @@ pub fn register(vm: &mut Vm) -> Rc<Shapes> {
             "ShapeBaseData" => (OnFailure::ShapeBase, None),
             "ExplosionData" => (
                 OnFailure::CouldntLoad,
-                Some(crate::dbvalues::rules::rules(vm).explosion()),
+                Some(crate::dbvalues::revalidated(
+                    &shapes.values,
+                    crate::dbvalues::rules::rules(vm).explosion(),
+                )),
             ),
             "ShapeBaseImageData" => (
                 OnFailure::Image,

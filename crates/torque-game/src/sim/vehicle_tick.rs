@@ -182,6 +182,7 @@ pub fn tick(
     put_vitals(vm, id, body.s());
     if let Some(e) = ext_mut(vm, id) {
         e.body = Some(body);
+        e.last_data = Some(d);
     }
     flush_mask(vm, id);
     let released = vm.release(id);

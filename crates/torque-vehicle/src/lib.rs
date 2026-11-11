@@ -24,6 +24,18 @@
 //! **Caps.** [`tick::MAX_SUBSTEPS`] bounds `integration`, which the datablock leaves unclamped;
 //! [`state::MAX_COLLISION_QUEUE`] bounds the collision list; fixed limits are 200 entries and 50 passes in
 //! `resolveCollision`, 64 collisions, 8 wheels and 16 GJK iterations; `collide`'s caps bound the sets.
+//!
+//! # Maintaining
+//!
+//! **The datablock's words on the body.** `VehicleState::on_new_data_block` (mass, drag, `1/mass`, friction, restitution, the
+//! center of mass, the diagonal inertia) and [`wheeled::rigid_from_data`] (the same, then the box inertia from `massBox` or the
+//! object box) are the one place the rigid body takes the datablock: `VehicleState::new`, the wheeled `on_new_data_block` and a
+//! host's refresh of a datablock edited under its vehicles all run them, so a new datablock field the body reads goes there and
+//! nowhere else. They keep the pose and the momenta; the velocity follows the new mass at the next `integrate`.
+//! [`wheeled::on_new_data_block`] adds the wheels' reset (tires and springs cleared, as `setDataBlock` does); a host that
+//! refreshes a vehicle in place saves and puts back the fittings around it. The host's differential tests (torque-server's
+//! `datablock_reload`: a vehicle refreshed in place equals one built fresh, 0 differing words over 100 seeded edits) hold the
+//! split. Check: `cargo test -p torque-vehicle`.
 
 // Comparisons are written so that a NaN takes a fixed side: a negated one is the intended form (`!(a >= b)` is "below, or
 // unordered"), as in `collide` and `sim`.

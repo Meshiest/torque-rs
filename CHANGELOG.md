@@ -18,8 +18,14 @@ different.
 - A datablock edited while the server runs (a field written, or the datablock declared again) refreshes the objects built from
   it at the next tick, where TGE leaves them stale until the mission loads again: one coalesced refresh per user per tick, light
   for a write (the fields an object copied) and whole for a redeclare (`onNewDataBlock` again, script threads kept by sequence
-  name and position), for ShapeBase, StaticShape, Item and Player; a game's class registers its own on `EngineClass::datablock_changed`
-  (`#[class(refresh = ..)]` on a plugin class), and `%db.onReloaded()` runs after a refresh. The book's "Live datablocks" chapter.
+  name and position), for ShapeBase, StaticShape, Item, Player and the vehicles (the rigid body's words with the pose and momenta
+  kept, the wheel records, the fittings kept); a game's class registers its own on `EngineClass::datablock_changed`
+  (`#[class(refresh = ..)]` on a plugin class; `PropData` refits its props at their exact pose and velocities), and
+  `%db.onReloaded()` runs after a refresh. A redeclared `ExplosionData`, `DebrisData`, `ParticleData`, `ParticleEmitterData`,
+  `AudioDescription` or `AudioProfile` runs its range checks again (TGE runs them in `onAdd` only), and one the checks refuse
+  stays, with the checks' line, instead of being deleted under its users; a Projectile whose datablock is deleted deletes
+  itself. The
+  book's "Live datablocks" chapter.
 - A client refreshes what it built from a datablock when a new record for it arrives mid-game, in place: the predicted
   Player's and vehicles' tuning (position, velocity and state kept to the bit), the tires and springs, a Player's live pose,
   the preloaded shapes and a plugin's copies of a datablock object's fields (the props' numbers), each keyed on a per-datablock

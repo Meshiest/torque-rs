@@ -4967,6 +4967,7 @@ dependencies = [
  "str0m",
  "torque-collide",
  "torque-engine",
+ "torque-example-assets",
  "torque-game",
  "torque-ghost-world",
  "torque-ghosts",

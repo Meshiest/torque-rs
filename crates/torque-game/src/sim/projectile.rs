@@ -14,7 +14,9 @@
 //! **Callbacks** at the step's call points, each `%db.<name>(%obj, ...)`: `onCollision(%obj, %col, %fade, %pos, %normal)` and
 //! `onExplode(%obj, %pos, %fade)`, the vectors as `"%g %g %g"`. The script runs with the object's copies written, so its
 //! `getPosition` is the hit point. A Projectile that reaches its lifetime is deleted after its tick; one that exploded is
-//! deleted [`::sim::projectile::DELETE_WAIT_MS`] later (a scheduled `delete`, as the engine's `ObjectDeleteEvent`).
+//! deleted [`::sim::projectile::DELETE_WAIT_MS`] later (a scheduled `delete`, as the engine's `ObjectDeleteEvent`). A
+//! Projectile whose ProjectileData was deleted under it deletes itself at its next tick (nothing reads the dead id; a
+//! Projectile is not refreshed otherwise: it reads its datablock each tick and caches nothing).
 //!
 //! **Plugin shapes.** A Projectile's ray meets the shapes of the plugins' collision sources too ([`crate::plugin_collision`]), one
 //! with a static shape's bit as a static object: the nearer of the container's hit and theirs is taken. A hit on one tells its source ([`collide::source::CollisionSource::hit`],
@@ -183,9 +185,14 @@ enum Ending {
     At(u32),
 }
 
-/// One tick of Projectile `id` (`Projectile::processTick` through `::sim`).
+/// One tick of Projectile `id` (`Projectile::processTick` through `::sim`). A Projectile whose datablock is gone is deleted
+/// instead: it could neither expire nor explode without one.
 pub fn tick(vm: &mut Vm, env: &SimEnv, id: ObjId) {
     if !vm.objects().contains(id) || !vm.charge_work(1) {
+        return;
+    }
+    if object_field(vm, id, b"dataBlock").is_some_and(|db| !vm.objects().contains(db)) {
+        let _ = vm.delete_object(id);
         return;
     }
     let Some(d) = data(vm, id) else {

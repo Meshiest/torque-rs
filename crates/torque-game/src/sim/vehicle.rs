@@ -97,6 +97,21 @@ pub struct VehicleExt {
     /// The state while a callback of its own tick runs script.
     pub parked: Option<Box<VehicleState>>,
     pub preload: Rc<Preload>,
+    /// The datablock as the last tick read it: what the vehicle runs with once its datablock is deleted under it (the dead
+    /// id is never read), as a Player keeps its last products.
+    pub last_data: Option<Data>,
+}
+
+impl VehicleExt {
+    /// The state of a vehicle just made: `body` in, nothing parked, no tick run yet.
+    pub fn new(body: Body, preload: Rc<Preload>) -> VehicleExt {
+        VehicleExt {
+            body: Some(body),
+            parked: None,
+            preload,
+            last_data: None,
+        }
+    }
 }
 
 impl PartialEq for VehicleExt {
@@ -300,10 +315,13 @@ pub fn spring_data(vm: &Vm, db: ObjId) -> SpringData {
     s
 }
 
-/// The vehicle's datablock now, by its class.
+/// The vehicle's datablock now, by its class; the last one its tick read when the datablock is gone.
 pub fn data(vm: &Vm, id: ObjId) -> Option<Data> {
     let db = object_field(vm, id, b"dataBlock")?;
     let e = ext_of(vm, id)?;
+    if !vm.objects().contains(db) {
+        return e.last_data.clone();
+    }
     match e.body.as_ref().map(|b| matches!(b, Body::Flying(_))) {
         Some(true) => Some(Data::Flying(Box::new(flying_data(vm, db)))),
         Some(false) => Some(Data::Wheeled(
@@ -607,12 +625,18 @@ fn make_body(vm: &Vm, id: ObjId, db: ObjId, flying: bool, pre: &Preload) -> Body
     }
 }
 
-/// `onNewDataBlock` again for a vehicle that has its state (`setDataBlock` after the add): the preload's products for the new
-/// datablock and the class's `onNewDataBlock` on the state. The first datablock's work is the class's `on_add`.
+/// Whether `db` is a datablock a vehicle of `id`'s class is built from.
+fn takes(vm: &Vm, id: ObjId, db: ObjId) -> bool {
+    is_vehicle(vm, id)
+        && (is_class(vm, db, "WheeledVehicleData") || is_class(vm, db, "FlyingVehicleData"))
+}
+
+/// `onNewDataBlock` again for a vehicle that has its state (`setDataBlock` after the add, the refresh of a datablock declared
+/// again): the preload's products for the new datablock, the object box the shape gave the scene (`ShapeBase::onNewDataBlock`
+/// ran before this) and the class's `onNewDataBlock` on the state, which keeps the pose and the momenta and resets the wheels.
+/// The first datablock's work is the class's `on_add`.
 pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) {
-    if !is_vehicle(vm, id)
-        || !(is_class(vm, db, "WheeledVehicleData") || is_class(vm, db, "FlyingVehicleData"))
-    {
+    if !takes(vm, id, db) {
         return;
     }
     let flying = is_class(vm, id, "FlyingVehicle");
@@ -629,11 +653,15 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) {
             crate::sim_classes::sim_classes(vm).wheeled_class(vm, db),
         )
     };
+    let obj_box = scene_box(vm, id);
     let Some(e) = ext_mut(vm, id) else {
         return;
     };
     e.preload = pre;
     if let Some(body) = e.body.as_mut() {
+        if let Some(b) = obj_box {
+            take_box(body.s_mut(), b);
+        }
         match (body, &d) {
             (Body::Wheeled(v), Data::Wheeled(d, _)) => {
                 wheeled::on_new_data_block(&mut v.s, &mut v.k, d)
@@ -646,6 +674,63 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) {
         }
     }
     flush_mask(vm, id);
+}
+
+/// The object box a new shape gave the scene, into the state as `VehicleState::new` takes it: the object box, the world box
+/// and the body convex's box (the box times the scale).
+fn take_box(s: &mut VehicleState, b: Box3) {
+    s.obj_box = b;
+    s.reset_world_box();
+    let scale = s.scale;
+    s.body_box = Box3::new(
+        std::array::from_fn(|i| b.min[i] * scale[i]),
+        std::array::from_fn(|i| b.max[i] * scale[i]),
+    );
+}
+
+/// The refresh of a vehicle whose datablock's fields were written (no redeclare, so the shape, the wheel records and the box are
+/// as they were): the rigid body's words again from the datablock (mass, `1/mass`, inertia, center of mass, friction,
+/// restitution, and `WheeledVehicle`'s box inertia), the pose and the momenta kept (the velocity follows the new mass at the
+/// next step, as a client's refresh keeps momenta too) and the wheels, their tires and springs as they are.
+pub fn refresh_written(vm: &mut Vm, id: ObjId, db: ObjId) {
+    if !takes(vm, id, db) {
+        return;
+    }
+    let Some(d) = data(vm, id) else {
+        return;
+    };
+    let Some(body) = ext_mut(vm, id).and_then(|e| e.body.as_mut()) else {
+        return;
+    };
+    match (body, &d) {
+        (Body::Wheeled(v), Data::Wheeled(d, _)) => wheeled::rigid_from_data(&mut v.s, d),
+        (Body::Flying(v), Data::Flying(d)) => v.s.on_new_data_block(&d.base),
+        _ => {}
+    }
+}
+
+/// A wheel's tire and spring, as script set them (`setWheelTire`, `setWheelSpring`).
+pub type WheelFitting = (Option<(ObjectId, TireData)>, Option<(ObjectId, SpringData)>);
+
+/// The tires and springs of a wheeled vehicle's wheels, to put back after [`new_datablock`] reset them
+/// ([`set_wheel_fittings`]): a refresh of the datablock keeps what the script fitted, where `setDataBlock` drops it. None for a
+/// vehicle without wheels or whose tick holds its body.
+pub fn wheel_fittings(vm: &Vm, id: ObjId) -> Option<Vec<WheelFitting>> {
+    match ext_of(vm, id)?.body.as_ref()? {
+        Body::Wheeled(v) => Some(v.k.wheels.iter().map(|w| (w.tire, w.spring)).collect()),
+        Body::Flying(_) => None,
+    }
+}
+
+/// Puts the fittings of [`wheel_fittings`] back on the wheels, by index.
+pub fn set_wheel_fittings(vm: &mut Vm, id: ObjId, fittings: &[WheelFitting]) {
+    let Some(Body::Wheeled(v)) = ext_mut(vm, id).and_then(|e| e.body.as_mut()) else {
+        return;
+    };
+    for (w, (tire, spring)) in v.k.wheels.iter_mut().zip(fittings) {
+        w.tire = *tire;
+        w.spring = *spring;
+    }
 }
 
 /// The collision hulls of vehicle `id`'s shape, made once here so that their accelerators are cached with the shape. Torque
@@ -693,11 +778,7 @@ impl EngineClass for VehicleClass {
         take_fields(vm, id, body.s_mut());
         let s = body.s().clone();
         if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
-            e.vehicle = Some(Box::new(VehicleExt {
-                body: Some(body),
-                parked: None,
-                preload: pre,
-            }));
+            e.vehicle = Some(Box::new(VehicleExt::new(body, pre)));
         }
         write_copies(vm, id, &s);
         flush_mask(vm, id);

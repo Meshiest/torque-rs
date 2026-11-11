@@ -455,11 +455,20 @@ pub fn contact_prep(
         .contacts(&mut v.s, &db.base, dt, host, Some(&mut hook))
 }
 
-/// `WheeledVehicle::onNewDataBlock`'s server part after the base's: the box inertia (`massBox` when all three are
-/// above zero, else the object box's size), mass, `1/mass`, friction, restitution, the centre of mass and its world point,
-/// and each wheel of the datablock reset: tire and spring cleared, extension 1, steering 1 for a wheel in front (`pos.y > 0`).
-/// The host runs the script's `onNewDataBlock` after it, and sets every mask bit.
+/// `WheeledVehicle::onNewDataBlock`'s server part after the base's: the rigid body's words ([`rigid_from_data`]) and each
+/// wheel of the datablock reset: tire and spring cleared, extension 1, steering 1 for a wheel in front (`pos.y > 0`). The host
+/// runs the script's `onNewDataBlock` after it, and sets every mask bit.
 pub fn on_new_data_block(s: &mut VehicleState, k: &mut Wheeled, db: &WheeledVehicleData) {
+    rigid_from_data(s, db);
+    reset_wheels(k, db);
+    s.set_mask(u32::MAX);
+}
+
+/// The rigid body's words from the datablock, as `WheeledVehicle::onNewDataBlock` sets them after `Vehicle`'s (mass and drag,
+/// mass, `1/mass`, friction, restitution, the center of mass): the box inertia (`massBox` when all three are above zero, else the
+/// object box's size), then the center of mass and its world point. The pose and the momenta are kept: a host refreshes a
+/// vehicle whose datablock's fields were written with this alone, its wheels and their tires as they are.
+pub fn rigid_from_data(s: &mut VehicleState, db: &WheeledVehicleData) {
     s.on_new_data_block(&db.base);
     let mb = db.base.mass_box;
     // massBox only when all three are ordered and above zero.
@@ -486,6 +495,10 @@ pub fn on_new_data_block(s: &mut VehicleState, k: &mut Wheeled, db: &WheeledVehi
         (r.lin_pos[1] + wc[1]),
         (r.lin_pos[2] + wc[2]),
     ];
+}
+
+/// The wheels' reset of [`on_new_data_block`], after [`rigid_from_data`].
+fn reset_wheels(k: &mut Wheeled, db: &WheeledVehicleData) {
     for i in 0..count(db) {
         let w = &mut k.wheels[i];
         w.tire = None;
@@ -500,7 +513,6 @@ pub fn on_new_data_block(s: &mut VehicleState, k: &mut Wheeled, db: &WheeledVehi
             w.steering = 1.0;
         }
     }
-    s.set_mask(u32::MAX);
 }
 
 /// `setWheelSteering(wheel, value)`: the value clamped to [-1, 1] (`f <= 1 ? (f <= -1 ? -1 : f) : 1`; a NaN stays),

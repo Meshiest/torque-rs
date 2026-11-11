@@ -2,6 +2,7 @@
 //! its wire record ([`PropDataRecord`]); and the same numbers made safe ([`PropParams`]).
 
 use torque_engine::{EngineClass, Filename};
+use torque_ts_vm::classes::DatablockChange;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
@@ -21,7 +22,12 @@ pub const MAX_SHAPE_BYTES: usize = 96;
 /// and names it when it spawns a prop (`propSpawn(Crate, "0 0 2 1 0 0 0")`). Every number is clamped to its range when it is
 /// written, and again when a prop reads it, so a hostile value never reaches the physics world ([`PropParams`]).
 #[derive(EngineClass, Clone, Debug, PartialEq)]
-#[class(name = "PropData", parent = "GameBaseData", preload = PropData::canonicalize)]
+#[class(
+    name = "PropData",
+    parent = "GameBaseData",
+    preload = PropData::canonicalize,
+    refresh = PropData::refresh
+)]
 pub struct PropData {
     /// The shape the prop is drawn as (a `.dts`, or a format the engine imports); empty draws nothing. What it collides as is
     /// `collision`: `size` or `radius` by default, the shape's collision meshes with `collision = "shape"`.
@@ -84,6 +90,21 @@ impl PropData {
             vm.objects_mut()
                 .set_field(id, b"collision", b"", canonical.as_bytes());
         }
+        Ok(())
+    }
+
+    /// The datablock's refresh on a server (its fields written, or it declared again, under the props built from it): every
+    /// prop among `users` takes the numbers as they are now, its body made again at its exact pose and velocities
+    /// ([`crate::server`]'s `refresh_props`). A write and a redeclare do the same work: the shape's hulls are read from the
+    /// book, which has them already unless the file changed.
+    fn refresh(
+        &self,
+        vm: &mut Vm,
+        id: ObjId,
+        users: &[ObjId],
+        _change: DatablockChange,
+    ) -> Result<(), String> {
+        crate::server::refresh_props(vm, id, self, users);
         Ok(())
     }
 }

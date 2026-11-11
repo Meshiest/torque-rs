@@ -48,6 +48,20 @@
 //! - no scan while no dirty datablock has a user (`a_drain_scans_nothing...`), so a mission load stays cheap;
 //! - a class with users and no refresh is warned about once (the unit tests in `scene/refresh.rs`).
 //!
+//! - a vehicle refreshed in place equals one built fresh (the rigid body's words, the boxes, the wheel records and sequences:
+//!   `a_refreshed_wheeled_vehicle...`, `a_refreshed_flying_vehicle...`): the light refresh is [`sim::vehicle::refresh_written`]
+//!   (torque-vehicle's `rigid_from_data`, the pose and the momenta kept), the heavy one [`sim::vehicle::new_datablock`] with the
+//!   wheels' tires and springs put back ([`sim::vehicle::wheel_fittings`]; `a_refreshed_vehicle_keeps...`);
+//! - the add-time checks of the six checked datablock classes (Explosion, Debris, Particle, ParticleEmitter, AudioDescription,
+//!   AudioProfile) run again on a redeclare ([`dbvalues`]'s `Revalidate`: `on_add` marks, the first `preload` takes the mark,
+//!   a later one is a redeclare), so a redeclared datablock's clamps and the emitter's particle list equal a fresh one's
+//!   (`a_redeclare_leaves_the_same_clamped_fields...`); a redeclare the checks refuse is an error and the datablock stays;
+//! - a Projectile whose datablock was deleted deletes itself at its next tick ([`sim::projectile::tick`];
+//!   `a_projectile_data_removed...`): no dead id is read;
+//! - a plugin's objects outside the process list are found by the wide scan when a datablock's count says it has more users
+//!   than the process list holds, and a plugin counts them itself ([`scene::refresh::user_added`], [`scene::refresh::user_left`];
+//!   the unit test `a_user_outside_the_process_list...`, torque-plugin-props's `datablock_reload`).
+//!
 //! Extension points: a game chains its refresh with [`behaviour::chain`] on its datablock class; the drain's caps are
 //! [`scene::refresh::MAX_REFRESHES_PER_DRAIN`] and [`scene::refresh::DRAIN_WORK`]. Check: `cargo test -p torque-game --lib refresh`
 //! and `cargo test -p torque-server --test main datablock_reload`.

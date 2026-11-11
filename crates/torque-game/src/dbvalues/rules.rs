@@ -518,9 +518,9 @@ pub struct ParticleEmitterDataAdd {
 }
 
 impl EngineClass for ParticleEmitterDataAdd {
+    /// The add's checks, also for a redeclare: the particle string must be there, whatever list an earlier add left.
     fn on_add(&self, vm: &mut Vm, id: ObjId) -> Result<bool, VmError> {
-        let has_ids = !self.values.emitter_ids(id).is_empty();
-        let (ok, ids) = rules(vm).emitter_checks(vm, id, has_ids);
+        let (ok, ids) = rules(vm).emitter_checks(vm, id, false);
         if let (true, Some(ids)) = (ok, ids) {
             self.values.set_emitter_ids(id, ids);
         }

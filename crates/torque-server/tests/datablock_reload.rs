@@ -2,19 +2,25 @@
 //! datablock declared again) is refreshed at the next tick and equals an object built fresh from the edited datablock, field
 //! for field; the refresh is coalesced (one light refresh per user per tick for any number of writes, one heavy refresh per
 //! user for any number of redeclares, no shape rebuild for a write), script threads keep their sequence and position, and a
-//! drain scans nothing while no object uses a dirty datablock.
+//! drain scans nothing while no object uses a dirty datablock. The vehicles' rigid body and wheel records follow their
+//! datablock the same way; the add-time checks of the effect and audio datablocks run again on a redeclare; a Projectile
+//! whose datablock is deleted deletes itself.
 
 use crate::net_client::{self, NetServer, eval};
 
 use torque_game::scene::{ext, refresh};
-use torque_game::sim::{item, player, vitals};
+use torque_game::sim::{item, player, vehicle, vitals};
 use torque_server::server::TICK_MS;
 use torque_shapes::synth::Rng;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::sim::ObjId;
+use torque_vehicle::data::WheelRecord;
 
 /// The shapes: boxes of three sizes, each with two sequences a thread can play.
 const SHAPES: [(&str, f32); 3] = [("a.dts", 1.0), ("b.dts", 2.0), ("c.dts", 0.5)];
+
+/// The wheeled vehicle's shape: a buggy with four hub nodes.
+const BUGGY: &str = "buggy.dts";
 
 fn server() -> NetServer {
     let files = MemFiles::new();
@@ -24,6 +30,10 @@ fn server() -> NetServer {
             torque_shapes::synth::hull_shape(b, &[("detail2", b)], &[], &["ambient", "spin"]);
         files.insert(name, &torque_shapes::write::write_dts(&shape));
     }
+    files.insert(
+        BUGGY,
+        &torque_shapes::write::write_dts(&torque_example_assets::buggy::buggy()),
+    );
     net_client::game_server(files).0
 }
 
@@ -535,6 +545,507 @@ fn a_datablock_whose_users_outgrow_the_budget_is_refreshed_over_several_ticks() 
         answer(&mut s, &format!("return S{}.getObjectBox();", users - 1)),
         "-0.5 -0.5 0 0.5 0.5 0.5"
     );
+}
+
+/// What a vehicle holds that comes from its datablock: the rigid body's words, its boxes and the wheel records and sequences the
+/// datablock's preload gave (a tire or spring is script's, not the datablock's, and is left out).
+#[derive(Debug, PartialEq)]
+struct VehicleWords {
+    mass: f32,
+    drag: f32,
+    rigid_mass: f32,
+    one_over_mass: f32,
+    inertia: [f32; 16],
+    inv_inertia: [f32; 16],
+    com: [f32; 3],
+    friction: f32,
+    restitution: f32,
+    obj_box: Corners,
+    body_box: Corners,
+    wheels: Vec<WheelRecord>,
+    steering_seq: i32,
+    brakelight_seq: i32,
+    /// Each wheel of the datablock's steering factor (`onNewDataBlock` sets it from the record's side).
+    wheel_steering: Vec<f32>,
+}
+
+fn vehicle_words(s: &NetServer, id: ObjId) -> VehicleWords {
+    let v = vehicle::state(&s.vm, id).expect("a vehicle's state");
+    let e = vehicle::ext_of(&s.vm, id).expect("a vehicle");
+    let pre = &e.preload;
+    let wheel_steering = match e.body.as_ref().expect("the body is in") {
+        vehicle::Body::Wheeled(w) => w.k.wheels
+            [..pre.wheels.len().min(torque_vehicle::wheeled::WHEELS)]
+            .iter()
+            .map(|w| w.steering)
+            .collect(),
+        vehicle::Body::Flying(_) => Vec::new(),
+    };
+    VehicleWords {
+        mass: v.mass,
+        drag: v.drag,
+        rigid_mass: v.rigid.mass,
+        one_over_mass: v.rigid.one_over_mass,
+        inertia: v.rigid.inertia,
+        inv_inertia: v.rigid.inv_inertia,
+        com: v.rigid.com,
+        friction: v.rigid.friction,
+        restitution: v.rigid.restitution,
+        obj_box: (v.obj_box.min, v.obj_box.max),
+        body_box: (v.body_box.min, v.body_box.max),
+        wheels: pre.wheels.clone(),
+        steering_seq: pre.steering_seq,
+        brakelight_seq: pre.brakelight_seq,
+        wheel_steering,
+    }
+}
+
+/// The vehicle classes the oracle covers.
+#[derive(Debug, Clone, Copy)]
+enum VehicleClass {
+    Wheeled,
+    Flying,
+}
+
+impl VehicleClass {
+    fn names(self) -> (&'static str, &'static str) {
+        match self {
+            VehicleClass::Wheeled => ("WheeledVehicle", "WheeledVehicleData"),
+            VehicleClass::Flying => ("FlyingVehicle", "FlyingVehicleData"),
+        }
+    }
+
+    /// The shapes a redeclare picks from: the buggy (four wheels) or a plain box (none) for the wheeled, the boxes for the flying.
+    fn shape(self, rng: &mut Rng) -> &'static str {
+        match self {
+            VehicleClass::Wheeled => {
+                if rng.one_in(2) {
+                    BUGGY
+                } else {
+                    SHAPES[rng.below(SHAPES.len())].0
+                }
+            }
+            VehicleClass::Flying => SHAPES[rng.below(SHAPES.len())].0,
+        }
+    }
+}
+
+/// A seeded edit of a vehicle datablock: the rigid body's words, and the shape on a redeclare.
+fn random_vehicle_edit(rng: &mut Rng, class: VehicleClass, redeclare: bool) -> String {
+    let mut fields = Vec::new();
+    if redeclare {
+        fields.push(format!("shapeFile = \"{}\";", class.shape(rng)));
+    }
+    fields.push(format!("mass = {};", 1.0 + rng.below(400) as f32 * 0.5));
+    fields.push(format!("drag = {};", rng.below(8) as f32 * 0.1));
+    fields.push(format!("bodyFriction = {};", rng.below(10) as f32 * 0.1));
+    fields.push(format!("bodyRestitution = {};", rng.below(10) as f32 * 0.1));
+    fields.push(format!(
+        "massCenter = \"{} {} {}\";",
+        rng.below(5) as f32 * 0.1 - 0.2,
+        rng.below(5) as f32 * 0.1 - 0.2,
+        rng.below(5) as f32 * 0.1
+    ));
+    // A massBox with a zero side falls back to the object box's size.
+    fields.push(format!(
+        "massBox = \"{} {} {}\";",
+        rng.below(4) as f32 * 0.5,
+        rng.below(4) as f32 * 0.5,
+        rng.below(4) as f32 * 0.5
+    ));
+    let (_, data) = class.names();
+    if redeclare {
+        format!("datablock {data}(D) {{ {} }};", fields.join(" "))
+    } else {
+        fields
+            .iter()
+            .map(|f| format!("D.{f}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// The oracle for a vehicle class (as [`differential`]): A built on D, D edited, a tick, B fresh on D; the words must not differ.
+fn vehicle_differential(class: VehicleClass, edits: usize, seed: u64) -> usize {
+    let mut s = server();
+    let (object, data) = class.names();
+    let mut rng = Rng(seed);
+    let first = match class {
+        VehicleClass::Wheeled => BUGGY,
+        VehicleClass::Flying => SHAPES[0].0,
+    };
+    eval(
+        &mut s,
+        &format!(
+            r#"datablock {data}(D) {{ shapeFile = "{first}"; mass = 300; }};
+new {object}(A) {{ dataBlock = D; position = "0 0 5"; }};"#
+        ),
+    );
+    let a = id_of(&s, "A");
+    tick(&mut s);
+    if matches!(class, VehicleClass::Wheeled) {
+        assert_eq!(
+            vehicle_words(&s, a).wheels.len(),
+            4,
+            "the buggy has four hubs"
+        );
+    }
+    let mut differing = 0;
+    for i in 0..edits {
+        let redeclare = rng.one_in(2);
+        eval(&mut s, &random_vehicle_edit(&mut rng, class, redeclare));
+        tick(&mut s);
+        eval(
+            &mut s,
+            &format!("new {object}(B) {{ dataBlock = D; position = \"0 0 5\"; }};"),
+        );
+        let b = id_of(&s, "B");
+        tick(&mut s);
+        let (at, bt) = (vehicle_words(&s, a), vehicle_words(&s, b));
+        if at != bt {
+            differing += 1;
+            eprintln!(
+                "{class:?} edit {i} (redeclare {redeclare}): refreshed {at:#?} fresh {bt:#?}"
+            );
+        }
+        eval(&mut s, "B.delete();");
+    }
+    assert!(
+        logged(&mut s).iter().all(|l| !l.contains("has no refresh")),
+        "the vehicle datablocks are refreshed, not warned about"
+    );
+    differing
+}
+
+#[test]
+fn a_refreshed_wheeled_vehicle_equals_a_fresh_one_over_seeded_edits() {
+    assert_eq!(vehicle_differential(VehicleClass::Wheeled, 100, 4), 0);
+}
+
+#[test]
+fn a_refreshed_flying_vehicle_equals_a_fresh_one_over_seeded_edits() {
+    assert_eq!(vehicle_differential(VehicleClass::Flying, 100, 5), 0);
+}
+
+#[test]
+fn a_refreshed_vehicle_keeps_its_pose_momenta_and_wheel_fittings() {
+    let mut s = server();
+    eval(
+        &mut s,
+        &format!(
+            r#"datablock WheeledVehicleTire(T) {{ shapeFile = "a.dts"; radius = 0.5; }};
+datablock WheeledVehicleSpring(S) {{ length = 0.4; force = 3000; damping = 1000; }};
+datablock WheeledVehicleData(D) {{ shapeFile = "{BUGGY}"; mass = 300; }};
+new WheeledVehicle(A) {{ dataBlock = D; position = "0 0 5"; }};
+for (%i = 0; %i < 4; %i++) {{ A.setWheelTire(%i, T); A.setWheelSpring(%i, S); }}
+A.setVelocity("1 2 3");"#
+        ),
+    );
+    let a = id_of(&s, "A");
+    tick(&mut s);
+    let before = vehicle::state(&s.vm, a).expect("the state").clone();
+    let fitted = |s: &NetServer| -> Vec<(bool, bool)> {
+        vehicle::wheel_fittings(&s.vm, a)
+            .expect("wheels")
+            .iter()
+            .take(4)
+            .map(|(t, sp)| (t.is_some(), sp.is_some()))
+            .collect()
+    };
+    assert_eq!(fitted(&s), vec![(true, true); 4]);
+    // A write doubles the mass: the momenta and the pose stay, the velocity follows the mass at the next step.
+    eval(&mut s, "D.mass = 600;");
+    let errors = refresh::drain(&mut s.vm);
+    assert!(errors.is_empty(), "{errors:?}");
+    let after = vehicle::state(&s.vm, a).expect("the state");
+    assert_eq!(after.rigid.mass, 600.0);
+    assert_eq!(after.rigid.lin_mom, before.rigid.lin_mom);
+    assert_eq!(after.rigid.ang_mom, before.rigid.ang_mom);
+    assert_eq!(after.rigid.lin_pos, before.rigid.lin_pos);
+    assert_eq!(after.rigid.ang_pos, before.rigid.ang_pos);
+    assert_eq!(after.obj_to_world, before.obj_to_world);
+    assert_eq!(
+        fitted(&s),
+        vec![(true, true); 4],
+        "a write keeps the fittings"
+    );
+    // A redeclare rebuilds the wheel records (the same shape: the same four) and keeps the fittings `setDataBlock` would drop.
+    eval(
+        &mut s,
+        &format!(r#"datablock WheeledVehicleData(D) {{ shapeFile = "{BUGGY}"; mass = 450; }};"#),
+    );
+    let errors = refresh::drain(&mut s.vm);
+    assert!(errors.is_empty(), "{errors:?}");
+    let after = vehicle::state(&s.vm, a).expect("the state");
+    assert_eq!(after.rigid.mass, 450.0);
+    assert_eq!(after.rigid.lin_pos, before.rigid.lin_pos);
+    assert_eq!(after.rigid.lin_mom, before.rigid.lin_mom);
+    assert_eq!(vehicle_words(&s, a).wheels.len(), 4);
+    assert_eq!(
+        fitted(&s),
+        vec![(true, true); 4],
+        "a redeclare keeps the fittings"
+    );
+    tick(&mut s);
+    assert!(logged(&mut s).iter().all(|l| !l.contains("rror")));
+}
+
+/// A datablock class whose add-time checks clamp its fields, with values out of range and the fields the checks leave behind.
+struct Checked {
+    class: &'static str,
+    /// The body of the declaration, every value out of range.
+    body: &'static str,
+    /// The fields compared (an indexed one as `times[1]`).
+    fields: &'static [&'static str],
+}
+
+const CHECKED: [Checked; 6] = [
+    Checked {
+        class: "ParticleData",
+        body: "dragCoefficient = -1; lifetimeMS = -5; lifetimeVarianceMS = 10; spinRandomMin = -10; spinRandomMax = 10; times[0] = 0.5; times[1] = 0.2; times[2] = 0.9; times[3] = 0.1;",
+        fields: &[
+            "dragCoefficient",
+            "lifetimeMS",
+            "lifetimeVarianceMS",
+            "times[0]",
+            "times[1]",
+            "times[2]",
+            "times[3]",
+        ],
+    },
+    Checked {
+        class: "ParticleEmitterData",
+        body: "ejectionPeriodMS = 0; periodVarianceMS = 5; ejectionVelocity = -1; velocityVariance = 3; ejectionOffset = -1; thetaMin = -1; thetaMax = 200; phiVariance = 400; lifetimeMS = -3; lifetimeVarianceMS = 5; particles = \"Dust\";",
+        fields: &[
+            "ejectionPeriodMS",
+            "periodVarianceMS",
+            "ejectionVelocity",
+            "velocityVariance",
+            "ejectionOffset",
+            "thetaMin",
+            "thetaMax",
+            "phiVariance",
+            "lifetimeMS",
+            "lifetimeVarianceMS",
+            "particles",
+        ],
+    },
+    Checked {
+        class: "ExplosionData",
+        body: "explosionScale = \"0 0 0\"; debrisThetaMin = -5; debrisThetaMax = 200; debrisPhiMin = -1; debrisPhiMax = 400; debrisNum = 2000; debrisNumVariance = 3000; debrisVelocity = 0; debrisVelocityVariance = 5000; playSpeed = 0; lifetimeMS = -5; lifetimeVariance = 5; delayMS = -1; delayVariance = 3; offset = -1;",
+        fields: &[
+            "explosionScale",
+            "debrisThetaMin",
+            "debrisThetaMax",
+            "debrisPhiMin",
+            "debrisPhiMax",
+            "debrisNum",
+            "debrisNumVariance",
+            "debrisVelocity",
+            "debrisVelocityVariance",
+            "playSpeed",
+            "lifetimeMS",
+            "lifetimeVariance",
+            "delayMS",
+            "delayVariance",
+            "offset",
+        ],
+    },
+    Checked {
+        class: "DebrisData",
+        body: "velocity = 1; velocityVariance = 5; friction = 20; elasticity = -20; lifetime = 2000; lifetimeVariance = -1; numBounces = -1; bounceVariance = 5; minSpinSpeed = 5; maxSpinSpeed = 1;",
+        fields: &[
+            "velocity",
+            "velocityVariance",
+            "friction",
+            "elasticity",
+            "lifetime",
+            "lifetimeVariance",
+            "numBounces",
+            "bounceVariance",
+            "minSpinSpeed",
+            "maxSpinSpeed",
+        ],
+    },
+    Checked {
+        class: "AudioDescription",
+        body: "volume = 2; loopCount = -5; minLoopGap = 10; maxLoopGap = 5; is3D = true; ReferenceDistance = -1; maxDistance = 0; coneInsideAngle = 400; coneOutsideAngle = -1; coneOutsideVolume = 3; coneVector = \"0 0 0\"; environmentLevel = 5; type = 99;",
+        fields: &[
+            "volume",
+            "loopCount",
+            "minLoopGap",
+            "maxLoopGap",
+            "ReferenceDistance",
+            "maxDistance",
+            "coneInsideAngle",
+            "coneOutsideAngle",
+            "coneOutsideVolume",
+            "coneVector",
+            "environmentLevel",
+            "type",
+        ],
+    },
+    Checked {
+        class: "AudioProfile",
+        body: "description = Voice; fileName = \"a.wav\"; volume = 2;",
+        fields: &["description", "fileName", "volume"],
+    },
+];
+
+/// Each of `fields` of `name`, as script reads it.
+fn fields_of(s: &mut NetServer, name: &str, fields: &[&str]) -> Vec<String> {
+    fields
+        .iter()
+        .map(|f| answer(s, &format!("return {name}.{f};")))
+        .collect()
+}
+
+#[test]
+fn a_redeclare_leaves_the_same_clamped_fields_as_a_fresh_add_for_the_six_checked_classes() {
+    let mut s = server();
+    // The particle the emitters name and the description the profiles name.
+    eval(
+        &mut s,
+        "datablock ParticleData(Dust) {}; datablock AudioDescription(Voice) { volume = 0.5; };",
+    );
+    for checked in &CHECKED {
+        let Checked {
+            class,
+            body,
+            fields,
+        } = checked;
+        // D declared in range (nothing clamped), then declared again with every value out of range; E fresh with the same.
+        eval(&mut s, &format!("datablock {class}(D{class}) {{ }};"));
+        eval(
+            &mut s,
+            &format!("datablock {class}(D{class}) {{ {body} }};"),
+        );
+        eval(
+            &mut s,
+            &format!("datablock {class}(E{class}) {{ {body} }};"),
+        );
+        assert!(
+            id_of(&s, &format!("D{class}")) < id_of(&s, &format!("E{class}")),
+            "{class}: the redeclare kept the object"
+        );
+        let (d, e) = (
+            fields_of(&mut s, &format!("D{class}"), fields),
+            fields_of(&mut s, &format!("E{class}"), fields),
+        );
+        assert_eq!(
+            d, e,
+            "{class}: the redeclared and the fresh datablock differ"
+        );
+    }
+    // The clamps themselves, for ParticleData: lifetime 1 ms, the variance below it, the drag at 0, the times ordered after
+    // the first, which is always 0.
+    assert_eq!(
+        fields_of(
+            &mut s,
+            "DParticleData",
+            &[
+                "dragCoefficient",
+                "lifetimeMS",
+                "lifetimeVarianceMS",
+                "times[1]",
+                "times[3]"
+            ]
+        ),
+        ["0", "1", "0", "0.2", "0.9"]
+    );
+    // The emitter's particle list is built again by the redeclare: a redeclare naming another particle changes it.
+    eval(
+        &mut s,
+        "datablock ParticleData(Smoke) {}; datablock ParticleEmitterData(DParticleEmitterData) { particles = \"Smoke\"; };",
+    );
+    let values = torque_game::shapes::shapes_of(&s.vm).expect("the shapes");
+    let emitter = id_of(&s, "DParticleEmitterData");
+    assert_eq!(
+        values.values().emitter_ids(emitter),
+        vec![id_of(&s, "Smoke") as i32]
+    );
+    // A redeclare whose values the checks refuse prints the checks' line, once, and the datablock stays with them.
+    logged(&mut s);
+    eval(
+        &mut s,
+        "new AudioDescription(Plain) {}; datablock AudioProfile(DAudioProfile) { description = Plain; };",
+    );
+    assert!(s.vm.objects().find(b"DAudioProfile").is_some());
+    let lines = logged(&mut s);
+    assert_eq!(
+        lines
+            .iter()
+            .filter(|l| l.contains("not networkable"))
+            .count(),
+        1,
+        "{lines:?}"
+    );
+    assert_eq!(lines.len(), 1, "one line: {lines:?}");
+    // The emitter's redeclare is checked as a fresh add: an empty particle string is refused, the list stays.
+    eval(
+        &mut s,
+        "datablock ParticleEmitterData(DParticleEmitterData) { particles = \"\"; };",
+    );
+    assert!(
+        logged(&mut s)
+            .iter()
+            .any(|l| l.contains("ParticleEmitterData(DParticleEmitterData) no particleString"))
+    );
+    assert_eq!(
+        values.values().emitter_ids(emitter),
+        vec![id_of(&s, "Smoke") as i32]
+    );
+}
+
+/// How many objects of `class` the server has.
+fn objects_of(s: &NetServer, class: &str) -> usize {
+    let objects = s.vm.objects();
+    objects
+        .iter()
+        .filter(|(_, o)| objects.classes.name(o.class()) == class.as_bytes())
+        .count()
+}
+
+#[test]
+fn a_projectile_data_removed_under_live_projectiles_leaves_no_projectile_after_600_ticks() {
+    let mut s = server();
+    eval(
+        &mut s,
+        "datablock ProjectileData(Shot) { lifetime = 60000; };",
+    );
+    for i in 0..10 {
+        eval(
+            &mut s,
+            &format!(
+                "new Projectile(P{i}) {{ dataBlock = Shot; initialPosition = \"{i} 0 5\"; initialVelocity = \"0 0 0\"; }};"
+            ),
+        );
+    }
+    for _ in 0..5 {
+        tick(&mut s);
+    }
+    assert_eq!(
+        objects_of(&s, "Projectile"),
+        10,
+        "they live while their datablock does"
+    );
+    eval(&mut s, "Shot.delete();");
+    let mut ticks = 0;
+    while objects_of(&s, "Projectile") > 0 && ticks < 600 {
+        tick(&mut s);
+        ticks += 1;
+    }
+    assert_eq!(
+        objects_of(&s, "Projectile"),
+        0,
+        "0 projectiles after {ticks} ticks"
+    );
+    assert!(ticks <= 2, "each deletes itself at its next tick: {ticks}");
+    for _ in ticks..600 {
+        tick(&mut s);
+    }
+    assert_eq!(objects_of(&s, "Projectile"), 0);
+    assert!(logged(&mut s).iter().all(|l| !l.contains("rror")));
 }
 
 #[test]

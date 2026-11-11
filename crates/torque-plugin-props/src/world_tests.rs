@@ -758,3 +758,74 @@ fn a_player_with_no_box_keeps_its_prop_where_the_offset_says() {
     let (p, _) = PropWorld::hold_pose(&PlayerAt::at([1.0, 2.0, 3.0]), offset, half);
     assert_eq!(p, [1.2, 2.5, 4.0]);
 }
+
+#[test]
+fn a_refit_keeps_the_pose_and_velocities_bit_for_bit_and_takes_the_new_mass() {
+    let mut w = world(PropLimits::default());
+    for k in 0..64u32 {
+        let (x, y) = ((k % 8) as f32 * 2.0, (k / 8) as f32 * 2.0);
+        w.spawn(
+            100 + k,
+            9,
+            crate_params(),
+            at(x, y, 3.0 + k as f32 * 0.1),
+            None,
+            0,
+        )
+        .unwrap();
+    }
+    // Falling, so every body has a speed.
+    for _ in 0..5 {
+        w.tick(&[], &far);
+    }
+    let before: Vec<(BodyState, f32)> = (0..64u32)
+        .map(|k| {
+            let id = BodyId(100 + k);
+            (
+                w.physics().body(id).unwrap(),
+                w.physics().mass_of(id).unwrap(),
+            )
+        })
+        .collect();
+    assert!(
+        before
+            .iter()
+            .all(|(s, m)| s.linvel[2] < 0.0 && (m - 20.0).abs() < 1e-3)
+    );
+    let heavier = PropNumbers {
+        mass: 40.0,
+        ..PropNumbers::default()
+    }
+    .held();
+    for k in 0..64u32 {
+        assert!(w.refit(100 + k, heavier, None));
+    }
+    for (k, (s, _)) in before.iter().enumerate() {
+        let id = BodyId(100 + k as u32);
+        let now = w.physics().body(id).unwrap();
+        assert!((w.physics().mass_of(id).unwrap() - 40.0).abs() < 1e-3);
+        assert_eq!(now.position, s.position, "prop {k}");
+        assert_eq!(now.rotation.map(f32::to_bits), s.rotation.map(f32::to_bits));
+        assert_eq!(
+            now.linvel.map(f32::to_bits),
+            s.linvel.map(f32::to_bits),
+            "prop {k}"
+        );
+        assert_eq!(
+            now.angvel.map(f32::to_bits),
+            s.angvel.map(f32::to_bits),
+            "prop {k}"
+        );
+        assert_eq!(now.sleeping, s.sleeping);
+    }
+    assert_eq!(w.get(100).unwrap().params.mass, 40.0);
+    // A frozen prop is refitted as a fixed body and stays frozen; a removed one is counted off its datablock.
+    w.freeze(100).unwrap();
+    assert!(w.refit(100, crate_params(), None));
+    assert!(w.get(100).unwrap().rest.is_frozen());
+    assert!(w.remove(101));
+    assert_eq!(w.take_left(), vec![(101, 9)]);
+    assert!(w.take_left().is_empty());
+    assert!(!w.refit(101, crate_params(), None), "no such prop");
+    assert!(w.tick(&[], &far).dropped.is_empty());
+}

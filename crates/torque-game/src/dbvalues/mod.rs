@@ -8,19 +8,23 @@
 //!
 //! **Behaviours.** [`register`] gives the classes with an add-time or preload step their [`EngineClass`] (the classes that also
 //! load a shape get theirs through [`shapes`](crate::shapes), which composes these); the checks themselves are the host's
-//! [`DatablockRules`](rules::DatablockRules), TGE's by default.
+//! [`DatablockRules`](rules::DatablockRules), TGE's by default. A datablock declared again runs no `onAdd`, only its
+//! `preload`, so the add-time checks are wrapped ([`revalidated`]): the preload of a redeclare runs them again, and the
+//! clamps and the emitter's particle list are those a fresh declaration of the same fields would leave. A redeclare whose
+//! values the checks refuse prints the checks' own line and the datablock keeps them (a first declaration is deleted), so no
+//! object is left pointing at a deleted datablock.
 
 pub mod fields;
 pub mod image;
 pub mod rules;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use ts_vm::classes::EngineClass;
+use ts_vm::classes::{EngineClass, PreloadError};
 use ts_vm::sim::ObjId;
-use ts_vm::vm::Vm;
+use ts_vm::vm::{Vm, VmError};
 
 pub use image::{ImageStates, State};
 
@@ -37,6 +41,9 @@ struct Tables {
     prepack: Option<Prepack>,
     /// The host's own tables of datablock state, which forget and clear with these.
     game: Option<Rc<dyn GameTables>>,
+    /// The datablocks whose add-time checks ran for the declaration that made them and whose first `preload` is still to
+    /// come ([`Revalidate`]).
+    added: HashSet<ObjId>,
 }
 
 /// A host's side tables of datablock state, kept in [`DbValues`] so that they forget an object and clear with the engine's.
@@ -89,6 +96,7 @@ impl DbValues {
         let mut t = self.0.borrow_mut();
         t.emitter_ids.remove(&id);
         t.images.remove(&id);
+        t.added.remove(&id);
         if let Some(g) = &t.game {
             g.forget(id);
         }
@@ -102,6 +110,18 @@ impl DbValues {
     /// The host's tables, if it gave any.
     pub fn game(&self) -> Option<Rc<dyn GameTables>> {
         self.0.borrow().game.clone()
+    }
+
+    // ---- the add-time checks on a redeclare
+
+    /// The add-time checks of `id` ran for the declaration making it: its first `preload` is not a redeclare.
+    fn mark_added(&self, id: ObjId) {
+        self.0.borrow_mut().added.insert(id);
+    }
+
+    /// Whether `id`'s add-time checks ran for the declaration that is preloading it now (true once per add).
+    fn take_added(&self, id: ObjId) -> bool {
+        self.0.borrow_mut().added.remove(&id)
     }
 
     // ---- the emitter's id list
@@ -149,6 +169,44 @@ impl DbValues {
     }
 }
 
+/// An add-time behavior whose checks run again when the datablock is declared again (see the module docs): `on_add` marks
+/// the add, the first `preload` after it takes the mark and does nothing, every later `preload` is a redeclare and runs the
+/// checks again.
+struct Revalidate {
+    add: Rc<dyn EngineClass>,
+    values: DbValues,
+}
+
+impl EngineClass for Revalidate {
+    fn on_add(&self, vm: &mut Vm, id: ObjId) -> Result<bool, VmError> {
+        self.values.mark_added(id);
+        self.add.on_add(vm, id)
+    }
+
+    fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
+        self.values.take_added(id);
+        self.add.on_remove(vm, id)
+    }
+
+    /// The checks again for a redeclare; what they refuse they have said themselves, and the datablock stays as declared.
+    fn preload(&self, vm: &mut Vm, id: ObjId) -> Result<(), PreloadError> {
+        if self.values.take_added(id) {
+            return Ok(());
+        }
+        self.add.on_add(vm, id).map_err(PreloadError::Vm)?;
+        Ok(())
+    }
+}
+
+/// `add` wrapped so that its checks run again on a redeclare ([`Revalidate`]); for a class whose add-time behavior is one of
+/// another behavior's (the shape classes').
+pub fn revalidated(values: &DbValues, add: Rc<dyn EngineClass>) -> Rc<dyn EngineClass> {
+    Rc::new(Revalidate {
+        add,
+        values: values.clone(),
+    })
+}
+
 /// Gives the classes with an add-time or preload step of their own their behaviour (the shape classes are composed by
 /// [`shapes::register`](crate::shapes::register), which calls this first), and the constructor defaults over the class table's.
 pub fn register(vm: &mut Vm, values: &DbValues) {
@@ -161,7 +219,7 @@ pub fn register(vm: &mut Vm, values: &DbValues) {
         ("ParticleEmitterData", rules.particle_emitter(values)),
     ];
     for (class, behaviour) in simple {
-        vm.set_class_behaviour(class, behaviour);
+        vm.set_class_behaviour(class, revalidated(values, behaviour));
     }
     rules.constructor_defaults(vm);
     // `%particle.reload()` and `%emitter.reload()`: the add-time checks again, their result dropped; the emitter's id list is

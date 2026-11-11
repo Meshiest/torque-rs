@@ -17,13 +17,21 @@
 //!
 //! **Refresh.** The class chain of the datablock refreshes its users through [`EngineClass::datablock_changed`]
 //! (root first, as `preload` runs): the engine's own classes answer from the behavior [`install`] chains onto `GameBaseData`
-//! ([`EngineRefresh`]: a [`Written`] mark runs the light refresh, the fields an object copies from its datablock; a
-//! [`Preloaded`] mark runs the class's whole `onNewDataBlock` work again, [`super::object::new_datablock`], which keeps the
-//! script threads by sequence name and position; it takes the refresh of CameraData and the ShapeBaseData classes but the
-//! vehicles', whose words it does not refresh yet). A game's own datablock class registers its refresh on its behavior (a
-//! plugin class has a `refresh` hook beside `preload`); a class with users and no refresh is warned about once. The users a
-//! behavior is given are live objects (an earlier datablock's `onReloaded` in the same drain may have deleted some: they are
-//! filtered first). After the refresh of a datablock that had users its script `onReloaded()` runs.
+//! ([`EngineRefresh`]: a [`Written`] mark runs the light refresh, the fields an object copies from its datablock, a vehicle's
+//! rigid body among them; a [`Preloaded`] mark runs the class's whole `onNewDataBlock` work again,
+//! [`super::object::new_datablock`], which keeps the script threads by sequence name and position and, for a vehicle, the
+//! tires and springs its wheels were fitted with; it takes the refresh of CameraData, ProjectileData (a Projectile reads its
+//! datablock each tick and caches nothing) and the ShapeBaseData classes, the vehicles' included). A game's own datablock
+//! class registers its refresh on its behavior (a plugin class has a `refresh` hook beside `preload`); a class with users and
+//! no refresh is warned about once. The users a behavior is given are live objects (an earlier datablock's `onReloaded` in the
+//! same drain may have deleted some: they are filtered first). After the refresh of a datablock that had users its script
+//! `onReloaded()` runs.
+//!
+//! **The scan.** The users of the dirty datablocks are found by one pass over the process list, where every `GameBase` is.
+//! A plugin's objects need not be in it (a prop is a `SceneObject` the plugin's own world steps), so when a dirty datablock's
+//! count says it has more users than the pass found, one pass over every object of the engine follows, once per drain: an
+//! object's `dataBlock` is read as an object reference or as the integer id a plugin class declares it as. A plugin whose
+//! objects are not `GameBase` counts them itself ([`user_added`] when one is made, [`user_left`] when one is gone).
 //!
 //! **Limits.** A drain refreshes the users of dirty datablocks in id order until it has refreshed [`MAX_REFRESHES_PER_DRAIN`]
 //! objects (the first datablock's users are always taken, however many) and runs under a host work budget ([`DRAIN_WORK`]),
@@ -45,9 +53,11 @@ use ts_vm::classes::{DatablockChange, EngineClass, PreloadError};
 use ts_vm::sim::{ClassId, ObjId, SIM_DATA_BLOCK};
 use ts_vm::vm::{Vm, VmError};
 
-use super::access::object_field;
+use ts_vm::fields::Value;
+
 use super::ext;
 use crate::sim::ProcessHandle;
+use crate::sim::vehicle;
 
 /// The (datablock, user) refreshes a drain stops taking more datablocks at; the rest wait for the next tick.
 pub const MAX_REFRESHES_PER_DRAIN: usize = 4096;
@@ -69,6 +79,8 @@ pub struct Stats {
     pub drains: u64,
     /// Drains that scanned the process list (a dirty datablock had a user).
     pub scans: u64,
+    /// Drains that scanned every object of the engine too (a dirty datablock counted users outside the process list).
+    pub wide_scans: u64,
     /// Objects refreshed after a field write.
     pub light: u64,
     /// Objects refreshed after a redeclare.
@@ -188,6 +200,14 @@ pub fn user_removed(vm: &mut Vm, user: ObjId) {
     }
 }
 
+/// A user of `db` that is gone already (deleted before anything could let go of it on its behalf: a plugin's object its world
+/// dropped): `db` counts one less. Nothing below zero.
+pub fn user_left(vm: &mut Vm, db: ObjId) {
+    if let Some(e) = ext::get_mut(vm.objects_mut(), db) {
+        e.db_users = e.db_users.saturating_sub(1);
+    }
+}
+
 /// How many objects have `db` as their datablock.
 pub fn users(vm: &Vm, db: ObjId) -> u32 {
     ext::get(vm.objects(), db).map_or(0, |e| e.db_users)
@@ -214,6 +234,17 @@ pub fn install(vm: &mut Vm, process: &ProcessHandle) {
     }));
     crate::behaviour::chain(vm, "SimDataBlock", Rc::new(MarkPreloaded));
     crate::behaviour::chain(vm, "GameBaseData", Rc::new(EngineRefresh));
+}
+
+/// The datablock object `id` points at: its `dataBlock` field as an object reference (the game classes) or as a positive
+/// integer id (a plugin class that declares the field as a number).
+fn datablock_of(vm: &Vm, id: ObjId) -> Option<ObjId> {
+    super::access::with_value(vm, id, b"dataBlock", |v| match v {
+        Value::Object(object) => *object,
+        Value::Int(n) => ObjId::try_from(*n).ok().filter(|&n| n != 0),
+        _ => None,
+    })
+    .flatten()
 }
 
 /// The tick's drain: every dirty datablock with users refreshes them (see the module docs). The errors are the refreshes' and
@@ -244,12 +275,36 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
         return Vec::new();
     }
     set.state.borrow_mut().stats.scans += 1;
-    // One scan of the process list (every object with a datablock is in it): each object joins its datablock's users.
+    // One scan of the process list (every GameBase with a datablock is in it): each object joins its datablock's users.
     for id in set.process.borrow().keys() {
-        if let Some(db) = object_field(vm, id, b"dataBlock")
+        if let Some(db) = datablock_of(vm, id)
             && let Some((_, users)) = dirty_users.get_mut(&db)
         {
             users.push(id);
+        }
+    }
+    // A datablock whose count says more: its other users are objects outside the process list (a plugin's), found by one pass
+    // over every object; the ones found already are kept out.
+    let short: IdSet<ObjId> = dirty_users
+        .iter()
+        .filter(|(db, (_, found))| found.len() < users(vm, **db) as usize)
+        .map(|(db, _)| *db)
+        .collect();
+    if !short.is_empty() {
+        set.state.borrow_mut().stats.wide_scans += 1;
+        let found: IdSet<ObjId> = dirty_users
+            .values()
+            .flat_map(|(_, users)| users.iter().copied())
+            .collect();
+        let ids: Vec<ObjId> = vm.objects().iter().map(|(id, _)| id).collect();
+        for id in ids {
+            if !found.contains(&id)
+                && let Some(db) = datablock_of(vm, id)
+                && short.contains(&db)
+                && let Some((_, users)) = dirty_users.get_mut(&db)
+            {
+                users.push(id);
+            }
         }
     }
     let mut errors = Vec::new();
@@ -373,10 +428,10 @@ fn refresh_one(
 }
 
 /// The engine's own classes' refresh, chained onto `GameBaseData`: each user of the datablock takes the light or the heavy
-/// refresh ([`light`], [`super::object::new_datablock`]) with the type mask its constructor made, then its `dynamicType` bits
-/// again, in the order its add ran them. Taken for `CameraData` and the `ShapeBaseData` classes other than the vehicles'
-/// (whose rigid body and wheels the light refresh does not reach yet): any other `GameBaseData` class with users is warned
-/// about, though the work above still runs for it.
+/// refresh ([`light`], [`heavy`]) with the type mask its constructor made, then its `dynamicType` bits again, in the order its
+/// add ran them. Taken for `CameraData`, `ProjectileData` (nothing cached: a Projectile reads its datablock each tick) and the
+/// `ShapeBaseData` classes, the vehicles' included: any other `GameBaseData` class with users is warned about, though the work
+/// above still runs for it.
 struct EngineRefresh;
 
 impl EngineClass for EngineRefresh {
@@ -388,7 +443,7 @@ impl EngineClass for EngineRefresh {
         change: DatablockChange,
     ) -> Result<bool, VmError> {
         let is = |class| super::camera::is_class(vm, db, class);
-        let taken = is("CameraData") || (is("ShapeBaseData") && !is("VehicleData"));
+        let taken = is("CameraData") || is("ShapeBaseData") || is("ProjectileData");
         for &user in users {
             if !vm.objects().contains(user) {
                 continue;
@@ -396,7 +451,7 @@ impl EngineClass for EngineRefresh {
             super::shapebase::clear_dynamic_type(vm, user);
             let refreshed = match change {
                 DatablockChange::Written => light(vm, user, db),
-                DatablockChange::Preloaded => super::object::new_datablock(vm, user, db),
+                DatablockChange::Preloaded => heavy(vm, user, db),
             };
             // The bits go back whatever the work did: a refresh the budget stopped runs again next tick.
             super::shapebase::refresh_dynamic_type(vm, user, db);
@@ -407,10 +462,25 @@ impl EngineClass for EngineRefresh {
 }
 
 /// The light refresh of one object after a field write: the fields it copied from its datablock (a Player's mass, drag,
-/// speeds, recharge rate, box and vitals scaling; another ShapeBase's vitals words), without the shape part.
+/// speeds, recharge rate, box and vitals scaling; another ShapeBase's vitals words; a vehicle's rigid body: mass, inertia,
+/// center of mass, friction, restitution, with its pose, momenta and wheel fittings kept), without the shape part.
 fn light(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
     super::shapebase::refresh_box(vm, id, db);
-    crate::sim::player::new_datablock(vm, id, db)
+    crate::sim::player::new_datablock(vm, id, db)?;
+    vehicle::refresh_written(vm, id, db);
+    Ok(())
+}
+
+/// The heavy refresh of one object after a redeclare: the class's whole `onNewDataBlock` work again
+/// ([`super::object::new_datablock`]); a wheeled vehicle keeps the tires and springs its wheels were fitted with, which that
+/// work resets as `setDataBlock` does.
+fn heavy(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
+    let fittings = vehicle::wheel_fittings(vm, id);
+    let refreshed = super::object::new_datablock(vm, id, db);
+    if let Some(fittings) = fittings {
+        vehicle::set_wheel_fittings(vm, id, &fittings);
+    }
+    refreshed
 }
 
 #[cfg(test)]
@@ -489,28 +559,54 @@ mod tests {
      {
         let process = ProcessHandle::new();
         let (mut vm, _, _) = scene(&process);
-        vm.eval(b"datablock ProjectileData(Shot) {}; new Projectile(P) { dataBlock = Shot; };")
+        vm.eval(b"datablock DebrisData(Chunk) {}; new Debris(P) { dataBlock = Chunk; };")
             .unwrap();
-        let (shot, p) = (
-            vm.objects().find(b"Shot").unwrap(),
+        let (chunk, p) = (
+            vm.objects().find(b"Chunk").unwrap(),
             vm.objects().find(b"P").unwrap(),
         );
         process.register(&vm, p);
-        user_added(&mut vm, p, shot);
+        user_added(&mut vm, p, chunk);
         for _ in 0..2 {
-            vm.eval(b"Shot.lifetime = 100; D.dynamicType = 3;").unwrap();
+            vm.eval(b"Chunk.lifetime = 100; D.dynamicType = 3;")
+                .unwrap();
             assert!(drain(&mut vm).is_empty());
         }
         assert_eq!(
             warnings(&vm),
             1,
-            "the ProjectileData once, the StaticShapeData never"
+            "the DebrisData once, the StaticShapeData never"
         );
         assert!(
             vm.log_texts()
                 .iter()
-                .any(|l| l.contains("class ProjectileData has no refresh"))
+                .any(|l| l.contains("class DebrisData has no refresh"))
         );
+    }
+
+    #[test]
+    fn a_user_outside_the_process_list_is_found_by_the_wide_scan_and_a_gone_one_is_counted_off() {
+        let process = ProcessHandle::new();
+        let (mut vm, d, _) = scene(&process);
+        // A second user of D that no process list holds.
+        vm.eval(b"new StaticShape(T) { dataBlock = D; };").unwrap();
+        let t = vm.objects().find(b"T").unwrap();
+        user_added(&mut vm, t, d);
+        assert_eq!(users(&vm, d), 2);
+        vm.eval(b"D.dynamicType = 5;").unwrap();
+        assert!(drain(&mut vm).is_empty());
+        let now = stats(&vm);
+        assert_eq!((now.scans, now.wide_scans, now.light), (1, 1, 2));
+        // The second user gone without its class letting go: counted off by hand, no wide scan after.
+        user_left(&mut vm, d);
+        vm.eval(b"T.delete(); D.dynamicType = 6;").unwrap();
+        assert!(drain(&mut vm).is_empty());
+        let now = stats(&vm);
+        assert_eq!((now.scans, now.wide_scans, now.light), (2, 1, 3));
+        assert_eq!(users(&vm, d), 1);
+        user_left(&mut vm, d);
+        user_left(&mut vm, d);
+        assert_eq!(users(&vm, d), 0, "nothing below zero");
     }
 
     #[test]

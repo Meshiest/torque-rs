@@ -161,6 +161,19 @@
 //! bodies take the new numbers at their next step with their poses and speeds kept. `tests/datablock_refresh.rs`: the book's
 //! numbers equal a fresh book's after 100 edits, a resend reads nothing again, a refresh of three ticks' worth takes four ticks.
 //!
+//! **A `PropData` edited under its props** (`PropData::refresh`, the `#[class(refresh = ..)]` hook the host's drain of changed
+//! datablocks calls once a tick with the props built from the datablock). A prop is a `SceneObject`, not a `GameBase`, so the
+//! plugin counts its props as users itself (`server::spawn` counts one on, `PropWorld::remove` lists it in `take_left` and the
+//! tick hook counts it off) and the host finds them by its wide scan. The refresh reads the numbers and the hulls again as a
+//! spawn does (`server::refresh_props`) and refits each prop ([`PropWorld::refit`]): the body is made again from the new
+//! numbers at the exact pose and velocities it has, bit for bit, asleep or awake as it was, fixed when frozen, its joints put
+//! back; a child keeps its body and takes the numbers for when it is freed; the object box and the init record (the hull
+//! digest) follow. A write and a redeclare do the same work. The work is charged to the next steps as a spawn's is, so a script
+//! that edits a datablock of a thousand props every tick is bounded by the step budget and the props' caps. Held by
+//! `tests/datablock_reload.rs` (64 props, a redeclare doubling `mass`: 64 bodies at the new mass, position error 0, velocities
+//! bit-equal) and `world_tests::a_refit_keeps...`. Check: `cargo test -p torque-plugin-props --test datablock_reload` under
+//! `TORQUE_NET_PROTOCOL=tge` and `=engine`.
+//!
 //! **Props that collide as their shape.** A datablock's `collision` field (`PropCollision`; it is in the datablock record, so
 //! network version 4) picks box or shape. For shape, `PropParams` holds `PropShape::Hulls { half, volume }`: `half` is the box
 //! that still stands for the prop wherever only a box is asked (`size` or `radius`: the placement checks, the collision source,
@@ -603,10 +616,12 @@ impl Plugin for PropsPlugin {
                 joints: joints.clone(),
             }),
         ));
-        // Each server starts its props over; each client its book.
+        // Each server starts its props over (and its script engine is given them, for the datablock class's refresh); each
+        // client its book.
         let fresh = server.clone();
-        engine.server(ServerStage::Classes, move |_, _| {
+        engine.server(ServerStage::Classes, move |vm, _| {
             fresh.reset();
+            vm.set_extension(Rc::new(server::PropsInVm(fresh.clone())));
             Ok(())
         });
         let (fresh, fresh_joints) = (book, joints);

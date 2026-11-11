@@ -118,6 +118,17 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
     for problem in problems {
         vm.warn(problem);
     }
+    // The props that left the world since the last tick are counted off their datablocks' users.
+    let left = props
+        .0
+        .borrow_mut()
+        .world
+        .as_mut()
+        .map(PropWorld::take_left)
+        .unwrap_or_default();
+    for (_, data) in left {
+        torque_game::scene::refresh::user_left(vm, data);
+    }
     if let Some(lost) = rebuilt {
         vm.warn(
             "props: the physics world stopped on a caught panic; it was made again from each prop's last state".to_string(),
@@ -152,7 +163,9 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             torque_game::sim::hosted::text3_fixed(h.point),
             torque_game::sim::hosted::text3_fixed(h.normal),
         ];
+        // A datablock deleted under its props has no callback to run.
         if is_class(vm, h.prop, CLASS)
+            && vm.objects().contains(h.data)
             && let Err(e) = vm.call_method(h.data, b"onCollision", &args)
         {
             vm.warn(format!("props: prop {}'s onCollision: {e}", h.prop));
@@ -163,7 +176,9 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             PropEvent::Sleep => "onPropSleep",
             PropEvent::Wake => "onPropWake",
         };
-        if let Err(e) = vm.call_method(data, name.as_bytes(), &[id.to_string().into_bytes()]) {
+        if vm.objects().contains(data)
+            && let Err(e) = vm.call_method(data, name.as_bytes(), &[id.to_string().into_bytes()])
+        {
             vm.warn(format!("props: prop {id}'s {name}: {e}"));
         }
     }

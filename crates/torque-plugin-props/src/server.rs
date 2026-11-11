@@ -226,6 +226,15 @@ pub fn joint_limits_of(prefs: &PropPrefs) -> crate::joints::JointLimits {
 #[derive(Clone, Debug, Default)]
 pub struct ServerProps(pub Rc<RefCell<PropServer>>);
 
+/// The server's props as a script engine extension, for the code that is given the engine alone (the datablock class's
+/// refresh hook): set when the server's classes are made.
+pub(crate) struct PropsInVm(pub(crate) ServerProps);
+
+/// The server's props of the script engine `vm`, if it is a props server's.
+pub(crate) fn props_of(vm: &Vm) -> Option<ServerProps> {
+    vm.extension::<PropsInVm>().map(|p| p.0.clone())
+}
+
 impl ServerProps {
     /// A fresh state (a new server).
     pub fn reset(&self) {
@@ -493,6 +502,9 @@ pub(crate) fn spawn(
         delete_logged(vm, id);
         return Err(e.to_string());
     }
+    // A prop is no GameBase: the world's spawn counts it as its datablock's user, and its removal counts it off
+    // (`PropWorld::take_left`, in the tick hook), so a change to the datablock refreshes the props built from it.
+    torque_game::scene::refresh::user_added(vm, id, data);
     if let Ok(srv) = props.0.try_borrow()
         && let Some(world) = &srv.world
     {
@@ -507,6 +519,45 @@ pub(crate) fn spawn(
         vm.error(format!("propSpawn: onPropSpawn: {e}"));
     }
     Ok(id)
+}
+
+/// The refresh of the props built from datablock `data` after it changed (`PropData::refresh`, from the host's drain of the
+/// changed datablocks): the numbers and the hulls are read again as a spawn reads them and each prop among `users` that is a
+/// prop of this server is refitted ([`PropWorld::refit`]: the body made again at its exact pose and velocities, its mass from
+/// the new density), its object box set from the new size and its init record sent again (the hull digest may have changed).
+/// A user that is no prop of the world (a deleted prop, an object of another class pointing at the datablock) is skipped.
+pub(crate) fn refresh_props(vm: &mut Vm, data: ObjId, kind: &PropData, users: &[ObjId]) {
+    let Some(props) = props_of(vm) else {
+        return;
+    };
+    let (params, hulls) = collision_of(vm, &props, data, kind);
+    let half = params.shape.half_extents();
+    let mut refitted = Vec::with_capacity(users.len());
+    {
+        let mut srv = props.0.borrow_mut();
+        let Some(world) = srv.world.as_mut() else {
+            return;
+        };
+        for &user in users {
+            if world.get(user).is_some_and(|p| p.data == data)
+                && world.refit(user, params, hulls.clone())
+            {
+                refitted.push(user);
+            }
+        }
+    }
+    for id in refitted {
+        torque_game::scene::object::set_object_box(vm, id, half.map(|h| -h), half);
+    }
+    if let Ok(srv) = props.0.try_borrow()
+        && let Some(world) = &srv.world
+    {
+        for &user in users {
+            if world.get(user).is_some_and(|p| p.data == data) {
+                write_back(vm, world, user, MASK_INIT);
+            }
+        }
+    }
 }
 
 /// What datablock `data` (read as `kind`) collides as: its numbers made safe, and the hulls of its shape when it asked for them

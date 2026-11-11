@@ -514,6 +514,9 @@ pub struct PropWorld {
     changed: Vec<(u32, u32)>,
     /// The joints taken out because a body at an end went, with their ropes, for the caller to delete their objects.
     pub(crate) gone_joints: Vec<(u32, u32)>,
+    /// The props removed since the last [`PropWorld::take_left`], each with its datablock: the host counts them off the
+    /// datablock's users.
+    left: Vec<(u32, u32)>,
     /// Where each player at a grapple's or a hold's end is, given before each tick.
     pub(crate) players: BTreeMap<u32, PlayerAt>,
     /// Where each held prop was when this tick's drive set its speed (by prop): what tells a hold that is catching up from one that is
@@ -622,6 +625,29 @@ fn add_static(world: &mut World, id: u32, piece: &StaticPiece) -> bool {
 }
 
 /// The body of a prop's shape: its hulls when it has them, else the box or ball its datablock gave.
+/// The body of a prop of `params` (and `hulls`) as `motion`, at the pose and the velocities of `s`.
+fn body_desc(
+    params: &PropParams,
+    hulls: Option<&PropHulls>,
+    motion: Motion,
+    s: &BodyState,
+) -> BodyDesc {
+    BodyDesc {
+        motion,
+        shape: body_shape(params, hulls),
+        position: s.position,
+        rotation: s.rotation,
+        linvel: s.linvel,
+        angvel: s.angvel,
+        density: params.density,
+        friction: params.friction,
+        restitution: params.restitution,
+        linear_damping: params.linear_damping,
+        angular_damping: params.angular_damping,
+        ..BodyDesc::default()
+    }
+}
+
 fn body_shape(params: &PropParams, hulls: Option<&PropHulls>) -> Shape {
     match (params.shape, hulls) {
         (PropShape::Hulls { .. }, Some(hulls)) => hulls.shape(),
@@ -662,6 +688,7 @@ impl PropWorld {
             dropped: Vec::new(),
             changed: Vec::new(),
             gone_joints: Vec::new(),
+            left: Vec::new(),
             players: BTreeMap::new(),
             hold_from: BTreeMap::new(),
             reflag: Vec::new(),
@@ -852,19 +879,7 @@ impl PropWorld {
             rotation,
             ..BodyState::default()
         });
-        let s = start.state();
-        let desc = BodyDesc {
-            motion: Motion::Dynamic,
-            shape: body_shape(&params, hulls.as_deref()),
-            position: s.position,
-            rotation: s.rotation,
-            density: params.density,
-            friction: params.friction,
-            restitution: params.restitution,
-            linear_damping: params.linear_damping,
-            angular_damping: params.angular_damping,
-            ..BodyDesc::default()
-        };
+        let desc = body_desc(&params, hulls.as_deref(), Motion::Dynamic, &start.state());
         let mut work = 0u64;
         let mut count = |units: u64| {
             work = work.saturating_add(units);
@@ -917,6 +932,7 @@ impl PropWorld {
         let Some(p) = self.props.remove(&id) else {
             return false;
         };
+        self.left.push((id, p.data));
         self.unindex(id, p.link);
         self.revision = next_revision();
         self.slots.insert(p.slot);
@@ -930,6 +946,84 @@ impl PropWorld {
         true
     }
 
+    /// The props removed since the last call, each with its datablock (bounded by the props that existed).
+    pub fn take_left(&mut self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.left)
+    }
+
+    /// Gives prop `id` the numbers and hulls of its datablock as it is now (the datablock changed under it): the body is made
+    /// again from them at the pose and the velocities it has this instant, bit for bit, awake or asleep as it was, and fixed if
+    /// the prop is frozen; its joints go back on the new body. A child of another prop (a part of its root's body, or driven)
+    /// keeps its body and takes the numbers for when it is freed. A body the physics world refuses with the new numbers keeps
+    /// the old ones and its old body. True when a body was made again. The work is charged to the next steps' budgets, as a
+    /// spawn's.
+    pub fn refit(&mut self, id: u32, params: PropParams, hulls: Option<Rc<PropHulls>>) -> bool {
+        let Some(p) = self.props.get_mut(&id) else {
+            return false;
+        };
+        let old = (
+            std::mem::replace(&mut p.params, params),
+            std::mem::replace(&mut p.hulls, hulls),
+        );
+        if p.link.is_child() {
+            return false;
+        }
+        // A world that has stopped has no body to read: the next tick makes every body again from its prop's state, with
+        // these numbers.
+        let Some(state) = self.world.body(BodyId(id)) else {
+            return false;
+        };
+        let motion = if p.rest.is_frozen() {
+            Motion::Fixed
+        } else {
+            Motion::Dynamic
+        };
+        self.touched.insert(id);
+        // What hangs on this body leaves it as the body goes and is fitted to the new one at the next fit, as after a thaw.
+        self.free_parts(id, motion == Motion::Fixed);
+        self.dirty_roots.push(id);
+        let Some(p) = self.props.get(&id) else {
+            return false;
+        };
+        let desc = body_desc(&p.params, p.hulls.as_deref(), motion, &state);
+        let removed = self.world.remove_body(BodyId(id));
+        self.note(&format!("prop {id}'s body"), removed);
+        let mut work = 0u64;
+        let mut free = |units: u64| {
+            work = work.saturating_add(units);
+            true
+        };
+        let (made, has_body) = match self.world.add_body(BodyId(id), &desc, &mut free) {
+            Ok(()) => (true, true),
+            Err(e) => {
+                // The world would not take the new numbers: the old body goes back with the old ones. When the world refuses
+                // that too it has stopped, and the next tick makes every body (and joint) again from its prop's state.
+                self.note(&format!("prop {id}'s new body"), Err::<(), _>(e));
+                let (params, hulls) = old;
+                let back = body_desc(&params, hulls.as_deref(), motion, &state);
+                if let Some(p) = self.props.get_mut(&id) {
+                    p.params = params;
+                    p.hulls = hulls;
+                }
+                let put_back = self.world.add_body(BodyId(id), &back, &mut free);
+                let has_body = put_back.is_ok();
+                self.note(&format!("prop {id}'s body put back"), put_back);
+                (false, has_body)
+            }
+        };
+        if has_body && state.sleeping {
+            let slept = self.world.set_body(BodyId(id), &state);
+            self.note(&format!("prop {id}'s sleep"), slept);
+        }
+        self.built_work = self.built_work.saturating_add(work);
+        self.built_bodies = self.built_bodies.saturating_add(1);
+        if has_body {
+            self.reinsert_joints_of(id);
+        }
+        self.revision = next_revision();
+        made
+    }
+
     /// The body again, as `motion`, at the prop's state (frozen: a fixed body; thawed: a dynamic one at rest).
     fn rebuild(&mut self, id: u32, motion: Motion) -> bool {
         if self.props.get(&id).is_none_or(|p| p.link.is_child()) {
@@ -941,29 +1035,18 @@ impl PropWorld {
         let Some(p) = self.props.get(&id) else {
             return false;
         };
-        let s = p.q.stopped().state();
-        let desc = BodyDesc {
+        let desc = body_desc(
+            &p.params,
+            p.hulls.as_deref(),
             motion,
-            shape: body_shape(&p.params, p.hulls.as_deref()),
-            position: s.position,
-            rotation: s.rotation,
-            density: p.params.density,
-            friction: p.params.friction,
-            restitution: p.params.restitution,
-            linear_damping: p.params.linear_damping,
-            angular_damping: p.params.angular_damping,
-            ..BodyDesc::default()
+            &p.q.stopped().state(),
+        );
+        let was = if motion == Motion::Fixed {
+            Motion::Dynamic
+        } else {
+            Motion::Fixed
         };
-        let before = BodyDesc {
-            motion: if motion == Motion::Fixed {
-                Motion::Dynamic
-            } else {
-                Motion::Fixed
-            },
-            linvel: p.q.state().linvel,
-            angvel: p.q.state().angvel,
-            ..desc.clone()
-        };
+        let before = body_desc(&p.params, p.hulls.as_deref(), was, &p.q.state());
         let removed = self.world.remove_body(BodyId(id));
         self.note(&format!("prop {id}'s body"), removed);
         let mut work = 0u64;

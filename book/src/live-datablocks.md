@@ -48,10 +48,35 @@ write does not run; a redeclare with the new name does.
 
 ## Which classes
 
-The engine's classes under `GameBaseData` (ShapeBase and StaticShape, Item, Player, Camera) refresh as above. A game's own
-datablock class registers its refresh on its class behavior: `EngineClass::datablock_changed(vm, db, users, change)` is
-called for the datablock's whole class chain, root first, with the users and the kind of change, and answers `true` once a
-behavior took the refresh. A plugin class declared with `#[derive(EngineClass)]` gets the hook beside `preload`:
+The engine's classes under `GameBaseData` (ShapeBase and StaticShape, Item, Player, Camera, the vehicles, Projectile) refresh
+as above:
+
+- **Vehicles.** A written `WheeledVehicleData` or `FlyingVehicleData` gives each vehicle its rigid body's words again: mass,
+  `1/mass`, inertia (a wheeled vehicle's from `massBox`, or the object box), center of mass, friction and restitution. The pose
+  and the momenta are kept, so the velocity follows the new mass at the next step (as a client's refresh keeps momenta, not
+  velocity). A redeclare runs the whole `onNewDataBlock` again: the shape, the object box and the body box, the wheel records
+  from the new shape's `hub<i>` nodes and `spring<i>` sequences, the steering and brake-light sequences; unlike a `setDataBlock`,
+  the tires and springs script fitted to the wheels are kept. Tires and springs themselves are read each tick, so a written
+  `WheeledVehicleTire` or `WheeledVehicleSpring` needs no refresh.
+- **Projectile.** Nothing is refreshed: a Projectile reads its `ProjectileData` each tick and caches nothing. A Projectile
+  whose datablock was deleted under it deletes itself at its next tick, so no object reads a dead id and none ticks forever.
+- **The checked datablocks** (`ExplosionData`, `DebrisData`, `ParticleData`, `ParticleEmitterData`, `AudioDescription`,
+  `AudioProfile`) have no users to refresh; what a redeclare brings up to date is the datablock itself. TGE runs their range
+  checks and clamps in `onAdd` only, so a redeclare that puts `lifetimeMS = -5` leaves it there. Here the checks run again from
+  the redeclare's `preload`, and the emitter's particle list is built again from `particles`: a redeclared datablock holds the
+  same clamped fields as a fresh declaration of the same values. A redeclare whose values the checks refuse (TGE deletes a new
+  datablock they refuse) prints the checks' own line, and the datablock keeps its values: no object is left pointing at a
+  deleted datablock.
+- **Plugin datablocks.** A `PropData` refreshes its props through the hook below: each prop's numbers (size or radius, mass or
+  density, friction, restitution, damping, the collision shape's hulls) are read again and its body made again from them at the
+  exact pose and velocities it has, asleep or awake as it was, fixed when frozen, with its joints; a prop hung on another keeps
+  its body and takes the numbers for when it is freed. `RopeData` is not refreshed: a rope is no object of the engine (it has no
+  `dataBlock`, so no count and no scan finds it) and copies its parameters when it is made; a changed `RopeData` reaches the
+  ropes made after it.
+
+A game's own datablock class registers its refresh on its class behavior: `EngineClass::datablock_changed(vm, db, users,
+change)` is called for the datablock's whole class chain, root first, with the users and the kind of change, and answers `true`
+once a behavior took the refresh. A plugin class declared with `#[derive(EngineClass)]` gets the hook beside `preload`:
 
 ```rust,ignore
 #[derive(EngineClass)]
@@ -68,10 +93,15 @@ impl PropData {
 
 A class with users and no refresh is stale, silently: the drain warns once per class
 (`datablock class X has no refresh: its N object(s) keep what they were built with`); the engine's own refresh takes
-`CameraData` and the `ShapeBaseData` classes other than the vehicles', so a `VehicleData` or `ProjectileData` with users is
-warned about. Vehicles, projectiles, the particle and explosion datablocks' clamps and the plugin datablocks are not refreshed
-yet. The `users` a hook is given are live objects: a user that an earlier datablock's `onReloaded` deleted in the same tick is
-left out, and a hook that deletes one itself leaves the hooks after it in the chain to check.
+`CameraData`, `ProjectileData` and the `ShapeBaseData` classes, the vehicles' included. The `users` a hook is given are live
+objects: a user that an earlier datablock's `onReloaded` deleted in the same tick is left out, and a hook that deletes one
+itself leaves the hooks after it in the chain to check.
+
+The users are found by one pass over the process list, where every `GameBase` is. A plugin whose objects are not `GameBase`
+(a prop is a `SceneObject` its own world steps) counts them itself: `scene::refresh::user_added` when one is made,
+`scene::refresh::user_left` when one is gone. When a dirty datablock's count says it has more users than the pass found, one
+pass over every object of the engine follows, once per drain; an object's `dataBlock` is read as an object reference or as
+the integer id a plugin class declares it as.
 
 ## Limits
 
@@ -89,6 +119,11 @@ left out, and a hook that deletes one itself leaves the hooks after it in the ch
   `onNewDataBlock` for such a write either.
 - A datablock whose users outgrow one tick's work budget is refreshed over several ticks, from where the last one stopped; a
   new change to it starts the refresh over, so a script that changes such a datablock every tick keeps its last users stale.
+- A prop's body made again is charged to the physics steps after it, as a spawn's is: a script that edits a `PropData` with a
+  thousand props every tick slows those steps and is bounded by the step budget and the props' caps.
+- A deleted datablock under live objects: a Projectile deletes itself; a prop keeps the numbers it copied and is unchanged; a
+  vehicle runs on with the datablock as its last tick read it, a Player with its last products, an Item with what it was built
+  with (the user counts and the checked removal are the removal chapter's work).
 
 ## Callbacks
 
