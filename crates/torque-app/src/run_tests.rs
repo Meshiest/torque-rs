@@ -6,7 +6,9 @@ use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
-use torque_client::conn::tge::TgeConn;
+use torque_client::conn::tge::{TgeConn, TgeFeed, start_feed};
+use torque_client::conn::{ConnGame, Connect, Started};
+use torque_client::state::ClientState;
 use torque_engine::{
     Engine, EngineBuilder, Plugin, PluginGroup, PluginType, RunError, Runner, ServerStage,
 };
@@ -23,7 +25,7 @@ use crate::run::{
     Dedicated, DedicatedRunnerPlugin, EngineDedicated, EngineRun, OffscreenRunnerPlugin, Stop,
     WebPageRunnerPlugin,
 };
-use crate::server::Listen;
+use crate::server::{GameServer, Listen};
 use crate::shots::FRAME_MS;
 use crate::view::WorldView;
 use crate::{App, GameApp, Host};
@@ -341,20 +343,21 @@ fn a_config_chooses_the_runner_by_id() {
     assert!(!engine.is_plugin_added::<DedicatedRunnerPlugin>());
 }
 
-/// A game that implements [`GameApp`] itself (it is no [`App`]) over a client of a plain engine, counting the frames drawn.
-struct Counted {
-    client: GameClient,
+/// A game that implements [`GameApp`] itself (it is no [`App`]) over a client of conn game `C` of a plain engine, counting
+/// the frames drawn.
+struct Counted<C: ConnGame> {
+    client: GameClient<GameServer, C>,
     frames: Rc<Cell<u32>>,
 }
 
-impl GameApp for Counted {
-    type Conn = TgeConn;
+impl<C: ConnGame> GameApp for Counted<C> {
+    type Conn = C;
 
-    fn host(&mut self) -> &mut Host<TgeConn> {
+    fn host(&mut self) -> &mut Host<C> {
         &mut self.client.host
     }
 
-    fn host_ref(&self) -> &Host<TgeConn> {
+    fn host_ref(&self) -> &Host<C> {
         &self.client.host
     }
 
@@ -398,6 +401,54 @@ fn app_for_names_a_game_app_and_the_offscreen_runner_draws_64_frames_of_it() {
         ))
         .app_for(move |engine: &Engine| {
             let client = ClientBuilder::from_engine(engine, None, ClientNet::None)?.build();
+            Ok(Counted {
+                client,
+                frames: Rc::clone(&counted),
+            })
+        })
+        .run()
+        .expect("the game runs");
+    assert_eq!(frames.get(), 64);
+}
+
+/// A conn game of the test's own: TGE's feed with parts of its own.
+#[derive(Debug, Default)]
+struct OwnConn;
+
+impl ConnGame for OwnConn {
+    type Feed = TgeFeed;
+    type Parts = u32;
+
+    const HANDSHAKE_WAIT_MS: u32 = TgeConn::HANDSHAKE_WAIT_MS;
+    const HANDSHAKE_TRIES: u32 = TgeConn::HANDSHAKE_TRIES;
+
+    fn start(
+        vm: &mut torque_ts_vm::vm::Vm,
+        client: &Rc<RefCell<ClientState<OwnConn>>>,
+        connect: Connect,
+    ) -> Result<Started<OwnConn>, String> {
+        let _ = client;
+        start_feed(vm, connect)
+    }
+}
+
+#[test]
+fn conn_game_app_for_draws_64_offscreen_frames_of_a_client_of_its_own_conn_game() {
+    if let Err(e) = crate::window::offscreen_gpu() {
+        eprintln!("skipped: {e}");
+        return;
+    }
+    let frames = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&frames);
+    EngineBuilder::new()
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            OffscreenRunnerPlugin::new((96, 54), 64 * FRAME_MS),
+        ))
+        .app_for(move |engine: &Engine| {
+            let client =
+                ClientBuilder::<OwnConn>::from_engine_with_conn(engine, None, ClientNet::None)?
+                    .build();
             Ok(Counted {
                 client,
                 frames: Rc::clone(&counted),

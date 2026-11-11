@@ -101,6 +101,35 @@ sent), the client posts `ConnectionMessage` 1 with the same sequence.
 **Its own packets.** The client's head (`ClientBlock`: the control checksum, the moves, the first-person and
 field-of-view pairs) and its event section. They also carry the acks the server's notifies come from.
 
+## A conn game of the game's own
+
+The client's half of a connection is a `ConnGame`: its feed (what it reads from the server into its world and what it
+sends back), its own part of the natives' state (`Parts`), the names its local test answers to, the natives it adds, and
+the answers it gives the connection at fixed points. Torque's is `TgeConn`, and every client type in `torque::app` takes it
+as the default, so `ClientBuilder::from_engine(..)` and `GameClient` mean a client of `TgeConn`.
+
+A game with its own conn game makes its client from the same plugins with
+`ClientBuilder::<MyConn>::from_engine_with_conn(&engine, files, net)`. The plugins' client recipes run at the same stages
+in the same order; they call the engine's installs through `ClientParts::installs`, which the builder makes for `MyConn`, so
+no recipe names a conn game. A recipe of the game's own reads the typed state with `ClientWiring::<MyConn>::of(vm, "my
+plugin")` (plain `ClientWiring` is TGE's; on a client of another conn game the error names both), and the socket kind and
+the GUI from `ClientParts`, which every client has. The per-tick pass is the engine's slot of `dyn ClientPass<MyConn>` when
+the game sets one, else the engine's own pass. A plugin sets it in its `build`:
+
+```rust,ignore
+let pass: Rc<dyn ClientPass<MyConn>> = Rc::new(MyPass);
+engine.set_slot::<dyn ClientPass<MyConn>>(pass);
+```
+
+The slot is exclusive: a second plugin that sets it fails the build, naming both. The game's app
+implements `GameApp` with `type Conn = MyConn` and is named to the engine with `EngineRun::app_for`, so the window, the
+page and the offscreen runner drive it as its own type.
+
+A conn game whose feed is Torque's (`type Feed = TgeFeed`) starts it with `torque_client::conn::tge::start_feed`, which
+does what `TgeConn` does: the engine's protocol when the engine speaks it, the engine's channels, plugin classes and
+per-ghost blocks. Such a client keeps `GameClient::with_world`, `ghost_count`, `sky_distances` and `predict_frame`. A feed
+of the game's own does those things itself, and fills the view from its own world in its frame.
+
 ## What the example leaves out
 
 A game adds these on the same pieces: the mission phases and the datablocks a client is sent before ghosting starts

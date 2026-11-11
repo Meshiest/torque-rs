@@ -4,8 +4,13 @@
 //! `torque_client::screen::register`, ...) and files it as a recipe at a stage. The host that makes a script engine
 //! ([`GameServer::start_engine`](crate::server::GameServer::start_engine),
 //! [`ClientBuilder::from_engine`](crate::client::ClientBuilder::from_engine)) replays the stages in order, handing the
-//! parts a stage needs to its recipes through the script engine's extension map ([`ServerWiring`], [`ClientWiring`]).
-//! The order of the stages is the order the installs always ran in; within a stage, the order the plugins were added.
+//! parts a stage needs to its recipes through the script engine's extension map ([`ServerWiring`], [`ClientWiring`] and
+//! [`ClientParts`]). The order of the stages is the order the installs always ran in; within a stage, the order the plugins
+//! were added.
+//!
+//! The client recipes name no conn game: a client is made for one
+//! ([`ClientBuilder::from_engine_with_conn`](crate::client::ClientBuilder::from_engine_with_conn); TGE's by default), and
+//! [`ClientParts::installs`] holds the engine's installs made for it, which the recipes call.
 //!
 //! | Plugin | Id | Role and stage | Wraps |
 //! |--------|----|----------------|-------|
@@ -50,6 +55,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 pub use torque_audio::plugin::AudioPlugin;
+use torque_client::conn::ConnGame;
 use torque_client::conn::tge::TgeConn;
 use torque_client::game::ClientGame;
 use torque_client::host::{ClientPass, EnginePass};
@@ -62,6 +68,7 @@ use torque_gui::client_script::RealmLayoutEntry;
 use torque_gui::custom::ControlEntry;
 use torque_gui::{DrawCache, Gui};
 use torque_ts_vm::vm::Vm;
+use web_time::Duration;
 
 pub use torque_app_server::plugins::{
     ContentFormatPlugins, EngineProtocolPlugin, GameClassesPlugin, HierarchyPlugin, MinimalPlugins,
@@ -73,6 +80,7 @@ pub use torque_app_server::plugins::{
 pub use crate::camera_modes::CameraModesPlugin;
 use crate::client::ClientNet;
 pub use crate::gizmos::GizmosPlugin;
+use crate::hosting::{Resolver, register_join_natives_with};
 pub use crate::renderers::RendererSlotPlugin;
 #[cfg(feature = "renderer")]
 pub use crate::renderers::{
@@ -134,26 +142,81 @@ impl PluginGroup for DefaultPlugins {
     }
 }
 
-/// What a client's recipes share while the client is made: the natives' state, the socket kind, and the GUI the GUI plugin
-/// makes. The host sets it as the script engine's extension before the first stage.
-pub struct ClientWiring {
-    state: Rc<RefCell<ClientState<TgeConn>>>,
-    net: ClientNet,
-    gui: RefCell<Option<Gui>>,
+/// What a client's recipes share while the client is made, typed by its conn game `C`: the natives' state, and the parts
+/// every client has ([`ClientParts`]). The host sets it as the script engine's extension before the first stage, so
+/// `vm.extension::<ClientWiring>()` finds a client of TGE's conn game and `vm.extension::<ClientWiring<C>>()` one of `C`.
+pub struct ClientWiring<C: ConnGame = TgeConn> {
+    state: Rc<RefCell<ClientState<C>>>,
+    parts: Rc<ClientParts>,
 }
 
-impl ClientWiring {
-    pub(crate) fn new(state: Rc<RefCell<ClientState<TgeConn>>>, net: ClientNet) -> ClientWiring {
-        ClientWiring {
-            state,
-            net,
-            gui: RefCell::new(None),
-        }
+impl<C: ConnGame> ClientWiring<C> {
+    pub(crate) fn new(
+        state: Rc<RefCell<ClientState<C>>>,
+        parts: Rc<ClientParts>,
+    ) -> ClientWiring<C> {
+        ClientWiring { state, parts }
     }
 
     /// The state the client's natives share.
-    pub fn state(&self) -> &Rc<RefCell<ClientState<TgeConn>>> {
+    pub fn state(&self) -> &Rc<RefCell<ClientState<C>>> {
         &self.state
+    }
+
+    /// The kind of socket the client was given.
+    pub fn net(&self) -> ClientNet {
+        self.parts.net
+    }
+
+    /// The GUI ([`GuiPlugin`]), once its stage ran.
+    pub fn gui(&self) -> Option<Gui> {
+        self.parts.gui()
+    }
+
+    /// The wiring of the client `vm` is being made for, a client of conn game `C`, for the recipe of `plugin`.
+    ///
+    /// # Errors
+    /// No client is being made, or the client is of another conn game (the message names both).
+    pub fn of(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring<C>>, String> {
+        if let Some(wiring) = vm.extension::<ClientWiring<C>>() {
+            return Ok(wiring);
+        }
+        let parts = client_parts(vm, plugin)?;
+        Err(format!(
+            "{plugin} needs a client of the conn game {}, and this client is of {}",
+            std::any::type_name::<C>(),
+            parts.conn
+        ))
+    }
+}
+
+/// What a client's recipes share whatever its conn game: the socket kind, the GUI the GUI plugin makes, and the engine's
+/// installs made for the client's conn game. The host sets it as the script engine's extension beside [`ClientWiring`].
+pub struct ClientParts {
+    /// The type name of the client's conn game.
+    conn: &'static str,
+    net: ClientNet,
+    gui: RefCell<Option<Gui>>,
+    installs: Box<dyn ClientInstalls>,
+}
+
+impl ClientParts {
+    /// The parts of a client of conn game `C` over `state`.
+    pub(crate) fn for_conn<C: ConnGame>(
+        state: &Rc<RefCell<ClientState<C>>>,
+        net: ClientNet,
+    ) -> ClientParts {
+        ClientParts {
+            conn: std::any::type_name::<C>(),
+            net,
+            gui: RefCell::new(None),
+            installs: Box::new(Installs(Rc::clone(state))),
+        }
+    }
+
+    /// The type name of the client's conn game.
+    pub fn conn(&self) -> &'static str {
+        self.conn
     }
 
     /// The kind of socket the client was given.
@@ -165,17 +228,70 @@ impl ClientWiring {
     pub fn gui(&self) -> Option<Gui> {
         self.gui.borrow().clone()
     }
+
+    /// The engine's installs over the client's state, made for its conn game.
+    pub fn installs(&self) -> &dyn ClientInstalls {
+        &*self.installs
+    }
 }
 
-/// The client wiring a recipe is replayed with.
-pub(crate) fn client_wiring(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring>, String> {
-    vm.extension::<ClientWiring>()
+/// The engine's client installs over a client's state, made for its conn game ([`ClientParts::installs`]): a recipe calls
+/// them without naming the conn game. Each wraps the install in `torque_client` (or [`hosting`](crate::hosting)) it names.
+pub trait ClientInstalls {
+    /// `ActionMap`'s natives (`torque_client::actionmap::register`), and the input sources `sources` the client polls.
+    fn action_maps(&self, vm: &mut Vm, sources: &[InputSourceEntry]);
+    /// The screen's natives over `gui` (`torque_client::screen::register`).
+    fn screen(&self, vm: &mut Vm, gui: &Gui);
+    /// The connection's natives over `gui`: the engine's, then the conn game's own (`torque_client::conn::register`).
+    fn conn(&self, vm: &mut Vm, gui: &Gui);
+    /// The LAN query's natives (`torque_client::query::register`).
+    fn query(&self, vm: &mut Vm);
+    /// `setFov` and its kin (`torque_client::zoom::register`).
+    fn zoom(&self, vm: &mut Vm);
+    /// The join screen's natives, looking names up with `resolver` for at most `timeout`
+    /// ([`register_join_natives_with`]).
+    fn join_natives(&self, vm: &mut Vm, resolver: Resolver, timeout: Duration);
+}
+
+/// [`ClientInstalls`] for conn game `C`.
+struct Installs<C: ConnGame>(Rc<RefCell<ClientState<C>>>);
+
+impl<C: ConnGame> ClientInstalls for Installs<C> {
+    fn action_maps(&self, vm: &mut Vm, sources: &[InputSourceEntry]) {
+        torque_client::actionmap::register(vm, &self.0);
+        torque_client::input_source::install(&mut self.0.borrow_mut(), sources);
+    }
+
+    fn screen(&self, vm: &mut Vm, gui: &Gui) {
+        torque_client::screen::register(vm, gui, &self.0);
+    }
+
+    fn conn(&self, vm: &mut Vm, gui: &Gui) {
+        torque_client::conn::register(vm, &self.0, gui);
+    }
+
+    fn query(&self, vm: &mut Vm) {
+        torque_client::query::register(vm, &self.0);
+    }
+
+    fn zoom(&self, vm: &mut Vm) {
+        torque_client::zoom::register(vm, &self.0);
+    }
+
+    fn join_natives(&self, vm: &mut Vm, resolver: Resolver, timeout: Duration) {
+        register_join_natives_with(vm, &self.0, resolver, timeout);
+    }
+}
+
+/// The client parts a recipe is replayed with.
+pub(crate) fn client_parts(vm: &Vm, plugin: &str) -> Result<Rc<ClientParts>, String> {
+    vm.extension::<ClientParts>()
         .ok_or_else(|| format!("{plugin} runs only when a game client is made"))
 }
 
 /// The GUI, for a plugin that builds on it.
-fn client_gui(wiring: &ClientWiring, plugin: &str) -> Result<Gui, String> {
-    wiring
+fn client_gui(parts: &ClientParts, plugin: &str) -> Result<Gui, String> {
+    parts
         .gui()
         .ok_or_else(|| format!("{plugin} needs the GUI, which has not run"))
 }
@@ -193,7 +309,7 @@ impl Plugin for GuiPlugin {
         let layout_fonts = self.layout_fonts;
         engine.client_script().prefs::<torque_gui::GuiPrefs>();
         engine.client(ClientStage::Gui, move |vm, engine| {
-            let wiring = client_wiring(vm, "the GUI")?;
+            let parts = client_parts(vm, "the GUI")?;
             let gui = torque_gui::register(vm);
             // The control classes the plugins added (`add_gui_control`): their classes come with the script registry's, after.
             gui.add_controls(engine.list::<ControlEntry>());
@@ -206,7 +322,7 @@ impl Plugin for GuiPlugin {
             }
             // The extensions the plugins added (`gui_primary`, `gui_extension`), made for this client's GUI.
             gui.install_extensions(vm, engine);
-            *wiring.gui.borrow_mut() = Some(gui);
+            *parts.gui.borrow_mut() = Some(gui);
             Ok(())
         });
     }
@@ -220,14 +336,12 @@ pub struct ActionMapPlugin;
 impl Plugin for ActionMapPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Input, |vm, engine| {
-            let wiring = client_wiring(vm, "the action maps")?;
+            let parts = client_parts(vm, "the action maps")?;
             vm.register_class("ActionMap", "SimObject", &[]);
-            torque_client::actionmap::register(vm, wiring.state());
             // The input sources the plugins added (`add_input_source`): the client polls them for `joystick<N>` events.
-            torque_client::input_source::install(
-                &mut wiring.state().borrow_mut(),
-                engine.list::<InputSourceEntry>(),
-            );
+            parts
+                .installs()
+                .action_maps(vm, engine.list::<InputSourceEntry>());
             Ok(())
         });
     }
@@ -245,9 +359,9 @@ impl Plugin for ScreenPlugin {
 
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Screen, |vm, _| {
-            let wiring = client_wiring(vm, "the screen")?;
-            let gui = client_gui(&wiring, "the screen")?;
-            torque_client::screen::register(vm, &gui, wiring.state());
+            let parts = client_parts(vm, "the screen")?;
+            let gui = client_gui(&parts, "the screen")?;
+            parts.installs().screen(vm, &gui);
             Ok(())
         });
     }
@@ -266,12 +380,12 @@ impl Plugin for ConnPlugin {
 
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Conn, |vm, engine| {
-            let wiring = client_wiring(vm, "the connection")?;
-            if wiring.net() == ClientNet::None {
+            let parts = client_parts(vm, "the connection")?;
+            if parts.net() == ClientNet::None {
                 return Ok(());
             }
-            let gui = client_gui(&wiring, "the connection")?;
-            torque_client::conn::register(vm, wiring.state(), &gui);
+            let gui = client_gui(&parts, "the connection")?;
+            parts.installs().conn(vm, &gui);
             // A networked engine sends its manifest (and its auth ticket) with every connect request.
             torque_client::conn::tge::ConnectHello::install(vm, engine);
             Ok(())
@@ -287,8 +401,7 @@ pub struct ServerQueryPlugin;
 impl Plugin for ServerQueryPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Query, |vm, _| {
-            let wiring = client_wiring(vm, "the server query")?;
-            torque_client::query::register(vm, wiring.state());
+            client_parts(vm, "the server query")?.installs().query(vm);
             Ok(())
         });
     }
@@ -303,8 +416,7 @@ pub struct ZoomPlugin;
 impl Plugin for ZoomPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.client(ClientStage::Natives, |vm, _| {
-            let wiring = client_wiring(vm, "the zoom")?;
-            torque_client::zoom::register(vm, wiring.state());
+            client_parts(vm, "the zoom")?.installs().zoom(vm);
             Ok(())
         });
     }
@@ -339,8 +451,8 @@ impl Plugin for LivePerfPlugin {
 }
 
 /// What [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the client host from: the draw cache and the
-/// window's mode. The pass that drives the engine's half of each tick is the engine's slot of `dyn ClientPass<TgeConn>`.
-/// [`ClientHostPlugin`] sets both.
+/// window's mode. The pass that drives the engine's half of each tick is the engine's slot of `dyn ClientPass<C>` for the
+/// client's conn game `C` when a game set one, else [`EnginePass`]. [`ClientHostPlugin`] sets this, and the slot for TGE's.
 #[derive(Clone, Copy)]
 pub struct ClientHostSetup {
     /// Makes the GUI's draw cache ([`draw_cache`](crate::draw_cache)).

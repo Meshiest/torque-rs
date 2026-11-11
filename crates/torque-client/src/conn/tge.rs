@@ -1236,6 +1236,81 @@ impl Feed for TgeFeed {
     }
 }
 
+/// A new connection's [`TgeFeed`] and [`TgeWorld`], as [`TgeConn`] starts one, for any conn game `G` whose feed is TGE's:
+/// the engine's protocol when the engine speaks it, the engine's channels, plugin classes and per-ghost blocks, and the
+/// plugin shapes the world draws.
+///
+/// # Errors
+/// The feed could not start on the connection's link.
+pub fn start_feed<G: ConnGame<Feed = TgeFeed>>(
+    vm: &mut Vm,
+    connect: Connect,
+) -> Result<Started<G>, String> {
+    let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
+    let reader = crate::game::installed_game(vm).and_then(|g| g.file_reader());
+    let hello = vm.extension::<ConnectHello>();
+    let mut feed = match hello.filter(|h| local.is_none() && h.engine_mode()) {
+        Some(hello) => {
+            vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+                connect.server.into(),
+            )));
+            let start = EngineStart {
+                server: connect.server.into(),
+                nonce: engine_nonce(vm.extension::<EngineNonceKey>().as_deref(), connect.seq),
+                source: Some(hello.source(vm)),
+                password: connect.password,
+                args: connect.args,
+                kind: connect.link.kind(),
+            };
+            TgeFeed::over_engine(
+                connect.link,
+                start,
+                vm.extension::<RpcLanes>(),
+                client_rates(vm),
+            )?
+        }
+        None => TgeFeed::with_rates(
+            connect.link,
+            &connect.password,
+            connect.args,
+            connect.seq,
+            local,
+            client_rates(vm),
+        )?,
+    };
+    if local.is_none()
+        && feed.engine.is_none()
+        && let Some(hello) = vm.extension::<ConnectHello>()
+    {
+        vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
+            connect.server.into(),
+        )));
+        feed.set_connect_source(connect.server.into(), hello.source(vm));
+    }
+    feed.set_reader(reader.clone());
+    feed.set_channels(vm.extension::<ClientChannels>());
+    if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
+        feed.set_plugins((*plugins).clone());
+    }
+    if let Some(hello) = vm.extension::<ConnectHello>() {
+        feed.set_blocks(hello.blocks());
+    }
+    // The plugin ghost classes the renderer draws as shapes.
+    let mut world = TgeWorld::default();
+    if let Some(drawn) = vm.extension::<DrawnShapes>() {
+        world.records.plugin_shapes = (*drawn).clone();
+    }
+    if let Some(stills) = vm.extension::<PluginStills>() {
+        world.records.stills = (*stills).clone();
+    }
+    Ok(Started {
+        feed,
+        world,
+        part: Box::new(super::NoPart),
+        reader,
+    })
+}
+
 /// Torque's connection half: [`TgeFeed`] into [`TgeWorld`], Torque's answers to the rest.
 #[derive(Debug, Default)]
 pub struct TgeConn;
@@ -1253,69 +1328,7 @@ impl ConnGame for TgeConn {
         connect: Connect,
     ) -> Result<Started<TgeConn>, String> {
         let _ = client;
-        let local = connect.local.map(|a| (a.protocol, a.ghost_bits));
-        let reader = crate::game::installed_game(vm).and_then(|g| g.file_reader());
-        let hello = vm.extension::<ConnectHello>();
-        let mut feed = match hello.filter(|h| local.is_none() && h.engine_mode()) {
-            Some(hello) => {
-                vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
-                    connect.server.into(),
-                )));
-                let start = EngineStart {
-                    server: connect.server.into(),
-                    nonce: engine_nonce(vm.extension::<EngineNonceKey>().as_deref(), connect.seq),
-                    source: Some(hello.source(vm)),
-                    password: connect.password,
-                    args: connect.args,
-                    kind: connect.link.kind(),
-                };
-                TgeFeed::over_engine(
-                    connect.link,
-                    start,
-                    vm.extension::<RpcLanes>(),
-                    client_rates(vm),
-                )?
-            }
-            None => TgeFeed::with_rates(
-                connect.link,
-                &connect.password,
-                connect.args,
-                connect.seq,
-                local,
-                client_rates(vm),
-            )?,
-        };
-        if local.is_none()
-            && feed.engine.is_none()
-            && let Some(hello) = vm.extension::<ConnectHello>()
-        {
-            vm.set_extension(Rc::new(torque_engine::net::ConnectTarget(
-                connect.server.into(),
-            )));
-            feed.set_connect_source(connect.server.into(), hello.source(vm));
-        }
-        feed.set_reader(reader.clone());
-        feed.set_channels(vm.extension::<ClientChannels>());
-        if let Some(plugins) = torque_server::net::codecs::plugin_classes(vm) {
-            feed.set_plugins((*plugins).clone());
-        }
-        if let Some(hello) = vm.extension::<ConnectHello>() {
-            feed.set_blocks(hello.blocks());
-        }
-        // The plugin ghost classes the renderer draws as shapes.
-        let mut world = TgeWorld::default();
-        if let Some(drawn) = vm.extension::<DrawnShapes>() {
-            world.records.plugin_shapes = (*drawn).clone();
-        }
-        if let Some(stills) = vm.extension::<PluginStills>() {
-            world.records.stills = (*stills).clone();
-        }
-        Ok(Started {
-            feed,
-            world,
-            part: Box::new(super::NoPart),
-            reader,
-        })
+        start_feed(vm, connect)
     }
 
     fn frame(game: &GameSlot, world: &mut WorldOf<TgeConn>) {

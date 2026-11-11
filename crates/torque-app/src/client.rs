@@ -13,15 +13,22 @@
 //!
 //! **A step** ([`GameClient::step`]): as many server ticks as the time covers when hosting, then the client's ticks (its input,
 //! its scripts, its connection, its query), the link carried around each, and the console's lines kept.
+//!
+//! **The conn game** (`C`, a [`ConnGame`]): what the connection reads into its world and what it asks the game. TGE's
+//! ([`TgeConn`]) is the default of [`ClientBuilder`] and [`GameClient`], and [`ClientBuilder::new`] and
+//! [`ClientBuilder::from_engine`] make a client of it; [`ClientBuilder::from_engine_with_conn`] makes one of any `C` from the
+//! same plugins. The pass is the engine's slot of `dyn ClientPass<C>` when a game set one, else [`EnginePass`]. What reads
+//! TGE's world ([`GameClient::with_world`], [`GameClient::predict_frame`]) is there for a conn game whose feed is TGE's.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
-use torque_client::conn::tge::{TgeConn, TgeWorld};
+use torque_client::conn::ConnGame;
+use torque_client::conn::tge::{TgeConn, TgeFeed, TgeWorld};
 use torque_client::game::ClientGame;
-use torque_client::host::{ClientHost, ClientPass};
+use torque_client::host::{ClientHost, ClientPass, EnginePass};
 use torque_client::hud::HudWorld as _;
 use torque_client::input::{Key, key_message};
 use torque_client::net::{Datagrams, NetPolicy};
@@ -37,8 +44,8 @@ use torque_ts_vm::vm::Vm;
 
 use super::Host;
 use super::plugins::{
-    ClientGamePlugin, ClientHostSetup, ClientWiring, DefaultPlugins, GameClassesPlugin, GuiPlugin,
-    ServerQueryPlugin,
+    ClientGamePlugin, ClientHostSetup, ClientParts, ClientWiring, DefaultPlugins,
+    GameClassesPlugin, GuiPlugin, ServerQueryPlugin,
 };
 use super::server::GameServer;
 use super::slots::{FileSetter, file_setter};
@@ -98,14 +105,18 @@ impl Default for ClientSetup {
     }
 }
 
-/// A client being made: its script engine, GUI and state, the engine's natives registered.
-pub struct ClientBuilder {
+/// What a client made with no client host fails with.
+const NO_CLIENT_HOST: &str = "the engine has no client host (ClientHostPlugin)";
+
+/// A client being made, of conn game `C` (TGE's by default): its script engine, GUI and state, the engine's natives
+/// registered.
+pub struct ClientBuilder<C: ConnGame = TgeConn> {
     pub vm: Vm,
     pub gui: Gui,
-    pub state: Rc<RefCell<ClientState<TgeConn>>>,
+    pub state: Rc<RefCell<ClientState<C>>>,
     link: Option<MemoryLink>,
     engine: Engine,
-    pass: Rc<dyn ClientPass<TgeConn>>,
+    pass: Rc<dyn ClientPass<C>>,
     host: ClientHostSetup,
 }
 
@@ -148,7 +159,7 @@ impl ClientBuilder {
         files: Option<MemFiles>,
         net: ClientNet,
     ) -> Result<ClientBuilder, String> {
-        ClientBuilder::from_engine_files(engine, files.map(file_setter), net)
+        ClientBuilder::from_engine_with_conn(engine, files, net)
     }
 
     /// [`ClientBuilder::from_engine`] over a file host of the game's own (a folder read in place, archives mounted over it, an
@@ -160,19 +171,30 @@ impl ClientBuilder {
     ) -> Result<ClientBuilder, String> {
         ClientBuilder::from_engine_files(engine, Some(file_setter(files)), net)
     }
+}
 
-    /// The body of the `from_engine` constructors (not generic over the file host, so it is built once).
+impl<C: ConnGame> ClientBuilder<C> {
+    /// A client of conn game `C` made by `engine`'s plugins, as [`ClientBuilder::from_engine`] makes one of TGE's: the same
+    /// recipes at the same stages, their installs made for `C` ([`ClientParts::installs`]). The pass is the engine's slot of
+    /// `dyn ClientPass<C>` when a game set one, else [`EnginePass`].
+    pub fn from_engine_with_conn(
+        engine: &Engine,
+        files: Option<MemFiles>,
+        net: ClientNet,
+    ) -> Result<ClientBuilder<C>, String> {
+        ClientBuilder::from_engine_files(engine, files.map(file_setter), net)
+    }
+
+    /// The body of the `from_engine` constructors (not generic over the file host, so it is built once per conn game).
     fn from_engine_files(
         engine: &Engine,
         files: Option<FileSetter>,
         net: ClientNet,
-    ) -> Result<ClientBuilder, String> {
+    ) -> Result<ClientBuilder<C>, String> {
+        let host = *engine.resource::<ClientHostSetup>().ok_or(NO_CLIENT_HOST)?;
         let pass = engine
-            .slot::<dyn ClientPass<TgeConn>>()
-            .ok_or("the engine has no client host (ClientHostPlugin)")?;
-        let host = *engine
-            .resource::<ClientHostSetup>()
-            .ok_or("the engine has no client host (ClientHostPlugin)")?;
+            .slot::<dyn ClientPass<C>>()
+            .unwrap_or_else(|| Rc::new(EnginePass));
         let mut vm = crate::slots::make_script_engine(engine);
         for warning in engine.warnings() {
             vm.warn(warning.to_string());
@@ -180,10 +202,14 @@ impl ClientBuilder {
         for warning in client_transport_warnings(engine) {
             vm.warn(warning);
         }
-        let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
+        let state = Rc::new(RefCell::new(ClientState::<C>::default()));
         let link = open_socket(engine, &state, net)?;
-        let wiring = Rc::new(ClientWiring::new(Rc::clone(&state), net));
-        vm.set_extension(Rc::clone(&wiring));
+        let parts = Rc::new(ClientParts::for_conn(&state, net));
+        vm.set_extension(Rc::new(ClientWiring::new(
+            Rc::clone(&state),
+            Rc::clone(&parts),
+        )));
+        vm.set_extension(Rc::clone(&parts));
         // The engine's bulk channels (read from the front of each server packet once active).
         let channels = engine.net_channels().map_err(|e| e.to_string())?;
         if !channels.is_empty() {
@@ -234,7 +260,7 @@ impl ClientBuilder {
         ] {
             replay(engine, stage, &mut vm)?;
         }
-        let gui = wiring.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
+        let gui = parts.gui().ok_or("the engine has no GUI (GuiPlugin)")?;
         Ok(ClientBuilder {
             vm,
             gui,
@@ -299,7 +325,7 @@ impl ClientBuilder {
     }
 
     /// The client host over the engine, in a window's mode, with no server hosted yet.
-    pub fn build<S>(mut self) -> GameClient<S> {
+    pub fn build<S>(mut self) -> GameClient<S, C> {
         // The host takes the script engine, so the `Host` stage's recipes are the last to see it.
         if let Err(e) = self.engine.replay(ClientStage::Host, &mut self.vm) {
             self.vm.warn(e.to_string());
@@ -350,7 +376,7 @@ impl ClientBuilder {
     }
 }
 
-impl Connect for ClientBuilder {
+impl<C: ConnGame> Connect for ClientBuilder<C> {
     fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
         let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
         self.set_socket(socket, policy);
@@ -360,9 +386,9 @@ impl Connect for ClientBuilder {
 }
 
 /// What the client's RPCs ask of the client: the mirrors of its ghosts, and the way to hang up on a server that sent a malformed batch.
-struct RpcHost(Rc<RefCell<ClientState<TgeConn>>>);
+struct RpcHost<C: ConnGame>(Rc<RefCell<ClientState<C>>>);
 
-impl ClientRpcHost for RpcHost {
+impl<C: ConnGame> ClientRpcHost for RpcHost<C> {
     fn ghost_object(&self, index: u32) -> Option<torque_ts_vm::sim::ObjId> {
         torque_client::ghost_objects::object_of(&self.0, index)
     }
@@ -381,17 +407,17 @@ impl ClientRpcHost for RpcHost {
 }
 
 /// The engine's pass with the plugins' per-tick work ([`ClientTick`]) after it, in the order the plugins pushed it.
-struct TickedPass {
-    pass: Rc<dyn ClientPass<TgeConn>>,
+struct TickedPass<C: ConnGame> {
+    pass: Rc<dyn ClientPass<C>>,
     ticks: Vec<ClientTick>,
 }
 
-impl ClientPass<TgeConn> for TickedPass {
-    fn net(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+impl<C: ConnGame> ClientPass<C> for TickedPass<C> {
+    fn net(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<C>>>) {
         self.pass.net(vm, client);
     }
 
-    fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<TgeConn>>>) {
+    fn other(&self, vm: &mut Vm, client: &Rc<RefCell<ClientState<C>>>) {
         self.pass.other(vm, client);
         torque_game::plugin_collision::report_overflow(vm);
         for tick in &self.ticks {
@@ -407,9 +433,9 @@ fn replay(engine: &Engine, stage: ClientStage, vm: &mut Vm) -> Result<(), String
 
 /// Opens the client's socket as `net` says, over the engine's transports (`udp` for [`ClientNet::Loopback`] and
 /// [`ClientNet::Lan`], `memory` for [`ClientNet::Memory`]); an in-memory one comes with its link.
-fn open_socket(
+fn open_socket<C: ConnGame>(
     engine: &Engine,
-    state: &Rc<RefCell<ClientState<TgeConn>>>,
+    state: &Rc<RefCell<ClientState<C>>>,
     net: ClientNet,
 ) -> Result<Option<MemoryLink>, String> {
     let (id, target): (&str, &dyn Any) = match &net {
@@ -439,10 +465,10 @@ struct Parked {
     link: Option<MemoryLink>,
 }
 
-/// A game's client, and the server `S` it hosts: a [`GameServer`], or a game's own type over one (borrowed as one, and made
-/// one when it stops).
-pub struct GameClient<S = GameServer> {
-    pub host: Host,
+/// A game's client of conn game `C` (TGE's by default), and the server `S` it hosts: a [`GameServer`], or a game's own type
+/// over one (borrowed as one, and made one when it stops).
+pub struct GameClient<S = GameServer, C: ConnGame = TgeConn> {
+    pub host: Host<C>,
     engine: Engine,
     /// The server this client runs in its own process, if any.
     pub server: Option<S>,
@@ -459,7 +485,7 @@ pub struct GameClient<S = GameServer> {
     pub client_log: Vec<String>,
 }
 
-impl<S> Connect for GameClient<S> {
+impl<S, C: ConnGame> Connect for GameClient<S, C> {
     fn connect_dyn(&mut self, id: &str, target: &dyn Any) -> Result<LinkInfo, String> {
         let (socket, policy, link, info) = open_connect(&self.engine, id, target)?.split();
         {
@@ -476,12 +502,12 @@ impl<S> Connect for GameClient<S> {
 /// Carries the datagrams between `server` (a [`GameServer`] ticked by hand, on [`super::server::Listen::Memory`]) and several
 /// clients made with [`ClientNet::Memory`] that have no server of their own: what each sent goes in, and what the server sent goes
 /// to the client it is addressed to. Call it around each tick of the server and each step of the clients.
-pub fn carry_between<S>(server: &GameServer, clients: &[&GameClient<S>]) {
+pub fn carry_between<S, C: ConnGame>(server: &GameServer, clients: &[&GameClient<S, C>]) {
     let links: Vec<&MemoryLink> = clients.iter().filter_map(|c| c.link.as_ref()).collect();
     MemoryLink::carry_all(&links, server);
 }
 
-impl<S> GameClient<S> {
+impl<S, C: ConnGame> GameClient<S, C> {
     /// Connects the client over the transport registered under `id`, to `target` (of the type that transport takes; see
     /// [`transports`](crate::transports)), closing any other socket it had: a browser's client opens a new link to join
     /// again. Not while a game is played alone ([`GameClient::start_local`]). Err: no transport is registered under `id`, the
@@ -491,7 +517,7 @@ impl<S> GameClient<S> {
     }
 }
 
-impl<S> GameClient<S> {
+impl<S, C: ConnGame> GameClient<S, C> {
     pub fn vm(&self) -> &Vm {
         self.host.server.vm()
     }
@@ -580,6 +606,19 @@ impl<S> GameClient<S> {
         Some(atoi(&v))
     }
 
+    /// Adds `seconds` to the time the next frame covers.
+    pub fn add_frame_time(&mut self, seconds: f32) {
+        self.frame_dt += seconds;
+    }
+
+    /// The time the next frame covers (seconds), taken.
+    pub fn take_frame_time(&mut self) -> f32 {
+        std::mem::take(&mut self.frame_dt)
+    }
+}
+
+/// What reads TGE's world: a client whose conn game's feed is TGE's.
+impl<S, C: ConnGame<Feed = TgeFeed>> GameClient<S, C> {
     /// The client's world of ghosts, if it is connected.
     pub fn with_world<R>(&self, f: impl FnOnce(&TgeWorld) -> R) -> Option<R> {
         let st = self.host.client.borrow();
@@ -603,16 +642,6 @@ impl<S> GameClient<S> {
                 .then(|| w.view_distances())
         })
         .flatten()
-    }
-
-    /// Adds `seconds` to the time the next frame covers.
-    pub fn add_frame_time(&mut self, seconds: f32) {
-        self.frame_dt += seconds;
-    }
-
-    /// The time the next frame covers (seconds), taken.
-    pub fn take_frame_time(&mut self) -> f32 {
-        std::mem::take(&mut self.frame_dt)
     }
 
     /// The control object's view this frame: the predicted Player between its last two ticks (`back`: 1 right after a tick, 0
@@ -639,7 +668,7 @@ impl<S> GameClient<S> {
     }
 }
 
-impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>> GameClient<S> {
+impl<S: std::borrow::BorrowMut<GameServer> + Into<GameServer>, C: ConnGame> GameClient<S, C> {
     /// `ms` of the clock (see the module docs).
     pub fn step(&mut self, ms: u32) {
         let mut left = ms;

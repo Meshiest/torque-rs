@@ -20,9 +20,9 @@ use std::sync::{Arc, mpsc};
 use web_time::{Duration, Instant};
 
 use super::client::ClientNet;
-use super::plugins::client_wiring;
+use super::plugins::client_parts;
 use super::server::lan_addresses;
-use torque_client::conn::tge::TgeConn;
+use torque_client::conn::ConnGame;
 use torque_client::state::ClientState;
 use torque_engine::{ClientStage, EngineBuilder, Plugin, Requires};
 use torque_ts_vm::vm::{Native, Vm};
@@ -424,7 +424,7 @@ impl JoinLookups {
 }
 
 /// The join screen's natives with the system's resolver (see [`register_join_natives_with`]).
-pub fn register_join_natives(vm: &mut Vm, state: &Rc<RefCell<ClientState<TgeConn>>>) {
+pub fn register_join_natives<G: ConnGame>(vm: &mut Vm, state: &Rc<RefCell<ClientState<G>>>) {
     register_join_natives_with(vm, state, system_resolver(), LOOKUP_TIMEOUT);
 }
 
@@ -436,9 +436,9 @@ pub fn register_join_natives(vm: &mut Vm, state: &Rc<RefCell<ClientState<TgeConn
 /// - `cancelJoinLookup()` drops the lookup (the player left the screen);
 /// - `armPublicJoin(address)` lets the connect that follows reach a public address the player typed (it does nothing unless
 ///   the player's own click or key is being handled, and for an address on the LAN).
-pub fn register_join_natives_with(
+pub fn register_join_natives_with<G: ConnGame>(
     vm: &mut Vm,
-    state: &Rc<RefCell<ClientState<TgeConn>>>,
+    state: &Rc<RefCell<ClientState<G>>>,
     resolver: Resolver,
     timeout: Duration,
 ) {
@@ -551,8 +551,11 @@ impl Plugin for HostingPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         let (resolver, timeout) = (Arc::clone(&self.resolver), self.timeout);
         engine.client(ClientStage::Natives, move |vm, _| {
-            let wiring = client_wiring(vm, "hosting")?;
-            register_join_natives_with(vm, wiring.state(), Arc::clone(&resolver), timeout);
+            client_parts(vm, "hosting")?.installs().join_natives(
+                vm,
+                Arc::clone(&resolver),
+                timeout,
+            );
             Ok(())
         });
     }

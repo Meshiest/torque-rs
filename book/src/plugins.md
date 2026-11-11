@@ -328,7 +328,10 @@ what you register: a native your game's scripts call belongs at `Game` (server) 
 engine's own natives already exist.
 
 A recipe that needs something an earlier stage made, such as the server game's parts, reads it from the wiring the host
-puts on the script engine (`ServerWiring` and `ClientWiring` in `torque::app::plugins`). The engine's own plugins do this.
+puts on the script engine (`ServerWiring`, `ClientWiring` and `ClientParts` in `torque::app::plugins`). The engine's own
+plugins do this. `ClientWiring<C>` is typed by the client's conn game (`ClientWiring::<C>::of(vm, plugin)` reads it, and
+names both conn games when the client is of another); `ClientParts` is on every client, whatever its conn game: the socket
+kind, the GUI and the engine's installs made for that conn game ([Server and client](server-and-client.md)).
 
 ### Resources, slots and lists
 

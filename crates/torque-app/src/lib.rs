@@ -88,6 +88,13 @@
 //!   before (`host_slots_tests.rs`; the native snapshots in `tests/natives`).
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
+//! - The client recipes name no conn game: a client of any [`ConnGame`] is made by the same
+//!   plugins at the same stages ([`client::ClientBuilder::from_engine_with_conn`]; the recipes call
+//!   [`plugins::ClientParts::installs`], made for the client's conn game), and the only typed extension is
+//!   [`plugins::ClientWiring<C>`](plugins::ClientWiring). A conn game with TGE's feed gets the engine's natives and its own,
+//!   and writes the bytes a client of TGE's writes in both protocols (`conn_game_natives_are_the_engines_and_its_own`,
+//!   `conn_game_writes_torques_bytes_in_both_protocols`, in `torque-trace-hash/tests/conn_game.rs`), and the runners drive a
+//!   [`GameApp`] over it (`conn_game_app_for_draws_64_offscreen_frames_of_a_client_of_its_own_conn_game`, in `run_tests.rs`).
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.
