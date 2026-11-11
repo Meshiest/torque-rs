@@ -513,7 +513,7 @@ fn a_client_resolves_the_ghosts_a_notification_names_and_refuses_the_rest() {
     // A ghost the server really sent this client, and the object its mirror is in the client's world.
     let (index, ghosts) = {
         let server = rig.client.server.as_ref().unwrap();
-        let shared = server.shared.borrow();
+        let shared = server.shared().expect("the network host").borrow();
         let ghosts = shared.ghosts.as_ref().expect("ghosts").clone();
         let index = (0..1024u32)
             .find(|i| ghosts.object_at(conn, *i).is_some())
@@ -659,7 +659,7 @@ fn a_script_names_objects_and_the_client_handler_gets_the_mirror() {
     let conn = first_conn(&rig);
     let object = {
         let server = rig.client.server.as_ref().unwrap();
-        let shared = server.shared.borrow();
+        let shared = server.shared().expect("the network host").borrow();
         let ghosts = shared.ghosts.as_ref().expect("ghosts").clone();
         (0..1024u32)
             .find_map(|i| ghosts.object_at(conn, i))

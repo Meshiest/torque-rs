@@ -25,7 +25,7 @@
 //! net game and the codecs; they are in no group.
 
 use std::any::{Any, type_name};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use torque_engine::{
@@ -92,39 +92,43 @@ pub struct ServerWiring {
     /// The `Rc<RefCell<ServerState<HostParts<G>>>>` of the server's net game `G`.
     state: Box<dyn Any>,
     net_game: &'static str,
-    transport: SharedTransport,
+    /// None while a server started on [`Listen::Late`](crate::server::Listen::Late) waits for its transport.
+    transport: RefCell<Option<SharedTransport>>,
     game: RefCell<Option<GameParts>>,
     /// TGE's server game over the state.
     tge_game: Box<dyn Fn(&mut Vm) -> GameParts>,
-    /// The network host of the net game over the state and the server game's parts.
+    /// The network host of the net game over the state, the server game's parts and the transport.
     attach_net: Box<AttachNet>,
+    /// Whether [`NetHostPlugin`]'s recipe ran with no transport, so [`ServerWiring::attach_late`] attaches the host.
+    host_waits: Cell<bool>,
 }
 
-/// Attaches a server's network host over its server game's parts.
-type AttachNet = dyn Fn(&mut Vm, &GameParts) -> Result<(), String>;
+/// Attaches a server's network host over its server game's parts and its transport.
+type AttachNet = dyn Fn(&mut Vm, &GameParts, &SharedTransport) -> Result<(), String>;
 
 impl ServerWiring {
-    /// The wiring of a server of net game `G`: its network host is made by `factory` and left in `attached`.
+    /// The wiring of a server of net game `G`: its network host is made by `factory` and left in `attached`. With no
+    /// `transport`, the host waits for [`ServerWiring::attach_late`].
     pub(crate) fn new<G: NetGame>(
         state: Rc<RefCell<ServerState<HostParts<G>>>>,
-        transport: SharedTransport,
+        transport: Option<SharedTransport>,
         factory: Rc<dyn NetGameFactory<G>>,
         attached: AttachedCell<G>,
     ) -> ServerWiring {
         let tge_state = Rc::clone(&state);
         let net_state = Rc::clone(&state);
-        let net_transport = Rc::clone(&transport);
         ServerWiring {
             state: Box::new(state),
             net_game: type_name::<G>(),
-            transport,
+            transport: RefCell::new(transport),
             game: RefCell::new(None),
             tge_game: Box::new(move |vm| torque_server::game::install(vm, &tge_state)),
-            attach_net: Box::new(move |vm, game| {
-                let net = crate::net_game::attach(vm, &net_state, &net_transport, &*factory, game)?;
+            attach_net: Box::new(move |vm, game, transport| {
+                let net = crate::net_game::attach(vm, &net_state, transport, &*factory, game)?;
                 *attached.borrow_mut() = Some(net);
                 Ok(())
             }),
+            host_waits: Cell::new(false),
         }
     }
 
@@ -149,9 +153,10 @@ impl ServerWiring {
         self.net_game
     }
 
-    /// The transport the server listens on.
-    pub fn transport(&self) -> &SharedTransport {
-        &self.transport
+    /// The transport the server listens on: none while a server started on [`Listen::Late`](crate::server::Listen::Late) waits
+    /// for [`GameServer::attach_net`](crate::server::GameServer::attach_net).
+    pub fn transport(&self) -> Option<SharedTransport> {
+        self.transport.borrow().clone()
     }
 
     /// The parts the server game made ([`ServerGamePlugin`]), once its stage ran.
@@ -165,11 +170,37 @@ impl ServerWiring {
         (self.tge_game)(vm)
     }
 
-    /// Makes the network host of the server's net game over the server game's parts.
+    /// Makes the network host of the server's net game over the server game's parts, or, with no transport yet, leaves it
+    /// for [`ServerWiring::attach_late`].
     fn attach_net(&self, vm: &mut Vm, game: &GameParts) -> Result<(), String> {
-        (self.attach_net)(vm, game)
+        let Some(transport) = self.transport() else {
+            self.host_waits.set(true);
+            return Ok(());
+        };
+        (self.attach_net)(vm, game, &transport)
+    }
+
+    /// Makes the network host that [`NetHostPlugin`]'s recipe left waiting, over `transport`. The host stays waiting, so a
+    /// caller whose attach failed later on can call it again; the caller refuses a server whose host is attached.
+    ///
+    /// # Errors
+    /// The recipe never ran (the engine has no `NetHostPlugin`); otherwise what the net game's factory returned.
+    pub(crate) fn attach_late(
+        &self,
+        vm: &mut Vm,
+        transport: SharedTransport,
+    ) -> Result<(), String> {
+        if !self.host_waits.get() {
+            return Err(NO_NET_HOST.to_string());
+        }
+        let game = server_game(self, "the network host")?;
+        *self.transport.borrow_mut() = Some(Rc::clone(&transport));
+        (self.attach_net)(vm, &game, &transport)
     }
 }
+
+/// Why a server has no network host after its `Net` stage.
+pub(crate) const NO_NET_HOST: &str = "the engine has no network host (NetHostPlugin)";
 
 /// The server wiring a recipe is replayed with.
 fn server_wiring(vm: &Vm, plugin: &str) -> Result<Rc<ServerWiring>, String> {

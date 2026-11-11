@@ -408,7 +408,13 @@ fn a_child_sent_without_its_parent_is_linked_once_the_parent_is_scoped() {
 fn a_child_sent_without_its_parent_is_linked_once_a_ghost_slot_frees() {
     let mut rig = Rig::start(0.0, rig::engine(&files()));
     // A table of eight ghosts.
-    rig.server.shared.borrow().engine.borrow_mut().ghost_size = 8;
+    rig.server
+        .shared()
+        .expect("the network host")
+        .borrow()
+        .engine
+        .borrow_mut()
+        .ghost_size = 8;
     assert!(rig.run_until(600, |r| r.client.ghost_count() >= 1));
     let mut fillers = Vec::new();
     while rig.client.ghost_count() < 7 {

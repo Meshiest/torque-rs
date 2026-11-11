@@ -31,7 +31,8 @@ pub const TICK_MS: u32 = 32;
 /// The key of the server's challenge digests, which the rig sets so a run's datagrams repeat.
 pub const CHALLENGE_KEY: [u8; 16] = [7; 16];
 
-const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
+/// Where the rig's server is on the memory link.
+pub const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
 const CLIENT: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_000);
 
 /// The network protocol a run speaks. Each line `trace-hash` prints names it, so a protocol's hashes are pinned apart from the
@@ -291,9 +292,31 @@ impl<G: NetGame> Rig<G> {
                 args: &[],
             },
         )?;
+        Rig::over_server(mode, engine, server, files, setup)
+    }
+
+    /// A client connected to `server`, which `engine` made in `mode` over `files` with its network host on the rig's memory
+    /// link ([`SERVER`]), with `setup` run on the client's script engine before it connects.
+    ///
+    /// # Errors
+    /// The server has no network host, is not on the memory link at [`SERVER`], or the client could not start.
+    pub fn over_server(
+        mode: Mode,
+        engine: Engine,
+        server: GameServer<G>,
+        files: MemFiles,
+        setup: impl FnOnce(&mut Vm) -> Result<(), String>,
+    ) -> Result<Rig<G>, String> {
+        let shared = server.shared().ok_or("the server has no network host")?;
+        if server.memory_end().is_none() || server.address() != Some(SocketAddr::V4(SERVER)) {
+            return Err(format!(
+                "the server listens at {:?}, not on the rig's memory link at {SERVER}",
+                server.address()
+            ));
+        }
         // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs too.
-        server.shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
-        if let Some(host) = ensure_host(server.vm(), &mut server.shared.borrow_mut()) {
+        shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
+        if let Some(host) = ensure_host(server.vm(), &mut shared.borrow_mut()) {
             host.table.rekey(CHALLENGE_KEY);
         }
 

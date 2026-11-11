@@ -63,7 +63,8 @@ fn another_player_walking_in_a_circle_moves_and_turns_steadily() {
         a.server
             .as_ref()
             .unwrap()
-            .shared
+            .shared()
+            .expect("the network host")
             .borrow()
             .counters
             .packets_sent

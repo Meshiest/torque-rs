@@ -4,6 +4,7 @@
 //!
 //! - [`hash::TraceHasher`]: the hash; floats go in by their bits.
 //! - [`rig::Rig`] and [`rig::Mode`]: a server (`MinimalPlugins` and a plugin under test) and a client over the in-memory link, stepped by hand.
+//!   [`rig::Rig::over_server`] connects the client to a server the caller started on the rig's link ([`rig::SERVER`]).
 //! - [`rapier`]: the Rapier world's scenario (bodies dropped onto a terrain and an interior; no server or client), printed
 //!   among [`scenarios::physics`] and folded into the `physics` line, not `all`.
 //! - [`props`]: the props plugin's scenario (crates dropped and walked through, a server and a predicting client), printed among

@@ -369,7 +369,7 @@ fn sources_that_never_answer_their_challenge_keep_the_waiting_connects_bounded()
         );
         server.tick();
         drop(wire.take());
-        let sh = server.shared.borrow();
+        let sh = server.shared().expect("the network host").borrow();
         let host = sh.engine_host.as_ref().expect("an engine host");
         assert!(
             host.challenged() <= limit,
@@ -382,7 +382,7 @@ fn sources_that_never_answer_their_challenge_keep_the_waiting_connects_bounded()
             host.table.pending()
         );
     }
-    let sh = server.shared.borrow();
+    let sh = server.shared().expect("the network host").borrow();
     assert_eq!(
         sh.engine_host
             .as_ref()

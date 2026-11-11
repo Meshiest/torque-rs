@@ -892,7 +892,8 @@ fn build(engine: &mut EngineBuilder) {
   into another. A game that needs a script engine other than TGE's gives its own: `script_engine` sets the factory every
   `GameServer::start*` and `ClientBuilder::from_engine*` calls, once per server or client, before the first stage; with
   none it is `Vm::new`. A host of a game's own makes its engine the same way with `slots::make_script_engine(&engine)`.
-- **The files.** `GameServer::start_engine_with_files` and `ClientBuilder::from_engine_with_files` take any `FileHost`: a
+- **The files.** `GameServer::start_engine_with_files` (`start_with_net_files` for a net game of the game's own) and
+  `ClientBuilder::from_engine_with_files` take any `FileHost`: a
   folder read in place, archives mounted over it, an overlay that keeps what the scripts write. The `MemFiles`
   constructors stay as they are.
 - **The server's entry.** A plain server sets the start's globals, runs its entry script, the `Entry` stage and the start

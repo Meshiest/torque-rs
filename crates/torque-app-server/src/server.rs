@@ -20,6 +20,7 @@
 
 use std::any::Any;
 use std::cell::RefCell;
+use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::rc::Rc;
 use web_time::{Duration, Instant};
@@ -31,6 +32,7 @@ use torque_engine::{
 use torque_game::sim_classes::SimClasses;
 use torque_net::connect::ManifestGate;
 use torque_net::engine::bridge::table_digests;
+use torque_net::modsync::RequiredMods;
 use torque_server::game::GameParts;
 use torque_server::net::NetGame;
 use torque_server::net::channels;
@@ -42,6 +44,7 @@ use torque_server::net::transport::{
     LanRules, MemoryEnd, PlainEngineRefusal, SharedTransport, check_plain_engine_bind,
 };
 use torque_server::net::{HostParts, NetShared};
+pub use torque_server::server::AttachError;
 use torque_server::server::{
     GameServer as ServerHost, MissionError, RunEnd, Server, TICK_MS, TickHooks,
 };
@@ -49,11 +52,12 @@ use torque_server::state::ServerState;
 use torque_ts_vm::host::{FileHost, MemFiles};
 use torque_ts_vm::vm::Vm;
 
-use crate::net_game::{AttachedCell, apply_codecs, factory_for};
-use crate::plugins::{MinimalPlugins, ServerWiring};
+use crate::net_game::{AttachedCell, NetAttached, apply_codecs, factory_for};
+use crate::plugins::{MinimalPlugins, NO_NET_HOST, ServerWiring};
 use crate::slots::{Connections, FileSetter, ServerEntry, file_setter};
+pub use crate::transports::ServerLink;
 pub use crate::transports::{BoundTransport, CustomListen};
-use crate::transports::{ServerLink, open_listen, server_transport_warnings};
+use crate::transports::{open_listen, server_transport_warnings};
 
 /// The UDP port number games listen on (and the LAN list asks): TGE's.
 pub const DEFAULT_PORT: u16 = 28_000;
@@ -163,6 +167,9 @@ pub enum Listen {
     Bound(BoundTransport),
     /// A transport a plugin registered under its own id ([`Listen::custom`]), with the request it reads.
     Custom(CustomListen),
+    /// No transport and no network host yet: the server starts without the host's natives, behaviors and passes, and
+    /// [`GameServer::attach_net`] gives it both later. Its start must add no datablock (their keys start with the host).
+    Late,
 }
 
 /// Why a server in engine mode may not listen as `listen` asks: plain UDP on an address outside the private set (the engine's
@@ -213,16 +220,55 @@ pub fn lan_addresses() -> Vec<Ipv4Addr> {
     found
 }
 
+/// The shared state of a network host of net game `G`.
+pub type SharedNet<G> = Rc<RefCell<NetShared<G>>>;
+
 /// A game's server, whose network host speaks net game `G` (Torque's by default).
 pub struct GameServer<G: NetGame = TorqueNet> {
     pub server: NetServer<G>,
-    pub shared: Rc<RefCell<NetShared<G>>>,
     pub game: GameParts,
-    transport: SharedTransport,
+    /// The network host's shared state; none until [`GameServer::attach_net`] on a server started on [`Listen::Late`].
+    shared: Option<SharedNet<G>>,
+    transport: Option<SharedTransport>,
     end: Option<MemoryEnd>,
+    /// What [`GameServer::attach_net`] needs of the start: some on a server started on [`Listen::Late`] until then.
+    late: Option<LateHost<G>>,
     /// How often a dedicated server prints its transport's status lines ([`GameServer::set_status_every`]).
     status_every: Option<Duration>,
 }
+
+/// What a server started on [`Listen::Late`] keeps for its network host: the engine that made it, its wiring and the cell
+/// the host's recipe leaves the host in.
+struct LateHost<G: NetGame> {
+    engine: Engine,
+    wiring: Rc<ServerWiring>,
+    attached: AttachedCell<G>,
+}
+
+/// Why [`GameServer::attach_net`] gave the server no network host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AttachNetError {
+    /// The server's rule for a host refused it: one is attached already (a server started on any other [`Listen`] has its
+    /// own), a datablock exists, or a real socket was given without the system clock.
+    Refused(AttachError),
+    /// In the engine's protocol, a real plain socket bound outside the private addresses (the protocol takes plain UDP for
+    /// LAN and development only).
+    PlainEngineBind(PlainEngineRefusal),
+    /// The host could not be made: the engine has no `NetHostPlugin`, or the net game's factory or a part of the host failed.
+    Failed(String),
+}
+
+impl fmt::Display for AttachNetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AttachNetError::Refused(e) => write!(f, "the network host was refused: {e}"),
+            AttachNetError::PlainEngineBind(e) => write!(f, "the network host was refused: {e}"),
+            AttachNetError::Failed(e) => write!(f, "the network host: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AttachNetError {}
 
 /// The console warning for a server with an auth provider whose address cannot be what players join it by: a provider that binds
 /// tickets to the server's address ([`GameServer::set_public_address`]) refuses every sign-in when the address is unknown (none,
@@ -341,6 +387,19 @@ impl<G: NetGame> GameServer<G> {
         Self::start_prepared(engine, file_setter(files), start, &mut |_| {})
     }
 
+    /// [`GameServer::start_with_net`] over a file host of the game's own, as [`GameServer::start_engine_with_files`] is
+    /// [`GameServer::start_engine`] over one.
+    ///
+    /// # Errors
+    /// As [`GameServer::start_with_net`].
+    pub fn start_with_net_files(
+        engine: &Engine,
+        files: impl FileHost + 'static,
+        start: &ServerStart,
+    ) -> Result<GameServer<G>, String> {
+        Self::start_prepared(engine, file_setter(files), start, &mut |_| {})
+    }
+
     /// [`GameServer::start_with_net`] with `prepare` run on the script engine after the `Prepare` stage. Generic over the net
     /// game `G` (one copy per net game); only `prepare` is a `dyn` closure, so a game's own closure does not copy this body
     /// into its crate.
@@ -356,7 +415,10 @@ impl<G: NetGame> GameServer<G> {
         {
             return Err(refusal.to_string());
         }
-        let ServerLink { transport, end } = open_listen(engine, &start.listen)?;
+        let link = match &start.listen {
+            Listen::Late => None,
+            listen => Some(open_listen(engine, listen)?),
+        };
 
         let mut vm = crate::slots::make_script_engine(engine);
         for warning in engine.warnings() {
@@ -369,7 +431,7 @@ impl<G: NetGame> GameServer<G> {
         let attached = AttachedCell::<G>::default();
         let wiring = Rc::new(ServerWiring::new(
             Rc::clone(&state),
-            Rc::clone(&transport),
+            link.as_ref().map(|link| Rc::clone(&link.transport)),
             factory,
             Rc::clone(&attached),
         ));
@@ -397,107 +459,27 @@ impl<G: NetGame> GameServer<G> {
         {
             claim_staging(&mut server.vm);
         }
-        apply_codecs(engine, &mut server.vm);
-        replay(engine, ServerStage::Net, &mut server.vm)?;
-        let net = attached
-            .borrow_mut()
-            .take()
-            .ok_or("the engine has no network host (NetHostPlugin)")?;
-        let shared = net.shared;
-        // An engine with networked plugins or an auth provider holds every client to its manifest and tickets, before
-        // `onConnectRequest`; one with neither judges no one and speaks Torque's handshake.
-        let profile = shared.borrow().handshake_profile();
-        let engine_mode = engine.protocol() == ProtocolKind::Engine;
-        // In engine mode the manifest is the connect itself: every client is held to it, whatever the plugins say on the wire.
-        let gate = engine.connect_gate(&profile).or_else(|| {
-            engine_mode.then(|| {
-                let gate = ManifestGate::new(engine.net_manifest(&profile));
-                match engine.auth() {
-                    Some(auth) => gate.with_auth(auth),
-                    None => gate,
-                }
-            })
-        });
-        if engine_mode {
-            let manifest = engine.net_manifest(&profile);
-            let mut sh = shared.borrow_mut();
-            if let Some(host) = torque_server::net::engine::ensure_host(&server.vm, &mut sh) {
-                host.digests = table_digests(Some(&manifest));
-                // A server that checks tickets challenges every connect, and checks the ticket against the challenge.
-                host.auth = if engine.auth().is_some() {
-                    torque_server::net::engine::Auth::Challenge
-                } else {
-                    torque_server::net::engine::Auth::None
-                };
+        let shared = match &link {
+            Some(link) => {
+                apply_codecs(engine, &mut server.vm);
+                replay(engine, ServerStage::Net, &mut server.vm)?;
+                let net = attached.borrow_mut().take().ok_or(NO_NET_HOST)?;
+                let memory = matches!(start.listen, Listen::Memory(_));
+                Some(wire_host(
+                    engine,
+                    &mut server,
+                    net,
+                    &link.transport,
+                    memory,
+                )?)
             }
-        }
-        if let Some(gate) = gate {
-            // The mods a server requires are known once its mods are loaded, after the gate is set; the script engine holds the
-            // list the gate judges with.
-            server.vm.set_extension(Rc::new(gate.required().clone()));
-            shared.borrow_mut().set_connect_gate(gate);
-            // Every client the gate lets in has the plugins the manifest names, so it is the engine's own: the plugins' ghost
-            // classes go to all of them (a game that also takes TGE clients leaves the engine without networked plugins).
-            server
-                .vm
-                .set_global(torque_server::net::torque::ENGINE_CLASSES_GLOBAL, "1");
-        }
-        // The address the socket is bound to is the one clients dial unless the host says otherwise
-        // ([`GameServer::set_public_address`]); a socket bound to every interface leaves it unknown.
-        let bound = transport.borrow().local_addr();
-        shared.borrow_mut().set_public_address(bound);
-        if engine.auth().is_some()
-            && let Some(warning) =
-                sign_in_address_warning(bound, matches!(start.listen, Listen::Memory(_)))
-        {
-            server.vm.warn(warning);
-        }
-        server
-            .attach_net(net.passes)
-            .map_err(|e| format!("the network host: {e:?}"))?;
-        // The engine's bulk channels go in each connection's packets; the hub a game sends through is an extension of the
-        // server's script engine.
-        let channels = engine.net_channels().map_err(|e| e.to_string())?;
-        let hub = channels::install(&shared, channels);
-        // Who may do what: the roles and permissions the plugins declared, scripts may add to, and the provider keeps.
-        let permissions = torque_engine::permissions::Permissions::new(engine)
-            .map_err(|e| format!("the permissions: {e}"))?;
-        server.vm.set_extension(Rc::new(permissions));
-        // The plugins' RPCs ride the reserved channel (each session's RPC lanes in engine mode); the server's pump runs them once
-        // a tick.
-        let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
-        let has_rpcs = !rpcs.is_empty();
-        if has_rpcs && let Some(hub) = &hub {
-            let host = Rc::new(SharedHost(Rc::downgrade(&shared)));
-            let perms = server
-                .vm
-                .extension::<torque_engine::permissions::Permissions>()
-                .ok_or("the server has no permissions")?;
-            let rpc = if engine_mode {
-                let lanes = Rc::new(RpcLanes::default());
-                server.vm.set_extension(Rc::clone(&lanes));
-                Rc::new(ServerRpc::over_lanes(rpcs, hub.clone(), host, perms, lanes))
-            } else {
-                Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms))
-            };
-            register_server_natives(&mut server.vm, &rpc);
-            // What the engine's uploads need of the connections (a game with no upload kind never asks).
-            torque_server::net::uploads::install_server(&mut server.vm, &rpc, hub);
-            server.vm.set_extension(rpc);
-        }
-        if let Some(hub) = hub {
-            server.vm.set_extension(Rc::new(hub));
-        }
-        // The server commands plugins declared are held to their limits, and scripts can read the refusals.
-        let mut commands = CommandTable::new(engine.list::<ServerCommand>());
-        if engine_mode {
-            // No event queue bounds the commands of this protocol, so the ones no plugin declared share default limits.
-            commands = commands.with_default_limits(CommandSpec::new());
-        }
-        if !commands.is_empty() {
-            shared.borrow_mut().set_commands(commands);
-            register_command_drops(&mut server.vm, &shared);
-        }
+            // `NetHostPlugin`'s recipe leaves the host waiting for `attach_net`, which sets the codecs then.
+            None => {
+                replay(engine, ServerStage::Net, &mut server.vm)?;
+                None
+            }
+        };
+        let has_rpcs = !engine.net_rpcs().map_err(|e| e.to_string())?.is_empty();
         // The plugins' tick hooks run around the process list's pass; a server whose engine has none ticks as it always did.
         if has_rpcs || !engine.list::<ServerTick>().is_empty() {
             server.set_tick_hooks(Some(Rc::new(EngineTicks {
@@ -528,14 +510,76 @@ impl<G: NetGame> GameServer<G> {
                 state.borrow_mut().allow_connections = true;
             }
         }
+        let late = link.is_none().then(|| LateHost {
+            engine: engine.clone(),
+            wiring,
+            attached,
+        });
+        let (transport, end) = link.map_or((None, None), |link| (Some(link.transport), link.end));
         Ok(GameServer {
             server,
-            shared,
             game,
+            shared,
             transport,
             end,
+            late,
             status_every: None,
         })
+    }
+
+    /// Gives a server started on [`Listen::Late`] its network host over `link` (a [`SharedTransport`], or a [`ServerLink`]
+    /// with the other end of an in-memory one, which [`GameServer::memory_end`] then returns): the codecs slot's codecs are
+    /// set, the net game's factory runs, and the host's natives, behaviors and parts are attached in the order a server
+    /// started on a transport attaches them, its passes last. From then on the server receives, sends and takes connections
+    /// as its scripts allow: the attach leaves `allowConnections` as the start left it. The required mods the start loaded
+    /// are the connect gate's.
+    ///
+    /// # Errors
+    /// [`AttachNetError::Refused`] when a host is attached already (every server not started on [`Listen::Late`] has one), a
+    /// datablock exists (attach before the scripts that add them), or `link` is a real socket and the scripts do not read the
+    /// system clock (`server.use_system_clock()`). [`AttachNetError::PlainEngineBind`] in the engine's protocol when `link` is
+    /// a real, plain (not validated) socket bound outside the private addresses, as a start on [`Listen::Udp`] refuses it.
+    /// [`AttachNetError::Failed`] when the engine has no `NetHostPlugin` or a part of the host fails. On any error the passes
+    /// are not attached, so the server reads and sends nothing; the natives and extensions an attach that failed part way
+    /// set stay until a later call, which makes the host again from the factory up.
+    pub fn attach_net(&mut self, link: impl Into<ServerLink>) -> Result<(), AttachNetError> {
+        let ServerLink { transport, end } = link.into();
+        let Some(late) = self.late.as_ref() else {
+            return Err(AttachNetError::Refused(AttachError::AlreadyAttached));
+        };
+        let (real, bound, validated) = {
+            let t = transport.borrow();
+            let bound = t.local_addr();
+            let validated = bound.is_some_and(|at| t.link_kind(at).facts.validated);
+            (t.is_real(), bound, validated)
+        };
+        self.server
+            .can_attach_net(real)
+            .map_err(AttachNetError::Refused)?;
+        if late.engine.protocol() == ProtocolKind::Engine
+            && real
+            && !validated
+            && let Some(bound) = bound
+        {
+            check_plain_engine_bind(&LanRules::PLAIN, bound.ip())
+                .map_err(AttachNetError::PlainEngineBind)?;
+        }
+        let allow = self.server.state.borrow().allow_connections;
+        let made = make_late_host(late, &mut self.server, &transport, end.is_some());
+        self.server.state.borrow_mut().allow_connections = allow;
+        let shared = made?;
+        // The start loaded the mods before the gate was made, so the gate takes their list now.
+        let vm = &self.server.vm;
+        if let Some(required) = vm.extension::<RequiredMods>()
+            && let Some(mods) = vm.extension::<torque_mods::Mods>()
+        {
+            required.set(mods.required());
+        }
+        self.late = None;
+        self.shared = Some(shared);
+        self.transport = Some(transport);
+        self.end = end;
+        Ok(())
     }
 
     /// Loads `mission` with the server's mission loader (the engine's [`ServerSlots::mission_loader`](crate::slots::ServerSlots::mission_loader),
@@ -544,16 +588,25 @@ impl<G: NetGame> GameServer<G> {
         self.server.load_mission(mission.as_bytes())
     }
 
-    /// Where the socket is bound.
+    /// Where the socket is bound (none before [`GameServer::attach_net`] on a server started on [`Listen::Late`]).
     pub fn address(&self) -> Option<SocketAddr> {
-        self.transport.borrow().local_addr()
+        self.transport.as_ref()?.borrow().local_addr()
+    }
+
+    /// The network host's shared state: the connections, the handshake, the ghosts. None until [`GameServer::attach_net`]
+    /// on a server started on [`Listen::Late`]; every other server has it from the start.
+    pub fn shared(&self) -> Option<&SharedNet<G>> {
+        self.shared.as_ref()
     }
 
     /// Tells the server the address clients reach it by (its public address), which its auth provider binds tickets to: a socket
     /// bound to every interface, a NAT or a relay hides it. A server that is never told one refuses every ticket of a provider
-    /// that binds to the address.
+    /// that binds to the address. A server with no host yet ([`Listen::Late`]) is told once [`GameServer::attach_net`]
+    /// has set the bound address.
     pub fn set_public_address(&self, address: Option<SocketAddr>) {
-        self.shared.borrow_mut().set_public_address(address);
+        if let Some(shared) = &self.shared {
+            shared.borrow_mut().set_public_address(address);
+        }
     }
 
     /// The in-memory transport's other end (a server started on [`Listen::Memory`]): what a link carries to and from clients.
@@ -596,7 +649,9 @@ impl<G: NetGame> GameServer<G> {
 
     /// Closes the socket (the clients see the server go quiet and time out).
     pub fn close(&mut self) {
-        self.transport.borrow_mut().close();
+        if let Some(transport) = &self.transport {
+            transport.borrow_mut().close();
+        }
     }
 
     /// Has a dedicated server print its transport's status lines ([`Transport::status`](torque_server::net::transport::Transport::status): a web transport's data channels)
@@ -607,7 +662,9 @@ impl<G: NetGame> GameServer<G> {
 
     /// The transport's status lines since the last call ([`Transport::status`](torque_server::net::transport::Transport::status)).
     pub fn transport_status(&mut self) -> Vec<String> {
-        self.transport.borrow_mut().status()
+        self.transport
+            .as_ref()
+            .map_or_else(Vec::new, |transport| transport.borrow_mut().status())
     }
 
     /// Runs as a dedicated server: a tick every 32 ms of the wall clock (catching up from now when behind, rather than running
@@ -656,13 +713,17 @@ impl<G: NetGame> GameServer<G> {
     /// Waits `wait` of the wall clock; a transport with work of its own between ticks ([`Transport::service`](torque_server::net::transport::Transport::service): a web
     /// transport's files and sockets) is serviced every few milliseconds meanwhile.
     fn wait(&mut self, wait: Duration) {
-        if !self.transport.borrow().wants_service() {
+        let Some(transport) = self
+            .transport
+            .as_ref()
+            .filter(|transport| transport.borrow().wants_service())
+        else {
             std::thread::sleep(wait);
             return;
-        }
+        };
         let until = Instant::now() + wait;
         loop {
-            self.transport.borrow_mut().service();
+            transport.borrow_mut().service();
             let now = Instant::now();
             let Some(left) = until.checked_duration_since(now) else {
                 break;
@@ -673,7 +734,9 @@ impl<G: NetGame> GameServer<G> {
 
     /// The transport's work between ticks, done now ([`Transport::service`](torque_server::net::transport::Transport::service); a harness that paces ticks itself calls it).
     pub fn service(&mut self) {
-        self.transport.borrow_mut().service();
+        if let Some(transport) = &self.transport {
+            transport.borrow_mut().service();
+        }
     }
 }
 
@@ -697,6 +760,136 @@ impl<G: NetGame> ServerHost for GameServer<G> {
     fn run_ticks(&mut self, limit_ms: u32, until: impl FnMut(&mut Self) -> bool) -> RunEnd {
         NetServer::<G>::run_on(self, limit_ms, until)
     }
+}
+
+/// The network host of a server started on [`Listen::Late`], made over `transport` as [`GameServer::attach_net`] makes it.
+fn make_late_host<G: NetGame>(
+    late: &LateHost<G>,
+    server: &mut NetServer<G>,
+    transport: &SharedTransport,
+    memory: bool,
+) -> Result<SharedNet<G>, AttachNetError> {
+    let failed = AttachNetError::Failed;
+    apply_codecs(&late.engine, &mut server.vm);
+    late.wiring
+        .attach_late(&mut server.vm, Rc::clone(transport))
+        .map_err(failed)?;
+    let net = late
+        .attached
+        .borrow_mut()
+        .take()
+        .ok_or_else(|| failed(NO_NET_HOST.to_string()))?;
+    wire_host(&late.engine, server, net, transport, memory).map_err(failed)
+}
+
+/// Wires the network host the `Net` stage made (`net`) into `server`, over `transport` (`memory`: the in-memory link, whose
+/// bound address is the one its clients dial): the connect gate, the engine protocol's digests, the public address, the bulk
+/// channels, the permissions, the RPCs, the server commands and, last, the host's passes, so a step that fails leaves a
+/// server that reads and sends nothing. What [`GameServer::start_engine`] does after the `Net` stage and
+/// [`GameServer::attach_net`] after its host's attach, in the same order.
+fn wire_host<G: NetGame>(
+    engine: &Engine,
+    server: &mut NetServer<G>,
+    net: NetAttached<G>,
+    transport: &SharedTransport,
+    memory: bool,
+) -> Result<SharedNet<G>, String> {
+    let shared = net.shared;
+    // An engine with networked plugins or an auth provider holds every client to its manifest and tickets, before
+    // `onConnectRequest`; one with neither judges no one and speaks Torque's handshake.
+    let profile = shared.borrow().handshake_profile();
+    let engine_mode = engine.protocol() == ProtocolKind::Engine;
+    // In engine mode the manifest is the connect itself: every client is held to it, whatever the plugins say on the wire.
+    let gate = engine.connect_gate(&profile).or_else(|| {
+        engine_mode.then(|| {
+            let gate = ManifestGate::new(engine.net_manifest(&profile));
+            match engine.auth() {
+                Some(auth) => gate.with_auth(auth),
+                None => gate,
+            }
+        })
+    });
+    if engine_mode {
+        let manifest = engine.net_manifest(&profile);
+        let mut sh = shared.borrow_mut();
+        if let Some(host) = torque_server::net::engine::ensure_host(&server.vm, &mut sh) {
+            host.digests = table_digests(Some(&manifest));
+            // A server that checks tickets challenges every connect, and checks the ticket against the challenge.
+            host.auth = if engine.auth().is_some() {
+                torque_server::net::engine::Auth::Challenge
+            } else {
+                torque_server::net::engine::Auth::None
+            };
+        }
+    }
+    if let Some(gate) = gate {
+        // The mods a server requires are known once its mods are loaded, after the gate is set; the script engine holds the
+        // list the gate judges with.
+        server.vm.set_extension(Rc::new(gate.required().clone()));
+        shared.borrow_mut().set_connect_gate(gate);
+        // Every client the gate lets in has the plugins the manifest names, so it is the engine's own: the plugins' ghost
+        // classes go to all of them (a game that also takes TGE clients leaves the engine without networked plugins).
+        server
+            .vm
+            .set_global(torque_server::net::torque::ENGINE_CLASSES_GLOBAL, "1");
+    }
+    // The address the socket is bound to is the one clients dial unless the host says otherwise
+    // ([`GameServer::set_public_address`]); a socket bound to every interface leaves it unknown.
+    let bound = transport.borrow().local_addr();
+    shared.borrow_mut().set_public_address(bound);
+    if engine.auth().is_some()
+        && let Some(warning) = sign_in_address_warning(bound, memory)
+    {
+        server.vm.warn(warning);
+    }
+    // The engine's bulk channels go in each connection's packets; the hub a game sends through is an extension of the
+    // server's script engine.
+    let channels = engine.net_channels().map_err(|e| e.to_string())?;
+    let hub = channels::install(&shared, channels);
+    // Who may do what: the roles and permissions the plugins declared, scripts may add to, and the provider keeps.
+    let permissions = torque_engine::permissions::Permissions::new(engine)
+        .map_err(|e| format!("the permissions: {e}"))?;
+    server.vm.set_extension(Rc::new(permissions));
+    // The plugins' RPCs ride the reserved channel (each session's RPC lanes in engine mode); the server's pump runs them once
+    // a tick.
+    let rpcs = engine.net_rpcs().map_err(|e| e.to_string())?;
+    let has_rpcs = !rpcs.is_empty();
+    if has_rpcs && let Some(hub) = &hub {
+        let host = Rc::new(SharedHost(Rc::downgrade(&shared)));
+        let perms = server
+            .vm
+            .extension::<torque_engine::permissions::Permissions>()
+            .ok_or("the server has no permissions")?;
+        let rpc = if engine_mode {
+            let lanes = Rc::new(RpcLanes::default());
+            server.vm.set_extension(Rc::clone(&lanes));
+            Rc::new(ServerRpc::over_lanes(rpcs, hub.clone(), host, perms, lanes))
+        } else {
+            Rc::new(ServerRpc::new(rpcs, hub.clone(), host, perms))
+        };
+        register_server_natives(&mut server.vm, &rpc);
+        // What the engine's uploads need of the connections (a game with no upload kind never asks).
+        torque_server::net::uploads::install_server(&mut server.vm, &rpc, hub);
+        server.vm.set_extension(rpc);
+    }
+    if let Some(hub) = hub {
+        server.vm.set_extension(Rc::new(hub));
+    }
+    // The server commands plugins declared are held to their limits, and scripts can read the refusals.
+    let mut commands = CommandTable::new(engine.list::<ServerCommand>());
+    if engine_mode {
+        // No event queue bounds the commands of this protocol, so the ones no plugin declared share default limits.
+        commands = commands.with_default_limits(CommandSpec::new());
+    }
+    if !commands.is_empty() {
+        shared.borrow_mut().set_commands(commands);
+        register_command_drops(&mut server.vm, &shared);
+    }
+    // The passes go on last: until they do, the transport is never read.
+    server
+        .attach_net(net.passes)
+        .map_err(|e| format!("the network host: {e:?}"))?;
+    Ok(shared)
 }
 
 /// A server's plain entry: the entry script, the `Entry` stage, then the start function.

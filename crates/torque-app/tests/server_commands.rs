@@ -339,7 +339,7 @@ fn unknown_commands_cost_the_connections_share_and_their_warnings_are_limited() 
     let mut most_charged = 0;
     for _ in 0..250 {
         rig.run(1);
-        let sh = rig.server.shared.borrow();
+        let sh = rig.server.shared().expect("the network host").borrow();
         let charged = sh.conns.values().map(|r| r.share_used).max().unwrap_or(0);
         if sh.counters.over_share > 0 {
             most_charged = most_charged.max(charged);
@@ -347,7 +347,7 @@ fn unknown_commands_cost_the_connections_share_and_their_warnings_are_limited() 
     }
     let seconds = ((rig.ticks - start) * 32).div_ceil(1000);
     let (unknown, over_share) = {
-        let sh = rig.server.shared.borrow();
+        let sh = rig.server.shared().expect("the network host").borrow();
         (sh.counters.unknown_commands, sh.counters.over_share)
     };
     assert!(
@@ -474,7 +474,14 @@ fn hostile_packets_of_an_established_connection_never_panic_the_server() {
             rig.step_through(&mut mutate);
             done += 1;
         }
-        if rig.server.shared.borrow().hs.is_empty() {
+        if rig
+            .server
+            .shared()
+            .expect("the network host")
+            .borrow()
+            .hs
+            .is_empty()
+        {
             rig = Rig::new();
         }
     }

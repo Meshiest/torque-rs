@@ -254,7 +254,7 @@ fn net_game_the_codecs_from_the_slot_are_the_hosts() {
         builder.add_plugins(NetCodecsPlugin::new(|_| Rc::new(Named)));
     });
     let server = GameServer::start_engine(&engine, files(), &start()).expect("starts");
-    let shared = server.shared.borrow();
+    let shared = server.shared().expect("the network host").borrow();
     assert_eq!(shared.hs.config().profile.game, b"Another Game");
     assert_eq!(format!("{:?}", shared.codecs), "Named");
 }

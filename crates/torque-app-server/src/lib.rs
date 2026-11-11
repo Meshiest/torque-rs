@@ -67,6 +67,26 @@
 //! as `TorqueNetFactory`'s); a runner that must start any net game calls `net_game::start_net_game`; a method a runner needs goes
 //! on `RunServer`.
 //!
+//! **A server can start with no network host** ([`server::Listen::Late`]) and get it from [`server::GameServer::attach_net`].
+//! `start_prepared` then opens no transport: the wiring has none, so `NetHostPlugin`'s recipe marks the host as waiting
+//! instead of attaching it (the rest of the `Net` stage runs as usual, the script registry's entries with it), the codecs are
+//! not set, and `shared`, `transport` and `end` stay empty while `LateHost` keeps the engine, the wiring and the attached
+//! cell. `attach_net` checks the server's rule first (`Server::can_attach_net`: no host yet, no datablock, a real socket only on
+//! the system clock) and, in the engine's protocol, refuses a real plain socket bound outside the private addresses as a
+//! start on `Listen::Udp` does (`check_plain_engine_bind`; a validated link may bind anywhere). Then it sets the codecs, runs
+//! `ServerWiring::attach_late` (the net game's factory and `attach_host`) and `wire_host`, the same function `start_prepared`
+//! calls after the `Net` stage, so the two paths cannot drift. `wire_host` attaches the host's passes after its last
+//! fallible step, so a failure at any step leaves a server whose transport is never read or written; the host's natives and
+//! extensions that a failed attach set stay, `LateHost` is kept, the recipe stays waiting, and a later `attach_net` makes the
+//! host again from the factory up. It keeps `allowConnections` as the start left it, also on failure (`attach_host` turns it
+//! off), and hands the gate the required mods the entry loaded. A server started on any other `Listen` takes the same path
+//! as before, which the native snapshots and the wire goldens check. Tests are `late_net_*` in `late_net_tests.rs` (no host's
+//! natives before, a normal server's after, each refusal, a failed step that reads nothing, a retry after a failed factory,
+//! `start_with_net_files`) and torque-trace-hash's `tests/late_net.rs` (a client's session writes the same datagrams as
+//! against a server started on the link, in both protocols): `cargo test -p torque-app-server --lib -- late_net_` and
+//! `cargo test -p torque-trace-hash --test late_net`. A new part of the host goes in `wire_host` before the passes, never in
+//! one of its callers.
+//!
 //! **A [`server::GameServer`] is a server host** (`torque_server::server::GameServer`), so torque-app's
 //! `ClientBuilder::over_server` can make a client on its script engine: `run_ticks` is `Server::run_on` over the server it
 //! holds, the same main loop as [`server::GameServer::tick`] with the client's work before each tick. Nothing in this crate
@@ -99,6 +119,8 @@ pub mod water;
 mod config_tests;
 #[cfg(test)]
 mod engine_tickets_tests;
+#[cfg(test)]
+mod late_net_tests;
 #[cfg(test)]
 mod net_game_tests;
 #[cfg(test)]

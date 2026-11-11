@@ -194,9 +194,17 @@ impl<G: NetGame> Pair<G> {
         client_extra: &Extra,
     ) -> Pair<G> {
         // The server draws the key of its challenges at random; fixed, the datagrams are a function of the inputs.
-        server.shared.borrow_mut().hs.set_key(CHALLENGE_KEY);
+        server
+            .shared()
+            .expect("the network host")
+            .borrow_mut()
+            .hs
+            .set_key(CHALLENGE_KEY);
         // Likewise the engine host's session table, if the server speaks the engine's protocol.
-        if let Some(host) = ensure_host(server.vm(), &mut server.shared.borrow_mut()) {
+        if let Some(host) = ensure_host(
+            server.vm(),
+            &mut server.shared().expect("the network host").borrow_mut(),
+        ) {
             host.table.rekey(CHALLENGE_KEY);
         }
         if matches!(server_extra, Extra::Rope) {

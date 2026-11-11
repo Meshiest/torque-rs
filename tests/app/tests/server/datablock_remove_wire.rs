@@ -256,7 +256,7 @@ impl Rig {
 
     /// The server's connection id of the client.
     fn conn(&self) -> ConnId {
-        let shared = self.server.shared.borrow();
+        let shared = self.server.shared().expect("the network host").borrow();
         let rec = shared
             .conns
             .values()
@@ -269,7 +269,8 @@ impl Rig {
     fn hostile_removes(&self, ids: &[u32]) {
         let conn = self.conn();
         self.server
-            .shared
+            .shared()
+            .expect("the network host")
             .borrow()
             .events
             .post_datablock_removes(conn, ids)

@@ -381,7 +381,7 @@ impl Rig {
 
     /// The ghost section totals of each client's connection, in join order.
     pub fn totals(&self) -> Vec<torque_server::net::ghosts::Totals> {
-        let shared = self.server.shared.borrow();
+        let shared = self.server.shared().expect("the network host").borrow();
         let hub = shared.ghosts.clone().expect("a ghost hub");
         let mut conns: Vec<_> = shared.conns.values().filter_map(|c| c.conn).collect();
         conns.sort_unstable();

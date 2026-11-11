@@ -427,7 +427,15 @@ fn a_command_burst_over_a_link_that_takes_big_datagrams_never_stalls() {
         "every command ran or was counted (by the host or by the RPC's own bucket)"
     );
     assert!(rig.still_connected());
-    assert_eq!(rig.server.shared.borrow().counters.oversize, 0);
+    assert_eq!(
+        rig.server
+            .shared()
+            .expect("the network host")
+            .borrow()
+            .counters
+            .oversize,
+        0
+    );
 }
 
 #[test]
@@ -436,12 +444,28 @@ fn a_datagram_over_the_limit_is_dropped_as_it_is_read_and_counted() {
     let end = rig.server.memory_end().expect("the memory end");
     end.inject(SocketAddr::V4(rig.addr), &vec![0xAB; 3_000]);
     rig.run(3);
-    assert_eq!(rig.server.shared.borrow().counters.oversize, 1);
+    assert_eq!(
+        rig.server
+            .shared()
+            .expect("the network host")
+            .borrow()
+            .counters
+            .oversize,
+        1
+    );
     assert!(rig.still_connected(), "the connection is untouched");
     // Torque's protocol leaves it to the handshake, which counts it as ignored.
     let mut tge = Rig::connected(Mode::Tge);
     let end = tge.server.memory_end().expect("the memory end");
     end.inject(SocketAddr::V4(tge.addr), &vec![0xAB; 3_000]);
     tge.run(3);
-    assert_eq!(tge.server.shared.borrow().counters.oversize, 0);
+    assert_eq!(
+        tge.server
+            .shared()
+            .expect("the network host")
+            .borrow()
+            .counters
+            .oversize,
+        0
+    );
 }

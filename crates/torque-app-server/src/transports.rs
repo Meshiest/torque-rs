@@ -25,9 +25,7 @@
 use std::any::Any;
 use std::cell::RefCell;
 use std::fmt;
-#[cfg(all(feature = "web", feature = "quic", not(target_arch = "wasm32")))]
-use std::net::SocketAddr;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder};
@@ -54,6 +52,12 @@ pub struct ServerLink {
     pub end: Option<MemoryEnd>,
 }
 
+impl From<SharedTransport> for ServerLink {
+    fn from(transport: SharedTransport) -> ServerLink {
+        ServerLink::new(transport)
+    }
+}
+
 impl ServerLink {
     /// A link that is `transport` alone.
     pub fn new(transport: SharedTransport) -> ServerLink {
@@ -61,6 +65,23 @@ impl ServerLink {
             transport,
             end: None,
         }
+    }
+
+    /// An in-memory transport bound at `at`, and its other end: what [`Listen::Memory`] listens on.
+    ///
+    /// # Errors
+    /// The transport refused the address.
+    pub fn memory(at: SocketAddr) -> Result<ServerLink, String> {
+        let (transport, end) = MemoryTransport::new();
+        let transport: SharedTransport = Rc::new(RefCell::new(transport));
+        transport
+            .borrow_mut()
+            .bind(at.ip(), at.port())
+            .map_err(|e| format!("the link: {e:?}"))?;
+        Ok(ServerLink {
+            transport,
+            end: Some(end),
+        })
     }
 }
 
@@ -224,7 +245,8 @@ impl fmt::Debug for CustomListen {
 }
 
 impl Listen {
-    /// The id of the transport this names: `udp`, `memory`, `web`, the id of a [`BoundTransport`], or a custom one's.
+    /// The id of the transport this names: `udp`, `memory`, `web`, the id of a [`BoundTransport`], a custom one's, or `late`
+    /// (no transport: [`Listen::Late`]).
     pub fn transport_id(&self) -> &str {
         match self {
             Listen::Udp { .. } => "udp",
@@ -235,6 +257,7 @@ impl Listen {
             Listen::Quic { .. } => "quic",
             Listen::Bound(bound) => &bound.id,
             Listen::Custom(custom) => &custom.id,
+            Listen::Late => "late",
         }
     }
 
@@ -545,16 +568,7 @@ impl Plugin for MemoryServerTransportPlugin {
             let &Listen::Memory(at) = listen else {
                 return Err(wrong_request("memory", listen));
             };
-            let (transport, end) = MemoryTransport::new();
-            let transport: SharedTransport = Rc::new(RefCell::new(transport));
-            transport
-                .borrow_mut()
-                .bind(at.ip(), at.port())
-                .map_err(|e| format!("the link: {e:?}"))?;
-            Ok(ServerLink {
-                transport,
-                end: Some(end),
-            })
+            ServerLink::memory(at)
         });
     }
 }

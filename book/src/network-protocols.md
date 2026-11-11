@@ -224,6 +224,29 @@ The plugins' net classes reach only the engine's own peers, and only through a n
 (`NetCodecs::plugin_classes`, as the engine's own `EngineCodecs` answer). A server whose engine has plugin classes warns at
 start, naming them, when either does not.
 
+## A host attached later
+
+A server started on `Listen::Late` has no transport and no network host: none of the host's natives (`commandToClient`, the
+permission natives, the `GameConnection` identity methods, the RPCs) and none of its passes. The rest of the start runs as
+usual. `GameServer::attach_net` gives it both later, running the net game's factory then and attaching the same host, in the
+same order, as a server started on a transport. Its game's scripts that make datablocks run after it:
+
+```rust,ignore
+let mut server = GameServer::<MyNet>::start_with_net_files(&engine, my_files, &ServerStart {
+    listen: Listen::Late,
+    ..start
+})?;
+server.attach_net(ServerLink::memory(address)?)?; // or any `SharedTransport`
+```
+
+The attach is refused (`AttachNetError::Refused`) when the server has a host already (every server started any other way
+has one), when a datablock exists (a datablock's key starts with the host, so one made before it would never be sent), and
+for a real socket when the scripts do not read the system clock (`server.server.use_system_clock()`). In the engine's
+protocol a real plain socket outside the private addresses is refused too (`AttachNetError::PlainEngineBind`), as a start on
+`Listen::Udp` refuses it. The host's passes go on last, so an attach that fails (`AttachNetError::Failed`) leaves a server
+that reads and sends nothing, and a later `attach_net` can try again. It leaves `allowConnections` as the start left it. `GameServer::shared` is none until then. `start_with_net_files` is `start_with_net`
+over a file host of the game's own, as `start_engine_with_files` is `start_engine` over one.
+
 ## Not changed
 
 A local connection (the listen server's own client, `connectLocal`) stays in process and is the same in both protocols. The LAN
@@ -261,7 +284,8 @@ lines. The `tge` lines never move.
   `engine_send`); `net.rs`: `Datagrams::link_kind`, `Datagrams::channel_binding`.
 - `torque-app-server/src/plugins.rs`: `EngineProtocolPlugin`, `ProtocolPlugins`, `set_protocol`, `ServerWiring` (untyped,
   with the typed attach of the server's net game); `server.rs`: the gate, the digests, the RPC lanes and the public-bind
-  refusal at start; `net_game.rs`: the net game and codecs slots, `NetGameParts`, `RunServer`, the plugin-class warning.
+  refusal at start, and `wire_host`, the host's parts after its attach, which a start on a transport and `attach_net` both call;
+  `net_game.rs`: the net game and codecs slots, `NetGameParts`, `RunServer`, the plugin-class warning.
 
 **Data flow.** Server: transport, `pump::receive`, `engine::receive`, `SessionTable::receive`, the session's events: a connect
 becomes a `PendingRequest` for `handle_request`, the move lane goes to `handle_game`, the RPC lane to `RpcLanes`, notifies through
@@ -298,6 +322,9 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
   default limits hold: 1,000 undeclared commands in a tick run at most 64 and are counted
   (`a_command_no_plugin_declared_is_held_to_the_default_limits_in_the_engines_protocol_only`). Nothing is sent before the accept
   (`nothing_is_sent_before_the_connection_is_accepted_in_either_protocol`).
+- A server started on `Listen::Late` has none of the host's natives, and after `attach_net` a normal server's; a client's
+  session against it writes the same datagrams, in both protocols; each refusal holds (`late_net_*` in `torque-app-server`'s
+  `late_net_tests.rs`, torque-trace-hash's `tests/late_net.rs`).
 - The command RPCs' tag tables are the connection's own, apart from the ghost records' (`EventLayer`'s `command_send` and `command_remote`):
   a command re-keying a slot never changes what a ghost record's string means.
 - TGE mode's bytes do not move (`cargo test -p torque-net --test tge_golden`, `cargo test -p torque-trace-hash --test wire_golden`).
