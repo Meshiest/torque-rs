@@ -56,6 +56,8 @@ wasm-bindgen = "0.2"
 torque-client-script-host = { path = "../../crates/torque-client-script-host", features = ["web"] }
 
 [dev-dependencies]
+# The level-profile example's pass times.
+torque-render-hd = { path = "../../crates/torque-render-hd" }
 torque-maps = { path = "../../crates/torque-maps" }
 torque-interior-builder = { path = "../../crates/torque-interior-builder", features = ["verify"] }
 

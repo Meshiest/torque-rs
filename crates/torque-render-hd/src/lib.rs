@@ -56,6 +56,7 @@ pub mod gizmos;
 pub mod limits;
 pub mod passes;
 pub mod post;
+pub mod profile;
 pub mod shaders;
 pub mod shadows;
 pub mod sky;

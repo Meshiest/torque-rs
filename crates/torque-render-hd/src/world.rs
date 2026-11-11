@@ -443,6 +443,10 @@ struct GpuObject {
     /// Its first place in the frame's table of meshes' places (its vertices' [`torque_render_scene::hd::material::NODE`] places are
     /// written past it), when it has places.
     node_base: Option<usize>,
+    /// What its shadow depends on besides where it is drawn from: its vertices (its stamp; an object without one is written anew
+    /// each upload, so the upload's generation) and its meshes' places' bytes. A shadow overlay drawn with the same content and
+    /// the same caster is the same picture ([`crate::shadows`] keeps it).
+    content: u64,
 }
 
 /// The eye-dependent draws of one sync, in two shared buffers.
@@ -620,6 +624,28 @@ fn frame_span_ms(data: &[u8], splits: u32, period_ns: f64) -> Option<f64> {
         gaps += ms(at(8 * r + 16 * k)?, at(8 * r + 16 * k + 8)?);
     }
     Some((ms(at(0)?, at(8)?) - gaps).max(0.0))
+}
+
+/// The most vertices of an object without a stamp whose content is hashed ([`unstamped_content`]).
+const UNSTAMPED_HASH_VERTICES: usize = 4096;
+
+/// The content of an object without a stamp (its vertices are written anew each upload): its draws' vertices' bytes hashed as
+/// one slice while they are at most [`UNSTAMPED_HASH_VERTICES`] (a crate, a door: its shadow overlay is kept while it stands),
+/// else the upload's generation (taken as changed each upload). The draws' places and counts are in the overlay's key already.
+fn unstamped_content(generation: u64, draws: &[HdDraw]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    let vertices: usize = draws.iter().map(|d| d.vertices.len()).sum();
+    if vertices > UNSTAMPED_HASH_VERTICES {
+        generation.hash(&mut h);
+        return h.finish();
+    }
+    let mut bytes = Vec::with_capacity(vertices * HD_VERTEX_BYTES);
+    for v in draws.iter().flat_map(|d| &d.vertices) {
+        v.write(&mut bytes);
+    }
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 /// The most pass marks a frame writes.
@@ -2674,6 +2700,12 @@ impl<E: HdExtension> HdWorld<E> {
     }
 
     /// What the last frame's shadow passes did.
+    /// Whether a shadow map with moving shapes in it is kept while nothing it shows changed (on by default;
+    /// [`crate::shadows`]). Off, it is copied from its static map and drawn over every frame: the check's reference.
+    pub fn set_keep_shadow_overlays(&mut self, on: bool) {
+        self.shadows.set_keep_overlays(on);
+    }
+
     pub fn shadow_stats(&self) -> ShadowStats {
         self.shadows.stats
     }
@@ -4643,6 +4675,7 @@ impl<E: HdExtension> HdWorld<E> {
                 },
                 ids,
                 node_base,
+                content: stamp.unwrap_or_else(|| unstamped_content(scene.generation, &o.draws)),
             });
         }
         for (d, c) in &scene.coronas {
@@ -4672,7 +4705,7 @@ impl<E: HdExtension> HdWorld<E> {
             self.loose = loose;
             return;
         }
-        self.upload_nodes(scene, &loose.objects, node_end);
+        self.upload_nodes(scene, &mut loose.objects, node_end);
         if !indices.is_empty() || !index_writes.is_empty() {
             // A window syncs its control object every frame: the buffers are written in place while they are big enough (made
             // anew, with room to grow, only when they are not), the runs that hold their stamps' vertices not at all.
@@ -4899,10 +4932,11 @@ impl<E: HdExtension> HdWorld<E> {
 
     /// The meshes' places of the frame's objects into the table (`end` places in all; made anew with room to grow when it is too
     /// small): each object's at its first place. The caller has checked [`HdWorld::nodes_fit`].
-    fn upload_nodes(&mut self, scene: &E::Scene, objects: &[GpuObject], end: usize) {
+    fn upload_nodes(&mut self, scene: &E::Scene, objects: &mut [GpuObject], end: usize) {
         if end == 0 {
             return;
         }
+        use std::hash::{Hash, Hasher};
 
         if (self.nodes.size() as usize) < end * NODE_BYTES {
             self.nodes = Self::nodes_buffer(&self.device, end + end / 4 + 64);
@@ -4926,6 +4960,16 @@ impl<E: HdExtension> HdWorld<E> {
                     c.copy_from_slice(&v.to_le_bytes());
                 }
             }
+            // Its places are part of its shadow's content (a limb that swings moves its shadow).
+            let mut h = std::hash::DefaultHasher::new();
+            g.content.hash(&mut h);
+            base.hash(&mut h);
+            let end = ((base + o.nodes.len()) * NODE_BYTES).min(bytes.len());
+            bytes
+                .get(base * NODE_BYTES..end)
+                .unwrap_or_default()
+                .hash(&mut h);
+            g.content = h.finish();
         }
         self.queue.write_buffer(&self.nodes, 0, &bytes);
         self.node_bytes = bytes;
@@ -6166,6 +6210,7 @@ impl<E: HdExtension> HdWorld<E> {
                 own: o.draws.iter().any(|d| d.shadow_only),
                 centre: o.centre,
                 radius: o.radius,
+                content: o.content,
                 draws: o
                     .draws
                     .iter()
@@ -6187,6 +6232,7 @@ impl<E: HdExtension> HdWorld<E> {
             cells: &self.cells,
             grid: &self.grid,
             ext: &self.ext_slots.shadow,
+            ext_generation: self.ext.shadow_generation(),
             nodes: &self.nodes,
             gpu: shadows::ShadowLists {
                 device: &self.device,

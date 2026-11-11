@@ -4395,6 +4395,7 @@ dependencies = [
  "torque-plugin-rope",
  "torque-plugin-smooth-prediction",
  "torque-render-core",
+ "torque-render-hd",
  "torque-render-scene",
  "wasm-bindgen",
 ]

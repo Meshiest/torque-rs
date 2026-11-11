@@ -294,6 +294,13 @@ pub trait HdExtension: Sized + 'static {
     /// The extension's buffers into the renderer's slots (each frame, before anything is drawn).
     fn fill_slots(&mut self, _slots: &mut ExtSlots) {}
 
+    /// A number that changes whenever what the casters' shader reads of [`ExtSlots::shadow`] changed (its `ext_excluded`, say),
+    /// the buffers written in place included: a shadow map with moving shapes in it is kept while nothing it shows changed, and
+    /// this is how it learns of a change there. Constant for an extension whose shadow buffers never change in place.
+    fn shadow_generation(&self) -> u64 {
+        0
+    }
+
     /// The near detail's distances (whole up to, gone by) when the frame draws it: the extra draws and the near clusters.
     fn near_detail(&self, _scene: &Self::Scene) -> Option<[f32; 2]> {
         None

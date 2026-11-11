@@ -6,8 +6,11 @@
 //!   move the snapped sphere, or the sun moved) or when static cells changed under it: then only the changed cells' texel rectangle is
 //!   cleared (a far-depth triangle under a scissor) and the cells that meet it are drawn again. A still camera draws no cell into a
 //!   cascade at all ([`ShadowStats::static_redraws`]).
-//! - **The dynamic overlay**: each frame a cascade (or a face) with shapes in it is copied from the static map and the shapes are
-//!   drawn over the copy; one that had shapes last frame but none now is copied back clean.
+//! - **The dynamic overlay**: a cascade (or a face) with shapes in it is copied from the static map and the shapes are drawn over
+//!   the copy; one that had shapes last frame but none now is copied back clean. The overlay is kept while nothing it shows
+//!   changed: the same caster, the same shapes with the same vertices and mesh places ([`ObjectCaster::content`]) and a static
+//!   map not drawn again leave the working map as it is (a room of lamps around a standing figure copied and drew every face
+//!   every frame: most of the frame's passes).
 //! - **Point lights** (`assign_slots`): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:
 //!   the shadow maps are three cube arrays ([`point_tiers`]), the quality's face size for the few most important lights, half of
 //!   it for the next, a quarter for the rest (the first tier's size, its count half the quality's point lights; then as many as the
@@ -115,6 +118,9 @@ pub(crate) struct ObjectCaster {
     pub centre: [f32; 3],
     pub radius: f32,
     pub draws: Vec<(u32, u32, i32)>,
+    /// What its shadow depends on besides the caster and `draws`: its vertices and its meshes' places (the renderer's object
+    /// content).
+    pub content: u64,
 }
 
 /// What a frame's shadows are made from.
@@ -132,6 +138,9 @@ pub(crate) struct ShadowInput<'a> {
     /// The extension's buffers in the casters' group 3 (bindings 0 and 1: [`crate::ExtSlots::shadow`]), and the frame's meshes'
     /// places (binding 2: the shapes' vertices in their meshes' own space).
     pub ext: &'a [wgpu::Buffer; 2],
+    /// The extension's shadow generation ([`crate::ext::HdExtension::shadow_generation`]): what its casters' shader reads of
+    /// its buffers changed when it changes (a kept overlay is drawn again).
+    pub ext_generation: u64,
     pub nodes: &'a wgpu::Buffer,
     /// Each map's casters culled for it: on the GPU into the scratch lists before its pass when the frame's lists are the
     /// GPU's, else by the CPU (the same test, the same order).
@@ -330,7 +339,8 @@ pub fn point_tiers(q: &ShadowQuality) -> [(u32, usize); 3] {
 pub(crate) struct Slot {
     pub light: Option<[u32; 4]>,
     valid: [bool; 6],
-    dynamic: [bool; 6],
+    /// What each working face holds ([`Overlay`]).
+    overlay: [Overlay; 6],
     /// How much of the light's shadow this cube gives (0 to 1): below 1 while it fades in or out.
     pub strength: f32,
     /// The cube its light is leaving (fading out, or crossfading to a cube of another tier).
@@ -571,14 +581,21 @@ pub(crate) struct Shadows {
     /// The scroll of a static cascade's cache: its pipeline, its group's layout, a uniform slot a cascade.
     scroll_pipeline: wgpu::RenderPipeline,
     scroll_layout: wgpu::BindGroupLayout,
-    /// The casters' group 3 layout (the extension's buffers, the meshes' places).
+    /// The casters' group 3 layout (the extension's buffers, the meshes' places), and the group over the buffers last bound
+    /// (made again only when one of them is another buffer).
     ext_layout: wgpu::BindGroupLayout,
+    ext_group: Option<([wgpu::Buffer; 3], wgpu::BindGroup)>,
     scroll_uniform: wgpu::Buffer,
     pub uniform: wgpu::Buffer,
     pub cmp_sampler: wgpu::Sampler,
     pub gather_sampler: wgpu::Sampler,
     cascade_keys: Vec<Option<[f32; 16]>>,
-    cascade_dynamic: Vec<bool>,
+    /// What each working cascade holds, and each cascade kept without the client's own Player ([`Overlay`]).
+    cascade_overlay: Vec<Overlay>,
+    cascade_self_overlay: Vec<Overlay>,
+    /// Whether a working map is kept while its overlay is unchanged (on; off: copied and drawn over every frame, the check's
+    /// reference: [`Shadows::set_keep_overlays`]).
+    keep_overlays: bool,
     /// Whether passes from outside the renderer draw into the cascades' work maps this frame ([`Shadows::set_drawn_over`]):
     /// each is copied from its cache every frame.
     drawn_over: bool,
@@ -1261,7 +1278,9 @@ impl Shadows {
             trans_sampler,
             trans_valid: vec![false; MAX_CASCADES],
             cascade_keys: vec![None; MAX_CASCADES],
-            cascade_dynamic: vec![false; MAX_CASCADES],
+            cascade_overlay: vec![Overlay::Unknown; MAX_CASCADES],
+            cascade_self_overlay: vec![Overlay::Unknown; MAX_CASCADES],
+            keep_overlays: true,
             drawn_over: false,
             cascade_matrices: Vec::new(),
             cascade_stale: vec![None; MAX_CASCADES],
@@ -1277,6 +1296,7 @@ impl Shadows {
             scroll_pipeline,
             scroll_layout,
             ext_layout,
+            ext_group: None,
             scroll_uniform,
             uniform,
             cmp_sampler,
@@ -1294,7 +1314,8 @@ impl Shadows {
         if self.maps.quality != quality {
             self.maps = Maps::new(device, quality);
             self.cascade_keys = vec![None; MAX_CASCADES];
-            self.cascade_dynamic = vec![false; MAX_CASCADES];
+            self.cascade_overlay = vec![Overlay::Unknown; MAX_CASCADES];
+            self.cascade_self_overlay = vec![Overlay::Unknown; MAX_CASCADES];
             self.cascade_stale = vec![None; MAX_CASCADES];
             self.slots = vec![Slot::default(); self.maps.slots()];
             self.seen_last.clear();
@@ -1322,6 +1343,12 @@ impl Shadows {
     /// copied from its cache every frame, so what they drew the frame before is gone).
     pub fn set_drawn_over(&mut self, on: bool) {
         self.drawn_over = on;
+    }
+
+    /// Whether a working map is kept while its overlay is unchanged (on by default). Off, every map with shapes in it is copied
+    /// from its static map and drawn over each frame: the reference the kept maps are checked against.
+    pub fn set_keep_overlays(&mut self, on: bool) {
+        self.keep_overlays = on;
     }
 
     /// The sun's cascades the last [`Shadows::encode`] drew, finest first: each one's light view and projection, its work map
@@ -1417,6 +1444,7 @@ impl Shadows {
                 input.extras.as_ref().map_or(0.0, |x| x.reach),
             ]
         };
+        // Returns the caster's bytes hashed (an overlay's key).
         let mut put_caster = |index: usize, m: &[f32; 16], light: [f32; 4], exclude: [u32; 4]| {
             b.clear();
             push_f32(&mut b, m);
@@ -1428,6 +1456,9 @@ impl Shadows {
                 caster_bytes.resize(at + CASTER_STRIDE as usize, 0);
             }
             caster_bytes[at..at + b.len()].copy_from_slice(&b);
+            let mut h = std::hash::DefaultHasher::new();
+            std::hash::Hash::hash(&b, &mut h);
+            std::hash::Hasher::finish(&h)
         };
         // The extra casters going on or off changes what the static cascades hold.
         if input.extras.is_some() != self.cascades_hold_extras {
@@ -1497,7 +1528,7 @@ impl Shadows {
             // The cascade's layer rides in the exclusion's first word (the transmittance pass's depth test reads it).
             // The light word carries the sun's direction and the extra casters' shadow reach.
             let t = input.sun.towards;
-            put_caster(
+            let caster = put_caster(
                 i,
                 &c.view_proj,
                 [t[0], t[1], t[2], input.caster_reach],
@@ -1594,10 +1625,27 @@ impl Shadows {
                 })
                 .map(|(k, _)| k)
                 .collect();
-            if drawn || !objects.is_empty() || self.cascade_dynamic[i] || self.drawn_over {
+            // The working cascade is made again when its static cascade was drawn, when passes from outside draw into it, or when
+            // its overlay is not the one it holds (shapes came, went or changed); else it stands as it is.
+            let fresh = drawn || self.drawn_over || !self.keep_overlays;
+            let key = overlay_key(caster, &objects, input);
+            if fresh || key != self.cascade_overlay[i] {
                 jobs.push(Job::CopyCascade { layer: i, to: i });
+                if !objects.is_empty() {
+                    stats.overlays += 1;
+                    jobs.push(Job::CascadeOverlay {
+                        layer: i,
+                        to: i,
+                        objects: objects.clone(),
+                    });
+                }
+                // A pass from outside drew into it: what it holds is not known next frame.
+                self.cascade_overlay[i] = if self.drawn_over {
+                    Overlay::Unknown
+                } else {
+                    key
+                };
             }
-            self.cascade_dynamic[i] = !objects.is_empty() || self.drawn_over;
             // The first-person images are lit by the nearest cascades with the client's own Player left out: it casts a shadow of
             // the held item's copy at the hand, not onto the image drawn before the eye.
             if i < NO_SELF_CASCADES && input.objects.iter().any(|o| o.own) {
@@ -1607,26 +1655,29 @@ impl Shadows {
                     .filter(|&k| !input.objects[k].own)
                     .collect();
                 no_self = i + 1;
-                jobs.push(Job::CopyCascade {
-                    layer: i,
-                    to: layers + i,
-                });
-                if !rest.is_empty() {
-                    stats.overlays += 1;
-                    jobs.push(Job::CascadeOverlay {
+                let key = overlay_key(caster, &rest, input);
+                if fresh || key != self.cascade_self_overlay[i] {
+                    jobs.push(Job::CopyCascade {
                         layer: i,
                         to: layers + i,
-                        objects: rest,
                     });
+                    if !rest.is_empty() {
+                        stats.overlays += 1;
+                        jobs.push(Job::CascadeOverlay {
+                            layer: i,
+                            to: layers + i,
+                            objects: rest,
+                        });
+                    }
+                    self.cascade_self_overlay[i] = if self.drawn_over {
+                        Overlay::Unknown
+                    } else {
+                        key
+                    };
                 }
-            }
-            if !objects.is_empty() {
-                stats.overlays += 1;
-                jobs.push(Job::CascadeOverlay {
-                    layer: i,
-                    to: i,
-                    objects,
-                });
+            } else {
+                // Not kept up while there is no own Player: made again when one is back.
+                self.cascade_self_overlay[i] = Overlay::Unknown;
             }
         }
         // The transmittance maps follow their static cascades.
@@ -1645,6 +1696,8 @@ impl Shadows {
         for k in cs.len()..MAX_CASCADES {
             self.cascade_keys[k] = None;
             self.cascade_stale[k] = None;
+            self.cascade_overlay[k] = Overlay::Unknown;
+            self.cascade_self_overlay[k] = Overlay::Unknown;
         }
 
         // Point lights.
@@ -1686,11 +1739,11 @@ impl Shadows {
                     // Drawn again in full should the cone turn to it.
                     let st = &mut self.slots[slot];
                     st.valid[face] = false;
-                    st.dynamic[face] = false;
+                    st.overlay[face] = Overlay::Unknown;
                     continue;
                 }
                 let m = cube_face(l.position, l.radius, face);
-                put_caster(
+                let caster = put_caster(
                     MAX_CASCADES + slot * 6 + face,
                     &m,
                     [l.position[0], l.position[1], l.position[2], l.radius],
@@ -1725,17 +1778,18 @@ impl Shadows {
                     })
                     .map(|(k, _)| k)
                     .collect();
-                if drawn || !objects.is_empty() || st.dynamic[face] {
+                let key = overlay_key(caster, &objects, input);
+                if drawn || !self.keep_overlays || key != st.overlay[face] {
                     jobs.push(Job::CopyFace { slot, face });
-                }
-                st.dynamic[face] = !objects.is_empty();
-                if !objects.is_empty() {
-                    stats.overlays += 1;
-                    jobs.push(Job::FaceOverlay {
-                        slot,
-                        face,
-                        objects,
-                    });
+                    if !objects.is_empty() {
+                        stats.overlays += 1;
+                        jobs.push(Job::FaceOverlay {
+                            slot,
+                            face,
+                            objects,
+                        });
+                    }
+                    st.overlay[face] = key;
                 }
             }
         }
@@ -1818,27 +1872,39 @@ impl Shadows {
         queue.write_buffer(&self.uniform, 0, &u);
 
         // The passes.
-        let ext_group = input
-            .gpu
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("hd shadow extension"),
-                layout: &self.ext_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: input.ext[0].as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: input.ext[1].as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: input.nodes.as_entire_binding(),
-                    },
-                ],
-            });
+        let ext_buffers = [
+            input.ext[0].clone(),
+            input.ext[1].clone(),
+            input.nodes.clone(),
+        ];
+        let ext_group = match &self.ext_group {
+            Some((buffers, group)) if *buffers == ext_buffers => group.clone(),
+            _ => {
+                let group = input
+                    .gpu
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("hd shadow extension"),
+                        layout: &self.ext_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: ext_buffers[0].as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: ext_buffers[1].as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: ext_buffers[2].as_entire_binding(),
+                            },
+                        ],
+                    });
+                self.ext_group = Some((ext_buffers, group.clone()));
+                group
+            }
+        };
         // Each map's casters' view (the jobs that draw cells: a cascade, a face, a transmittance map).
         let views: Vec<Option<crate::cull::ViewPlanes>> = jobs
             .iter()
@@ -2275,6 +2341,36 @@ impl Shadows {
             _ => draw_objects(pass, input, objects),
         }
     }
+}
+
+/// What a working map holds: its static map alone, the shapes of an overlay (the caster's bytes, the extension's shadow
+/// generation and each shape's ghost, draws and content hashed), or something not known to be either (nothing yet, a pass from
+/// outside drew into it, or it was not kept up): a map is made again whenever what it should hold is not this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Overlay {
+    Static,
+    Shapes(u64),
+    #[default]
+    Unknown,
+}
+
+/// What an overlay of `objects` over the caster `caster` (its bytes hashed) shows. Two frames' overlays with the same key are
+/// the same picture.
+fn overlay_key(caster: u64, objects: &[usize], input: &ShadowInput<'_>) -> Overlay {
+    use std::hash::{Hash, Hasher};
+    if objects.is_empty() {
+        return Overlay::Static;
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    caster.hash(&mut h);
+    input.ext_generation.hash(&mut h);
+    for &k in objects {
+        let o = &input.objects[k];
+        o.ghost.hash(&mut h);
+        o.draws.hash(&mut h);
+        o.content.hash(&mut h);
+    }
+    Overlay::Shapes(h.finish())
 }
 
 /// A cascade's slot in the scroll's uniform (the uniform offset alignment).
