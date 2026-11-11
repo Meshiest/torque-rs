@@ -39,6 +39,14 @@
 //! `Assets::debug_assert_untrusted` when they are mounted (`mount_server_files`). A new kind of mount does both.
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - What the offer and the data message carry is versioned (`offer::WIRE_VERSION`, the digit in their head; the request has none).
+//!   Change what they carry and the version moves with it; a message of another version is answered with `MessageError::Version` naming both
+//!   (`a_message_of_another_version_is_refused_with_the_versions`). The content message the cache stores has its own head and is
+//!   not part of this, so a cache survives it.
+//! - A name from a server is shown on screens and read by scripts, so it is held to `modsync::is_display_name` (short, printable, no
+//!   markup) when the offer is read, and the server sends the id for a mod whose name fails it
+//!   (`a_display_name_that_is_too_long_or_not_plain_text_is_refused`, `a_mods_display_name_reaches_the_client_and_falls_back_to_the_id`
+//!   in minimal-engine's tests).
 //! - `read_prefix` answers as `read` does, cut: a mod's file over the game's, the files under it below
 //!   and a zip mod's entry inflates only the prefix (`a_prefix_read_of_a_mods_file_is_the_start_of_what_a_read_gives`,
 //!   `a_prefix_read_of_a_zip_mods_file_is_its_start`).

@@ -145,7 +145,14 @@ impl WebSoccer {
                 client.global("$Join::Bytes")
             ),
         );
-        mark("mods", &client.global("$Join::Mods"));
+        mark(
+            "mods",
+            &format!(
+                "{} {}",
+                client.global("$Join::Mods"),
+                client.global("$Join::Versions")
+            ),
+        );
         mark("team", &client.global("$Match::Team"));
         let figure = client
             .with_world(|w| w.control.object.is_some() && w.control.position.is_some())

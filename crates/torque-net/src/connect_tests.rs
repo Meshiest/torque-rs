@@ -408,6 +408,7 @@ fn the_gate_asks_only_that_a_client_can_take_the_mods_a_server_requires() {
     assert_eq!(gate.check(from(), &cx(), &client(None)), Ok(None));
     required.set(vec![RequiredMod {
         id: "props".into(),
+        name: "Props".into(),
         version: "1.2".into(),
         hash: [9; 32],
         bytes: 4_096,

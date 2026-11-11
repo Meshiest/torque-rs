@@ -10,7 +10,9 @@ use std::sync::Arc;
 use torque_net::chunk::{Kind, MessageHandle};
 use torque_net::handshake::ConnId;
 use torque_net::manifest::is_name;
-use torque_net::modsync::{MAX_REQUIRED, ModsSection, RequiredMod, RequiredMods, is_version};
+use torque_net::modsync::{
+    MAX_REQUIRED, ModsSection, RequiredMod, RequiredMods, is_display_name, is_version,
+};
 use torque_server::net::channels::ChannelHub;
 use torque_ts_vm::sim::ObjId;
 
@@ -1069,6 +1071,8 @@ impl Mods {
 pub struct RequiredInfo {
     /// The mod's id.
     pub id: String,
+    /// The name shown for it (the id when it has no other).
+    pub name: String,
     /// Its version.
     pub version: String,
     /// The hash of its content, as 64 hexadecimal digits.
@@ -1113,6 +1117,7 @@ impl Mods {
     pub(crate) fn required_info(&self) -> Vec<RequiredInfo> {
         let info = |m: &RequiredMod| RequiredInfo {
             id: m.id.clone(),
+            name: m.name.clone(),
             version: m.version.clone(),
             hash: crate::content::hex(&m.hash),
             bytes: m.bytes,
@@ -1130,6 +1135,7 @@ impl Mods {
                     .iter()
                     .map(|o| RequiredInfo {
                         id: o.id.clone(),
+                        name: o.name.clone(),
                         version: o.version.clone(),
                         hash: crate::content::hex(&o.hash),
                         bytes: o.bytes(),
@@ -1182,8 +1188,15 @@ impl Mods {
             if download {
                 sendable = sendable.saturating_add(content.bytes);
             }
+            // A name a client could not show is the id.
+            let name = if is_display_name(&info.name) {
+                info.name.clone()
+            } else {
+                info.id.clone()
+            };
             list.push(RequiredMod {
                 id: info.id.clone(),
+                name,
                 version,
                 hash: content.hash,
                 bytes: content.bytes,
@@ -1209,6 +1222,7 @@ impl Mods {
         for need in list.iter() {
             let mut offer = ModOffer {
                 id: need.id.clone(),
+                name: need.name.clone(),
                 version: need.version.clone(),
                 hash: need.hash,
                 download: false,

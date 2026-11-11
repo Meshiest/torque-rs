@@ -281,7 +281,7 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client*
 - `getRequiredModCount()` - how many mods the server requires of its clients (on a client, how many its server announced)
   *arguments: none; server and client*
-- `getRequiredModField(id, field)` - one fact about a required mod: version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
+- `getRequiredModField(id, field)` - one fact about a required mod: name (the one to show; the id when it has no other), version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
   *arguments: 2; server and client*
 - `getRequiredModList()` - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
   *arguments: none; server and client*

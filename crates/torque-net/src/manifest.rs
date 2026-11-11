@@ -151,7 +151,7 @@ fn digest_of<'a>(names: impl Iterator<Item = &'a str>) -> u64 {
 
 /// Whether `c` could hide or reorder text on a screen: a control character, a line or paragraph separator, or a format character
 /// (Unicode category Cf: the bidirectional overrides and isolates, zero-width characters, the invisible operators, tags).
-fn is_invisible(c: char) -> bool {
+pub(crate) fn is_invisible(c: char) -> bool {
     c.is_control()
         || matches!(
             u32::from(c),

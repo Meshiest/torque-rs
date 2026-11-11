@@ -1,6 +1,7 @@
 //! What a server sends a client that can take content, and what a client asks for: the offer, a request and the data that answers it.
 //!
-//! **The offer** lists the mods the server requires. Per mod: its id, version and package hash ([`crate::content`]), whether the
+//! **The offer** lists the mods the server requires. Per mod: its id, the name to show for it ([`torque_net::modsync::is_display_name`]; the id
+//! when the mod has no other), version and package hash ([`crate::content`]), whether the
 //! server serves its content, and, when it does, per file the path, size and SHA-256, and per block of [`BLOCK_BYTES`] of the
 //! file a strong hash ([`block_hash`]: SHA-256 cut to [`BLOCK_HASH_LEN`] bytes). A client matches what it has against it, by
 //! package hash, then by file hash, then by block hash within a file of the same path of an older copy of the mod, and asks for
@@ -10,12 +11,17 @@
 //! as the remote command `TorqueModsGet`. **The data** that answers it is a message of the mods channel with the run's bytes.
 //! A server serves only what its offer lists, to anyone who asks; a request outside the offer is refused.
 //!
+//! **Versions.** The offer and the data message start with `TQM` and the digit of `WIRE_VERSION`. A message of another version
+//! is answered with [`MessageError::Version`], which says which version each side speaks, so peers of different builds fail with a
+//! reason instead of a parse error. Change the version with anything these messages carry (the content message of the cache has its
+//! own head and is not affected).
+//!
 //! Everything here is read from hostile bytes: every count is checked against the bytes left and a cap before anything is
 //! allocated, a path passes the package's rules and is never a script, and a malformed message is an `Err`.
 
 use sha2::{Digest, Sha256};
 
-use crate::content::{Cursor, Hash, MAGIC, MessageError};
+use crate::content::{Cursor, Hash, MessageError};
 use crate::files::is_script_path;
 use crate::package::{MAX_PATH_LEN, ModLimits, check_path};
 
@@ -31,6 +37,13 @@ pub const MAX_OFFER_BYTES: usize = 1 << 20;
 
 /// The most mods an offer lists.
 pub const MAX_OFFER_MODS: usize = torque_net::modsync::MAX_REQUIRED;
+
+/// The version of the offer and data messages: the digit that ends their head (`TQM` and the digit). It moves with every change
+/// to what those messages carry; a peer of another version is refused by name, not by a failed parse. The request (`ModsGet`)
+/// has no head and no version: it is a command or an RPC of the connection.
+pub(crate) const WIRE_VERSION: u8 = 2;
+
+const WIRE_HEAD: [u8; 3] = *b"TQM";
 
 const KIND_OFFER: u8 = 1;
 const KIND_DATA: u8 = 3;
@@ -70,6 +83,8 @@ impl FileOffer {
 pub struct ModOffer {
     /// The mod's id.
     pub id: String,
+    /// The name a client shows for it (the id when the server sent none).
+    pub name: String,
     /// Its version.
     pub version: String,
     /// The package hash of its content.
@@ -113,14 +128,40 @@ fn put_text(out: &mut Vec<u8>, text: &str) {
     crate::content::put_text(out, text);
 }
 
+fn put_head(out: &mut Vec<u8>, kind: u8) {
+    out.extend_from_slice(&WIRE_HEAD);
+    out.push(b'0' + WIRE_VERSION);
+    out.push(kind);
+}
+
+/// Reads the head of a message of `kind`: another version is told apart from something that is no message of ours.
+fn take_head(c: &mut Cursor<'_>, kind: u8) -> Result<(), MessageError> {
+    if c.take(3)? != WIRE_HEAD {
+        return Err(MessageError::Malformed("magic"));
+    }
+    let version = c.u8()?;
+    if version != b'0' + WIRE_VERSION {
+        return Err(MessageError::Version(version));
+    }
+    if c.u8()? != kind {
+        return Err(MessageError::Malformed("kind"));
+    }
+    Ok(())
+}
+
+/// Whether `bytes` starts a message of `kind`, in any version (a peer of another one is answered with the version).
+fn has_head(bytes: &[u8], kind: u8) -> bool {
+    bytes.len() > 4 && bytes[..3] == WIRE_HEAD && bytes[4] == kind
+}
+
 /// The offer message of `mods` (at most [`MAX_OFFER_MODS`]).
 pub fn encode_offer(mods: &[ModOffer]) -> Vec<u8> {
     let mut out = Vec::new();
-    out.extend_from_slice(&MAGIC);
-    out.push(KIND_OFFER);
+    put_head(&mut out, KIND_OFFER);
     out.extend_from_slice(&(mods.len().min(MAX_OFFER_MODS) as u16).to_le_bytes());
     for m in mods.iter().take(MAX_OFFER_MODS) {
         put_text(&mut out, &m.id);
+        put_text(&mut out, &m.name);
         put_text(&mut out, &m.version);
         out.extend_from_slice(&m.hash);
         out.push(u8::from(m.download));
@@ -149,15 +190,10 @@ pub fn decode_offer(bytes: &[u8], caps: &OfferCaps) -> Result<Vec<ModOffer>, Mes
         return Err(MessageError::TooLarge("offer"));
     }
     let mut c = Cursor(bytes);
-    if c.take(4)? != MAGIC {
-        return Err(MessageError::Malformed("magic"));
-    }
-    if c.u8()? != KIND_OFFER {
-        return Err(MessageError::Malformed("kind"));
-    }
+    take_head(&mut c, KIND_OFFER)?;
     let count = usize::from(c.u16()?);
-    // Each mod takes at least two text lengths, a hash, a flag and a file count.
-    if count > MAX_OFFER_MODS || count.saturating_mul(2 + 32 + 1 + 4) > c.0.len() {
+    // Each mod takes at least three text lengths, a hash, a flag and a file count.
+    if count > MAX_OFFER_MODS || count.saturating_mul(3 + 32 + 1 + 4) > c.0.len() {
         return Err(MessageError::TooLarge("mods in the offer"));
     }
     let (mut files_total, mut bytes_total) = (0usize, 0u64);
@@ -165,6 +201,7 @@ pub fn decode_offer(bytes: &[u8], caps: &OfferCaps) -> Result<Vec<ModOffer>, Mes
     let mut ids = std::collections::HashSet::new();
     for _ in 0..count {
         let id = c.text()?;
+        let name = c.text()?;
         let version = c.text()?;
         // A server's ids are held to a local mod's rules (no `/`, `:` or quote reaches a mount name, a hook or a message),
         // and an id comes once: a repeat would make the client look for its older copies again.
@@ -177,6 +214,14 @@ pub fn decode_offer(bytes: &[u8], caps: &OfferCaps) -> Result<Vec<ModOffer>, Mes
         if !torque_net::modsync::is_version(&version) {
             return Err(MessageError::Malformed("mod version"));
         }
+        // A name of nothing is the id; any other must be one a client may show.
+        let name = if name.is_empty() {
+            id.clone()
+        } else if torque_net::modsync::is_display_name(&name) {
+            name
+        } else {
+            return Err(MessageError::Malformed("mod name"));
+        };
         let hash = c.hash()?;
         let download = match c.u8()? {
             0 => false,
@@ -240,6 +285,7 @@ pub fn decode_offer(bytes: &[u8], caps: &OfferCaps) -> Result<Vec<ModOffer>, Mes
         }
         mods.push(ModOffer {
             id,
+            name,
             version,
             hash,
             download,
@@ -268,8 +314,7 @@ pub struct Request {
 /// The data message that answers `request`: the run's bytes.
 pub fn encode_data(request: &Request, bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len() + 24);
-    out.extend_from_slice(&MAGIC);
-    out.push(KIND_DATA);
+    put_head(&mut out, KIND_DATA);
     out.extend_from_slice(&request.mod_index.to_le_bytes());
     out.extend_from_slice(&request.file.to_le_bytes());
     out.extend_from_slice(&request.start.to_le_bytes());
@@ -281,12 +326,7 @@ pub fn encode_data(request: &Request, bytes: &[u8]) -> Vec<u8> {
 /// Reads a data message: the request it answers and the bytes (borrowed from `bytes`).
 pub fn decode_data(bytes: &[u8]) -> Result<(Request, &[u8]), MessageError> {
     let mut c = Cursor(bytes);
-    if c.take(4)? != MAGIC {
-        return Err(MessageError::Malformed("magic"));
-    }
-    if c.u8()? != KIND_DATA {
-        return Err(MessageError::Malformed("kind"));
-    }
+    take_head(&mut c, KIND_DATA)?;
     let request = Request {
         mod_index: c.u32()?,
         file: c.u32()?,
@@ -298,12 +338,12 @@ pub fn decode_data(bytes: &[u8]) -> Result<(Request, &[u8]), MessageError> {
 
 /// Whether `bytes` is an offer message (by its head).
 pub fn is_offer(bytes: &[u8]) -> bool {
-    bytes.len() > 4 && bytes[..4] == MAGIC && bytes[4] == KIND_OFFER
+    has_head(bytes, KIND_OFFER)
 }
 
 /// Whether `bytes` is a data message (by its head).
 pub fn is_data(bytes: &[u8]) -> bool {
-    bytes.len() > 4 && bytes[..4] == MAGIC && bytes[4] == KIND_DATA
+    has_head(bytes, KIND_DATA)
 }
 
 #[cfg(test)]

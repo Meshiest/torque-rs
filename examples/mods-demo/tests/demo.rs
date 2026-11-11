@@ -76,6 +76,12 @@ fn mods_load_in_the_order_their_rules_give_and_a_pref_keeps_one_out() {
     assert_eq!(server.call("isModEnabled", &["confetti"]).unwrap(), "0");
     assert_eq!(server.call("isModEnabled", &["soccer"]).unwrap(), "1");
     assert_eq!(server.call("getRequiredModList", &[]).unwrap(), "soccer");
+    assert_eq!(
+        server
+            .call("getRequiredModField", &["soccer", "name"])
+            .unwrap(),
+        "Soccer"
+    );
     // The second mod's script ran after the first's (its ball copies the soccer mod's), and its Lua sits over the first's: the
     // match is played with the big ball.
     assert_eq!(

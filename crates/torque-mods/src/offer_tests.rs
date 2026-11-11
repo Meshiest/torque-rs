@@ -17,6 +17,7 @@ fn bytes_of(len: usize, seed: u8) -> Vec<u8> {
 fn offer(download: bool) -> ModOffer {
     ModOffer {
         id: "props".to_string(),
+        name: "Props Pack".to_string(),
         version: "1.2".to_string(),
         hash: [3; 32],
         download,
@@ -124,6 +125,102 @@ fn an_offer_naming_one_id_twice_or_an_id_a_local_mod_could_not_have_is_refused()
             "{id}"
         );
     }
+}
+
+#[test]
+fn a_mods_display_name_travels_in_the_offer_and_an_empty_one_is_its_id() {
+    let back = decode_offer(&encode_offer(&[offer(true)]), &caps()).unwrap();
+    assert_eq!(back[0].name, "Props Pack");
+    let mut m = offer(true);
+    m.name = String::new();
+    let back = decode_offer(&encode_offer(&[m]), &caps()).unwrap();
+    assert_eq!(back[0].name, "props");
+}
+
+#[test]
+fn a_display_name_that_is_too_long_or_not_plain_text_is_refused() {
+    let longest = "n".repeat(torque_net::modsync::MAX_DISPLAY_NAME_BYTES);
+    let mut m = offer(true);
+    m.name = longest.clone();
+    assert_eq!(
+        decode_offer(&encode_offer(&[m]), &caps()).unwrap()[0].name,
+        longest
+    );
+    for name in [
+        format!("{longest}n"),
+        "n".repeat(300),
+        "Pro\u{1}ps".to_string(),
+        "Pro\nps".to_string(),
+        "Pro\u{202e}ps".to_string(),
+        "<b>Props</b>".to_string(),
+        " Props".to_string(),
+    ] {
+        let mut m = offer(true);
+        m.name = name.clone();
+        assert!(
+            matches!(
+                decode_offer(&encode_offer(&[m]), &caps()),
+                Err(MessageError::Malformed(_))
+            ),
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn a_message_of_another_version_is_refused_with_the_versions() {
+    let current = encode_offer(&[offer(true)]);
+    let data = encode_data(
+        &Request {
+            mod_index: 0,
+            file: 0,
+            start: 0,
+            count: 1,
+        },
+        b"x",
+    );
+    for other in [1u8, 3, 9] {
+        let byte = b'0' + other;
+        let mut old = current.clone();
+        old[3] = byte;
+        assert!(
+            is_offer(&old),
+            "an offer of any version is recognized, to be answered"
+        );
+        let found = decode_offer(&old, &caps());
+        assert_eq!(found, Err(MessageError::Version(byte)));
+        assert!(
+            found
+                .unwrap_err()
+                .to_string()
+                .contains(&format!("version {other}")),
+            "the reason names the version"
+        );
+        let mut old_data = data.clone();
+        old_data[3] = byte;
+        assert_eq!(decode_data(&old_data), Err(MessageError::Version(byte)));
+    }
+    // A head byte that is no digit is shown as the byte, not as a number from subtracting a digit.
+    let mut odd = current.clone();
+    odd[3] = 0xff;
+    let shown = decode_offer(&odd, &caps()).unwrap_err().to_string();
+    assert!(
+        shown.contains("unknown version") && shown.contains("0xff"),
+        "{shown}"
+    );
+    odd[3] = b':';
+    assert_eq!(
+        decode_offer(&odd, &caps()),
+        Err(MessageError::Version(b':'))
+    );
+    // Not a mods message at all stays a bad message.
+    let mut other = current;
+    other[0] = b'X';
+    assert!(!is_offer(&other));
+    assert_eq!(
+        decode_offer(&other, &caps()),
+        Err(MessageError::Malformed("magic"))
+    );
 }
 
 #[test]

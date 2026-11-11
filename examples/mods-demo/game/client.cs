@@ -32,6 +32,7 @@ function connectTo(%address, %shown)
    $Join::Address = %address;
    $Join::Shown = %shown $= "" ? %address : %shown;
    $Join::Mods = "";
+   $Join::Versions = "";
    $Join::Files = 0;
    $Join::Bytes = 0;
    $Join::Received = 0;
@@ -77,17 +78,20 @@ function GameConnection::onConnectionTimedOut(%this)
    leftMatch("Lost the connection to the server.");
 }
 
-// The mods the server needs, as "id version" each, and their files, from the offer it sent.
+// The mods the server needs (their names and versions, each list tab separated: a name has no tab) and their files, from the offer it sent.
 function readOffer()
 {
    %list = getRequiredModList();
    $Join::Mods = "";
+   $Join::Versions = "";
    $Join::Files = 0;
    for (%i = 0; %i < getWordCount(%list); %i++)
    {
       %id = getWord(%list, %i);
-      %mod = %id SPC getRequiredModField(%id, "version");
-      $Join::Mods = $Join::Mods $= "" ? %mod : $Join::Mods @ ", " @ %mod;
+      %name = getRequiredModField(%id, "name");
+      %version = getRequiredModField(%id, "version");
+      $Join::Mods = $Join::Mods $= "" ? %name : $Join::Mods @ "\t" @ %name;
+      $Join::Versions = $Join::Versions $= "" ? %version : $Join::Versions @ "\t" @ %version;
       $Join::Files += getRequiredModField(%id, "files");
    }
 }
@@ -173,7 +177,8 @@ function updateJoinScreen()
    %state = $Join::State;
    JoinScreenTitle.setText("Joining " @ $Join::Shown);
    %offer = %state $= "downloading" || %state $= "cached" || %state $= "joining";
-   JoinScreenMod.setText(%offer ? $Join::Mods : "");
+   JoinScreenMod.setText(%offer ? strreplace($Join::Mods, "\t", ", ") : "");
+   JoinScreenVersion.setText(%offer ? strreplace($Join::Versions, "\t", ", ") : "");
    %files = $Join::Files == 1 ? "1 file" : $Join::Files @ " files";
    if (%state $= "cached")
       JoinScreenDetail.setText("The server's game mode, already on this computer.");
@@ -347,7 +352,7 @@ new GuiControlProfile(MenuBackProfile) { opaque = true; fillColor = "22 40 30 25
 new GuiControlProfile(MenuPanelProfile) { opaque = true; border = true; fillColor = "28 48 38 240"; borderColor = "86 128 98 255"; };
 new GuiControlProfile(MenuTitleProfile) { fontType = "Arial"; fontSize = 48; fontColors[0] = "246 244 232 255"; };
 new GuiControlProfile(MenuHeadProfile) { fontType = "Arial"; fontSize = 30; fontColors[0] = "246 244 232 255"; justify = "center"; };
-new GuiControlProfile(MenuModProfile) { fontType = "Arial"; fontSize = 24; fontColors[0] = "255 214 120 255"; justify = "center"; };
+new GuiControlProfile(MenuModProfile) { fontType = "Arial"; fontSize = 24; fontColors[0] = "255 214 120 255"; justify = "right"; };
 new GuiControlProfile(MenuTextProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "226 236 228 255"; };
 new GuiControlProfile(MenuCenterProfile) { fontType = "Arial"; fontSize = 18; fontColors[0] = "226 236 228 255"; justify = "center"; };
 new GuiControlProfile(MenuDimProfile) { fontType = "Arial"; fontSize = 16; fontColors[0] = "160 184 166 255"; };
@@ -685,7 +690,9 @@ new GuiControl(JoinScreenGui)
    {
       profile = MenuPanelProfile; visible = true; enabled = true; position = "120 160"; extent = "560 280"; horizSizing = "center"; vertSizing = "center";
       new GuiTextCtrl(JoinScreenTitle) { profile = MenuHeadProfile; visible = true; enabled = true; position = "20 22"; extent = "520 38"; text = ""; };
-      new GuiTextCtrl(JoinScreenMod) { profile = MenuModProfile; visible = true; enabled = true; position = "20 76"; extent = "520 30"; text = ""; };
+      // The mod's name ends at the middle and its version, smaller, starts beside it.
+      new GuiTextCtrl(JoinScreenMod) { profile = MenuModProfile; visible = true; enabled = true; position = "20 76"; extent = "256 30"; text = ""; };
+      new GuiTextCtrl(JoinScreenVersion) { profile = MenuDimProfile; visible = true; enabled = true; position = "286 84"; extent = "254 22"; text = ""; };
       new GuiTextCtrl(JoinScreenDetail) { profile = MenuDimCenterProfile; visible = true; enabled = true; position = "20 110"; extent = "520 22"; text = ""; };
       new GuiControl(JoinBarTrack)
       {

@@ -50,6 +50,7 @@ struct Pack {
     version: &'static str,
     art: Vec<u8>,
     share: &'static str,
+    name: Option<String>,
 }
 
 const BOOM: [u8; 1_500] = [9; 1_500];
@@ -66,6 +67,7 @@ impl Pack {
             version,
             art: pattern(3_000, 1),
             share: "download",
+            name: None,
         }
     }
 
@@ -79,11 +81,20 @@ impl Pack {
         self
     }
 
+    fn named(mut self, name: impl Into<String>) -> Pack {
+        self.name = Some(name.into());
+        self
+    }
+
     /// The mod's files under `mods/props`: content (a Lua file among it), scripts (entry scripts, a library, compiled code, a
     /// menu) and the manifest.
     fn put(&self, files: &mut GameFiles) {
+        let name = self
+            .name
+            .as_ref()
+            .map_or_else(String::new, |name| format!("name = {name:?}\n"));
         let toml = format!(
-            "id = \"props\"\nversion = \"{}\"\nshare = \"{}\"\n",
+            "id = \"props\"\nversion = \"{}\"\nshare = \"{}\"\n{name}",
             self.version, self.share
         );
         files.insert("mods/props/mod.toml", toml.as_bytes());
@@ -358,6 +369,50 @@ fn the_server_lists_what_it_requires_for_its_scripts() {
     // Switching the mod off takes it off the list.
     server.call("disableMod", &["props"]).unwrap();
     assert_eq!(server.call("getRequiredModCount", &[]).unwrap(), "0");
+}
+
+#[test]
+fn a_mods_display_name_reaches_the_client_and_falls_back_to_the_id() {
+    // Named: the client hears the name from the offer, with a download and without one.
+    let named = Pack::new("1.2").named("Props Pack");
+    for (cache, local) in [("name-download", None), ("name-local", Some(&named))] {
+        let mut p = pair(Some(&named), server_plugin(), local, client_plugin(cache));
+        p.connect();
+        p.run_until(3_000, true, joined);
+        assert_eq!(p.state(), "done");
+        let field =
+            |p: &mut Pair, f: &str| p.client.call("getRequiredModField", &["props", f]).unwrap();
+        assert_eq!(field(&mut p, "name"), "Props Pack");
+        assert_eq!(field(&mut p, "version"), "1.2");
+    }
+    // Not named, or named something a client could not show: the id.
+    for pack in [
+        Pack::new("1.2"),
+        Pack::new("1.2").named("<b>Props</b>"),
+        Pack::new("1.2").named("n".repeat(65)),
+    ] {
+        let mut p = pair(
+            Some(&pack),
+            server_plugin(),
+            Some(&pack),
+            client_plugin("name-id"),
+        );
+        p.connect();
+        p.run_until(1_000, true, joined);
+        assert_eq!(
+            p.client
+                .call("getRequiredModField", &["props", "name"])
+                .unwrap(),
+            "props"
+        );
+        let server = p.client.server.as_mut().unwrap();
+        assert_eq!(
+            server
+                .call("getRequiredModField", &["props", "name"])
+                .unwrap(),
+            "props"
+        );
+    }
 }
 
 #[test]

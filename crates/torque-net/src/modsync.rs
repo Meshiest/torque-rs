@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
-use crate::manifest::is_name;
+use crate::manifest::{is_invisible, is_name};
 
 /// The section format this build writes and reads.
 pub const SECTION_FORMAT: u8 = 1;
@@ -28,11 +28,22 @@ pub const MAX_REQUIRED: usize = 32;
 /// The longest version text, in bytes.
 pub const MAX_VERSION_BYTES: usize = 24;
 
+/// The longest display name, in bytes.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 64;
+
+/// The most combining marks in a row in a display name.
+pub const MAX_COMBINING_RUN: usize = 2;
+
+/// The most combining marks in all in a display name.
+pub const MAX_COMBINING_TOTAL: usize = 8;
+
 /// A mod a server requires.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequiredMod {
     /// The mod's id.
     pub id: String,
+    /// The name a client shows for the mod (see [`is_display_name`]; the id when the mod names itself nothing else).
+    pub name: String,
     /// Its version, as the mod writes it.
     pub version: String,
     /// The SHA-256 of its content (see the mods crate for what is hashed, in which order).
@@ -95,6 +106,70 @@ impl ModsSection {
 /// or zero-width ones), or empty.
 pub fn is_version(text: &str) -> bool {
     text.len() <= MAX_VERSION_BYTES && (text.is_empty() || is_name(text))
+}
+
+/// Whether `text` is a name a client may show for a mod a server sent: 1 to [`MAX_DISPLAY_NAME_BYTES`] bytes of printable
+/// characters (no control, bidirectional or zero-width ones), no `<` or `>` (a name is never markup), no space at either end, and
+/// not a name that looks empty or overflows its label: no blank-looking filler characters (Hangul fillers, the blank braille
+/// pattern and the like), it starts with a character a mark can sit on, and it has at most [`MAX_COMBINING_RUN`] combining marks
+/// in a row and [`MAX_COMBINING_TOTAL`] in all.
+pub fn is_display_name(text: &str) -> bool {
+    if text.is_empty() || text.len() > MAX_DISPLAY_NAME_BYTES || text.trim() != text {
+        return false;
+    }
+    let (mut run, mut total) = (0usize, 0usize);
+    for (at, c) in text.chars().enumerate() {
+        if is_invisible(c) || is_filler(c) || c == '<' || c == '>' {
+            return false;
+        }
+        if is_combining(c) {
+            run += 1;
+            total += 1;
+            if at == 0 || run > MAX_COMBINING_RUN || total > MAX_COMBINING_TOTAL {
+                return false;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    true
+}
+
+/// A character that shows as blank though it is not white space, so a name of it could look empty.
+fn is_filler(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x034f | 0x115f | 0x1160 | 0x17b4 | 0x17b5 | 0x2800 | 0x3164 | 0xffa0
+    )
+}
+
+/// A mark that draws on the character before it (the main combining blocks, and the variation selectors).
+fn is_combining(c: char) -> bool {
+    matches!(
+        u32::from(c),
+        0x0300..=0x036f
+            | 0x0483..=0x0489
+            | 0x0591..=0x05bd
+            | 0x05bf
+            | 0x05c1..=0x05c2
+            | 0x05c4..=0x05c5
+            | 0x05c7
+            | 0x0610..=0x061a
+            | 0x064b..=0x065f
+            | 0x0670
+            | 0x06d6..=0x06dc
+            | 0x06df..=0x06e4
+            | 0x06e7..=0x06e8
+            | 0x06ea..=0x06ed
+            | 0x180b..=0x180d
+            | 0x1ab0..=0x1aff
+            | 0x1dc0..=0x1dff
+            | 0x20d0..=0x20ff
+            | 0x3099..=0x309a
+            | 0xfe00..=0xfe0f
+            | 0xfe20..=0xfe2f
+            | 0xe0100..=0xe01ef
+    )
 }
 
 /// The mods a server requires, shared between the gate that judges clients with them and whatever sets them once the server's mods

@@ -15,14 +15,15 @@ different.
 
 #### Mods
 
-- `torque-mods`: servers that require mods (`ModsPlugin::required_mods`). The server sends the mods it requires (id, version,
+- `torque-mods`: servers that require mods (`ModsPlugin::required_mods`). The server sends the mods it requires (id, display name, version,
   package hash and, for a mod it serves, per-file and per-64 KiB-block hashes); the client matches them against what it has
   installed or cached, builds an updated mod from files and blocks of an older copy, asks for only the blocks it lacks, and verifies
   every block, file and the whole mod before it mounts it and keeps it in a per-user cache keyed by hash and by the server it came from, so a
   server cannot probe what the player downloaded elsewhere (`$Pref::Mods::ShareCache` turns that off). The client's connect block
   lists none of its mods. The server holds `onConnect` until the
   client is ready, in a burst (the whole packet, every tick), with caps on held clients, requests, time and idle time. TorqueScript
-  is never sent or run; Lua files are kept as untrusted data. `getRequiredMod*`, `getModDownloadState`, `onModDownload*`.
+  is never sent or run; Lua files are kept as untrusted data. The offer and data messages carry a version, and a peer of another one
+  is refused with both versions named. `getRequiredMod*`, `getModDownloadState`, `onModDownload*`.
 
 #### Rendering
 

@@ -141,7 +141,7 @@ try {
   console.log(`download: ${JSON.stringify(s)}`);
   if (s.join !== 'downloading') problems.push(`the page showed no download part way (${[...seen].join(', ')})`);
   else await writeFile(`${stem}-download.png`, await page.screenshot());
-  if (s.mods !== 'soccer 1.0.0') problems.push(`the download screen names ${JSON.stringify(s.mods)}, not soccer 1.0.0`);
+  if (s.mods !== 'Soccer 1.0.0') problems.push(`the download screen names ${JSON.stringify(s.mods)}, not Soccer 1.0.0`);
 
   // The match.
   s = await wait(page, limit, (s) => s.join === 'playing' && s.figure && s.team !== '', seen);

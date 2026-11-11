@@ -258,7 +258,7 @@ getRecord 3..3 getRecord(text, index) - one newline-separated record
 getRecordCount 2..2 getRecordCount(text) - how many records the text has
 getRecords 3..4 getRecords(text, first [, last]) - the records from first to last
 getRequiredModCount 1..1 getRequiredModCount() - how many mods the server requires of its clients (on a client, how many its server announced)
-getRequiredModField 3..3 getRequiredModField(id, field) - one fact about a required mod: version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
+getRequiredModField 3..3 getRequiredModField(id, field) - one fact about a required mod: name (the one to show; the id when it has no other), version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
 getRequiredModList 1..1 getRequiredModList() - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
 getSimTime 1..1 getSimTime() - the simulation time in milliseconds
 getSubStr 4..4 getSubStr(text, start, count) - count bytes of the text from start

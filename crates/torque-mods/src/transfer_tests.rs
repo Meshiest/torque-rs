@@ -29,6 +29,7 @@ fn offered(id: &str, version: &str, files: &Files, download: bool) -> (ModOffer,
     sorted.sort_by_key(|(p, _)| p.to_ascii_lowercase());
     let offer = ModOffer {
         id: id.to_string(),
+        name: id.to_string(),
         version: version.to_string(),
         hash: summarize_files(&sorted).hash,
         download,

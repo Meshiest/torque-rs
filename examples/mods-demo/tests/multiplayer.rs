@@ -145,7 +145,9 @@ fn a_player_finds_the_server_downloads_the_mod_takes_a_bots_place_and_plays() {
     });
     assert!(downloading, "the download started: {seen:?}");
     let bytes = content(&server);
-    assert_eq!(ann.client.global("$Join::Mods"), "soccer 1.0.0");
+    // The offer carries the mod's display name, not its id.
+    assert_eq!(ann.client.global("$Join::Mods"), "Soccer");
+    assert_eq!(ann.client.global("$Join::Versions"), "1.0.0");
     assert_eq!(ann.client.global("$Join::Bytes"), bytes.to_string());
     assert!(ann.client.number("$Join::Files") > 10.0);
     let detail = ann

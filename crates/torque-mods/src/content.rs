@@ -158,6 +158,8 @@ pub enum MessageError {
     BadPath(String),
     /// The message names a file that could be script.
     Script(String),
+    /// The peer speaks another version of the mod messages: the byte its head has where this side's has the version's digit.
+    Version(u8),
 }
 
 impl std::fmt::Display for MessageError {
@@ -171,6 +173,17 @@ impl std::fmt::Display for MessageError {
             MessageError::Script(path) => write!(
                 f,
                 "the server sent a script file (`{path}`); a server sends content, never scripts"
+            ),
+            MessageError::Version(found) if found.is_ascii_digit() => write!(
+                f,
+                "the server speaks version {} of the mod messages; this game speaks version {}",
+                char::from(*found),
+                crate::offer::WIRE_VERSION
+            ),
+            MessageError::Version(found) => write!(
+                f,
+                "the server speaks an unknown version of the mod messages (byte {found:#04x}); this game speaks version {}",
+                crate::offer::WIRE_VERSION
             ),
         }
     }

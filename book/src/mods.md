@@ -28,7 +28,7 @@ the same. A folder or file whose name starts with `.` or `_` is skipped.
 ```toml
 id = "bigger-bombs"                     # required: letters, digits, _ - . (at most 64)
 version = "1.2.0"                       # required: 1 to 4 numbers with dots
-name = "Bigger Bombs"                   # shown in lists (default: the id)
+name = "Bigger Bombs"                   # shown in lists and on a joining player's download screen (default: the id)
 description = "Bombs with more bang."
 author = "Ann"
 
@@ -51,6 +51,7 @@ priority = 10
 |---|---|
 | `id` | The mod's name everywhere: in lists, in `requires`, in the console functions. Two mods with one id: the first found loads, the other is skipped with a warning. |
 | `version` | Compared number by number (`1.10` is newer than `1.9`). |
+| `name` | The name people see: in lists, and on a player's screen while it downloads this mod from a server (the server sends it with the offer). Without it, the id. A server sends it only when it is 1 to 64 bytes of printable text with no `<` or `>` and no space at either end; any other name is sent as the id. |
 | `requires` | Ids, each optionally with `>=`, `>`, `<=`, `<` or `=` and a version (`"core >= 1.2"`). A mod whose requirement is missing, or at the wrong version, is skipped with a warning that says which; so are the mods that require it. |
 | `load_after`, `load_before` | Order hints between mods that do not need each other. They only count when the other mod is there. |
 | `requires_plugins` | Ids of engine plugins (`torque.audio`). A mod that needs a plugin the game does not have is skipped. |
@@ -154,7 +155,7 @@ nobody sees. It is off until the game turns it on (see "For game makers" below),
 1. You connect. Your connect block says only that you can take content and the most you will take. It says nothing about the mods
    you have installed or have downloaded before. (A server can still learn something from how you answer its offer: see "For
    players".)
-2. The server accepts you into a **downloading** state and sends its list of required mods. For each: the id, the version and a
+2. The server accepts you into a **downloading** state and sends its list of required mods. For each: the id, the name to show, the version and a
    hash of the content, and, for a mod it serves, every file's path, size and hash and the hash of every 64 KiB block of it.
 3. You compare. A mod you have installed, or downloaded from this same server before, with the same hash needs nothing. For the
    rest you build the new version from files and blocks of an older copy of the same mod, installed or in your cache from this
@@ -192,9 +193,13 @@ runs it (`exec` refuses it, and a loader asks `Mods::is_untrusted(path)`); only 
 ### For server hosts
 
 The server lists the mods it asks for when its mods start, and the list follows `enableMod` and `disableMod`. The script functions
-`getRequiredModCount()`, `getRequiredModList()` and `getRequiredModField(id, field)` (`version`, `hash`, `bytes`, `files`,
+`getRequiredModCount()`, `getRequiredModList()` and `getRequiredModField(id, field)` (`name`, `version`, `hash`, `bytes`, `files`,
 `download`) read it. A player is held while it checks, fetches and mounts, and then joins as usual. A mod over the limits below
 is required but not served: a player who lacks it leaves with a line that says so.
+
+The offer and the data messages are written in a numbered version of the mod messages. A new game joining an older server leaves
+with a line that names both versions; an older game joining a newer server sees a bad-message error and leaves. The number moves
+whenever the messages carry something new (the display name did).
 
 While a player is held, its connection is in `ClientGroup` but your `onConnect` has not run. The held connection sends packets
 every tick and gives the whole packet to the transfer (a **burst**), then goes back to the connection's rate. A server holds only

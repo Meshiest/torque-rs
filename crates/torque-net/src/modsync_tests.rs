@@ -3,6 +3,7 @@ use super::*;
 fn need(id: &str, byte: u8) -> RequiredMod {
     RequiredMod {
         id: id.to_string(),
+        name: id.to_string(),
         version: "1".to_string(),
         hash: [byte; 32],
         bytes: 1_000,
@@ -71,6 +72,71 @@ fn versions_are_plain_text() {
     assert!(is_version("1.2.3"));
     assert!(!is_version("1.\u{202e}2"));
     assert!(!is_version(&"9".repeat(MAX_VERSION_BYTES + 1)));
+}
+
+#[test]
+fn display_names_are_short_printable_and_not_markup() {
+    for good in ["Soccer", "Big Ball", "Fußball 2", "a"] {
+        assert!(is_display_name(good), "{good}");
+    }
+    let long = "n".repeat(MAX_DISPLAY_NAME_BYTES + 1);
+    for bad in [
+        "",
+        " ",
+        " Soccer",
+        "Soccer ",
+        "So\ncer",
+        "So\u{1}cer",
+        "So\u{202e}cer",
+        "So\u{200b}cer",
+        "<b>Soccer</b>",
+        "a>b",
+        long.as_str(),
+    ] {
+        assert!(!is_display_name(bad), "{bad:?}");
+    }
+    assert!(is_display_name(&"n".repeat(MAX_DISPLAY_NAME_BYTES)));
+}
+
+#[test]
+fn a_display_name_cannot_look_empty() {
+    for filler in [
+        '\u{3164}', '\u{115f}', '\u{1160}', '\u{ffa0}', '\u{2800}', '\u{17b4}', '\u{17b5}',
+        '\u{34f}',
+    ] {
+        for name in [
+            filler.to_string(),
+            format!("{filler}{filler}"),
+            format!("Soc{filler}cer"),
+        ] {
+            assert!(!is_display_name(&name), "{name:?}");
+        }
+    }
+    // White space of other kinds at an end (no-break, ideographic) is not a name either.
+    for blank in ["\u{a0}", "\u{3000}", "\u{2003}x"] {
+        assert!(!is_display_name(blank), "{blank:?}");
+    }
+    // A mark with nothing to sit on.
+    assert!(!is_display_name("\u{301}"));
+    assert!(!is_display_name("\u{301}Soccer"));
+}
+
+#[test]
+fn a_display_name_limits_its_combining_marks() {
+    let marks = |n: usize, mark: char| format!("e{}", mark.to_string().repeat(n));
+    assert!(is_display_name(&marks(MAX_COMBINING_RUN, '\u{301}')));
+    assert!(!is_display_name(&marks(MAX_COMBINING_RUN + 1, '\u{301}')));
+    // Spread out, up to the total and no further.
+    let spread = |letters: usize| "e\u{301}\u{302}".repeat(letters);
+    assert!(is_display_name(&spread(
+        MAX_COMBINING_TOTAL / MAX_COMBINING_RUN
+    )));
+    assert!(!is_display_name(&spread(
+        MAX_COMBINING_TOTAL / MAX_COMBINING_RUN + 1
+    )));
+    // Variation selectors count as marks too.
+    assert!(!is_display_name(&marks(MAX_COMBINING_RUN + 1, '\u{fe0f}')));
+    assert!(is_display_name("Café"));
 }
 
 #[test]

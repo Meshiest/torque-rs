@@ -180,7 +180,7 @@ pub(crate) fn get_required_mod_list(vm: VmMut) -> String {
     })
 }
 
-/// one fact about a required mod: version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
+/// one fact about a required mod: name (the one to show; the id when it has no other), version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
 #[function(name = "getRequiredModField")]
 pub(crate) fn get_required_mod_field(vm: VmMut, id: &str, field: &str) -> String {
     let Some(mods) = Mods::of(&vm) else {
@@ -194,6 +194,7 @@ pub(crate) fn get_required_mod_field(vm: VmMut, id: &str, field: &str) -> String
         return String::new();
     };
     match field.to_ascii_lowercase().as_str() {
+        "name" => m.name,
         "version" => m.version,
         "hash" => m.hash,
         "bytes" => m.bytes.to_string(),
