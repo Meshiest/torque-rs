@@ -777,6 +777,44 @@ The client host a game holds is `Host<C, S>`, which is `Host` for TGE's connecti
 game whose client runs over its server ([Server and client](server-and-client.md)) has `type Server = GameServer` and holds
 `Host<C, GameServer>`.
 
+### What the game draws, and the window's choices
+
+The window and the offscreen runner call the game's `frame` (the world into the view, the canvas drawn, the eye) and then its
+`draw`, which draws the frame into the runner's target. `draw` is `view.draw(gpu, target, gui, eye)` unless you change it: the
+world in the GUI's world rectangle, then the whole GUI over it. A game with a renderer of its own, or one that draws its GUI in
+another order (a world drawn at its own GUI batch, a blurred backdrop through a copy of the frame), draws there instead and
+returns whether it drew a world (the window caps its frames while none is).
+
+```rust
+fn draw(&mut self, view: &mut WorldView, gpu: &Gpu, target: &wgpu::TextureView, gui: &GuiDraws, eye: Eye)
+    -> Result<bool, String> {
+    self.my_renderer.draw(gpu, target, eye)?;   // the world, the game's own way
+    view.draw(gpu, target, gui, eye)?;          // a released view: no clear, the GUI over it
+    Ok(true)
+}
+```
+
+The rest of what a game's own window loop decides goes through `GameApp` too, each with the window's own behavior as its
+default:
+
+| Method | What the window does with it |
+|---|---|
+| `window_choices()` | a `WindowChoices`, read as the window opens and every pass: `fresh_resolution` (start at the monitor's start size), `frame_cap_pref` (the global that holds the menus' frame cap), `may_grab` (whether the cursor may be held), `vsync` (the surface's present mode, set again when it changes) and `fps_update` (`$fps::real` and `$fps::virtual` counted each frame) |
+| `upkeep()` | called once a pass, after the clock's step |
+| `pass_work(work)` | the wall time the pass took, frames aside |
+| `window_gpu(window)` | the device and surface the window draws with (the engine's backend order unless you pick one, for example with `window_gpu_prefer` and the profile's display device) |
+
+```rust
+fn window_choices(&self) -> WindowChoices<'_> {
+    WindowChoices {
+        frame_cap_pref: Some("$pref::Video::frameCap"),
+        vsync: self.host_ref().vsync_pref(),
+        fps_update: true,
+        ..WindowChoices::default()
+    }
+}
+```
+
 To run another way, turn the default runner off and add the one you want:
 
 | Plugin | Runs |

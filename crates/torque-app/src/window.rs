@@ -1,7 +1,11 @@
 //! A game in a window: [`run`] drives a [`GameApp`] through the client's window driver ([`torque_client::platform::window`]),
-//! drawing each frame into a [`WindowSurface`] (a window's GPU device and surface, kept to the window's size).
+//! drawing each frame into a [`WindowSurface`] (a window's GPU device and surface, kept to the window's size). The game draws
+//! the frame itself ([`GameApp::draw`]), makes the device ([`GameApp::window_gpu`]) and makes the window's per-pass choices
+//! ([`WindowChoices`], [`GameApp::upkeep`], [`GameApp::pass_work`]).
 
 use std::sync::Arc;
+
+use web_time::Duration;
 
 use torque_render_core::window::{WINDOW_BACKENDS, configure_surface_vsync, window_gpu};
 use torque_render_core::{Gpu, RenderError, wgpu};
@@ -19,35 +23,90 @@ pub fn offscreen_gpu() -> Result<Gpu, RenderError> {
     Gpu::with_backends(&WINDOW_BACKENDS)
 }
 
+/// The device and surface of `window` on the engine's window backend order ([`window_gpu`]: Vulkan first, `WGPU_BACKEND`
+/// ahead of it): what [`GameApp::window_gpu`] gives by default.
+///
+/// # Errors
+///
+/// When no backend gives a device with a surface for the window.
+pub fn default_gpu(window: &Arc<Window>) -> Result<(Gpu, wgpu::Surface<'static>), String> {
+    window_gpu(window.clone())
+        .map(|(gpu, surface, _adapter)| (gpu, surface))
+        .map_err(|e| e.to_string())
+}
+
+/// The window's choices that are a game's to make ([`GameApp::window_choices`]). [`run`] reads `fresh_resolution` as the window
+/// opens and the rest every pass, so an answer may change while the game runs. The default is what the window does for a game
+/// that makes none: the saved resolution kept, the menus' frames capped at the display's refresh, the cursor held whenever the
+/// game wants the mouse, vertical sync on, and only `$Client::FrameRate` counted. A game sets the fields it chooses and takes
+/// the rest with `..WindowChoices::default()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowChoices<'a> {
+    /// Whether the profile has no saved resolution: the window then starts at the monitor's start size (the game's
+    /// [`ScreenRules`]).
+    pub fresh_resolution: bool,
+    /// The global that holds the menus' frame cap (`torque_client::platform::frame_cap::cap_of`; None: the display's refresh).
+    pub frame_cap_pref: Option<&'a str>,
+    /// Whether the window may hold the cursor at all; when false it never does, even while the game wants the mouse.
+    pub may_grab: bool,
+    /// Whether frames wait for the display's refresh. When the answer changes the surface's present mode is set again before
+    /// the next frame.
+    pub vsync: bool,
+    /// Whether each frame drawn also runs the client's frame average (`$fps::real`, `$fps::virtual`:
+    /// [`Host::fps_update`](super::Host::fps_update)) beside `$Client::FrameRate`. The offscreen seat counts its frames the
+    /// same way.
+    pub fps_update: bool,
+}
+
+impl Default for WindowChoices<'_> {
+    fn default() -> Self {
+        WindowChoices {
+            fresh_resolution: false,
+            frame_cap_pref: None,
+            may_grab: true,
+            vsync: true,
+            fps_update: false,
+        }
+    }
+}
+
 pub struct WindowSurface {
     /// The surface draws into the window; kept with it.
     _window: Arc<Window>,
     pub gpu: Gpu,
     surface: wgpu::Surface<'static>,
     size: (u32, u32),
+    /// Whether the surface's frames wait for the display's refresh.
+    vsync: bool,
 }
 
 impl WindowSurface {
-    /// The device and surface of `window` on the engine's window backend order ([`window_gpu`]: Vulkan first, `WGPU_BACKEND`
-    /// ahead of it), its client area `size`, frames shown at the display's refresh.
+    /// The device and surface of `window` on the engine's window backend order ([`default_gpu`]), its client area `size`,
+    /// frames shown at the display's refresh.
+    ///
+    /// # Errors
+    ///
+    /// When no backend gives a device with a surface for the window.
     pub fn new(window: &Arc<Window>, size: (u32, u32)) -> Result<WindowSurface, String> {
-        let (gpu, surface, _adapter) = window_gpu(window.clone()).map_err(|e| e.to_string())?;
-        Ok(WindowSurface::of(window, gpu, surface, size))
+        let (gpu, surface) = default_gpu(window)?;
+        Ok(WindowSurface::of(window, gpu, surface, size, true))
     }
 
-    /// The surface of `window` on `gpu`, configured for `size`.
-    fn of(
+    /// The surface of `window` on `gpu`, configured for `size`, its frames waiting for the display's refresh when `vsync`.
+    pub fn of(
         window: &Arc<Window>,
         gpu: Gpu,
         surface: wgpu::Surface<'static>,
         size: (u32, u32),
+        vsync: bool,
     ) -> WindowSurface {
-        configure_surface_vsync(&gpu, &surface, size.0, size.1, true);
+        configure_surface_vsync(&gpu, &surface, size.0, size.1, vsync);
         WindowSurface {
             _window: window.clone(),
             gpu,
             surface,
             size,
+            vsync,
         }
     }
 
@@ -57,7 +116,21 @@ impl WindowSurface {
 
     pub fn resize(&mut self, size: (u32, u32)) {
         self.size = size;
-        configure_surface_vsync(&self.gpu, &self.surface, size.0, size.1, true);
+        configure_surface_vsync(&self.gpu, &self.surface, size.0, size.1, self.vsync);
+    }
+
+    /// Whether the frames wait for the display's refresh.
+    pub fn vsync(&self) -> bool {
+        self.vsync
+    }
+
+    /// The frames wait for the display's refresh, or not, from the next frame on; the surface is configured again only when
+    /// that changes.
+    pub fn set_vsync(&mut self, vsync: bool) {
+        if self.vsync != vsync {
+            self.vsync = vsync;
+            self.resize(self.size);
+        }
     }
 
     /// The next frame to draw into, or None when the surface has none now (it is configured again for the next try).
@@ -214,6 +287,26 @@ impl WebDevice {
 }
 
 impl<G: GameApp> AppWindow<G> {
+    /// `game` before its window is made: no surface or view yet.
+    fn new(game: G) -> AppWindow<G> {
+        AppWindow {
+            game,
+            surface: None,
+            view: None,
+            #[cfg(target_arch = "wasm32")]
+            web: None,
+            #[cfg(target_arch = "wasm32")]
+            stage: "",
+            #[cfg(target_arch = "wasm32")]
+            frame_times: crate::web_page::FrameTimes::new(),
+            #[cfg(target_arch = "wasm32")]
+            load: WebLoad::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            cache_saved: false,
+            clock: web_time::Instant::now(),
+        }
+    }
+
     /// A frame with nothing to show yet (no surface or view, or still loading): the canvas still lays out and runs its first
     /// `onRender`s, as the main loop's per-pass draw did before the window drew once a frame; the draws are dropped.
     fn idle_frame(&mut self) {
@@ -282,7 +375,8 @@ impl<G: GameApp> AppWindow<G> {
         let web = self.web.take().ok_or("no device asked for")?;
         let (gpu, surface) = answer.map_err(|e| format!("WebGPU: {e}"))?;
         crate::web_page::mark("size", &format!("{}x{}", web.size.0, web.size.1));
-        let surface = WindowSurface::of(&web.window, gpu, surface, web.size);
+        let vsync = self.game.window_choices().vsync;
+        let surface = WindowSurface::of(&web.window, gpu, surface, web.size, vsync);
         self.surface_made(surface);
         Ok(true)
     }
@@ -308,6 +402,10 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         self.game.screen_rules()
     }
 
+    fn fresh_resolution(&self) -> bool {
+        self.game.window_choices().fresh_resolution
+    }
+
     fn window_made(&mut self, window: &Arc<Window>, size: (u32, u32)) -> Result<(), String> {
         #[cfg(target_arch = "wasm32")]
         {
@@ -322,7 +420,9 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let mut surface = WindowSurface::new(window, size)?;
+            let (gpu, surface) = self.game.window_gpu(window)?;
+            let vsync = self.game.window_choices().vsync;
+            let mut surface = WindowSurface::of(window, gpu, surface, size, vsync);
             surface.clear(wgpu::Color::BLACK);
             self.made(surface);
             Ok(())
@@ -351,12 +451,13 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         self.game.host().wheel_part(part);
     }
 
-    /// In a browser: the page's requests to the scripts, once a pass ([`crate::page_bridge::serve`]).
+    /// In a browser: the page's requests to the scripts, once a pass ([`crate::page_bridge::serve`]); then the game's upkeep.
     fn upkeep(&mut self) {
         #[cfg(target_arch = "wasm32")]
         crate::page_bridge::serve(torque_client::host::GameServer::vm_mut(
             &mut self.game.host().server,
         ));
+        self.game.upkeep();
     }
 
     fn draw(&mut self) -> Result<Option<bool>, String> {
@@ -393,13 +494,14 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
             crate::web_page::mark("quality", quality.name());
         }
         let (gui, eye) = self.game.frame(view);
+        surface.set_vsync(self.game.window_choices().vsync);
         let Some(frame) = surface.frame() else {
             return Ok(None);
         };
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let drew = view.draw(&surface.gpu, &target, &gui, eye)?;
+        let drew = self.game.draw(view, &surface.gpu, &target, &gui, eye)?;
         // In a browser the map is loading until its sky is all made, too (the clouds' noise, a share each frame).
         #[cfg(target_arch = "wasm32")]
         let sky_waiting = view.clouds_waiting();
@@ -408,7 +510,7 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
             .submitted(surface.gpu.queue(), self.game.loading(), sky_waiting);
         surface.present(frame);
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
-        self.game.host().frame_drawn(real_ms);
+        crate::count_frame(&mut self.game, real_ms);
         view.report_warnings(self.game.host());
         // The warm-up's pipelines kept now, should the process not reach its close.
         #[cfg(not(target_arch = "wasm32"))]
@@ -432,8 +534,20 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
         Ok(Some(drew))
     }
 
+    fn frame_cap_pref(&self) -> Option<&str> {
+        self.game.window_choices().frame_cap_pref
+    }
+
     fn vsync(&self) -> bool {
-        true
+        self.game.window_choices().vsync
+    }
+
+    fn may_grab(&self) -> bool {
+        self.game.window_choices().may_grab
+    }
+
+    fn pass_work(&mut self, work: Duration) {
+        self.game.pass_work(work);
     }
 
     fn note(&mut self, line: &str) {
@@ -453,22 +567,7 @@ pub fn run<G: GameApp>(game: G) -> Result<(), String> {
             reason = "the window is only changed when a sound card is opened"
         )
     )]
-    let mut w = AppWindow {
-        game,
-        surface: None,
-        view: None,
-        #[cfg(target_arch = "wasm32")]
-        web: None,
-        #[cfg(target_arch = "wasm32")]
-        stage: "",
-        #[cfg(target_arch = "wasm32")]
-        frame_times: crate::web_page::FrameTimes::new(),
-        #[cfg(target_arch = "wasm32")]
-        load: WebLoad::default(),
-        #[cfg(not(target_arch = "wasm32"))]
-        cache_saved: false,
-        clock: web_time::Instant::now(),
-    };
+    let mut w = AppWindow::new(game);
     #[cfg(target_arch = "wasm32")]
     {
         driver::spawn(w, event_loop);
@@ -528,3 +627,7 @@ impl<G: GameApp> AppWindow<G> {
         drop(game);
     }
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod tests;

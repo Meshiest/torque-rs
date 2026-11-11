@@ -167,7 +167,8 @@ settings come back as they were (`HdSettings`: the features, budgets, the user's
 histories start over after a restore and the automatic exposure adapts again, so the first frames settle briefly. Natively
 `release_gpu` waits for the device to free the memory; in a browser the buffers go when the browser collects them.
 
-While the world is released, the game's `frame` draws the world itself. `view.draw` then clears nothing when the engine's
+While the world is released, the game draws the world itself, in its `draw` (the runners hand it the frame's target:
+[Running an engine](plugins.md#what-the-game-draws-and-the-windows-choices)). `view.draw` then clears nothing when the engine's
 renderer was the one drawing, draws the GUI over what the game drew, and returns `false`; `draw_world` and `render_world` are an
 error, and `view.renderer()` panics (`view.has_gpu()` says which). Releasing a released view, or restoring one that holds its
 world, does nothing. `restore_gpu` returns the number of cells whose meshes the scene had dropped after the old upload

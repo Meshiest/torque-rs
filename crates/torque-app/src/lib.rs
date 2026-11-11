@@ -38,7 +38,8 @@
 //!   [`server::GameServer::start_engine`] and [`client::ClientBuilder::from_engine`].
 //! - [`run`]: [`run::EngineRun`] and the runners behind [`Engine::run`](torque_engine::Engine::run), each a plugin on the
 //!   engine's runner slot: the window, the page's canvas, offscreen and a dedicated server.
-//! - [`window`]: a window's GPU surface and [`window::run`], which drives a [`GameApp`] in a window.
+//! - [`window`]: a window's GPU surface, the window's choices a game makes ([`window::WindowChoices`]) and [`window::run`],
+//!   which drives a [`GameApp`] in a window.
 //! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
 //!   the loading stages and frame times written on the page.
@@ -82,6 +83,22 @@
 //!   `every_app_is_a_game_app_over_the_tge_connection`, in `run_tests.rs`). The app slot is one slot for `app` and `app_for`
 //!   (`app_for_is_the_same_exclusive_slot_as_app`). A new method a runner needs from the game goes on [`GameApp`] with a
 //!   default, and on [`App`] with the same default, so existing games keep compiling.
+//! - The runners never draw a frame themselves. A frame of [`window::run`] or [`shots::Seat::frame`] is: [`GameApp::frame`],
+//!   then [`GameApp::draw`] into the runner's target, then `count_frame` (`$Client::FrameRate`, and the frame average only
+//!   when [`WindowChoices::fps_update`] is chosen: `a_frame_counts_the_frame_average_only_when_the_game_chose_it`, in
+//!   `window_tests.rs`). `draw`'s default is [`WorldView::draw`], so a game that draws nothing of its own gets the view's
+//!   frame pixel for pixel (`the_default_draw_is_the_views_draw_pixel_for_pixel`, in `shots_tests.rs`; the examples'
+//!   shots), and one with its own `draw` paints the frame in the view's place
+//!   (`a_games_own_draw_paints_the_frame_in_place_of_the_view`). [`shots::Seat::world_picture`] draws the world alone and
+//!   does not call `draw`.
+//! - The window's per-pass choices are the game's. `AppWindow` answers the driver's `fresh_resolution`, `frame_cap_pref`,
+//!   `may_grab` and `vsync` from [`GameApp::window_choices`], read again at each call so an answer can change while the game
+//!   runs; it runs [`GameApp::upkeep`] after its own (the page bridge, in a browser) and hands [`GameApp::pass_work`] each
+//!   pass's time (`window_tests.rs`). The surface's present mode follows `vsync` before each frame
+//!   ([`window::WindowSurface::set_vsync`] configures the surface again only on a change), and a native window's device is
+//!   [`GameApp::window_gpu`]'s (a browser's canvas asks for its own). Every default is what the window does for a game that
+//!   chooses nothing (`a_game_that_makes_no_choices_gets_the_windows_own`): a new value the window reads goes into
+//!   [`WindowChoices`] with such a default, a new callback onto [`GameApp`] and [`App`] alike.
 //! - A client is made on the engine's script engine and runs the engine's client entry in `exec_entry` when a plugin set them
 //!   ([`slots::HostSlots`]), and over a game's own file host with [`ClientBuilder::from_engine_with_files`]; both
 //!   `from_engine` constructors share one body that is not generic over the file host. With none set the client is the same as
@@ -175,9 +192,14 @@ pub mod web_join;
 pub mod web_page;
 pub mod window;
 
+use std::sync::Arc;
+
 pub use torque_render_core::Gpu;
+use torque_render_core::wgpu;
 use torque_render_hd::ext::{HdExtension, NoExtension, ViewScene};
 pub use torque_render_scene::source::Eye;
+use web_time::Duration;
+use winit::window::Window;
 
 use torque_client::conn::ConnGame;
 use torque_client::conn::tge::TgeConn;
@@ -197,12 +219,15 @@ mod renderers_tests;
 #[cfg(test)]
 mod run_tests;
 #[cfg(test)]
+mod shots_tests;
+#[cfg(test)]
 mod transports_tests;
 
 pub use client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
 pub use files::GameFiles;
 pub use server::{GameServer, Listen};
 pub use view::{Daylight, SceneShape, WorldView};
+pub use window::WindowChoices;
 
 /// The client host a game drives: the connection half `C` (TGE's by default) over the server host `S` of its script
 /// engine: one of its own by default, or the game's server it runs over ([`ClientBuilder::over_server`]).
@@ -232,6 +257,39 @@ pub trait App {
     /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
     fn loading(&self) -> bool {
         false
+    }
+
+    /// Draws the frame into `target`: [`GameApp::draw`], with the same default ([`WorldView::draw`]).
+    fn draw(
+        &mut self,
+        view: &mut WorldView,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        gui: &GuiDraws,
+        eye: Eye,
+    ) -> Result<bool, String> {
+        view.draw(gpu, target, gui, eye)
+    }
+
+    /// The window's choices: [`GameApp::window_choices`], the window's own by default.
+    fn window_choices(&self) -> WindowChoices<'_> {
+        WindowChoices::default()
+    }
+
+    /// The upkeep of a pass of the window's loop: [`GameApp::upkeep`], nothing by default.
+    fn upkeep(&mut self) {}
+
+    /// The wall time a pass of the window's loop took: [`GameApp::pass_work`], ignored by default.
+    fn pass_work(&mut self, work: Duration) {
+        let _ = work;
+    }
+
+    /// The window's device and surface: [`GameApp::window_gpu`], the engine's choice by default.
+    fn window_gpu(
+        &mut self,
+        window: &Arc<Window>,
+    ) -> Result<(Gpu, wgpu::Surface<'static>), String> {
+        window::default_gpu(window)
     }
 }
 
@@ -280,6 +338,53 @@ pub trait GameApp: 'static {
     fn screen_rules(&self) -> &dyn ScreenRules {
         &TgeScreen
     }
+
+    /// Draws the frame into `target` (an `Rgba8Unorm` texture of the canvas's size), right after [`frame`](Self::frame) gave
+    /// `gui` and `eye` (the offscreen seat's own eye in its place when it has one). Returns whether a world was drawn: the
+    /// window caps its frames while none is. The window and the offscreen seat draw every frame through here and never call
+    /// [`WorldView::draw`] themselves, so a game with a renderer of its own (a view released with
+    /// [`WorldView::release_gpu`]) or one that layers its GUI another way draws what it likes. The default is
+    /// [`WorldView::draw`]: the world in the GUI's world rectangle, then the whole GUI over it.
+    fn draw(
+        &mut self,
+        view: &mut WorldView<Self::Ext>,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        gui: &GuiDraws,
+        eye: Eye,
+    ) -> Result<bool, String> {
+        view.draw(gpu, target, gui, eye)
+    }
+
+    /// What the window does each pass and each frame that is the game's to choose ([`WindowChoices`]): read as the window
+    /// opens and again every pass, so an answer may change while the game runs. The default is the window's own.
+    fn window_choices(&self) -> WindowChoices<'_> {
+        WindowChoices::default()
+    }
+
+    /// Once a pass of the window's loop, after the clock's step and before the cursor and the screen mode are looked at (the
+    /// work a game's own loop does between its steps). Nothing by default.
+    fn upkeep(&mut self) {}
+
+    /// The wall time the window's loop spent in a pass, its frame aside (a game's budget for its own work). Ignored by default.
+    fn pass_work(&mut self, work: Duration) {
+        let _ = work;
+    }
+
+    /// The device and surface the window draws with, asked for once as a native window is made (a browser's canvas asks for
+    /// its own without blocking and never calls this). The window configures the surface. The default is the engine's
+    /// window order ([`torque_render_core::window::window_gpu`]: `WGPU_BACKEND`, then Vulkan first); a game picks its own
+    /// backends or display device with [`torque_render_core::window::window_gpu_prefer`] or a device of its own.
+    ///
+    /// # Errors
+    ///
+    /// When no device and surface can be made: the window's loop ends with the message.
+    fn window_gpu(
+        &mut self,
+        window: &Arc<Window>,
+    ) -> Result<(Gpu, wgpu::Surface<'static>), String> {
+        window::default_gpu(window)
+    }
 }
 
 impl<A: App + 'static> GameApp for A {
@@ -317,6 +422,47 @@ impl<A: App + 'static> GameApp for A {
 
     fn loading(&self) -> bool {
         App::loading(self)
+    }
+
+    fn draw(
+        &mut self,
+        view: &mut WorldView,
+        gpu: &Gpu,
+        target: &wgpu::TextureView,
+        gui: &GuiDraws,
+        eye: Eye,
+    ) -> Result<bool, String> {
+        App::draw(self, view, gpu, target, gui, eye)
+    }
+
+    fn window_choices(&self) -> WindowChoices<'_> {
+        App::window_choices(self)
+    }
+
+    fn upkeep(&mut self) {
+        App::upkeep(self);
+    }
+
+    fn pass_work(&mut self, work: Duration) {
+        App::pass_work(self, work);
+    }
+
+    fn window_gpu(
+        &mut self,
+        window: &Arc<Window>,
+    ) -> Result<(Gpu, wgpu::Surface<'static>), String> {
+        App::window_gpu(self, window)
+    }
+}
+
+/// A frame drawn at real time `real_ms`, counted as the window counts it: `$Client::FrameRate` ([`Host::frame_drawn`]), and
+/// the frame average too ([`Host::fps_update`]) when the game's [`WindowChoices::fps_update`] says so.
+pub(crate) fn count_frame<G: GameApp>(game: &mut G, real_ms: f64) {
+    let fps_update = game.window_choices().fps_update;
+    let host = game.host();
+    host.frame_drawn(real_ms);
+    if fps_update {
+        host.fps_update(real_ms);
     }
 }
 

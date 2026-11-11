@@ -50,7 +50,7 @@ impl<G: GameApp> Seat<G> {
         })
     }
 
-    /// Draws one frame.
+    /// Draws one frame: the game's [`GameApp::frame`], then its [`GameApp::draw`] into the target, as a window draws it.
     pub fn frame(&mut self, gpu: &Gpu) -> Result<(), String> {
         // Names over the shapes (GuiShapeNameHud) stand where the game's own camera sees them: none from another eye.
         if self.eye.is_some() {
@@ -62,9 +62,10 @@ impl<G: GameApp> Seat<G> {
         #[cfg(feature = "gizmos")]
         self.view
             .set_gizmo_frame_seconds(Some(FRAME_MS as f32 / 1000.0));
-        self.view.draw(gpu, &self.target.color, &gui, eye)?;
+        self.game
+            .draw(&mut self.view, gpu, &self.target.color, &gui, eye)?;
         let real_ms = self.clock.elapsed().as_secs_f64() * 1000.0;
-        self.game.host().frame_drawn(real_ms);
+        crate::count_frame(&mut self.game, real_ms);
         self.view.report_warnings(self.game.host());
         Ok(())
     }
