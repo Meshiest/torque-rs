@@ -4,7 +4,7 @@
 
 Console functions, by namespace. Functions of the global namespace are called as `name(..)`, the others as `Namespace::name(..)`.
 
-314 entries in 1 namespace.
+316 entries in 1 namespace.
 
 ## Global
 
@@ -232,6 +232,8 @@ Console functions, by namespace. Functions of the global namespace are called as
   *arguments: none; client*
 - `getCompileTimeString()` - when the build was made
   *arguments: none; server and client*
+- `getDataBlockUsers(datablock [, max])` - the ids of the objects that have the datablock, at most max (256 by default, 4096 at most)
+  *arguments: 1 to 2; server*
 - `getField(text, index)` - one tab- or newline-separated field
   *arguments: 2; server and client*
 - `getFieldCount(text)` - how many fields the text has
@@ -596,6 +598,8 @@ Console functions, by namespace. Functions of the global namespace are called as
 - `registerFont(string face, string path)` - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
   *arguments: 2; client*
 - `reloadDataBlocks(file [, removeMissing])` - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
+  *arguments: 1 to 2; server*
+- `removeDataBlock(datablock [, fallback | "deleteUsers"])` - removes a datablock no object or datablock uses; with a fallback datablock of its class moves its users and references to that first; with "deleteUsers" deletes its users first. False, with the reason printed, when it stays
   *arguments: 1 to 2; server*
 - `removeField(text, index)` - the text without that field
   *arguments: 2; server and client*

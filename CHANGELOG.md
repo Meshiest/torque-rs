@@ -45,6 +45,13 @@ different.
   file no longer declares (removed only when asked and only while unused); in development the server also watches every
   script file that declared a datablock and reloads the ones that change on disk, keeping every datablock when the new text
   does not compile. In TGE a changed datablock file waits for the next mission load.
+- Datablocks are reference counted on the server, where TGE deletes one under its objects and tells nobody: `%db.delete()` with
+  users retires the datablock (its users keep working, no new object, `setDataBlock`, datablock field or declaration finds it,
+  and it is freed with its last user); `removeDataBlock(%db [, %fallback | "deleteUsers"])` refuses over users and over
+  datablocks whose fields hold the id, or moves them to a fallback of the same class, or deletes the users first;
+  `%db.getUserCount()`, `%db.getUsers([%max])` and `getDataBlockUsers(%db [, %max])` are bounded queries. Datablock ids are
+  never reused inside a mission, a Player keeps its last products when its datablock is gone, and a ghost never carries a dead
+  datablock id.
 
 #### Mods
 

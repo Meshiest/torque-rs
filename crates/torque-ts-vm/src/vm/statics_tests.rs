@@ -232,3 +232,69 @@ fn a_write_to_the_frames_object_reaches_a_registered_one_as_it_reaches_a_pending
         b"5".to_vec()
     );
 }
+
+/// A retiring datablock (a host's reference-counted removal) resolves for no datablock-typed field write, by name or id, and
+/// its name declares a new datablock; the set lets the id go with the object.
+#[test]
+fn a_retiring_datablock_is_found_by_no_field_write_and_its_name_declares_a_new_one() {
+    use crate::fields::FieldType;
+    let mut vm = crate::vm::Vm::new();
+    vm.register_class_typed(
+        "Holder",
+        "SimObject",
+        vec![typed("data", FieldType::DataBlock("SimDataBlock"), 1)],
+        true,
+    )
+    .unwrap();
+    vm.eval(b"datablock SimDataBlock(D) {}; new Holder(H) { data = D; };")
+        .unwrap();
+    let (d, h) = (
+        vm.objects().find(b"D").unwrap(),
+        vm.objects().find(b"H").unwrap(),
+    );
+    let data = |vm: &crate::vm::Vm| {
+        let object = vm.objects().get(h).unwrap();
+        let (_, slots) = vm
+            .objects()
+            .classes
+            .static_field(object.class(), b"data")
+            .unwrap();
+        match object.slot(slots[0]) {
+            Some(crate::fields::Value::Object(id)) => *id,
+            other => panic!("a pointer slot: {other:?}"),
+        }
+    };
+    assert_eq!(data(&vm), Some(d));
+
+    assert!(vm.objects_mut().retire_datablock(d));
+    assert!(!vm.objects_mut().retire_datablock(d), "retired once");
+    assert!(!vm.objects_mut().retire_datablock(h), "not a datablock");
+    assert!(vm.objects().is_retiring(d));
+    assert_eq!(vm.objects().retiring_datablocks(), [d]);
+    // Neither the name nor the id finds it for a write; the field is cleared, as for a name that is no datablock.
+    vm.eval(b"H.data = D;").unwrap();
+    assert_eq!(data(&vm), None);
+    vm.eval(format!("H.data = {d};").as_bytes()).unwrap();
+    assert_eq!(data(&vm), None);
+    assert_eq!(
+        vm.log_texts()
+            .iter()
+            .filter(|l| l.contains("is not a datablock of class SimDataBlock"))
+            .count(),
+        2
+    );
+    // The name declares a new datablock, with a new id; the retiring one is still registered and still named.
+    vm.eval(b"datablock SimDataBlock(D) {};").unwrap();
+    let d2 = vm.objects().find(b"D").unwrap();
+    assert_ne!(d2, d);
+    assert!(vm.objects().contains(d) && !vm.objects().is_retiring(d2));
+    vm.eval(b"H.data = D;").unwrap();
+    assert_eq!(data(&vm), Some(d2));
+    vm.delete_object(d).unwrap();
+    assert!(vm.objects().retiring_datablocks().is_empty());
+    assert_eq!(
+        vm.objects().find(b"D"),
+        Some(d2),
+        "the new one keeps the name"
+    );
+}

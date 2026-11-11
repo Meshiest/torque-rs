@@ -39,6 +39,9 @@ pub type IdBuild = BuildHasherDefault<IdHasher>;
 /// A map keyed by object ids.
 pub type IdMap<K, V> = std::collections::HashMap<K, V, IdBuild>;
 
+/// A set of object ids.
+pub type IdSet<K> = std::collections::HashSet<K, IdBuild>;
+
 #[cfg(test)]
 #[path = "idhash_tests.rs"]
 mod tests;

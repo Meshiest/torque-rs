@@ -9,7 +9,9 @@
 //!
 //! **Users.** Every datablock counts the objects whose `dataBlock` it is ([`ObjectExt::db_users`]: `GameBase::onAdd`,
 //! `setDataBlock` and `onRemove` move the count, [`user_added`], [`user_removed`]; an object remembers the datablock it is
-//! counted on, [`ObjectExt::counted_db`], so a `dataBlock` field written directly never drifts a count). A datablock without users takes no mark
+//! counted on, [`ObjectExt::counted_db`], so a `dataBlock` field written directly never drifts a count; [`users_of`] lists them).
+//! The count is also what a removal reads ([`super::remove`]): a datablock deleted over users retires, and the drain frees it
+//! once the count is zero. A datablock without users takes no mark
 //! (an object made after the change is built from the changed datablock, and a first declaration never has one), and the
 //! drain reads the counts again and scans the process list only when a dirty datablock still has a user: a mission load,
 //! which declares thousands of datablocks and the objects on them before the first tick, costs a count read per write and
@@ -219,6 +221,43 @@ pub fn users(vm: &Vm, db: ObjId) -> u32 {
     ext::get(vm.objects(), db).map_or(0, |e| e.db_users)
 }
 
+/// The objects whose `dataBlock` is `db`, by id, at most `max` of them: one scan of the process list (every object with a
+/// datablock is in it), each object looked at charged as one unit of work. Empty without the extension or while `db` has no
+/// counted user (then nothing is scanned).
+pub fn users_of(vm: &Vm, db: ObjId, max: usize) -> Vec<ObjId> {
+    let Some(set) = dirty(vm) else {
+        return Vec::new();
+    };
+    if max == 0 || users(vm, db) == 0 {
+        return Vec::new();
+    }
+    let process = set.process.borrow();
+    let mut found: Vec<ObjId> = process
+        .keys()
+        .filter(|&id| {
+            vm.charge_work(1);
+            datablock_of(vm, id) == Some(db)
+        })
+        .collect();
+    found.sort_unstable();
+    found.truncate(max);
+    found
+}
+
+/// Deletes every retiring datablock ([`Vm::objects`]' `retire_datablock`) whose last user is gone: the tick's drain runs it
+/// first. The errors are the deletions' (a datablock's `onRemove`).
+fn purge_retiring(vm: &mut Vm) -> Vec<VmError> {
+    let mut errors = Vec::new();
+    for db in vm.objects().retiring_datablocks() {
+        if users(vm, db) == 0
+            && let Err(error) = vm.delete_object(db)
+        {
+            errors.push(error);
+        }
+    }
+    errors
+}
+
 /// What the drains did so far; zero without the extension.
 pub fn stats(vm: &Vm) -> Stats {
     dirty(vm).map_or_else(Stats::default, |set| set.state.borrow().stats)
@@ -253,12 +292,15 @@ fn datablock_of(vm: &Vm, id: ObjId) -> Option<ObjId> {
     .flatten()
 }
 
-/// The tick's drain: every dirty datablock with users refreshes them (see the module docs). The errors are the refreshes' and
-/// the `onReloaded` callbacks' that ran past the budget; a datablock whose refresh did not run, or did not finish, stays dirty.
+/// The tick's drain: the retiring datablocks without users are freed, then every dirty datablock with users refreshes them (see
+/// the module docs). The errors are the deletions', the refreshes' and the `onReloaded` callbacks' that ran past the budget; a
+/// datablock whose refresh did not run, or did not finish, stays dirty.
 pub fn drain(vm: &mut Vm) -> Vec<VmError> {
     let Some(set) = dirty(vm) else {
         return Vec::new();
     };
+    // A retiring datablock whose users are all gone is freed before the marks are read (its mark would be dropped anyway).
+    let mut errors = purge_retiring(vm);
     let (marks, work) = {
         let mut state = set.state.borrow_mut();
         (
@@ -267,7 +309,7 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
         )
     };
     if marks.is_empty() {
-        return Vec::new();
+        return errors;
     }
     set.state.borrow_mut().stats.drains += 1;
     // The live datablocks with a user, by one count each (a count needs the object): a mark of one that is gone or has no
@@ -278,7 +320,7 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
         .map(|(db, mark)| (db, (mark, Vec::new())))
         .collect();
     if dirty_users.is_empty() {
-        return Vec::new();
+        return errors;
     }
     set.state.borrow_mut().stats.scans += 1;
     // One scan of the process list (every GameBase with a datablock is in it): each object joins its datablock's users.
@@ -313,7 +355,6 @@ pub fn drain(vm: &mut Vm) -> Vec<VmError> {
             }
         }
     }
-    let mut errors = Vec::new();
     let mut refreshed = 0usize;
     let saved = vm.begin_host_budget(work);
     // Datablock order: the ids, so a tick's work is the same whatever the map's order.

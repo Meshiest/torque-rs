@@ -149,6 +149,7 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     torque_game::sim::image::register(vm, &env);
     process.set_env(env);
     torque_game::scene::refresh::install(vm, &process);
+    torque_game::scene::remove::register(vm);
     vm.set_static_write_observer(Some(Rc::new(torque_game::scene::object::static_written)));
     torque_game::scene::camera::register(vm);
     GameParts { container, shapes }

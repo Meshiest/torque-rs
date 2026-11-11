@@ -1316,6 +1316,9 @@ pub struct Objects {
     /// pending events go. One entry per unregistered object; the VM looks at the start of every outermost
     /// run, in every event native and before every event fires.
     unregistered: Vec<ObjId>,
+    /// The datablocks that are retiring ([`retire_datablock`](Self::retire_datablock)): live, still the datablock of the
+    /// objects that took them, but found by no new lookup. Bounded by the datablock id range; an id leaves when its object does.
+    retiring: crate::idhash::IdSet<ObjId>,
     /// What registered objects and their dynamic fields count in (the `Vm`'s account).
     memory: MemoryAccount,
 }
@@ -1347,6 +1350,7 @@ impl Objects {
             datablock_group: 0,
             work: Cell::new(0),
             unregistered: Vec::new(),
+            retiring: crate::idhash::IdSet::default(),
             memory: MemoryAccount::default(),
         };
         let mut root = SimObject::new(SIM_GROUP, &objects.classes);
@@ -1447,6 +1451,7 @@ impl Objects {
     pub fn unregister(&mut self, id: ObjId) -> Option<SimObject> {
         let mut object = *self.live.remove(&id)?;
         self.unregistered.push(id);
+        self.retiring.remove(&id);
         if let Some(name) = &object.name {
             self.names.remove(name, object.name_seq);
         }
@@ -1968,6 +1973,30 @@ impl Objects {
     /// For hosts restoring a state, and tests.
     pub fn set_next_datablock_id(&mut self, id: ObjId) {
         self.next_datablock = id;
+    }
+
+    /// Marks the live datablock `id` retiring: it stays registered, in DataBlockGroup and the datablock of the objects that have
+    /// it, but a datablock field written with its name or id, `datablock Class(name)` and a host's lookup of a datablock for a
+    /// new user ([`is_retiring`](Self::is_retiring)) no longer find it; a `datablock` declaration of its name makes a new
+    /// datablock. True when it was not retiring yet; false for one that is, or for an object that is no registered datablock.
+    pub fn retire_datablock(&mut self, id: ObjId) -> bool {
+        let is_datablock = self
+            .live
+            .get(&id)
+            .is_some_and(|o| self.classes.is_a(o.class, SIM_DATA_BLOCK));
+        is_datablock && self.retiring.insert(id)
+    }
+
+    /// Whether `id` is a retiring datablock ([`retire_datablock`](Self::retire_datablock)).
+    pub fn is_retiring(&self, id: ObjId) -> bool {
+        self.retiring.contains(&id)
+    }
+
+    /// The retiring datablocks, by id.
+    pub fn retiring_datablocks(&self) -> Vec<ObjId> {
+        let mut ids: Vec<ObjId> = self.retiring.iter().copied().collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// The last dynamic id handed out; the next object gets the one after it. For hosts and tests.

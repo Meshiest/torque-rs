@@ -274,7 +274,7 @@ const DATABLOCK_CLASSES: [(&str, &str); 8] = [
 ];
 
 /// Whether `db` is a datablock of the class `id`'s `onNewDataBlock` takes (a `GameBaseData` for a class that names none).
-fn takes_datablock(vm: &Vm, id: ObjId, db: ObjId) -> bool {
+pub(crate) fn takes_datablock(vm: &Vm, id: ObjId, db: ObjId) -> bool {
     let wanted = DATABLOCK_CLASSES
         .iter()
         .find(|(object, _)| camera::is_class(vm, id, object))
@@ -301,7 +301,8 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
 /// `GameBase::setDataBlock`: an object that is not added yet only takes the pointer; an added one given another datablock
 /// writes the pointer, marks [`DATABLOCK_MASK`] so every connection that ghosts it reads the new datablock, runs the classes'
 /// `onNewDataBlock` ([`new_datablock`]), then the new datablock's script `onNewDataBlock(%db, %obj)`. False for a datablock
-/// the object's class does not take, with nothing changed; true otherwise, also for the datablock it already has.
+/// the object's class does not take, or a retiring one ([`super::remove`]), with nothing changed; true otherwise, also for the
+/// datablock it already has.
 ///
 /// # Errors
 /// A class's work or the script callback ran past the script engine's limits.
@@ -316,7 +317,8 @@ pub fn set_data_block(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<bool, VmError
     if super::access::object_field(vm, id, b"dataBlock") == Some(db) {
         return Ok(true);
     }
-    if !takes_datablock(vm, id, db) {
+    // A retiring datablock (deleted over its users) takes no new user.
+    if vm.objects().is_retiring(db) || !takes_datablock(vm, id, db) {
         return Ok(false);
     }
     set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
@@ -365,10 +367,10 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
             return Native::Bool(false);
         };
         let name = c.argv.get(2).map_or(&b""[..], Vec::as_slice);
-        let found = vm
-            .objects()
-            .find(name)
-            .filter(|db| camera::is_class(vm, *db, "GameBaseData"));
+        // A retiring datablock is found by neither its name nor its id.
+        let found = vm.objects().find(name).filter(|&db| {
+            camera::is_class(vm, db, "GameBaseData") && !vm.objects().is_retiring(db)
+        });
         let Some(db) = found else {
             vm.error(format!(
                 "Could not find data block \"{}\"",

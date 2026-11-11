@@ -92,6 +92,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("getCameraMode")` *none; client*
 - `ts.call("getCameraModes")` *none; client*
 - `ts.call("getCompileTimeString")` *none; server and client*
+- `ts.call("getDataBlockUsers", datablock [, max])` *1 to 2; server*
 - `ts.call("getField", text, index)` *2; server and client*
 - `ts.call("getFieldCount", text)` *1; server and client*
 - `ts.call("getFields", text, first [, last])` *2 to 3; server and client*
@@ -220,6 +221,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `ts.call("quit")` *none; server and client*
 - `ts.call("registerFont", string face, string path)` *2; client*
 - `ts.call("reloadDataBlocks", file [, removeMissing])` *1 to 2; server*
+- `ts.call("removeDataBlock", datablock [, fallback | "deleteUsers"])` *1 to 2; server*
 - `ts.call("removeField", text, index)` *2; server and client*
 - `ts.call("removeRecord", text, index)` *2; server and client*
 - `ts.call("removeTaggedString", tag)` *1; server and client*
@@ -701,6 +703,12 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:unmount()` *none; server and client*
 - `obj:unmountImage(int slot)` *1; server and client*
 - `obj:unmountObject(ShapeBase obj)` *1; server and client*
+
+### SimDataBlock
+
+- `obj:delete()` *none; server*
+- `obj:getUserCount()` *none; server*
+- `obj:getUsers([max])` *0 to 1; server*
 
 ### SimObject
 

@@ -51,6 +51,12 @@
 //! - Every `.dso` `exec` loads, with or without its source, is refused over [`vm::MAX_DSO_BYTES`] before it is parsed
 //!   (`an_oversized_dso_is_refused`), and a removal of a freed tag never changes its counts, whatever [`tags::TagRules`]
 //!   say (`removing_a_dead_tag_twice_keeps_counts`).
+//! - A retiring datablock ([`sim::Objects::retire_datablock`]: a host's reference-counted removal) is found by no new lookup
+//!   that gives it a user: a datablock-typed field write resolves neither its name nor its id (`VmEnv::find_object`),
+//!   `datablock Class(name)` of its name makes a new datablock (`find_declared_datablock`), and the id leaves the set with the
+//!   object (`Objects::unregister`), so the set is bounded by the datablock id range
+//!   (`a_retiring_datablock_is_found_by_no_field_write_and_its_name_declares_a_new_one`). Datablock ids are never reused
+//!   inside a mission: `next_datablock_id` only grows and only `deleteDataBlocks` resets it.
 //! - No input panics the runtime, and every case's time stays within 5 microseconds a step of its runs' steps: random
 //!   programs, their bytecode mutated, strings up to the size cap through what copies or scans them, and every native
 //!   called from script with hostile arguments, in both executors (`tests/fuzz.rs`:

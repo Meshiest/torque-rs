@@ -401,8 +401,11 @@ impl GameView<'_> {
         torque_game::scene::access::matrix_of(self.fields.vm, self.fields.obj)
     }
 
+    /// The object's datablock, if it still exists: a ghost never carries the id of a deleted one.
     fn datablock(&self) -> Option<ObjId> {
-        torque_game::scene::access::object_field(self.fields.vm, self.fields.obj, b"dataBlock")
+        let vm = self.fields.vm;
+        torque_game::scene::access::object_field(vm, self.fields.obj, b"dataBlock")
+            .filter(|&db| vm.objects().contains(db))
     }
 
     fn db_float(&self, name: &[u8], default: f32) -> f32 {

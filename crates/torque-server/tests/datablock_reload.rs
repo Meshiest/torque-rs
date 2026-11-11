@@ -1029,7 +1029,17 @@ fn a_projectile_data_removed_under_live_projectiles_leaves_no_projectile_after_6
         10,
         "they live while their datablock does"
     );
+    // A plain `delete()` under users retires the datablock: its projectiles keep working.
+    let shot = id_of(&s, "Shot");
     eval(&mut s, "Shot.delete();");
+    tick(&mut s);
+    assert_eq!(
+        objects_of(&s, "Projectile"),
+        10,
+        "a retired datablock's users live on"
+    );
+    // The host's own deletion (what `deleteDataBlocks` does to every datablock) leaves them a dead id.
+    s.vm.delete_object(shot).unwrap();
     let mut ticks = 0;
     while objects_of(&s, "Projectile") > 0 && ticks < 600 {
         tick(&mut s);

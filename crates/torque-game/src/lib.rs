@@ -79,6 +79,28 @@
 //!   so each file gets its own.
 //!
 //! Each reload runs under [`shapes::reload::RELOAD_WORK`], at most [`shapes::reload::MAX_RELOADS_PER_POLL`] a poll. Check: `cargo test -p torque-server --test main shape_reload`.
+//!
+//! **Datablock removal** ([`scene::remove`]). The same user count decides a removal: `SimDataBlock::delete` (the override
+//! registered by [`scene::remove::register`], server only) deletes a datablock without users and *retires* one with them
+//! ([`ts_vm::sim::Objects::retire_datablock`]: the retiring set lives in the script engine, where the datablock field resolver
+//! and `datablock Class(name)` read it); the drain's first step frees retiring datablocks whose count is zero;
+//! `removeDataBlock` ([`scene::remove::remove_datablock`]) checks users and referrers (datablock-typed fields holding the id,
+//! [`scene::remove::referrers`]) and moves users with [`scene::object::set_data_block`], rewrites referrers through
+//! `Vm::set_object_member` (so the key observer and the refresh mark fire), or deletes users. Invariants, each held by a test in
+//! torque-server's `tests/datablock_remove.rs`:
+//! - a retiring datablock takes no new user by any path: the field resolver, `setDataBlock` (native and
+//!   [`scene::object::set_data_block`]) and the redeclare lookup all check `is_retiring` (`a_plain_delete_over_players...`);
+//!   a new path that resolves a datablock for a new user must check it too;
+//! - a script's user list is bounded by [`scene::remove::MAX_LISTED_USERS`]; the removal's own user and referrer scans are
+//!   bounded by the process list and DataBlockGroup and charged per object (`a_fallback_moves_sixty_four_users...`);
+//! - the removal hook runs once per datablock, never again for one already retiring
+//!   (`the_removal_hook_runs_once_per_datablock`);
+//! - a removal that leaves a user (a fallback a user's class cannot take) leaves the datablock (`remove_datablock`'s last check);
+//! - a Player whose datablock is gone keeps its last products ([`sim::player::refresh_info`]) and the ghost view hands the codecs
+//!   no dead id (torque-server's `GameView::datablock`) (`a_datablock_deleted_under_its_players...`).
+//!
+//! Extension point: [`scene::remove::set_removal_hook`], run once per datablock when its id stops resolving (a host's wire
+//! message). Check: `cargo test -p torque-server --test main datablock_remove`.
 
 pub mod behaviour;
 pub mod charge;

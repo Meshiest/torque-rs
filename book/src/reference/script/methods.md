@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-324 entries in 37 classes.
+327 entries in 38 classes.
 
 | Class | Entries |
 |---|---|
@@ -39,6 +39,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [ScatterSky](#scattersky) | 1 |
 | [SceneObject](#sceneobject) | 23 |
 | [ShapeBase](#shapebase) | 78 |
+| [SimDataBlock](#simdatablock) | 3 |
 | [SimObject](#simobject) | 12 |
 | [SimSet](#simset) | 10 |
 | [SpotLight](#spotlight) | 2 |
@@ -725,6 +726,15 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 1; server and client*
 - `obj.unmountObject(ShapeBase obj)`
   *arguments: 1; server and client*
+
+## SimDataBlock
+
+- `datablock.delete()` - deletes the datablock, or retires it until its last user is gone
+  *arguments: none; server*
+- `datablock.getUserCount()` - how many objects have the datablock
+  *arguments: none; server*
+- `datablock.getUsers([max])` - the ids of the objects that have the datablock, at most max (256 by default, 4096 at most)
+  *arguments: 0 to 1; server*
 
 ## SimObject
 

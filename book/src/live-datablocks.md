@@ -4,7 +4,7 @@ A datablock is read once. The objects built from it keep what they took: a Playe
 instance and hulls, a StaticShape the type bits its `dynamicType` gave it. In TGE an edited datablock is a stale object
 until the mission is loaded again. Here the server notices the edit and brings the objects that use the datablock up to date
 at the next tick, so a game can change a datablock while it runs. This chapter covers the server's refresh, the rounds that
-send what changed to connected clients, and the client's refresh.
+send what changed to connected clients, how a datablock is removed from a running server, and the client's refresh.
 
 ## The model
 
@@ -269,6 +269,47 @@ but is not watched. A reload asked for inside a reload (a reloaded file calling 
 | Edit in place and resend | yes, no wire change | yes, the same events |
 | Add a datablock mid-game | yes, within the 1,021 ids of a mission | yes, within the id range |
 | Who takes it | a stock Torque client and the engine's | the engine's clients |
+
+## Removal
+
+TGE lets a script `delete()` a datablock under the objects built from it and tells nobody: the objects keep a dead pointer, a
+Player's next tick reads its products from nothing, a ghost update sends the dead id. Here every datablock counts its users (the
+same count the refresh reads), and a removal is reference counted.
+
+**`%db.delete()`** stays unchecked, as in TGE. Without users the datablock goes at once. With users it *retires*: it stays
+registered and in DataBlockGroup, the objects built from it keep working (a Player keeps its products, a ghost still carries its
+id, which the client holds) and a client that joins still receives it, but its name and id resolve for no new user. A
+`new Player() { dataBlock = Soldier; }`, a `setDataBlock(Soldier)` (by name or id), a datablock field of another datablock written
+with its name, and a `datablock PlayerData(Soldier) {...}` all treat it as absent: the object is refused with TGE's "is not a
+datablock" message, `setDataBlock` answers false, and the declaration makes a *new* datablock of the name, with a new id, so new
+objects take the new one while the old one's users finish on the old. The tick's drain frees a retiring datablock once its count
+is zero; `deleteDataBlocks()` frees them all with the mission.
+
+**`removeDataBlock(%db [, %mode])`** is the checked removal. It answers true once the datablock is gone, false (with the reason
+printed) when it stays:
+
+- no mode: refuses while the datablock has a user (`datablock PlayerData Soldier (41) is used by 3 objects (first: Player P0
+  (1203))`) or a *referrer*, another datablock whose datablock-typed field holds its id (the stored id, not a text that happens to
+  name it);
+- a fallback datablock of the removed one's class (or a class below it): every user is moved to it with `setDataBlock`, so the
+  classes' `onNewDataBlock` work runs and every connection that ghosts the object reads the new datablock, every referrer's field
+  is rewritten to the fallback through the normal field write (its key moves, its own users refresh), then the datablock goes;
+- `"deleteUsers"`: every user is deleted first; a referrer still refuses.
+
+**Queries.** `%db.getUserCount()` is the datablock's count. `%db.getUsers([%max])` and `getDataBlockUsers(%db [, %max])` list the
+users' ids in one scan of the process list, at most `%max` of them, 256 without one and never more than 4,096 (the hard cap).
+
+**Ids.** A removal spends the id: the datablock id counter only grows inside a mission and `deleteDataBlocks()` starts it over,
+so a client that still holds a removed datablock never sees its id mean another one; at the end of the range the usual
+"Exceeded maximum number of data blocks" error stands. The group closes up, so the group positions of later datablocks drop by
+one; nothing depends on positions. A datablock deleted behind the count's back (the host's own deletion, `deleteDataBlocks()`
+under live objects) no longer breaks what is left: a Player keeps the last products it had and a ghost never carries the id of
+a datablock that is gone.
+
+**The wire.** Removal posts nothing to a connection in TGE mode: a connected client keeps a datablock no object uses until the
+mission reloads, a client that joins later never gets it. A host that tells its clients sets a hook
+(`torque_game::scene::remove::set_removal_hook`), run once per datablock with the id at the moment it stops resolving. The
+natives exist only in the server's script engine. Tests: `crates/torque-server/tests/datablock_remove.rs`.
 
 ## Client refresh
 

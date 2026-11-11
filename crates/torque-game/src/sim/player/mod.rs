@@ -338,11 +338,15 @@ pub fn generation(vm: &Vm, db: ObjId) -> u32 {
     ext::get(vm.objects(), db).map_or(0, |e| e.db_generation)
 }
 
-/// The info again when the datablock changed or was written since it was built (the tick's first act).
+/// The info again when the datablock changed or was written since it was built (the tick's first act). A Player whose
+/// datablock is gone keeps the last info it had.
 pub fn refresh_info(vm: &mut Vm, id: ObjId) {
     let Some(db) = object_field(vm, id, b"dataBlock") else {
         return;
     };
+    if !vm.objects().contains(db) {
+        return;
+    }
     let Some((old_db, old_gen)) = ext::get(vm.objects(), id)
         .and_then(|e| e.player.as_deref())
         .map(|p| (p.db, p.generation))

@@ -32,4 +32,5 @@ pub mod links;
 pub mod object;
 pub mod rays;
 pub mod refresh;
+pub mod remove;
 pub mod shapebase;

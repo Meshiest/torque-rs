@@ -99,9 +99,13 @@ impl FieldEnv for VmEnv<'_> {
         }
     }
 
+    /// A retiring datablock is found by no field write (its id no more than its name).
     fn find_object(&mut self, text: &[u8], class: &str) -> Option<ObjId> {
         let objects = &self.0.objects;
         let id = objects.find(text)?;
+        if objects.is_retiring(id) {
+            return None;
+        }
         let wanted = objects.classes.find(class.as_bytes())?;
         objects
             .classes

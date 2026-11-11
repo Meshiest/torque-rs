@@ -79,6 +79,15 @@
 //! fallback is the one to use once it exists. Extension point: `reload::before_round` (a plugin reads its content again
 //! before the round; capped at `MAX_BEFORE_ROUND_HOOKS`). Check: `cargo test -p torque-server --test main datablock_watch`.
 //!
+//! **A datablock's removal is the game's reference-counted one** (`game.rs` registers `torque_game::scene::remove`, server
+//! only): a retiring datablock is a live object, so a connection that joins still gets it in its chain and `net/datablocks.rs`
+//! renders it as any other (its key, forgotten by `KeyedClass::on_remove` only when it is finally deleted); a removed one's
+//! key is forgotten and the others' keys do not move (`a_client_that_joins_after_a_removal_gets_the_rest_with_their_keys`).
+//! `net/torque.rs`'s `GameView::datablock` hands the codecs no id of a deleted datablock
+//! (`a_datablock_deleted_under_its_players_leaves_them_their_info_and_no_dead_id_on_the_wire`). Nothing is posted to a
+//! connection on a removal; a protocol that tells its clients hooks `torque_game::scene::remove::set_removal_hook`
+//! (`tests/datablock_remove.rs`).
+//!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one
 //! limiter, not a second here) (`unknown_commands_cost_the_connections_share_and_their_warnings_are_limited` in

@@ -307,7 +307,8 @@ impl Vm {
     }
 
     /// The start of `datablock Class(name)`: an existing datablock of that name is declared again.
-    /// Looked up in DataBlockGroup only (a newer object that took the global name does not hide it),
+    /// Looked up in DataBlockGroup only (a newer object that took the global name does not hide it; a retiring one,
+    /// [`Objects::is_retiring`](crate::sim::Objects::is_retiring), counts as absent),
     /// compared with the class ignoring case (`dStricmp`). The case is
     /// unobservable from script: identifiers reach the runtime in their first-interned spelling and
     /// `datablock (%expr)(Name)` is a syntax error, so only hand-made bytecode could differ. The same class: the
@@ -324,6 +325,10 @@ impl Vm {
         let Some(existing) = self.objects.find_below(group, name) else {
             return Declared::Absent;
         };
+        // A retiring datablock is not declared again: the declaration makes a new one of the name.
+        if self.objects.is_retiring(existing) {
+            return Declared::Absent;
+        }
         let same_class = self.objects.get(existing).is_some_and(|o| {
             self.objects
                 .classes
