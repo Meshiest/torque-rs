@@ -6,12 +6,13 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use common::{console, files, global, run, script, server};
+use common::{files, run, script, server};
 use torque_engine::EngineBuilder;
 use torque_mods::ModsPlugin;
 use torque_plugin_loader::{
     ApprovalRequest, LoadReport, NativeExtensions, NativeExtensionsPlugin, Outcome,
 };
+use torque_ts_vm::testing::{console, global};
 
 /// The build folder: CARGO_TARGET_DIR's, else the crate's own.
 fn target_dir() -> PathBuf {

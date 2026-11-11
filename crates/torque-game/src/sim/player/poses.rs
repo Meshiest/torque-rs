@@ -426,8 +426,7 @@ mod tests {
 
     /// The poses of a PlayerData whose fields are `fields` (script text), its shape having every pose's root.
     fn poses_of(fields: &str) -> PoseData {
-        let mut vm = Vm::new();
-        crate::specs::install(&mut vm);
+        let mut vm = crate::testing::vm();
         let text = format!("datablock PlayerData(Posed) {{ {fields} }}; return Posed.getId();");
         let id = vm.eval(text.as_bytes()).expect("the datablock");
         let id: ObjId = String::from_utf8(id).unwrap().parse().unwrap();

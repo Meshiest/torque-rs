@@ -34,6 +34,8 @@ torque-transfer = { path = "../torque-transfer" }
 testing = []
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 # The resource layer's files, read by an asset loader in a test.
 torque-resource = { path = "../torque-resource" }
 

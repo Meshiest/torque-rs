@@ -135,26 +135,6 @@ pub fn run(vm: &mut Vm, files: &MemFiles, path: &str, source: &str) -> Result<bo
     vm.exec_file(path.as_bytes(), false)
 }
 
-/// TorqueScript text run with `eval`, its result as text.
-pub fn eval(vm: &mut Vm, code: &str) -> Result<String, VmError> {
-    vm.eval(code.as_bytes())
-        .map(|r| String::from_utf8_lossy(&r).into_owned())
-}
-
-/// The console's lines since the last call, one string.
-pub fn console(vm: &mut Vm) -> String {
-    vm.drain_log()
-        .into_iter()
-        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// A global's value as text.
-pub fn global(vm: &Vm, name: &str) -> String {
-    String::from_utf8_lossy(&vm.global(name).unwrap_or_default()).into_owned()
-}
-
 /// The shared test script `name` (`tests/scripts`), built in: the web check has no files to read it from.
 pub fn script(name: &str) -> String {
     match name {

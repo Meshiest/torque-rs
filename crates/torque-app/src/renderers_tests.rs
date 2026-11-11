@@ -1,11 +1,11 @@
 use std::rc::Rc;
+use torque_ts_vm::testing::eval;
 
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginType};
 use torque_render_core::{Gpu, wgpu};
 use torque_render_hd::HdFeatures;
 use torque_render_scene::hd::{HdMode, Quality};
 use torque_render_scene::source::Eye;
-use torque_ts_vm::vm::Vm;
 
 use crate::client::{ClientBuilder, ClientNet};
 use crate::plugins::*;
@@ -99,10 +99,6 @@ fn client(engine: &Engine) -> ClientBuilder {
 
 fn slot(builder: &ClientBuilder) -> Rc<RendererSlot> {
     RendererSlot::of(&builder.vm).expect("the client has a renderer slot")
-}
-
-fn eval(vm: &mut Vm, code: &str) -> String {
-    String::from_utf8(vm.eval(code.as_bytes()).expect("the script runs")).unwrap()
 }
 
 #[test]

@@ -72,8 +72,7 @@ fn game_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
         .add_plugins(RopePlugin)
         .build()
         .expect("the engine builds");
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     engine
         .replay(ServerStage::Classes, &mut vm)
         .expect("the plugin's classes");

@@ -38,6 +38,8 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Event", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "Window"] }
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 # The tests' zips are written with the same crate the reader uses.
 zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # `tests/late_offer.rs` runs a whole server and its clients over the memory transport (the same way the wire goldens do).

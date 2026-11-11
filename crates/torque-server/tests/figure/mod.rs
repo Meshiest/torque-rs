@@ -11,7 +11,6 @@ use torque_server::state::ServerState;
 use torque_shape_builder::{MeshData, SequenceDef, ShapeBuilder, Track, turn};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::sim::ObjId;
-use torque_ts_vm::vm::Vm;
 
 const X: [f32; 3] = [1.0, 0.0, 0.0];
 const Y: [f32; 3] = [0.0, 1.0, 0.0];
@@ -132,8 +131,7 @@ pub fn wall() -> Vec<u8> {
 }
 
 pub fn game_server() -> Server {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let files = MemFiles::new();
     files.insert("figure.dts", &figure());
     files.insert("plain.dts", &plain());

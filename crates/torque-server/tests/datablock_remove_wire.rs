@@ -67,7 +67,6 @@ fn game_server(protocol: ProtocolKind) -> (NetServer, Shared, MemoryEnd) {
     use torque_server::net::{Host, HostParts, NetClock, attach_host};
     use torque_server::state::ServerState;
     use torque_ts_vm::host::MemFiles;
-    use torque_ts_vm::vm::Vm;
 
     let files = MemFiles::new();
     for (name, half) in [("a.dts", 1.0), ("b.dts", 2.0)] {
@@ -75,8 +74,7 @@ fn game_server(protocol: ProtocolKind) -> (NetServer, Shared, MemoryEnd) {
         let shape = torque_shapes::synth::hull_shape(b, &[("detail2", b)], &[], &["ambient"]);
         files.insert(name, &torque_shapes::write::write_dts(&shape));
     }
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let game = torque_server::game::install(&mut vm, &state);

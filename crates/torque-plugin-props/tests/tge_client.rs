@@ -33,7 +33,6 @@ use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::sim::ObjId;
-use torque_ts_vm::vm::Vm;
 
 type NetServer = Server<HostParts<TorqueNet>>;
 
@@ -52,8 +51,7 @@ fn game_server() -> (
         .add_plugins(PropsPlugin)
         .build()
         .expect("the engine builds");
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     engine
         .replay(ServerStage::Classes, &mut vm)
         .expect("the plugin's classes");

@@ -382,8 +382,7 @@ fn floor() -> Vec<u8> {
 }
 
 fn server() -> Server {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let files = MemFiles::new();
     files.insert("figure.dts", &shapes::write::write_dts(&figure().build()));
     files.insert("floor.dts", &floor());

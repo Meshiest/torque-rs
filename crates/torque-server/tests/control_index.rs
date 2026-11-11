@@ -30,8 +30,7 @@ struct Scene {
 impl Scene {
     /// A server with `clients` connections, each with a `Client<i>` object and no control object, and a `Player` datablock.
     fn new(clients: u32) -> Scene {
-        let mut vm = Vm::new();
-        torque_game::specs::install(&mut vm);
+        let mut vm = torque_game::testing::vm();
         let files = MemFiles::new();
         let b = [-0.5, -0.5, 0.0, 0.5, 0.5, 2.0];
         let mut body = torque_shapes::synth::hull_shape(

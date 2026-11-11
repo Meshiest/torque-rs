@@ -6,6 +6,7 @@ use std::io::Write;
 use torque_engine::{Engine, ServerStage};
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
+
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
@@ -44,20 +45,6 @@ pub fn server(engine: &Engine, files: MemFiles, entry: &str) -> Vm {
         engine.replay(stage, &mut vm).expect("the stage replays");
     }
     vm
-}
-
-/// The console's lines so far, one string.
-pub fn console(vm: &mut Vm) -> String {
-    vm.drain_log()
-        .into_iter()
-        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// `eval` as text.
-pub fn eval(vm: &mut Vm, code: &str) -> String {
-    String::from_utf8_lossy(&vm.eval(code.as_bytes()).expect("the code runs")).into_owned()
 }
 
 /// A small seeded generator (xorshift), so a failing case can be rerun.

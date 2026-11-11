@@ -717,8 +717,7 @@ mod tests {
     /// A `Vm` with the game classes, the dirty set over `process` and the observer, and a StaticShape `S` on datablock `D`
     /// counted as its user (what a server's `GameBase::onAdd` does). The declaration itself marks nothing (`D` had no user).
     fn scene(process: &ProcessHandle) -> (Vm, ObjId, ObjId) {
-        let mut vm = Vm::new();
-        crate::specs::install(&mut vm);
+        let mut vm = crate::testing::vm();
         install(&mut vm, process);
         vm.set_static_write_observer(Some(Rc::new(super::super::object::static_written)));
         vm.eval(b"datablock StaticShapeData(D) {}; new StaticShape(S) { dataBlock = D; };")
@@ -753,8 +752,7 @@ mod tests {
             Some(DatablockChange::Preloaded)
         );
         assert_eq!(set.state.borrow().stats.marks, 1, "one mark per datablock");
-        let mut bare = Vm::new();
-        crate::specs::install(&mut bare);
+        let mut bare = crate::testing::vm();
         bare.eval(b"datablock StaticShapeData(D) {};").unwrap();
         let bare_d = bare.objects().find(b"D").unwrap();
         mark(&bare, bare_d, DatablockChange::Written);

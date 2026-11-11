@@ -105,6 +105,9 @@
 //! - a Player whose datablock is gone keeps its last products ([`sim::player::refresh_info`]) and the ghost view hands the codecs
 //!   no dead id (torque-server's `GameView::datablock`) (`a_datablock_deleted_under_its_players...`).
 //!
+//! **Test helper.** [`testing::vm`] (feature `testing`, a dev-dependency only: no normal build enables it) is a `Vm` with
+//! [`specs::install`] done; the tests of the crates that host the game classes start from it.
+//!
 //! Extension point: [`scene::remove::set_removal_hook`], run once per datablock right before it is deleted (a host's wire
 //! message). Check: `cargo test -p torque-server --test main datablock_remove`.
 
@@ -123,3 +126,5 @@ pub mod shapes;
 pub mod sim;
 pub mod sim_classes;
 pub mod specs;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use common::{closed_port, eval, global, listener, pump, pump_with, ticks, vm_limited, vm_with};
+use common::{closed_port, listener, pump, pump_with, ticks, vm_limited, vm_with};
 use torque_plugin_tcp::{TcpLimits, TcpPlugin};
+use torque_ts_vm::testing::{eval, global};
 
 /// Accepts every connection on a fresh port and keeps them open; the count accepted so far.
 fn sink() -> (u16, Arc<Mutex<Vec<TcpStream>>>) {

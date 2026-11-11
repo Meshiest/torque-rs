@@ -21,9 +21,8 @@ fn client() -> Vm {
         .add_plugins(PropsPlugin)
         .build()
         .expect("the engine builds");
-    let mut vm = Vm::new();
     // The class's parent (`GameBaseData`) is the engine's.
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     for &stage in ClientStage::ALL {
         engine.replay(stage, &mut vm).expect("the stage replays");
     }

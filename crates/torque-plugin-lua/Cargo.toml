@@ -48,7 +48,7 @@ torque-gui = { path = "../torque-gui" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }
 torque-mods = { path = "../torque-mods" }
 torque-plugin-loader = { path = "../torque-plugin-loader" }
-torque-ts-vm = { path = "../torque-ts-vm" }
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 torque-ts-compiler = { path = "../torque-ts-compiler" }
 
 [lints.rust]

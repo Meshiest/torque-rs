@@ -33,6 +33,8 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
+# A `Vm` with the game classes installed (`torque_game::testing::vm`).
+torque-game = { path = "../torque-game", features = ["testing"] }
 # The engine's renderer, to draw the ropes in the pictures' tests.
 torque-app = { path = "../torque-app", features = ["renderer"] }
 # The tick the simulation steps by is the server's.

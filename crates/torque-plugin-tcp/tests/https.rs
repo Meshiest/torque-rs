@@ -6,8 +6,9 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 use std::thread;
 
-use common::{eval, global, listener, logging, pump, vm_with};
+use common::{listener, logging, pump, vm_with};
 use torque_plugin_tcp::{TcpPlugin, client_config};
+use torque_ts_vm::testing::{eval, global};
 
 #[test]
 fn an_https_get_checks_the_certificate_and_reads_the_answer() {

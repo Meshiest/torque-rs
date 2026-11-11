@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{console, eval, files, server};
+use common::{files, server};
 use serde_json::Value;
 use torque_engine::{Engine, EngineBuilder, ServerStage};
 use torque_mods::{
@@ -13,6 +13,7 @@ use torque_mods::{
     PrereqPolicy, Problem, Requirement, Version,
 };
 use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::testing::{console, eval};
 use torque_ts_vm::vm::Vm;
 
 /// The same mods in two manifest formats: `mod.toml` for the default layout, `mod.json` for the custom one.

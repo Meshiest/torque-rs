@@ -1,6 +1,7 @@
 //! Prefs: defaults set before scripts, clamped on read, exported, and read back typed.
 
 use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::testing::global;
 use torque_ts_vm::vm::Vm;
 
 use crate::{
@@ -55,10 +56,6 @@ fn server(engine: &Engine) -> Vm {
         engine.replay(stage, &mut vm).expect("the replay runs");
     }
     vm
-}
-
-fn global(vm: &Vm, name: &str) -> String {
-    String::from_utf8_lossy(&vm.global(name).unwrap_or_default()).into_owned()
 }
 
 #[test]

@@ -32,7 +32,6 @@ use torque_server::net::{Host, HostParts, NetClock, attach_host};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
-use torque_ts_vm::vm::Vm;
 
 const GHOST_BITS: u8 = 8;
 const CONN: ConnId = ConnId(1);
@@ -46,8 +45,7 @@ struct Scene {
 
 impl Scene {
     fn new() -> Scene {
-        let mut vm = Vm::new();
-        torque_game::specs::install(&mut vm);
+        let mut vm = torque_game::testing::vm();
         let files = MemFiles::new();
         let b = [-1.0, -2.0, 0.0, 1.0, 2.0, 1.0];
         let car = torque_shapes::synth::hull_shape(b, &[("detail2", b)], &[], &[]);

@@ -562,8 +562,7 @@ mod chain_tests {
     }
 
     fn vm_with_pair() -> (Vm, ObjId, ObjId) {
-        let mut vm = Vm::new();
-        crate::specs::install(&mut vm);
+        let mut vm = crate::testing::vm();
         vm.eval(b"new ScriptObject(A) { next = \"B\"; };\nnew ScriptObject(B) { next = \"A\"; };")
             .unwrap();
         let a = vm.objects().find(b"A").unwrap();

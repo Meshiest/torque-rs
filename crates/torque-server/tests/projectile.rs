@@ -12,8 +12,7 @@ use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
 fn game_server() -> Server {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let files = MemFiles::new();
     let b = [-0.5, -0.5, 0.0, 0.5, 0.5, 2.0];
     let body = torque_shapes::synth::hull_shape(

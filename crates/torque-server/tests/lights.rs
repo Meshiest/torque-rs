@@ -16,8 +16,7 @@ use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
 fn game_server() -> Server {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let files = MemFiles::new();
     let b = [-1.0, -2.0, 0.0, 1.0, 2.0, 1.0];
     let car = torque_shapes::synth::hull_shape(b, &[("detail2", b)], &["mount0", "mount1"], &[]);

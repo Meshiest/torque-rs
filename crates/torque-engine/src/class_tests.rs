@@ -2,6 +2,7 @@
 //! ranges in the dump, a preload hook and a refresh hook.
 
 use std::cell::RefCell;
+use torque_ts_vm::testing::eval;
 
 use torque_ts_vm::classes::DatablockChange;
 use torque_ts_vm::vm::Vm;
@@ -115,10 +116,6 @@ fn server() -> Vm {
         engine.replay(stage, &mut vm).expect("the replay runs");
     }
     vm
-}
-
-fn eval(vm: &mut Vm, text: &str) -> String {
-    String::from_utf8(vm.eval(text.as_bytes()).expect("the script runs")).expect("UTF-8")
 }
 
 fn logged(vm: &Vm, part: &str) -> bool {

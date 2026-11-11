@@ -95,6 +95,8 @@ quic = ["torque-app-server/quic", "dep:torque-net-quic"]
 audio-device = ["torque-audio/device"]
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 criterion = { workspace = true }
 # The interiors bench's yards.
 torque-interior-builder = { path = "../torque-interior-builder" }

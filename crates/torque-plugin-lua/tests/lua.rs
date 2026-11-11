@@ -8,9 +8,10 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use common::{Stopwatch, client, console, engine, eval, files, global, run, script, server};
+use common::{Stopwatch, client, engine, files, run, script, server};
 use torque_engine::{EngineBuilder, ServerStage};
 use torque_mods::{Mods, ModsPlugin};
+use torque_ts_vm::testing::{console, global, try_eval};
 use torque_ts_vm::vm::VmError;
 
 /// The TorqueScript the shared scripts expect before they run.
@@ -42,7 +43,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         console(&mut vm);
         assert_eq!(
             run(&mut vm, &files, "scripts/basics.lua", &script("basics.lua")),
@@ -52,21 +53,21 @@ cases! {
         assert_eq!(global(&vm, "$Test::Result"), "ok", "{log}");
         assert!(log.contains("basics ran 3"), "{log}");
         // What the script defined, called from TorqueScript.
-        assert_eq!(eval(&mut vm, "return luaAdd(2, 3);").unwrap(), "5");
+        assert_eq!(try_eval(&mut vm, "return luaAdd(2, 3);").unwrap(), "5");
         assert_eq!(
-            eval(&mut vm, "return Thing.luaGreet(\"Ann\");").unwrap(),
+            try_eval(&mut vm, "return Thing.luaGreet(\"Ann\");").unwrap(),
             "hello Ann from Thing"
         );
-        assert_eq!(eval(&mut vm, "return luaNothing();").unwrap(), "");
+        assert_eq!(try_eval(&mut vm, "return luaNothing();").unwrap(), "");
         assert_eq!(global(&vm, "$Test::FromLua"), "7");
-        assert_eq!(eval(&mut vm, "return Thing.health;").unwrap(), "25");
+        assert_eq!(try_eval(&mut vm, "return Thing.health;").unwrap(), "25");
     }
 
     fn the_shared_sandbox_script_passes() {
         let engine = engine();
         let files = files(&[("main.cs", b"")]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         console(&mut vm);
         assert_eq!(
             run(
@@ -97,7 +98,7 @@ cases! {
         let recurse = "local function f() return f() + 1 end f()";
         assert_eq!(run(&mut vm, &files, "recurse.lua", recurse), Ok(true));
         assert!(console(&mut vm).contains("stack overflow"));
-        assert_eq!(eval(&mut vm, "return 1 + 1;").unwrap(), "2");
+        assert_eq!(try_eval(&mut vm, "return 1 + 1;").unwrap(), "2");
     }
 
     fn compiled_lua_is_never_loaded() {
@@ -156,7 +157,7 @@ cases! {
             "the code after the caught loop never ran"
         );
         // The engine and the realm go on.
-        assert_eq!(eval(&mut vm, "return 6 * 7;").unwrap(), "42");
+        assert_eq!(try_eval(&mut vm, "return 6 * 7;").unwrap(), "42");
         assert_eq!(
             run(
                 &mut vm,
@@ -185,12 +186,12 @@ cases! {
             Ok(true)
         );
         assert_eq!(
-            eval(&mut vm, "luaSpin(); $Test::Reached = 1;"),
+            try_eval(&mut vm, "luaSpin(); $Test::Reached = 1;"),
             Err(VmError::StepLimit)
         );
         assert_eq!(global(&vm, "$Test::Reached"), "");
         // A TorqueScript loop called from Lua.
-        eval(&mut vm, "function tsSpin() { while (1) {} }").unwrap();
+        try_eval(&mut vm, "function tsSpin() { while (1) {} }").unwrap();
         assert_eq!(
             run(
                 &mut vm,
@@ -201,7 +202,7 @@ cases! {
             Err(VmError::StepLimit)
         );
         assert_eq!(global(&vm, "$Test::Reached"), "");
-        assert_eq!(eval(&mut vm, "return 2;").unwrap(), "2");
+        assert_eq!(try_eval(&mut vm, "return 2;").unwrap(), "2");
     }
 
     fn without_a_step_limit_the_default_budget_stops_a_runaway_loop() {
@@ -213,7 +214,7 @@ cases! {
             run(&mut vm, &files, "loop.lua", "while true do end"),
             Err(VmError::StepLimit)
         );
-        assert_eq!(eval(&mut vm, "return 3;").unwrap(), "3");
+        assert_eq!(try_eval(&mut vm, "return 3;").unwrap(), "3");
     }
 
     fn an_allocation_bomb_hits_the_memory_cap() {
@@ -236,7 +237,7 @@ cases! {
             assert!(log.contains("memory"), "{name}: {log}");
         }
         // The engine and the realm go on.
-        assert_eq!(eval(&mut vm, "return 5;").unwrap(), "5");
+        assert_eq!(try_eval(&mut vm, "return 5;").unwrap(), "5");
         assert_eq!(
             run(
                 &mut vm,
@@ -310,7 +311,7 @@ cases! {
             let engine = engine();
             let files = files(&[]);
             let mut vm = server(&engine, &files);
-            eval(
+            try_eval(
                 &mut vm,
                 "function tsDown(%n) { if (%n <= 0) return \"bottom\"; return luaDown(%n - 1) @ \"\"; }",
             )
@@ -325,11 +326,11 @@ cases! {
                 Ok(true)
             );
             // TS -> Lua -> TS -> Lua ...
-            assert_eq!(eval(&mut vm, "return tsDown(12);").unwrap(), "bottom");
+            assert_eq!(try_eval(&mut vm, "return tsDown(12);").unwrap(), "bottom");
             console(&mut vm);
             // Past the call depth: the run stops with an error, and nothing crashes.
             assert_eq!(
-                eval(&mut vm, "return tsDown(1000);"),
+                try_eval(&mut vm, "return tsDown(1000);"),
                 Err(VmError::CallDepth)
             );
             // Lua that recurses into itself through TorqueScript, started from Lua.
@@ -342,7 +343,7 @@ cases! {
                 ),
                 Err(VmError::CallDepth)
             );
-            assert_eq!(eval(&mut vm, "return tsDown(3);").unwrap(), "bottom");
+            assert_eq!(try_eval(&mut vm, "return tsDown(3);").unwrap(), "bottom");
         });
     }
 
@@ -377,21 +378,21 @@ cases! {
             "another mod cannot require this mod's modules or see its globals"
         );
         assert_eq!(
-            eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
+            try_eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
             "Hello, Bo"
         );
         let mods = Mods::of(&vm).expect("the mods are there");
         mods.disable(&mut vm, "greeter").expect("switched off");
         console(&mut vm);
         assert_eq!(
-            eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
+            try_eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
             "",
             "its function went with it"
         );
         assert!(console(&mut vm).contains("luaGreet"));
         mods.enable(&mut vm, "greeter").expect("switched on");
         assert_eq!(
-            eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
+            try_eval(&mut vm, "return luaGreet(\"Bo\");").unwrap(),
             "Hello, Bo"
         );
     }
@@ -408,16 +409,16 @@ cases! {
         ]);
         let mut vm = server(&engine, &files);
         let log = console(&mut vm);
-        assert_eq!(eval(&mut vm, "return boom();").unwrap(), "big", "{log}");
+        assert_eq!(try_eval(&mut vm, "return boom();").unwrap(), "big", "{log}");
         assert_eq!(
-            eval(&mut vm, "return getModField(\"bigger-bombs\", \"package\");").unwrap(),
+            try_eval(&mut vm, "return getModField(\"bigger-bombs\", \"package\");").unwrap(),
             "Mod_bigger_bombs"
         );
         let mods = Mods::of(&vm).expect("the mods are there");
         mods.disable(&mut vm, "bigger-bombs").expect("switched off");
         console(&mut vm);
         assert_eq!(
-            eval(&mut vm, "return boom();").unwrap(),
+            try_eval(&mut vm, "return boom();").unwrap(),
             "",
             "its function went with it"
         );
@@ -554,7 +555,7 @@ cases! {
             ),
         ]);
         let mut vm = server(&engine, &files);
-        let shared = |vm: &mut torque_ts_vm::vm::Vm| eval(vm, "return shared();").unwrap();
+        let shared = |vm: &mut torque_ts_vm::vm::Vm| try_eval(vm, "return shared();").unwrap();
         assert_eq!(shared(&mut vm), "C>B", "{}", console(&mut vm));
         let mods = Mods::of(&vm).unwrap();
         mods.disable(&mut vm, "b").unwrap();
@@ -575,7 +576,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         for (what, code) in [
             (
                 "SimObject::call",
@@ -628,8 +629,8 @@ cases! {
         for mut vm in [server(&engine, &files), client(&engine, &files)] {
             // The mods' native declared that it deletes files, so the policy refuses it by name: even after a script
             // stands in for it here, so that a call getting through would show.
-            assert!(eval(&mut vm, "return clearModDownloadCache();").is_ok());
-            eval(&mut vm, "function clearModDownloadCache() { $Test::Cleared = 1; return 1; }").unwrap();
+            assert!(try_eval(&mut vm, "return clearModDownloadCache();").is_ok());
+            try_eval(&mut vm, "function clearModDownloadCache() { $Test::Cleared = 1; return 1; }").unwrap();
             let source = "local ok = pcall(function() ts.call('clearModDownloadCache') end)                           ts.setGlobal('$Test::Allowed', tostring(ok))";
             assert_eq!(run(&mut vm, &files, "cache.lua", source), Ok(true));
             let log = console(&mut vm);
@@ -702,7 +703,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(
+        try_eval(
             &mut vm,
             "package Theirs { function tsWho() { return \"theirs\"; } }; function tsWho() { return \"base\"; } activatePackage(Theirs);",
         )
@@ -714,7 +715,7 @@ cases! {
             assert_eq!(run(&mut vm, &files, "packages.lua", &source), Ok(true));
             let log = console(&mut vm);
             assert_eq!(global(&vm, "$Test::Allowed"), "false", "{function}: {log}");
-            assert_eq!(eval(&mut vm, "return tsWho();").unwrap(), "theirs", "{function}");
+            assert_eq!(try_eval(&mut vm, "return tsWho();").unwrap(), "theirs", "{function}");
         }
     }
 
@@ -877,7 +878,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         for (what, code) in [
             ("command", "ts.object('Thing').command = 'quit();'"),
             (
@@ -918,7 +919,7 @@ cases! {
         }
         for field in ["command", "altCommand", "validate", "escapeCommand"] {
             assert_eq!(
-                eval(&mut vm, &format!("return Thing.{field};")).unwrap(),
+                try_eval(&mut vm, &format!("return Thing.{field};")).unwrap(),
                 "",
                 "{field}"
             );
@@ -933,14 +934,14 @@ cases! {
             ),
             Ok(true)
         );
-        assert_eq!(eval(&mut vm, "return Thing.label;").unwrap(), "quit();");
+        assert_eq!(try_eval(&mut vm, "return Thing.label;").unwrap(), "quit();");
     }
 
     fn a_code_field_cannot_be_reached_by_its_name_s_spelling() {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         // An index long enough that the joined name is cut at 255 bytes: what is left still starts with `command`.
         let long = format!(
             "assert(ts.setField('Thing', 'c', 'quit();', 'ommand{}'))",
@@ -998,7 +999,7 @@ cases! {
         }
         for field in ["command", "command0", "x", "command[0]"] {
             assert_eq!(
-                eval(
+                try_eval(
                     &mut vm,
                     &format!("return Thing.getFieldValue(\"{field}\");")
                 )
@@ -1063,7 +1064,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         let long = format!("c[ommand{}]", "x".repeat(300));
         for spec in [
             "comm[and]",
@@ -1118,7 +1119,7 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
         let long = format!("ommand{}", "x".repeat(300));
         for (slot, array) in [
             ("comm", "and"),
@@ -1152,8 +1153,8 @@ cases! {
         let engine = engine();
         let files = files(&[]);
         let mut vm = server(&engine, &files);
-        eval(&mut vm, FIXTURES).unwrap();
-        eval(&mut vm, "function tsMark(%v) { $marked = %v; }").unwrap();
+        try_eval(&mut vm, FIXTURES).unwrap();
+        try_eval(&mut vm, "function tsMark(%v) { $marked = %v; }").unwrap();
         for (what, code) in [
             (
                 "schedule setFieldValue",
@@ -1192,7 +1193,7 @@ cases! {
             assert_eq!(global(&vm, "$Test::Allowed"), "false", "{what}: {log}");
         }
         vm.advance_time(10);
-        assert_eq!(eval(&mut vm, "return Thing.command;").unwrap(), "");
+        assert_eq!(try_eval(&mut vm, "return Thing.command;").unwrap(), "");
         // An ordinary queued call runs when it fires.
         assert_eq!(
             run(

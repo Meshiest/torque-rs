@@ -13,8 +13,7 @@ fn field(name: &str, text: &str) -> UnpackedField {
 
 #[test]
 fn an_event_for_a_datablock_of_another_class_is_refused_and_leaves_it_alone() {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let id = vm
         .eval(b"datablock AudioDescription(QuietDesc) { volume = 0.5; }; return QuietDesc.getId();")
         .unwrap();
@@ -61,8 +60,7 @@ fn an_event_for_a_datablock_of_another_class_is_refused_and_leaves_it_alone() {
 
 #[test]
 fn an_object_the_client_made_takes_an_update_in_place_and_an_unchanged_resend_moves_nothing() {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let id = ts_vm::sim::FIRST_DATABLOCK_ID + 7;
     let event = |volume: &str| Unpacked {
         id,
@@ -102,8 +100,7 @@ fn an_object_the_client_made_takes_an_update_in_place_and_an_unchanged_resend_mo
 
 #[test]
 fn a_scripts_datablock_at_an_id_the_clients_own_had_is_not_written() {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let id = ts_vm::sim::FIRST_DATABLOCK_ID + 9;
     let event = |volume: &str| Unpacked {
         id,
@@ -141,8 +138,7 @@ fn a_scripts_datablock_at_an_id_the_clients_own_had_is_not_written() {
 
 #[test]
 fn over_a_script_engine_shared_with_the_server_the_servers_own_datablock_is_left_as_it_is() {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let id = vm
         .eval(
             b"datablock AudioDescription(ServerDesc) { volume = 0.5; }; return ServerDesc.getId();",
@@ -172,8 +168,7 @@ fn over_a_script_engine_shared_with_the_server_the_servers_own_datablock_is_left
 
 #[test]
 fn an_update_puts_an_out_of_range_value_in_range_as_the_first_add_does_and_says_nothing() {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     torque_game::shapes::register(&mut vm);
     let id = ts_vm::sim::FIRST_DATABLOCK_ID + 9;
     let event = |lifetime: &str| Unpacked {
@@ -210,8 +205,7 @@ fn an_update_puts_an_out_of_range_value_in_range_as_the_first_add_does_and_says_
 
 /// A client over the game classes' behaviors: its add-time checks run.
 fn checked_client() -> (Vm, Rc<torque_game::shapes::Shapes>) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let shapes = torque_game::shapes::register(&mut vm);
     (vm, shapes)
 }

@@ -64,6 +64,8 @@ rooms = []
 p2p = ["webrtc", "rooms"]
 
 [dev-dependencies]
+# A `Vm` with the game classes installed (`torque_game::testing::vm`).
+torque-game = { path = "../torque-game", features = ["testing"] }
 # The benches.
 criterion = { workspace = true }
 # The web transport's TLS tests: a certificate made for the test.

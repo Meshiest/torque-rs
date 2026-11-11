@@ -148,8 +148,7 @@ fn a_network_feed_sends_its_challenge_again_and_gives_up_after_tges_tries() {
 }
 
 fn tge_client() -> (Vm, Rc<RefCell<ClientState<TgeConn>>>, DatagramQueue) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let gui = gui::register(&mut vm);
     let net = Rc::new(RefCell::new(ClientNet::default()));
     let mem = MemoryDatagrams::default();
@@ -603,8 +602,7 @@ fn networked_client(
     DatagramQueue,
     DatagramQueue,
 ) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let gui = gui::register(&mut vm);
     let net = Rc::new(RefCell::new(ClientNet {
         policy: crate::net::NetPolicy::Lan,

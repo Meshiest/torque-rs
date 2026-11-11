@@ -21,6 +21,8 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 web-time = "1.1"
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 # The draw tests' synthetic bitmaps.
 png = "0.18"
 criterion = { workspace = true }

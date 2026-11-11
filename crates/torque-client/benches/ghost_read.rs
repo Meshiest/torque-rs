@@ -27,7 +27,6 @@ use torque_server::net::{Host, HostParts, NetClock, attach_host};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use ts_vm::host::MemFiles;
-use ts_vm::vm::Vm;
 
 const OBJECTS: usize = 1_024;
 const GHOST_BITS: u8 = 11;
@@ -50,8 +49,7 @@ struct Recording {
 /// A hub with one connection and `OBJECTS` static shapes: the sections that create every ghost, then the sections of every object
 /// marked dirty, each pass acknowledged.
 fn record() -> Recording {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     let files = MemFiles::new();
     let b = [-1.0, -2.0, 0.0, 1.0, 2.0, 1.0];
     let car = shapes::synth::hull_shape(b, &[("detail2", b)], &[], &[]);

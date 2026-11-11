@@ -3,11 +3,12 @@
 
 mod common;
 
-use common::{console, eval, files, server, zip_of};
+use common::{files, server, zip_of};
 use torque_engine::{
     AssetError, Assets, ClientStage, Engine, EngineBuilder, Plugin, PluginId, Spec,
 };
 use torque_mods::{MANIFEST, ModLimits, ModStatus, Mods, ModsConfig, ModsPlugin, Version};
+use torque_ts_vm::testing::{console, eval};
 use torque_ts_vm::vm::Vm;
 
 /// A word list: what a test loader makes of a `.words` file.

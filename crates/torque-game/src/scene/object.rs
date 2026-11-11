@@ -504,8 +504,7 @@ mod transform_tests {
 
     /// What a camera's `setTransform` marks under a layer whose mask for it is `mask`.
     fn camera_marks(mask: u32) -> u32 {
-        let mut vm = Vm::new();
-        crate::specs::install(&mut vm);
+        let mut vm = crate::testing::vm();
         vm.eval(
             b"datablock CameraData(EyeData) {};
 new Camera(Eye) { dataBlock = EyeData; };",

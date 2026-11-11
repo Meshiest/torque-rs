@@ -1,6 +1,7 @@
 //! Natives declared with `#[function]` and `#[methods]`: what the attributes make registers as the hand-written
 //! registry calls do, methods reach their object's data, and the declarations' mistakes fail the build.
 
+use torque_ts_vm::testing::eval;
 use torque_ts_vm::vm::Vm;
 
 use crate::script::{NativeDecl, Natives, TypedNative};
@@ -38,10 +39,6 @@ fn server(engine: &Engine) -> Vm {
         engine.replay(stage, &mut vm).expect("the replay runs");
     }
     vm
-}
-
-fn eval(vm: &mut Vm, text: &str) -> String {
-    String::from_utf8(vm.eval(text.as_bytes()).expect("the script runs")).expect("UTF-8")
 }
 
 fn listing_line(vm: &Vm, label: &str) -> String {

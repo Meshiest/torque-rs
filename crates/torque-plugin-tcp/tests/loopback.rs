@@ -6,8 +6,9 @@ mod common;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::thread;
+use torque_ts_vm::testing::{eval, global};
 
-use common::{answer, closed_port, eval, global, listener, logging, pump, read_request, vm};
+use common::{answer, closed_port, listener, logging, pump, read_request, vm};
 
 #[test]
 fn a_connect_sends_and_receives_lines_and_the_last_one_comes_at_the_disconnect() {

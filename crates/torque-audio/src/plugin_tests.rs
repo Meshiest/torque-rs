@@ -1,5 +1,6 @@
 use torque_engine::{ClientStage, ClientTick, Engine};
 use ts_vm::host::MemFiles;
+use ts_vm::testing::eval;
 
 use super::*;
 
@@ -39,10 +40,6 @@ fn client_vm(engine: &Engine) -> Vm {
         engine.replay(stage, &mut vm).expect("the recipes run");
     }
     vm
-}
-
-fn eval(vm: &mut Vm, code: &str) -> String {
-    String::from_utf8_lossy(&vm.eval(code.as_bytes()).unwrap()).into_owned()
 }
 
 fn tick(engine: &Engine, vm: &mut Vm) {

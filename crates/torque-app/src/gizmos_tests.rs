@@ -1,5 +1,6 @@
 use glam::{Quat, Vec3};
 use torque_engine::{ClientStage, ClientTick, Engine, EngineBuilder};
+use torque_ts_vm::testing::{eval, log_lines};
 use torque_ts_vm::vm::Vm;
 
 use super::*;
@@ -27,21 +28,10 @@ fn client_vm(engine: &Engine) -> Vm {
     vm
 }
 
-fn eval(vm: &mut Vm, code: &str) {
-    vm.eval(code.as_bytes()).expect("the script runs");
-}
-
 fn tick(engine: &Engine, vm: &mut Vm) {
     for hook in engine.list::<ClientTick>() {
         hook.run(vm);
     }
-}
-
-fn log(vm: &mut Vm) -> Vec<String> {
-    vm.drain_log()
-        .into_iter()
-        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
-        .collect()
 }
 
 fn segments(g: &Gizmos) -> Vec<torque_render_hd::gizmos::GizmoSegment> {
@@ -339,7 +329,7 @@ fn a_call_with_too_few_or_too_many_arguments_draws_nothing() {
     );
     eval(&mut vm, "clearDebug(1);");
     assert!(g.is_empty());
-    let lines = log(&mut vm);
+    let lines = log_lines(&mut vm);
     assert!(
         lines.iter().any(|l| l.contains("drawDebugLine(")),
         "{lines:?}"
@@ -358,7 +348,7 @@ fn the_console_is_told_when_a_script_overflows_the_caps() {
     eval(&mut vm, r#"drawDebugBox("0 0 0", "1 1 1", "1 1 1");"#);
     // Twelve lines are past ten: the box was dropped and the console told at once.
     assert!(g.is_empty());
-    let told = log(&mut vm);
+    let told = log_lines(&mut vm);
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains("more than 10 lines at once"));
 }
@@ -374,14 +364,14 @@ fn rust_overflows_reach_the_console_with_the_next_tick() {
     let g = Gizmos::of(&vm).unwrap();
     g.label([0.0; 3], "a", RED);
     g.label([0.0; 3], "b", RED);
-    assert!(log(&mut vm).is_empty());
+    assert!(log_lines(&mut vm).is_empty());
     tick(&engine, &mut vm);
-    let told = log(&mut vm);
+    let told = log_lines(&mut vm);
     assert_eq!(told.len(), 1, "{told:?}");
     assert!(told[0].contains("more than 1 labels at once"));
     // Told once.
     tick(&engine, &mut vm);
-    assert!(log(&mut vm).is_empty());
+    assert!(log_lines(&mut vm).is_empty());
 }
 
 #[test]

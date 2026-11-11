@@ -1,5 +1,6 @@
 use torque_fonts::ttf_fuzz::Synth;
 use torque_ts_vm::host::MemFiles;
+use torque_ts_vm::testing::console;
 use torque_ts_vm::vm::Vm;
 
 use super::*;
@@ -25,14 +26,6 @@ fn rig() -> (Vm, Gui, MemFiles) {
 fn register_font(vm: &mut Vm, face: &str, path: &str) -> bool {
     let call = format!("return registerFont(\"{face}\", \"{path}\");");
     vm.eval(call.as_bytes()).unwrap() == b"1"
-}
-
-fn console(vm: &mut Vm) -> String {
-    vm.drain_log()
-        .into_iter()
-        .map(|l| String::from_utf8_lossy(&l.text).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 #[test]

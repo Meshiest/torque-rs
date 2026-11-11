@@ -1,4 +1,5 @@
 use ts_vm::host::MemFiles;
+use ts_vm::testing::eval;
 
 use super::*;
 
@@ -46,10 +47,6 @@ fn rig() -> (Vm, Rc<RefCell<AudioHost>>) {
     let (mut vm, host) = rig_with(files);
     vm.set_step_limit(Some(50_000_000));
     (vm, host)
-}
-
-fn eval(vm: &mut Vm, code: &str) -> String {
-    String::from_utf8_lossy(&vm.eval(code.as_bytes()).unwrap()).into_owned()
 }
 
 fn log(vm: &mut Vm) -> Vec<String> {

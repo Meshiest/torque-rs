@@ -45,8 +45,7 @@ function tick() {\n\
 schedule(0, 0, tick);\n";
 
 fn server(files: &MemFiles) -> Server {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(files.clone());
     Server::new(vm)
 }
@@ -255,8 +254,7 @@ type NetServer = Server<HostParts<TorqueNet>>;
 /// connections, with Torque's codecs (TGE's ghost classes).
 fn net_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
     let files = MemFiles::new();
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let mut s = Server::with_state(vm, Rc::clone(&state));

@@ -36,7 +36,6 @@ use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
-use torque_ts_vm::vm::Vm;
 
 const SERVER_ADDR: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 28_000);
@@ -55,8 +54,7 @@ type Shared = Rc<RefCell<NetShared<TorqueNet>>>;
 pub(crate) fn game_server_with(
     files: impl torque_ts_vm::host::FileHost + 'static,
 ) -> (NetServer, Shared, MemoryEnd) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let game = torque_server::game::install(&mut vm, &state);

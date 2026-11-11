@@ -37,5 +37,9 @@ torque-resource = { path = "../torque-resource" }
 torque-maps = { path = "../torque-maps" }
 torque-mapcore = { path = "../torque-mapcore" }
 
+[features]
+# `testing::vm`: a `Vm` with the game classes' specs installed, for other crates' tests. Never a normal dependency's feature.
+testing = []
+
 [lints]
 workspace = true

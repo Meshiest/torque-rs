@@ -9,8 +9,9 @@ use std::net::TcpStream;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{eval, global, listener, pump, vm_limited};
+use common::{listener, pump, vm_limited};
 use torque_plugin_tcp::{TcpLimits, poll};
+use torque_ts_vm::testing::{eval, global};
 use torque_ts_vm::vm::Vm;
 
 /// The longest one pass may take.

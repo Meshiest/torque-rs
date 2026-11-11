@@ -3,6 +3,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use torque_ts_vm::testing::eval;
 
 use torque_ts_vm::convert::{ArgKind, ScriptError};
 use torque_ts_vm::vm::{Native, Vm};
@@ -62,10 +63,6 @@ fn client(engine: &Engine) -> Vm {
         engine.replay(stage, &mut vm).expect("the replay runs");
     }
     vm
-}
-
-fn eval(vm: &mut Vm, text: &str) -> String {
-    String::from_utf8(vm.eval(text.as_bytes()).expect("the script runs")).expect("UTF-8")
 }
 
 /// The `native_listing` line of the native `label` (`name` or `Namespace::name`).

@@ -55,7 +55,10 @@ fn lua_sets_layout_fields_and_the_next_frame_lays_them_out() {
                ts.object('B').flexGrow = 1 \
                ts.setGlobal('$Test::Direction', row.direction)";
     assert_eq!(run(&mut vm, &files, "layout.lua", lua), Ok(true));
-    assert_eq!(common::global(&vm, "$Test::Direction"), "column");
+    assert_eq!(
+        torque_ts_vm::testing::global(&vm, "$Test::Direction"),
+        "column"
+    );
     gui.frame(&mut vm);
     assert_eq!(rect(&vm, "A"), [125, 0, 50, 20]);
     assert_eq!(

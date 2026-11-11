@@ -44,10 +44,8 @@ pub fn game_server(
     use torque_server::net::transport::{MemoryTransport, SharedTransport};
     use torque_server::net::{Host, NetClock, attach_host};
     use torque_server::state::ServerState;
-    use torque_ts_vm::vm::Vm;
 
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(files);
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let game = torque_server::game::install(&mut vm, &state);

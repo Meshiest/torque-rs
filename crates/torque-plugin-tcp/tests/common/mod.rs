@@ -55,19 +55,6 @@ pub fn test_resolver() -> Resolver {
     })
 }
 
-/// Runs `script`, panicking on a script error.
-pub fn eval(vm: &mut Vm, script: &str) -> String {
-    let out = vm.eval(script.as_bytes()).expect("the script runs");
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// The global `name` as text ("" when unset).
-pub fn global(vm: &Vm, name: &str) -> String {
-    vm.global(name)
-        .map(|v| String::from_utf8_lossy(&v).into_owned())
-        .unwrap_or_default()
-}
-
 /// Ticks `vm` (a pass, then a millisecond's sleep) until `done` holds; false when [`WAIT`] passed first. Every pass's report
 /// goes to `each`.
 pub fn pump_with(

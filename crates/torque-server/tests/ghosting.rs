@@ -14,7 +14,6 @@ use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
 use torque_server::server::{Server, TICK_MS};
 use torque_server::state::ServerState;
 use torque_ts_vm::host::MemFiles;
-use torque_ts_vm::vm::Vm;
 
 type NetServer = Server<HostParts<TorqueNet>>;
 
@@ -25,8 +24,7 @@ const CLIENT_ADDR: SocketAddr =
 
 /// A server with the game classes and a network host on a memory transport, taking connections.
 fn game_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
+    let mut vm = torque_game::testing::vm();
     vm.set_file_host(MemFiles::new());
     let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
     let game = torque_server::game::install(&mut vm, &state);

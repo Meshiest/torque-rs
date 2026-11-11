@@ -32,6 +32,8 @@ default = ["https"]
 https = ["dep:rustls", "dep:rustls-native-certs"]
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 # The HTTPS tests: a certificate made for the test, and the server's side of TLS.
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
 rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12"] }

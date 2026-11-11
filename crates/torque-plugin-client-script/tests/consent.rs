@@ -13,6 +13,7 @@ use torque_plugin_client_script::policy::{
 };
 use torque_plugin_client_script::{Choices, ConsentAnswer, RealmState, Realms};
 use torque_ts_vm::host::DirHost;
+use torque_ts_vm::testing::try_eval;
 
 fn ui_net() -> Grants {
     Grants::of(&[Tier::Ui, Tier::Net])
@@ -538,7 +539,10 @@ fn the_choices_file_is_beyond_every_script_file_function() {
     let mut vm = torque_ts_vm::vm::Vm::new();
     vm.set_file_host(DirHost::new(&game));
     // The control: a file in the game's folder is there.
-    assert_eq!(eval(&mut vm, "return isFile(\"art/pic.txt\");"), "1");
+    assert_eq!(
+        try_eval(&mut vm, "return isFile(\"art/pic.txt\");").unwrap_or_default(),
+        "1"
+    );
     let absolute = file.to_string_lossy().replace('\\', "/");
     let forms = [
         absolute.clone(),
@@ -556,7 +560,7 @@ fn the_choices_file_is_beyond_every_script_file_function() {
             format!("return exec(\"{path}\");"),
             format!("return findFirstFile(\"{path}\");"),
         ] {
-            let result = eval(&mut vm, &call.replace('\\', "\\\\"));
+            let result = try_eval(&mut vm, &call.replace('\\', "\\\\")).unwrap_or_default();
             assert!(
                 result.is_empty() || result == "0" || result == "-1",
                 "{call} gave {result}"
@@ -565,16 +569,11 @@ fn the_choices_file_is_beyond_every_script_file_function() {
     }
     // Nothing in the game's folder gives the server's key either.
     assert!(
-        !eval(&mut vm, "return findFirstFile(\"*\");").contains("choices"),
+        !try_eval(&mut vm, "return findFirstFile(\"*\");")
+            .unwrap_or_default()
+            .contains("choices"),
         "no listing shows it"
     );
-}
-
-fn eval(vm: &mut torque_ts_vm::vm::Vm, code: &str) -> String {
-    match vm.eval(code.as_bytes()) {
-        Ok(out) => String::from_utf8_lossy(&out).into_owned(),
-        Err(_) => String::new(),
-    }
 }
 
 #[test]
@@ -608,14 +607,14 @@ fn no_script_reads_the_remembered_choices() {
     ] {
         assert!(w.vm.global(name).is_none(), "{name}");
     }
-    let dump = eval(&mut w.vm, "return getVariableDump();");
+    let dump = try_eval(&mut w.vm, "return getVariableDump();").unwrap_or_default();
     assert!(!dump.contains(&key));
     // The only script functions the plugin adds are the server's, and none answers with the choices.
     for call in [
         "return clientScriptOffer(1);",
         "return clientScriptSend(1, \"x\");",
     ] {
-        let result = eval(&mut w.server_vm, call);
+        let result = try_eval(&mut w.server_vm, call).unwrap_or_default();
         assert!(
             !result.contains(&key) && !result.contains("allow"),
             "{call}: {result}"

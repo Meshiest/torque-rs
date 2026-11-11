@@ -37,6 +37,8 @@ torque-server = { path = "../torque-server" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [dev-dependencies]
+# The script test helpers (`torque_ts_vm::testing`).
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 torque-engine = { path = "../torque-engine", features = ["testing"] }
 torque-fonts = { path = "../torque-fonts" }
 torque-plugin-gui-layout = { path = "../torque-plugin-gui-layout" }

@@ -24,5 +24,9 @@ foldhash = "0.2"
 [target.'cfg(windows)'.dependencies]
 winapi-util = "0.1.11"
 
+[features]
+# `testing`: the script test helpers other crates' tests share. Never a normal dependency's feature.
+testing = []
+
 [lints]
 workspace = true

@@ -34,5 +34,9 @@ script = ["dep:ts-vm", "dep:ts-text", "dep:torque-game"]
 # `AudioPlugin`: the `alx` natives and the mixer as a plugin of the engine builder.
 engine = ["script", "dep:torque-engine"]
 
+[dev-dependencies]
+# The script test helpers (`ts_vm::testing`).
+ts-vm = { package = "torque-ts-vm", path = "../torque-ts-vm", features = ["testing"] }
+
 [lints]
 workspace = true
