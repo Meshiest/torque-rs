@@ -6,6 +6,7 @@ use std::cell::{Cell, RefCell};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::rc::Rc;
 
+use torque_client::conn::tge::TgeConn;
 use torque_engine::{
     Engine, EngineBuilder, Plugin, PluginGroup, PluginType, RunError, Runner, ServerStage,
 };
@@ -15,14 +16,17 @@ use torque_render_scene::source::Eye;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Native;
 
+use crate::client::{ClientBuilder, ClientNet, GameClient};
+use crate::orbit::Orbit;
 use crate::plugins::{DefaultPlugins, WindowRunnerPlugin};
 use crate::run::{
     Dedicated, DedicatedRunnerPlugin, EngineDedicated, EngineRun, OffscreenRunnerPlugin, Stop,
     WebPageRunnerPlugin,
 };
 use crate::server::Listen;
+use crate::shots::FRAME_MS;
 use crate::view::WorldView;
-use crate::{App, Host};
+use crate::{App, GameApp, Host};
 
 /// Counts the ticks a script reports and asks the server to stop at the third.
 #[derive(torque_engine::PluginId)]
@@ -335,4 +339,90 @@ fn a_config_chooses_the_runner_by_id() {
         .expect("one runner is left");
     assert!(engine.is_plugin_added::<WindowRunnerPlugin>());
     assert!(!engine.is_plugin_added::<DedicatedRunnerPlugin>());
+}
+
+/// A game that implements [`GameApp`] itself (it is no [`App`]) over a client of a plain engine, counting the frames drawn.
+struct Counted {
+    client: GameClient,
+    frames: Rc<Cell<u32>>,
+}
+
+impl GameApp for Counted {
+    type Conn = TgeConn;
+
+    fn host(&mut self) -> &mut Host<TgeConn> {
+        &mut self.client.host
+    }
+
+    fn host_ref(&self) -> &Host<TgeConn> {
+        &self.client.host
+    }
+
+    fn title(&self) -> String {
+        "counted".to_string()
+    }
+
+    fn log_name(&self) -> &str {
+        "counted"
+    }
+
+    fn view(&self, gpu: &Gpu) -> WorldView {
+        WorldView::new(gpu)
+    }
+
+    fn advance(&mut self, ms: u32) {
+        self.client.step(ms);
+    }
+
+    fn frame(&mut self, _: &mut WorldView) -> (GuiDraws, Eye) {
+        self.frames.set(self.frames.get() + 1);
+        (
+            self.client.host.draw_frame(),
+            Orbit::default().eye([0.0; 3]),
+        )
+    }
+}
+
+#[test]
+fn app_for_names_a_game_app_and_the_offscreen_runner_draws_64_frames_of_it() {
+    if let Err(e) = crate::window::offscreen_gpu() {
+        eprintln!("skipped: {e}");
+        return;
+    }
+    let frames = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&frames);
+    EngineBuilder::new()
+        .add_plugins((
+            DefaultPlugins.disable::<WindowRunnerPlugin>(),
+            OffscreenRunnerPlugin::new((96, 54), 64 * FRAME_MS),
+        ))
+        .app_for(move |engine: &Engine| {
+            let client = ClientBuilder::from_engine(engine, None, ClientNet::None)?.build();
+            Ok(Counted {
+                client,
+                frames: Rc::clone(&counted),
+            })
+        })
+        .run()
+        .expect("the game runs");
+    assert_eq!(frames.get(), 64);
+}
+
+#[test]
+fn app_for_is_the_same_exclusive_slot_as_app() {
+    let err = EngineBuilder::new()
+        .add_plugins(DefaultPlugins)
+        .app(|_: &Engine| Ok(Nothing))
+        .app_for(|_: &Engine| Ok(Nothing))
+        .run()
+        .unwrap_err();
+    assert!(matches!(err, RunError::Build(_)), "{err:?}");
+}
+
+#[test]
+fn every_app_is_a_game_app_over_the_tge_connection() {
+    fn conn<A: GameApp>() -> std::any::TypeId {
+        std::any::TypeId::of::<A::Conn>()
+    }
+    assert_eq!(conn::<Nothing>(), std::any::TypeId::of::<TgeConn>());
 }

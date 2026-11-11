@@ -1,4 +1,4 @@
-//! A game in a window: [`run`] drives an [`App`] through the client's window driver ([`torque_client::platform::window`]),
+//! A game in a window: [`run`] drives a [`GameApp`] through the client's window driver ([`torque_client::platform::window`]),
 //! drawing each frame into a [`WindowSurface`] (a window's GPU device and surface, kept to the window's size).
 
 use std::sync::Arc;
@@ -7,13 +7,12 @@ use torque_render_core::window::{WINDOW_BACKENDS, configure_surface_vsync, windo
 use torque_render_core::{Gpu, RenderError, wgpu};
 use winit::window::Window;
 
-use torque_client::conn::tge::TgeConn;
 use torque_client::platform::window::{self as driver, WindowGame};
-use torque_client::screen::{ScreenRules, TgeScreen};
+use torque_client::screen::ScreenRules;
 use torque_server::server::Server;
 
 use super::view::WorldView;
-use super::{App, Host};
+use super::{GameApp, Host};
 
 /// An offscreen device (pictures and tests) on the first of the engine's window backends ([`WINDOW_BACKENDS`]: Vulkan first)
 /// with an adapter, so the pictures are drawn as the windows draw them.
@@ -112,7 +111,7 @@ impl WindowSurface {
     }
 }
 
-/// An [`App`] in a window: its surface and world view once the window is made.
+/// A [`GameApp`] in a window: its surface and world view once the window is made.
 struct AppWindow<G> {
     game: G,
     surface: Option<WindowSurface>,
@@ -136,7 +135,7 @@ struct AppWindow<G> {
     clock: web_time::Instant,
 }
 
-/// In a browser, while the map loads (the game's [`App::loading`], or its sky still being made), a frame is drawn only once the
+/// In a browser, while the map loads (the game's [`GameApp::loading`], or its sky still being made), a frame is drawn only once the
 /// last one's work is done on the GPU. The browser's GPU process makes the new pipelines a loading map asks for one after
 /// another (some take it a second or more), and the page's thread waits for it when it has more data to send than the GPU
 /// process has taken: a frame that does not start until the last is done never sends the map's buffers behind them. A frame
@@ -215,7 +214,7 @@ impl WebDevice {
     }
 }
 
-impl<G: App> AppWindow<G> {
+impl<G: GameApp> AppWindow<G> {
     /// The window's surface and the game's view on its device.
     #[cfg(not(target_arch = "wasm32"))]
     fn made(&mut self, surface: WindowSurface) {
@@ -284,15 +283,15 @@ impl<G: App> AppWindow<G> {
     }
 }
 
-impl<G: App> WindowGame for AppWindow<G> {
-    type Conn = TgeConn;
+impl<G: GameApp> WindowGame for AppWindow<G> {
+    type Conn = G::Conn;
     type Server = Server;
 
-    fn host(&mut self) -> &mut Host {
+    fn host(&mut self) -> &mut Host<G::Conn> {
         self.game.host()
     }
 
-    fn host_ref(&self) -> &Host {
+    fn host_ref(&self) -> &Host<G::Conn> {
         self.game.host_ref()
     }
 
@@ -301,7 +300,7 @@ impl<G: App> WindowGame for AppWindow<G> {
     }
 
     fn screen_rules(&self) -> &dyn ScreenRules {
-        &TgeScreen
+        self.game.screen_rules()
     }
 
     fn window_made(&mut self, window: &Arc<Window>, size: (u32, u32)) -> Result<(), String> {
@@ -432,7 +431,7 @@ impl<G: App> WindowGame for AppWindow<G> {
 
 /// Opens the window and runs `game` until it is closed or quits. In a browser the window is a canvas on the page and this
 /// returns at once: the page's event loop runs the game from then on.
-pub fn run<G: App + 'static>(game: G) -> Result<(), String> {
+pub fn run<G: GameApp>(game: G) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
     let w = AppWindow {
         game,
@@ -479,7 +478,7 @@ fn save_pipeline_cache(gpu: &Gpu, log_name: &str) {
     }
 }
 
-impl<G: App> AppWindow<G> {
+impl<G: GameApp> AppWindow<G> {
     /// Lets go of the window's state in order: the view first (its renderer stops and waits for its worker threads, which hold
     /// the device), then the device's pipeline cache is saved, then the surface and the device go, then the game. The device
     /// is let go here rather than at the process's end; the arena's ahead thread may still hold a clone for the buffers it is

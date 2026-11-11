@@ -38,7 +38,7 @@
 //!   [`server::GameServer::start_engine`] and [`client::ClientBuilder::from_engine`].
 //! - [`run`]: [`run::EngineRun`] and the runners behind [`Engine::run`](torque_engine::Engine::run), each a plugin on the
 //!   engine's runner slot: the window, the page's canvas, offscreen and a dedicated server.
-//! - [`window`]: a window's GPU surface and [`window::run`], which drives an [`App`] in a window.
+//! - [`window`]: a window's GPU surface and [`window::run`], which drives a [`GameApp`] in a window.
 //! - [`page_bridge`]: a web build's page and the game's scripts calling each other (`torque.call`, `callPage`), within caps.
 //! - [`web_page`]: the entry web builds share: the page's calls ([`web_exports!`]), the files it fetches, its settings, and
 //!   the loading stages and frame times written on the page.
@@ -46,7 +46,7 @@
 //!   a room) and its start-up lines.
 //! - `web_join` and `web_host` (the `p2p` feature, built for the web): a browser's client joining a server, a room's host
 //!   or the server in its page's worker; and that worker's server (`web_host_exports!`).
-//! - [`shots`]: an [`App`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
+//! - [`shots`]: a [`GameApp`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
 //!
@@ -74,6 +74,14 @@
 //!   `the_sleeping_furniture_is_drawn_still_and_a_pushed_chair_moves_again`).
 //! - The interiors hand their panes out with the last frame's draws moved over, not copied, and a frame with none changed
 //!   reads no file name again (bench `interiors update 100 kept` in `benches/app.rs`, timed under the bench lock).
+//! - Every runner takes a [`GameApp`], not an [`App`]: [`App`] is the game over TGE's connection half, and a blanket impl makes
+//!   each one a `GameApp` with that `Conn`, so [`window::run`], [`shots::Seat`] and the runner plugins have one generic path
+//!   for every connection half. [`run::EngineRun::app_for`] stores, for the game's type, the three runners (window, page,
+//!   offscreen) as closures over its `make`; nothing past it is erased, so a game's frame calls are not dynamic
+//!   (`app_for_names_a_game_app_and_the_offscreen_runner_draws_64_frames_of_it`, and
+//!   `every_app_is_a_game_app_over_the_tge_connection`, in `run_tests.rs`). The app slot is one slot for `app` and `app_for`
+//!   (`app_for_is_the_same_exclusive_slot_as_app`). A new method a runner needs from the game goes on [`GameApp`] with a
+//!   default, and on [`App`] with the same default, so existing games keep compiling.
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 
@@ -114,8 +122,10 @@ pub mod window;
 use torque_render_core::Gpu;
 use torque_render_scene::source::Eye;
 
+use torque_client::conn::ConnGame;
 use torque_client::conn::tge::TgeConn;
 use torque_client::host::ClientHost;
+use torque_client::screen::{ScreenRules, TgeScreen};
 use torque_fonts::faces::FaceCache;
 use torque_fonts::{Fallback, NoFallback};
 use torque_gui::{DrawCache, GuiDraws};
@@ -135,8 +145,8 @@ pub use files::GameFiles;
 pub use server::{GameServer, Listen};
 pub use view::{Daylight, SceneShape, WorldView};
 
-/// The client host a game drives: TGE's connection half over a script engine as its server.
-pub type Host = ClientHost<TgeConn, Server>;
+/// The client host a game drives: the connection half `C` (TGE's by default) over a script engine as its server.
+pub type Host<C = TgeConn> = ClientHost<C, Server>;
 
 /// A game the window ([`window::run`]) and the pictures ([`shots`]) drive.
 pub trait App {
@@ -162,6 +172,81 @@ pub trait App {
     /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
     fn loading(&self) -> bool {
         false
+    }
+}
+
+/// A game the runners drive over any connection half: [`App`] with the half named. Every [`App`] is a `GameApp` over
+/// [`TgeConn`]; a game with its own [`ConnGame`] implements this directly and is named to the engine with
+/// [`EngineRun::app_for`](run::EngineRun::app_for).
+pub trait GameApp: 'static {
+    /// The connection half the game's client host runs.
+    type Conn: ConnGame;
+
+    /// The game's client host, for the runners to drive.
+    fn host(&mut self) -> &mut Host<Self::Conn>;
+
+    /// The game's client host, read only.
+    fn host_ref(&self) -> &Host<Self::Conn>;
+
+    /// The window's title.
+    fn title(&self) -> String;
+
+    /// The name printed in front of the window's notes.
+    fn log_name(&self) -> &str;
+
+    /// A world view on `gpu` for the game's frames.
+    fn view(&self, gpu: &Gpu) -> WorldView;
+
+    /// `ms` of the clock between two frames.
+    fn advance(&mut self, ms: u32);
+
+    /// The frame: the world into `view`, the canvas drawn (with the world's rectangle) and the eye.
+    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye);
+
+    /// Whether the game is still loading its map (a browser's page keeps its loading display up until it is not).
+    fn loading(&self) -> bool {
+        false
+    }
+
+    /// The rules the window's first size and `setScreenMode` follow (TGE 1.4's by default).
+    fn screen_rules(&self) -> &dyn ScreenRules {
+        &TgeScreen
+    }
+}
+
+impl<A: App + 'static> GameApp for A {
+    type Conn = TgeConn;
+
+    fn host(&mut self) -> &mut Host {
+        App::host(self)
+    }
+
+    fn host_ref(&self) -> &Host {
+        App::host_ref(self)
+    }
+
+    fn title(&self) -> String {
+        App::title(self)
+    }
+
+    fn log_name(&self) -> &str {
+        App::log_name(self)
+    }
+
+    fn view(&self, gpu: &Gpu) -> WorldView {
+        App::view(self, gpu)
+    }
+
+    fn advance(&mut self, ms: u32) {
+        App::advance(self, ms);
+    }
+
+    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
+        App::frame(self, view)
+    }
+
+    fn loading(&self) -> bool {
+        App::loading(self)
     }
 }
 

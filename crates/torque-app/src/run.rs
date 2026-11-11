@@ -29,7 +29,8 @@
 //! Two runners in one engine fail the build, naming both plugins.
 //!
 //! The window, web page and offscreen runners need the game: the app the plugins named with [`EngineRun::app`], made from the
-//! engine when the runner starts. A dedicated server needs files and a start function ([`Dedicated`]) and no app.
+//! engine when the runner starts ([`EngineRun::app_for`] names a [`GameApp`] over a connection half of its own). A dedicated
+//! server needs files and a start function ([`Dedicated`]) and no app.
 //!
 //! ```no_run
 //! use torque_app::App;
@@ -49,24 +50,55 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use torque_engine::{ClientStage, Engine, EngineBuilder, Plugin, Runner};
-use torque_gui::GuiDraws;
-use torque_render_core::Gpu;
-use torque_render_scene::source::Eye;
 
-use crate::view::WorldView;
-use crate::{App, Host};
+use crate::{App, GameApp};
 pub use torque_app_server::run::{
     Dedicated, DedicatedRunnerPlugin, EngineDedicated, PrintLine, Stop, run_dedicated,
 };
 
-/// How the app is made from the engine.
-pub(crate) type MakeApp = dyn Fn(&Engine) -> Result<Box<dyn App>, String>;
+/// What the runners say when they are built for the other platform. Said before a missing game is, so the platform's mistake
+/// is the one a game's author is told about.
+const NOT_IN_A_BROWSER: &str = "a browser build runs on the page's canvas: use WebPageRunnerPlugin";
+const ONLY_IN_A_BROWSER: &str =
+    "WebPageRunnerPlugin runs only in a browser build: use WindowRunnerPlugin";
+const NOT_OFFSCREEN_IN_A_BROWSER: &str = "an offscreen run does not run in a browser build";
 
-/// The engine builder's method for naming the game.
+/// The game the plugins named, made and run by the three runners that need one. The entry is made for the game's type
+/// ([`EngineRun::app_for`]): each runner is the generic runner of that type, so nothing past this point is erased.
+pub(crate) struct AppEntry {
+    window: Run,
+    web: Run,
+    offscreen: RunOffscreen,
+}
+
+/// A runner of the named game, as the entry stores it.
+type Run = Box<dyn Fn(&Engine) -> Result<(), String>>;
+type RunOffscreen = Box<dyn Fn(&Engine, &OffscreenRunnerPlugin) -> Result<(), String>>;
+
+impl AppEntry {
+    fn of<A: GameApp>(make: impl Fn(&Engine) -> Result<A, String> + 'static) -> AppEntry {
+        let make = Rc::new(make);
+        let for_window = Rc::clone(&make);
+        let for_web = Rc::clone(&make);
+        AppEntry {
+            window: Box::new(move |engine| window(engine, &*for_window)),
+            web: Box::new(move |engine| web(engine, &*for_web)),
+            offscreen: Box::new(move |engine, plugin| offscreen_run(engine, &*make, plugin)),
+        }
+    }
+}
+
+/// The engine builder's methods for naming the game.
 pub trait EngineRun {
     /// Names the game: `make` makes the [`App`] from the built engine when a window, a page or an offscreen runner starts.
     /// An exclusive slot, like the runner's: naming a second game fails the build.
     fn app<A: App + 'static>(
+        &mut self,
+        make: impl Fn(&Engine) -> Result<A, String> + 'static,
+    ) -> &mut EngineBuilder;
+
+    /// [`app`](Self::app) for a game over any connection half ([`GameApp`]): the runners drive the game as its own type.
+    fn app_for<A: GameApp>(
         &mut self,
         make: impl Fn(&Engine) -> Result<A, String> + 'static,
     ) -> &mut EngineBuilder;
@@ -77,11 +109,14 @@ impl EngineRun for EngineBuilder {
         &mut self,
         make: impl Fn(&Engine) -> Result<A, String> + 'static,
     ) -> &mut EngineBuilder {
-        let make: Rc<MakeApp> = Rc::new(move |engine| {
-            let app: Box<dyn App> = Box::new(make(engine)?);
-            Ok(app)
-        });
-        self.set_slot::<MakeApp>(make)
+        self.app_for(make)
+    }
+
+    fn app_for<A: GameApp>(
+        &mut self,
+        make: impl Fn(&Engine) -> Result<A, String> + 'static,
+    ) -> &mut EngineBuilder {
+        self.set_slot::<AppEntry>(Rc::new(AppEntry::of(make)))
     }
 }
 
@@ -103,7 +138,10 @@ struct WindowRunner;
 
 impl Runner for WindowRunner {
     fn run(&self, engine: &Engine) -> Result<(), String> {
-        window(engine)
+        if cfg!(target_arch = "wasm32") {
+            return Err(NOT_IN_A_BROWSER.to_string());
+        }
+        (entry(engine)?.window)(engine)
     }
 }
 
@@ -133,7 +171,10 @@ struct WebPageRunner;
 
 impl Runner for WebPageRunner {
     fn run(&self, engine: &Engine) -> Result<(), String> {
-        web(engine)
+        if !cfg!(target_arch = "wasm32") {
+            return Err(ONLY_IN_A_BROWSER.to_string());
+        }
+        (entry(engine)?.web)(engine)
     }
 }
 
@@ -180,81 +221,56 @@ struct OffscreenRunner(OffscreenRunnerPlugin);
 
 impl Runner for OffscreenRunner {
     fn run(&self, engine: &Engine) -> Result<(), String> {
-        offscreen_run(engine, &self.0)
+        if cfg!(target_arch = "wasm32") {
+            return Err(NOT_OFFSCREEN_IN_A_BROWSER.to_string());
+        }
+        (entry(engine)?.offscreen)(engine, &self.0)
     }
 }
 
-/// The app the engine's game makes.
-fn make_app(engine: &Engine) -> Result<Boxed, String> {
-    let make = engine
-        .slot::<MakeApp>()
-        .ok_or("the engine has no game to show: name it with `EngineRun::app`")?;
-    make(engine).map(Boxed)
-}
-
-/// The app the engine made, as an [`App`] of its own.
-struct Boxed(Box<dyn App>);
-
-impl App for Boxed {
-    fn host(&mut self) -> &mut Host {
-        self.0.host()
-    }
-
-    fn host_ref(&self) -> &Host {
-        self.0.host_ref()
-    }
-
-    fn title(&self) -> String {
-        self.0.title()
-    }
-
-    fn log_name(&self) -> &str {
-        self.0.log_name()
-    }
-
-    fn view(&self, gpu: &Gpu) -> WorldView {
-        self.0.view(gpu)
-    }
-
-    fn advance(&mut self, ms: u32) {
-        self.0.advance(ms);
-    }
-
-    fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
-        self.0.frame(view)
-    }
-
-    fn loading(&self) -> bool {
-        self.0.loading()
-    }
+/// The entry the engine's game was named with.
+fn entry(engine: &Engine) -> Result<Rc<AppEntry>, String> {
+    engine
+        .slot::<AppEntry>()
+        .ok_or_else(|| "the engine has no game to show: name it with `EngineRun::app`".to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn window(engine: &Engine) -> Result<(), String> {
-    crate::window::run(make_app(engine)?)
+fn window<A: GameApp>(
+    engine: &Engine,
+    make: &dyn Fn(&Engine) -> Result<A, String>,
+) -> Result<(), String> {
+    crate::window::run(make(engine)?)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn window(_: &Engine) -> Result<(), String> {
-    Err("a browser build runs on the page's canvas: use WebPageRunnerPlugin".to_string())
+fn window<A: GameApp>(_: &Engine, _: &dyn Fn(&Engine) -> Result<A, String>) -> Result<(), String> {
+    Err(NOT_IN_A_BROWSER.to_string())
 }
 
 #[cfg(target_arch = "wasm32")]
-fn web(engine: &Engine) -> Result<(), String> {
+fn web<A: GameApp>(
+    engine: &Engine,
+    make: &dyn Fn(&Engine) -> Result<A, String>,
+) -> Result<(), String> {
     crate::web_page::init();
-    crate::window::run(make_app(engine)?)
+    crate::window::run(make(engine)?)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn web(_: &Engine) -> Result<(), String> {
-    Err("WebPageRunnerPlugin runs only in a browser build: use WindowRunnerPlugin".to_string())
+fn web<A: GameApp>(_: &Engine, _: &dyn Fn(&Engine) -> Result<A, String>) -> Result<(), String> {
+    Err(ONLY_IN_A_BROWSER.to_string())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn offscreen_run(engine: &Engine, offscreen: &OffscreenRunnerPlugin) -> Result<(), String> {
+fn offscreen_run<A: GameApp>(
+    engine: &Engine,
+    make: &dyn Fn(&Engine) -> Result<A, String>,
+    offscreen: &OffscreenRunnerPlugin,
+) -> Result<(), String> {
     use crate::shots::{Seat, write_png};
 
-    let app = make_app(engine)?;
+    let app = make(engine)?;
     let gpu = crate::window::offscreen_gpu().map_err(|e| e.to_string())?;
     let mut seat = Seat::new(app, &gpu, offscreen.size)?;
     seat.run(&gpu, offscreen.ms)?;
@@ -269,6 +285,10 @@ fn offscreen_run(engine: &Engine, offscreen: &OffscreenRunnerPlugin) -> Result<(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn offscreen_run(_: &Engine, _: &OffscreenRunnerPlugin) -> Result<(), String> {
-    Err("an offscreen run does not run in a browser build".to_string())
+fn offscreen_run<A: GameApp>(
+    _: &Engine,
+    _: &dyn Fn(&Engine) -> Result<A, String>,
+    _: &OffscreenRunnerPlugin,
+) -> Result<(), String> {
+    Err(NOT_OFFSCREEN_IN_A_BROWSER.to_string())
 }

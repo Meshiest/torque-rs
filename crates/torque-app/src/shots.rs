@@ -1,4 +1,4 @@
-//! An [`App`] without a window: every frame drawn offscreen as the window would draw it, and pictures of it written as PNGs.
+//! A [`GameApp`] without a window: every frame drawn offscreen as the window would draw it, and pictures of it written as PNGs.
 //!
 //! A [`Seat`] is one game with its world view and its target; [`run`] runs the clocks of several seats side by side, a frame
 //! of each every [`FRAME_MS`]; [`Seat::picture`] holds the clock while the renderer settles on the scene, then reads it back;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use torque_render_core::{Frame, Gpu, Offscreen};
 use torque_render_scene::source::Eye;
 
-use super::App;
+use super::GameApp;
 use super::view::WorldView;
 
 /// The clock's step between frames (ms).
@@ -29,7 +29,7 @@ pub struct Seat<G> {
     clock: web_time::Instant,
 }
 
-impl<G: App> Seat<G> {
+impl<G: GameApp> Seat<G> {
     /// `game` drawn at `size` on `gpu`.
     pub fn new(mut game: G, gpu: &Gpu, size: (u32, u32)) -> Result<Seat<G>, String> {
         game.host().surface_size(size);
@@ -99,7 +99,7 @@ impl<G: App> Seat<G> {
 }
 
 /// The seats' clocks run `ms`, a frame of each every [`FRAME_MS`].
-pub fn run<G: App>(gpu: &Gpu, seats: &mut [&mut Seat<G>], ms: u32) -> Result<(), String> {
+pub fn run<G: GameApp>(gpu: &Gpu, seats: &mut [&mut Seat<G>], ms: u32) -> Result<(), String> {
     for _ in 0..ms.div_ceil(FRAME_MS) {
         for s in seats.iter_mut() {
             s.game.advance(FRAME_MS);

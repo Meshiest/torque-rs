@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use torque_client::conn::ConnGame;
 use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::HdWorld;
@@ -445,7 +446,7 @@ impl WorldView {
     /// the view draws with the slot's renderer and its features, and with each swap from its next frame. A renderer chosen
     /// before (a script at start-up) that cannot be made on this view's GPU gives way to the engine's own, with a warning on
     /// the client's console.
-    pub fn attach_to(&mut self, host: &mut crate::Host) {
+    pub fn attach_to<C: ConnGame>(&mut self, host: &mut crate::Host<C>) {
         use torque_client::host::GameServer;
         let vm = host.server.vm_mut();
         if let Some(slot) = RendererSlot::of(vm)
@@ -642,7 +643,7 @@ impl WorldView {
     }
 
     /// The warnings since the last take on the console of the client `host` runs.
-    pub fn report_warnings(&mut self, host: &mut crate::Host) {
+    pub fn report_warnings<C: ConnGame>(&mut self, host: &mut crate::Host<C>) {
         if self.warnings.is_empty() {
             return;
         }

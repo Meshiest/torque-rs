@@ -753,6 +753,21 @@ fn main() -> ExitCode {
 `EngineRun` (from `torque::app::run`) adds `app`, which names the game: a function that makes your `App` (the client, a
 title and what to draw) from the built engine, when a runner that needs one starts.
 
+`App` is the game over TGE's connection half. A game with a connection half of its own implements `GameApp` instead (the
+same methods, plus `type Conn` naming its `ConnGame` and a `screen_rules` that is TGE 1.4's unless you change it) and
+names itself with `app_for`; the runners then drive it as its own type, with no dynamic calls on the way. Every `App` is
+already a `GameApp`, so `app` and `app_for` take either, and they share one slot: naming a second game, by either, fails
+the build.
+
+```rust
+EngineBuilder::new()
+    .add_plugins(DefaultPlugins)
+    .app_for(move |engine| MyGame::new(engine))   // MyGame: GameApp, with its own Conn
+    .run()?;
+```
+
+The client host a game holds is `Host<C>`, which is `Host` for TGE's connection half.
+
 To run another way, turn the default runner off and add the one you want:
 
 | Plugin | Runs |
