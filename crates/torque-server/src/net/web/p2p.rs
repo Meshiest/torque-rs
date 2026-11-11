@@ -30,7 +30,7 @@ use tungstenite::{Error as WsError, Message};
 use web_time::{Duration, Instant};
 
 use super::rtc::{Reply, RtcSetup, RtcSide};
-use super::stand_in::StandIns;
+use super::stand_in::{STAND_IN_NET, StandIns};
 use crate::net::room::{FromService, MAX_MESSAGE, ToService, show_code};
 use crate::net::transport::{BindError, BindPolicy, Recv, Transport};
 
@@ -274,7 +274,7 @@ impl P2pHost {
             code: None,
             ice: String::new(),
             inbox: VecDeque::new(),
-            stand_ins: StandIns::default(),
+            stand_ins: StandIns::new(STAND_IN_NET),
             joiners: HashMap::new(),
             by_stand_in: HashMap::new(),
             gone: Vec::new(),
@@ -368,7 +368,7 @@ impl P2pHost {
             return;
         };
         if let Some(j) = self.joiners.remove(&peer) {
-            self.stand_ins.give_back(j.ip, j.stand_in);
+            self.stand_ins.give_back(j.stand_in);
         }
         if self.gone.len() < 4096 {
             self.gone.push(stand_in);

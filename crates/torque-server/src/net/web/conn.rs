@@ -274,7 +274,7 @@ impl Conn {
         why.count(pass.counters);
         let closed_stand_in = self.stand_in;
         if let Some(addr) = self.stand_in.take() {
-            pass.stand_ins.give_back(self.peer.ip(), addr);
+            pass.stand_ins.give_back(addr);
         }
         match std::mem::replace(&mut self.phase, Phase::Gone) {
             Phase::Http { mut pipe, .. } => pipe.shut(),

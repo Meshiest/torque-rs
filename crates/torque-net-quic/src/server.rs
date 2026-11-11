@@ -50,7 +50,7 @@ use crate::h3::{self, ALPN_H3, Driver, Outcome};
 use crate::identity::ServerKey;
 use crate::io::{Io, UdpIo};
 use crate::retry::{Load, RetryGate};
-use crate::stand_in::{StandIns, is_reserved};
+use crate::stand_in::{STAND_IN_NET, StandIns, is_reserved};
 use crate::tls::{ALPN, QUIC_MAX_DATAGRAM, QuicLimits, TlsError};
 
 /// The most datagrams one pass reads from the socket.
@@ -223,7 +223,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             by_stand_in: HashMap::new(),
             per_ip: HashMap::new(),
             established: 0,
-            stand_ins: StandIns::default(),
+            stand_ins: StandIns::new(STAND_IN_NET),
             inbox: VecDeque::new(),
             gone: Vec::new(),
             released: Vec::new(),

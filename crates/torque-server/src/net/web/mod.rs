@@ -223,7 +223,7 @@ impl WebTransport {
             conns: Vec::new(),
             inbox: VecDeque::new(),
             connects: HashMap::new(),
-            stand_ins: StandIns::default(),
+            stand_ins: StandIns::new(STAND_IN_NET),
             counters: WebCounters::default(),
             last_pump: None,
             gone: Vec::new(),
@@ -667,7 +667,7 @@ impl<D: Transport> MultiTransport<D> {
 
 /// Whether `addr` is in the half of the reserved range the QUIC link's connections go by (`248.0.0.0/5`).
 fn is_quic_stand_in(addr: SocketAddr) -> bool {
-    matches!(addr.ip(), IpAddr::V4(v4) if v4.octets()[0] & 0xf8 == 248)
+    torque_net::stand_in::is_stand_in(addr, torque_net::stand_in::QUIC_NET)
 }
 
 impl<D: Transport> Transport for MultiTransport<D> {

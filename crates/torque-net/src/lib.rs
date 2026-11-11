@@ -18,6 +18,8 @@
 //! - [`fair`]: the ONE place a stranger's budget is shared out: the source network ([`fair::NetworkKey`]), per-second budgets
 //!   charged per address, per network and in all ([`fair::FairLimiter`]), and the connections one source may hold
 //!   ([`fair::SourceCaps`]).
+//! - [`stand_in`]: the reserved-range addresses a transport names its connections by toward the host (the web transport's
+//!   `240.0.0.0/5`, the QUIC link's `248.0.0.0/5`): one IP per peer address, a port per connection.
 //! - [`crc`]: CRC-32 (the standard one and the raw running state the camera checksum uses).
 //! - [`protocol`]: the packet layer (header, sequence and ack window, notify queue, rates, ping timeout, the send gate) and
 //!   [`handshake`]: the handshake's datagrams (TGE's types 26 to 38), the keyed challenge digest, the pending and established tables
@@ -143,6 +145,7 @@ pub mod profile;
 pub mod protocol;
 pub mod remote;
 pub mod serverquery;
+pub mod stand_in;
 pub mod strcoder;
 pub mod testrng;
 
