@@ -27,8 +27,8 @@ use std::sync::Arc;
 use torque_client::conn::ConnGame;
 use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
-use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{HdExtension, NoExtension, PlainScene, ViewScene};
+use torque_render_hd::{HdSettings, HdWorld};
 use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
@@ -298,7 +298,10 @@ impl SceneShape {
 /// geometry with ([`HdExtension`]): the engine's plain cells by default, else a game's, whose scene ([`ViewScene`]) holds the
 /// game's data beside the engine's frame.
 pub struct WorldView<E: HdExtension<Scene: ViewScene> = NoExtension> {
-    world: HdWorld<E>,
+    /// The enhanced renderer's GPU world (None: released, [`WorldView::release_gpu`]).
+    world: Option<HdWorld<E>>,
+    /// What the released world was set to, for the one [`WorldView::restore_gpu`] makes (Some exactly while `world` is None).
+    carried: Option<HdSettings>,
     gui: GuiPass,
     scene: E::Scene,
     /// Whether the floor or the daylight changed since the last frame (else only the objects did).
@@ -365,7 +368,8 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         // Smoke and dust lit by the sun, the sky and the lights; additive glows stay unlit.
         frame.particle_light = Some(ParticleLight::BLENDED);
         let mut view = WorldView {
-            world: HdWorld::new(gpu),
+            world: Some(HdWorld::new(gpu)),
+            carried: None,
             gui: GuiPass::new(gpu, None),
             scene,
             statics_changed: true,
@@ -393,7 +397,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         };
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
-        view.world.warm_effects();
+        if let Some(world) = &mut view.world {
+            world.warm_effects();
+        }
         view
     }
 
@@ -424,23 +430,94 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
 
     /// Whether the effects' pipelines are still being made on their worker thread ([`HdWorld::warming`]).
     pub fn warming(&self) -> bool {
-        self.world.warming()
+        self.world.as_ref().is_some_and(HdWorld::warming)
     }
 
     /// In a browser: whether the last frame wanted clouds while their noise was still being made ([`HdWorld::clouds_waiting`]):
     /// the sky is not all drawn yet. Never natively.
     pub fn clouds_waiting(&self) -> bool {
-        self.world.clouds_waiting()
+        self.world.as_ref().is_some_and(HdWorld::clouds_waiting)
     }
 
     /// The enhanced renderer the view draws with (its timers and reports).
+    ///
+    /// # Panics
+    /// While the GPU world is released ([`release_gpu`](Self::release_gpu); [`has_gpu`](Self::has_gpu) says).
     pub fn renderer(&mut self) -> &mut HdWorld<E> {
-        &mut self.world
+        self.world
+            .as_mut()
+            .expect("the view's GPU world is released: call restore_gpu first")
     }
 
     /// Starts the renderer's histories again (a cut: the next frame keeps nothing of the last).
     pub fn reset_history(&mut self) {
-        self.world.reset_history();
+        if let Some(world) = &mut self.world {
+            world.reset_history();
+        }
+    }
+
+    /// Whether the view holds its GPU world (false between [`release_gpu`](Self::release_gpu) and
+    /// [`restore_gpu`](Self::restore_gpu)).
+    pub fn has_gpu(&self) -> bool {
+        self.world.is_some()
+    }
+
+    /// The bytes of vertices and indices the view's GPU world holds now (0 while it is released): the world's static arena, its
+    /// loose draws, its particles and the extension's.
+    pub fn gpu_geometry_bytes(&self) -> u64 {
+        self.world.as_ref().map_or(0, HdWorld::geometry_bytes)
+    }
+
+    /// Drops the enhanced renderer's GPU world (its buffers, textures, targets and pipelines), so the app's frame can draw the
+    /// world another way with the memory back, and [`restore_gpu`](Self::restore_gpu) builds it again. Natively it waits for
+    /// the device to free the memory; in a browser the buffers are freed when the browser collects them, some time after.
+    /// The scene stays as it was (cells, planes, lights, moving objects, particles, the daylight), and so do the quality, the
+    /// slot and the GUI pass. Every setting a game made on the renderer through [`renderer`](Self::renderer) is kept for the
+    /// restore ([`HdSettings`]). What is not: the passes a game added with [`add_pass`](Self::add_pass) (an attached view takes
+    /// its slot's again), and `renderer().ext`, which is made new by the restore, so a game's extension rebuilds the state it
+    /// keeps in it. While released, `draw` leaves the world to the app when the engine's renderer was drawing (it clears nothing,
+    /// draws the GUI over what the app drew, and returns false), and `draw_world` is an error. A view already released is left
+    /// as it is.
+    pub fn release_gpu(&mut self) {
+        let Some(world) = self.world.take() else {
+            return;
+        };
+        self.carried = Some(world.settings());
+        // A frame still in flight holds the buffers; the warm-up thread ends with the world.
+        let _ = world.finish();
+        drop(world);
+        let _ = self.gpu.device().poll(wgpu::PollType::wait_indefinitely());
+    }
+
+    /// Makes the GPU world again after [`release_gpu`](Self::release_gpu): a new renderer with the settings it had (and a new
+    /// `ext`), the effects warming, the slot's passes and the static batch sources made again, every scene cell marked not resident and the
+    /// statics changed, so the next frame sends the whole scene. Returns the cells whose meshes the scene had dropped after the
+    /// old upload. The anti-aliasing's and the occlusion's histories start over, and the automatic exposure (when on) adapts
+    /// again from its start, so the first frames after a restore settle briefly. The meshes dropped cannot be sent again, so the game builds them again (a scene without [`ViewScene::batch_cells`]
+    /// counts and clears none: its game marks its own cells). A view that holds its world is left as it is (0).
+    pub fn restore_gpu(&mut self) -> usize {
+        let Some(carried) = self.carried.take() else {
+            return 0;
+        };
+        let mut world = HdWorld::new(&self.gpu);
+        world.apply_settings(carried);
+        if self.slot.is_some() {
+            world.features = self.features.features;
+        }
+        world.warm_effects();
+        self.world = Some(world);
+        if let Some(slot) = self.slot.as_ref().map(|(slot, _)| Rc::clone(slot)) {
+            self.take_adds(&slot);
+        }
+        self.statics_changed = true;
+        self.scene.batch_cells().map_or(0, |cells| {
+            cells
+                .cells
+                .values_mut()
+                .map(|c| std::mem::take(&mut c.resident) && c.indices.is_empty())
+                .filter(|&dropped| dropped)
+                .count()
+        })
     }
 
     /// The engine's renderer's quality step.
@@ -530,7 +607,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     pub fn attach_slot(&mut self, slot: Rc<RendererSlot>) -> Result<(), String> {
         self.features = slot.features();
         self.scene.set_mode(Some(self.features.mode(self.quality)));
-        self.world.features = self.features.features;
+        if let Some(world) = &mut self.world {
+            world.features = self.features.features;
+        }
         let lit = self.features.particle_light;
         self.scene.particle_light = self.particle_light.filter(|_| lit);
         self.take_adds(&slot);
@@ -547,10 +626,12 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// in place of any the view held before.
     fn take_adds(&mut self, slot: &RendererSlot) {
         let adds = slot.adds();
-        let passes = self.world.passes_mut();
-        passes.clear();
-        for e in &adds.passes {
-            passes.add(e.stage(), e.make());
+        if let Some(world) = &mut self.world {
+            let passes = world.passes_mut();
+            passes.clear();
+            for e in &adds.passes {
+                passes.add(e.stage(), e.make());
+            }
         }
         for i in 0..self.batch_sources.len() {
             self.remove_static_batch(PLUGIN_BATCHES + i as u32);
@@ -582,7 +663,11 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// Runs `pass` at `stage` of every frame the engine's renderer draws, after the passes there ([`crate::render`]). A view
     /// attached to a client starts again from the passes its plugins added.
     pub fn add_pass(&mut self, stage: Stage, pass: impl HdPass) {
-        self.world.add_pass(stage, pass);
+        let Some(world) = &mut self.world else {
+            self.warn("a pass is left out: the view's GPU world is released".to_owned());
+            return;
+        };
+        world.add_pass(stage, pass);
     }
 
     /// Lays out `source`'s batch from the next frame, and again whenever it changes ([`StaticBatchSource`]). False: the view
@@ -777,7 +862,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             _ => Drawing::None,
         };
         if self.drawing == Drawing::Default && was != Drawing::Default {
-            self.world.reset_history();
+            self.reset_history();
         }
     }
 
@@ -1281,8 +1366,11 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         ViewCull::new(
             frame,
             &eyes,
-            self.world.capture_on(),
-            self.world.shadow_range().map(|r| r.end),
+            self.world.as_ref().is_some_and(HdWorld::capture_on),
+            self.world
+                .as_ref()
+                .and_then(HdWorld::shadow_range)
+                .map(|r| r.end),
         )
     }
 
@@ -1306,7 +1394,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
 
     /// Waits for the GPU and returns the last frame's GPU time in ms (`None` without timestamps).
     pub fn gpu_ms(&mut self) -> Option<f64> {
-        self.world.gpu_ms()
+        self.world.as_mut()?.gpu_ms()
     }
 
     /// Which particle draws the enhanced renderer lights (none: all unlit, as TGE draws them; [`ParticleLight::BLENDED`]: smoke
@@ -1341,10 +1429,12 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         let texture = target.texture();
         let (width, height) = (texture.width(), texture.height());
         self.follow_slot();
+        // The engine's renderer drawing with its world released: the app drew the look itself, and the GUI goes over it.
+        let own_look = self.drawing == Drawing::Default && self.world.is_none();
         let world = gui
             .worlds
             .first()
-            .filter(|_| self.drawing != Drawing::None)
+            .filter(|_| self.drawing != Drawing::None && !own_look)
             .and_then(|w| {
                 let [x, y, w, h] = w.rect;
                 let x0 = u32::try_from(x).ok()?.min(width);
@@ -1356,7 +1446,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         if let Some(rect) = world {
             self.draw_world(target, rect, eye)?;
         }
-        let clear = world.is_none().then_some([0.0, 0.0, 0.0, 1.0]);
+        let clear = (world.is_none() && !own_look).then_some([0.0, 0.0, 0.0, 1.0]);
         self.gui.draw(gpu, gui, target, clear);
         Ok(world.is_some())
     }
@@ -1406,9 +1496,13 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             )?;
             false
         } else {
-            self.world.upload(&self.scene);
+            let world = self
+                .world
+                .as_mut()
+                .ok_or("the view's GPU world is released")?;
+            world.upload(&self.scene);
             let format = target.texture().format();
-            self.world
+            world
                 .draw(&self.scene, &camera, Some((target, format, [x, y])))
                 .map_err(|e| format!("the world: {e}"))?;
             true
@@ -1416,7 +1510,9 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         // The debug gizmos over the finished world; the engine's renderer has a depth to hide them behind.
         #[cfg(feature = "gizmos")]
         if let Some(painter) = &mut self.gizmos {
-            let depth = own.then(|| self.world.depth_view()).flatten();
+            let depth = own
+                .then(|| self.world.as_ref().and_then(HdWorld::depth_view))
+                .flatten();
             painter.paint(&self.gpu, target, [x, y, w, h], &camera, depth);
         }
         Ok(())

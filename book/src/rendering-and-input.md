@@ -154,6 +154,26 @@ Three rules come with it:
   the plugins' static batch sources are left out with a console warning naming them, and `set_static_batch` returns the
   warning.
 
+## Drawing another look, and coming back
+
+A game that draws the world another way for a while (a renderer of its own that is not an `HdWorld`) does not need the enhanced
+renderer's GPU memory meanwhile. `view.release_gpu()` drops the renderer's whole GPU world (its buffers, textures, targets and
+pipelines) and waits for the device to free it; `view.restore_gpu()` makes it again. Nothing the scene holds is lost: the
+floor, the static meshes and batches, the lights, the moving objects, the particles and the daylight stay in the view, so the
+first frame after a restore sends them all and the picture is the one before the release, pixel for pixel. The renderer's
+settings come back as they were (`HdSettings`: the features, budgets, the user's LUT and the rest a game set through
+`view.renderer()`). A pass added with `add_pass` does not (a view attached to a client takes its slot's again), and
+`renderer().ext` is made new, so a game's extension rebuilds whatever it keeps there. The anti-aliasing's and occlusion's
+histories start over after a restore and the automatic exposure adapts again, so the first frames settle briefly. Natively
+`release_gpu` waits for the device to free the memory; in a browser the buffers go when the browser collects them.
+
+While the world is released, the game's `frame` draws the world itself. `view.draw` then clears nothing when the engine's
+renderer was the one drawing, draws the GUI over what the game drew, and returns `false`; `draw_world` and `render_world` are an
+error, and `view.renderer()` panics (`view.has_gpu()` says which). Releasing a released view, or restoring one that holds its
+world, does nothing. `restore_gpu` returns the number of cells whose meshes the scene had dropped after the old upload
+(`Cell::resident`): those cannot be sent again, so the game builds them again. The slot rule stays: a view with a game's
+extension still refuses another renderer on the slot.
+
 ## Input, cameras, controls and assets
 
 The other four registries have a chapter each. In short:

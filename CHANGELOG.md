@@ -31,6 +31,9 @@ different.
 
 #### Rendering
 
+- `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
+  scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
+  identical picture (`has_gpu`, `gpu_geometry_bytes`).
 - `torque::app`: `GameApp` gains `type Ext`, the render extension its world view draws with (`WorldView<E>`).
 - `torque-render-hd`: passes at the opaque and translucent stages can sample the sun's shadows (`PassCx::sun_shadows`,
   `SUN_SHADOW_WGSL`, a bind group layout and group), with the lookup the forward pass shades with.

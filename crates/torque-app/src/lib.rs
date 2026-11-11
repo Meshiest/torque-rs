@@ -103,9 +103,16 @@
 //!   batches and the plugins' sources with a warning naming them (both in `tests/render_ext.rs`, whose tint test also checks
 //!   a game's extension with its block off draws exactly the engine's picture). The view's GPU world is its `world` field,
 //!   made in `with_extension` alone; the slot's features and passes go into it in `attach_slot`/`take_adds`, and the scene's
-//!   cells carry their `resident` flags. Emptying and rebuilding it means a new `HdWorld`, its `warm_effects`, those two
-//!   steps, `set_daylight` again and the cells marked not resident; the quality and the particle light are applied again
-//!   through `attach_slot` and `set_quality`.
+//!   cells carry their `resident` flags. `WorldView::release_gpu` empties it and `restore_gpu` rebuilds it
+//!   (`tests/view_rebuild.rs`): `world` is `None` while released, and `carried` holds the renderer's settings
+//!   (`HdSettings`, from `HdWorld::settings`) for the new `HdWorld` (its `ext`, histories and exposure start over), which
+//!   then gets `warm_effects`, the slot's features and `take_adds` (passes, batch sources, kinds), every scene cell's
+//!   `resident` flag cleared (counted when its mesh was dropped: the game builds those again) and `statics_changed`. The
+//!   scene, the quality, the particle light, the daylight, the GUI pass and the slot are not touched, so no setter runs again.
+//!   Everything that reads `world` goes through the `Option`: a draw with the engine's renderer errors, `draw` leaves the
+//!   world to the app (`own_look`: no clear, the GUI over it) and `renderer()` panics, so a new use of `world` handles `None`.
+//!   A new GPU-held part of the view (not the scene) belongs in `release_gpu`, and a new plain renderer setting that must
+//!   survive belongs in `HdSettings` (`settings`/`apply_settings` in torque-render-hd); `tests/view_rebuild.rs` compares pictures, so a part missed shows as a differing pixel.
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 //! - The client recipes name no conn game: a client of any [`ConnGame`] is made by the same

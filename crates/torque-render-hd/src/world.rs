@@ -2022,6 +2022,38 @@ pub(crate) fn texture_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     ]
 }
 
+/// The settings of a renderer that a game set and the scene does not carry ([`HdWorld::settings`]): what a new renderer takes
+/// to draw as the old one did ([`HdWorld::apply_settings`]). Not in it: the passes a game added, the extension's own state
+/// (`ext`), and the timing and report counters.
+#[derive(Debug, Clone)]
+pub struct HdSettings {
+    pub features: HdFeatures,
+    pub histories: Histories,
+    pub debug: DebugView,
+    pub render_scale: RenderScale,
+    pub gpu_cull: bool,
+    pub occlusion: bool,
+    pub lod: bool,
+    pub upload_budget: Option<u64>,
+    pub upload_time: std::time::Duration,
+    pub brute_force_lights: bool,
+    pub frame_seconds: f32,
+    pub auto_exposure: bool,
+    pub grain: f32,
+    pub planar_override: Option<f32>,
+    pub mirror_reflections: bool,
+    pub capture_every_frame: bool,
+    pub motion_per_draw: bool,
+    pub identity_grade: bool,
+    pub profile_passes: bool,
+    pub cpu_marks: bool,
+    noise_budget: web_time::Duration,
+    user_lut: Option<CubeLut>,
+    buffer_cap: Option<u64>,
+    arena_pages: (u64, u64),
+    static_budget: u64,
+}
+
 impl<E: HdExtension> HdWorld<E> {
     /// The enhanced renderer on `gpu`'s device (its queue and the optional features it asked for). Panics with
     /// [`crate::limits::LimitError`]'s message where the device cannot run it ([`HdWorld::try_new`]).
@@ -7725,6 +7757,66 @@ impl<E: HdExtension> HdWorld<E> {
     /// leaves the cells that do not fit for later.
     pub fn set_static_budget(&mut self, bytes: u64) {
         self.arena.budget = bytes;
+    }
+
+    /// The settings a game made on this renderer ([`HdSettings`]).
+    pub fn settings(&self) -> HdSettings {
+        HdSettings {
+            features: self.features,
+            histories: self.histories,
+            debug: self.debug,
+            render_scale: self.render_scale,
+            gpu_cull: self.gpu_cull,
+            occlusion: self.occlusion,
+            lod: self.lod,
+            upload_budget: self.upload_budget,
+            upload_time: self.upload_time,
+            brute_force_lights: self.brute_force_lights,
+            frame_seconds: self.frame_seconds,
+            auto_exposure: self.auto_exposure,
+            grain: self.grain,
+            planar_override: self.planar_override,
+            mirror_reflections: self.mirror_reflections,
+            capture_every_frame: self.capture_every_frame,
+            motion_per_draw: self.motion_per_draw,
+            identity_grade: self.identity_grade,
+            profile_passes: self.profile_passes,
+            cpu_marks: self.cpu_marks,
+            noise_budget: self.clouds.noise_budget,
+            user_lut: self.user_lut.clone(),
+            buffer_cap: self.buffer_cap,
+            arena_pages: (self.arena.page_vertices, self.arena.page_indices),
+            static_budget: self.arena.budget,
+        }
+    }
+
+    /// Sets what [`HdWorld::settings`] took from another renderer.
+    pub fn apply_settings(&mut self, settings: HdSettings) {
+        self.features = settings.features;
+        self.histories = settings.histories;
+        self.debug = settings.debug;
+        self.render_scale = settings.render_scale;
+        self.gpu_cull = settings.gpu_cull;
+        self.occlusion = settings.occlusion;
+        self.lod = settings.lod;
+        self.upload_budget = settings.upload_budget;
+        self.upload_time = settings.upload_time;
+        self.brute_force_lights = settings.brute_force_lights;
+        self.frame_seconds = settings.frame_seconds;
+        self.auto_exposure = settings.auto_exposure;
+        self.grain = settings.grain;
+        self.planar_override = settings.planar_override;
+        self.mirror_reflections = settings.mirror_reflections;
+        self.capture_every_frame = settings.capture_every_frame;
+        self.motion_per_draw = settings.motion_per_draw;
+        self.identity_grade = settings.identity_grade;
+        self.profile_passes = settings.profile_passes;
+        self.cpu_marks = settings.cpu_marks;
+        self.clouds.noise_budget = settings.noise_budget;
+        self.set_user_lut(settings.user_lut);
+        self.set_buffer_cap(settings.buffer_cap);
+        self.set_arena_pages(settings.arena_pages.0, settings.arena_pages.1);
+        self.set_static_budget(settings.static_budget);
     }
 
     /// The renderer's CPU-side copies by part, roughly (each vector's capacity times its element's size, maps by their entries):
