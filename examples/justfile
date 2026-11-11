@@ -77,7 +77,7 @@ shots-all dir="../target/shots":
 # pixels (`shots_tolerance`) pass as near and are listed apart from the exact matches. Works on the folder of a single example too;
 # a relative folder is relative to `examples/`
 shots-diff a b:
-    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 --ignore-from "{{justfile_directory()}}" {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
+    cargo run -p torque-example-showcase --release --bin shots-diff -- --ignore-corner 160x40 --ignore-from "{{source_directory()}}" {{shots_tolerance}} "{{absolute_path(a)}}" "{{absolute_path(b)}}"
 
 # `shots-diff` on one example's folder: `example` is the folder name below the `shots-all` dir (for instance `vehicle-demo`), `a`
 # is the dir a run drew into and `b` the baseline dir
