@@ -699,6 +699,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_name_nobody_knows_ends_on_the_screen_as_not_found() {
+        static SLOTS: AtomicUsize = AtomicUsize::new(0);
+        let unknown = resolver(|| Err(io::Error::new(io::ErrorKind::NotFound, "no such host")));
+        let mut screen = JoinLookups::with_slots(&SLOTS, unknown, LOOKUP_TIMEOUT);
+        assert_eq!(
+            screen.check("my-server.example", true),
+            "?my-server.example"
+        );
+        assert_eq!(
+            settled(&mut screen),
+            LookupStatus::Failed(LookupError::NotFound)
+        );
+        assert_eq!(
+            LookupError::NotFound.message(),
+            "That name was not found. Check the spelling."
+        );
+        assert_eq!(screen.result(), LookupStatus::Idle);
+    }
+
     /// A resolver that answers `slow.example` once `release` is dropped, and other names at once (203.0.113.7).
     fn slow_resolver() -> (Resolver, mpsc::Sender<()>) {
         let (release, wait) = mpsc::channel::<()>();

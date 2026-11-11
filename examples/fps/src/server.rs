@@ -137,7 +137,18 @@ impl ArenaServer {
         files: &GameFiles,
         options: &ServerOptions,
     ) -> Result<GameServer, String> {
-        ArenaServer::start_in(engine, files, options, udp_listen(options), false)
+        ArenaServer::start_from_on(engine, files, options, udp_listen(options))
+    }
+
+    /// [`ArenaServer::start_from`] on `listen` instead of the UDP socket `options` name (a scripted session's in-process
+    /// network: [`torque::app::transports::InstantNet`]).
+    pub fn start_from_on(
+        engine: &Engine,
+        files: &GameFiles,
+        options: &ServerOptions,
+        listen: Listen,
+    ) -> Result<GameServer, String> {
+        ArenaServer::start_in(engine, files, options, listen, false)
     }
 
     fn start_in(

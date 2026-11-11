@@ -46,6 +46,9 @@ volume is refused until its files are local plain files. A file over `files::MAX
 
 **The socket.** `torque_server::net::transport::UdpTransport` under a `BindPolicy`: a server binds the one address its
 host names, and a public address is refused unless the host allows it. `MemoryTransport` is the in-memory one for tests.
+Pictures that must come out the same on every run put their clients and server on `torque_app::transports::InstantNet`
+(add `InstantNetClientTransportPlugin` and `InstantNetServerTransportPlugin` to the engine): each datagram is there at the
+next read, where the system's loopback may hold one past it when the machine is busy.
 
 **The handshake and the connections.** `torque_net::handshake::Server::new(ServerConfig::new(max_players), key)` answers
 the challenge and connect requests and keeps the connection table, each connection with its packet layer

@@ -1,5 +1,6 @@
-//! The example without a window: two clients in one process over the loopback address, every frame drawn offscreen as the
-//! window would draw it, and pictures taken: the main menu, the choice of who may join a hosted game, the list of games with
+//! The example without a window: two clients in one process over an in-process network ([`InstantNet`]: each
+//! datagram there at the next read, so every run plays the script out the same), every frame drawn offscreen as the window
+//! would draw it, and pictures taken: the main menu, the choice of who may join a hosted game, the list of games with
 //! the hosted one, the address box with an error line, the view from the host's eyes with its HUD (rounds, health, chat), the other player holding its pistol, and a bolt in flight (as it leaves the
 //! muzzle, then with its trail behind it eight steps away and two steps away), then the arena itself: the floor at the host's
 //! feet, the length of the arena from a corner, the host's own shadow on the floor ahead, the view from a spawn point with the
@@ -15,15 +16,43 @@ use torque_render_scene::hd::kit::look_at;
 use torque::game::scene::lag::STEP_MS;
 use torque::script::vm::sim::ObjId;
 
+use torque::app::transports::{
+    InstantNet, InstantNetClientTransportPlugin, InstantNetServerTransportPlugin,
+};
+
 use crate::client::{ArenaGame, ClientOptions, NetMode};
 use crate::files::GameFiles;
 use crate::hitbox_view;
+use crate::plugin::{ArenaPlugin, arena_engine};
 
 /// The longest a step of the script may wait (ms of the clock).
 pub const WAIT_LIMIT_MS: u32 = 20_000;
 
 /// One client and what its frames draw into.
 type Seat = torque::app::shots::Seat<ArenaGame>;
+
+/// A client named `name` over `files` on `net`, made from the arena's engine with the in-process network's transports added
+/// (the engine the game ships with leaves them out).
+pub(crate) fn net_client(
+    files: GameFiles,
+    name: &str,
+    net: &InstantNet,
+) -> Result<ArenaGame, String> {
+    let mut engine = arena_engine(ArenaPlugin::new(&files).with_port(0));
+    engine.add_plugins((
+        InstantNetClientTransportPlugin,
+        InstantNetServerTransportPlugin,
+    ));
+    let engine = engine.build().map_err(|e| e.to_string())?;
+    let options = ClientOptions {
+        net: NetMode::Loopback,
+        name: name.to_string(),
+        port: 0,
+        instant_net: Some(net.clone()),
+        ..ClientOptions::default()
+    };
+    ArenaGame::from_engine(&engine, files, options, None)
+}
 
 /// Runs both clocks until `done` holds (at most [`WAIT_LIMIT_MS`]).
 fn run_until(
@@ -59,17 +88,9 @@ pub fn write_all(
     make_files: impl Fn() -> io::Result<GameFiles>,
 ) -> Result<Vec<PathBuf>, String> {
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
+    let net = InstantNet::default();
     let seat = |name: &str| -> Result<Seat, String> {
-        let files = make_files().map_err(|e| e.to_string())?;
-        let game = ArenaGame::new(
-            files,
-            ClientOptions {
-                net: NetMode::Loopback,
-                name: name.to_string(),
-                port: 0,
-                ..ClientOptions::default()
-            },
-        )?;
+        let game = net_client(make_files().map_err(|e| e.to_string())?, name, &net)?;
         Seat::new(game, &gpu, size)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
@@ -98,9 +119,10 @@ pub fn write_all(
     })?;
     save(&b.picture(&gpu)?, "lan-list")?;
 
-    // A name where the numbers go: the plain error line under the box.
+    // Neither numbers nor a name: the plain error line under the box (a name would be looked up on the system's network, and
+    // the line would show however far the lookup got).
     b.game
-        .call("eval", &["AddressEdit.setValue(\"my-server.example\");"])?;
+        .call("eval", &["AddressEdit.setValue(\"my server\");"])?;
     b.game.call("connectAddress", &[])?;
     // The name's lookup runs on the system's resolver: the picture waits for its answer, not for a set time.
     let mut waited = 0;
@@ -224,17 +246,9 @@ fn meet(
     size: (u32, u32),
     make_files: &impl Fn() -> io::Result<GameFiles>,
 ) -> Result<(Seat, Seat), String> {
+    let net = InstantNet::default();
     let seat = |name: &str| -> Result<Seat, String> {
-        let files = make_files().map_err(|e| e.to_string())?;
-        let game = ArenaGame::new(
-            files,
-            ClientOptions {
-                net: NetMode::Loopback,
-                name: name.to_string(),
-                port: 0,
-                ..ClientOptions::default()
-            },
-        )?;
+        let game = net_client(make_files().map_err(|e| e.to_string())?, name, &net)?;
         Seat::new(game, gpu, size)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);
@@ -341,16 +355,9 @@ pub fn write_menus(
 ) -> Result<Vec<PathBuf>, String> {
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     let first = *sizes.first().ok_or("no sizes")?;
+    let net = InstantNet::default();
     let seat = |name: &str| -> Result<Seat, String> {
-        let game = ArenaGame::new(
-            make_files().map_err(|e| e.to_string())?,
-            ClientOptions {
-                net: NetMode::Loopback,
-                name: name.to_string(),
-                port: 0,
-                ..ClientOptions::default()
-            },
-        )?;
+        let game = net_client(make_files().map_err(|e| e.to_string())?, name, &net)?;
         Seat::new(game, &gpu, first)
     };
     let (mut a, mut b) = (seat("Ann")?, seat("Bob")?);

@@ -1,21 +1,24 @@
 //! A shot fired in the arena, seen from the side: pictures of the world alone (no HUD, crosshair or chat) at the renderer's
 //! highest quality, for the project's front page ([`shot_frames`], [`shot_picture`]).
 //!
-//! Three clients over the loopback address: Ann hosts and holds the camera (her figure stands a step behind it, looking where
-//! it looks, so the shot's flare, which faces her eye, faces the camera too), Bob fires at Carl, who stands facing him a few steps away. The pictures follow Bob's shot from its flash, a frame apart: the
-//! muzzle's flare, the bolt in flight with its ribbon, Carl hit.
+//! Three clients over an in-process network ([`InstantNet`]): Ann hosts and holds the camera (her figure stands a step behind
+//! it, looking where it looks, so the shot's flare, which faces her eye, faces the camera too), Bob fires at Carl, who stands
+//! facing him a few steps away. The pictures follow Bob's shot from its flash, a frame apart: the muzzle's flare, the bolt in
+//! flight with its ribbon, Carl hit.
 
 use std::f32::consts::PI;
 use std::io;
 
 use torque::app::shots::{FRAME_MS, run};
+use torque::app::transports::InstantNet;
 use torque_render_core::{Frame, Gpu};
 use torque_render_scene::hd::Quality;
 use torque_render_scene::hd::kit::look_at;
 
-use crate::client::{ArenaGame, ClientOptions, NetMode};
+use crate::client::ArenaGame;
 use crate::files::GameFiles;
-use crate::shots::WAIT_LIMIT_MS;
+
+use crate::shots::{WAIT_LIMIT_MS, net_client};
 
 type Seat = torque::app::shots::Seat<ArenaGame>;
 
@@ -59,17 +62,9 @@ pub fn shot_frames(
     size: (u32, u32),
     make_files: impl Fn() -> io::Result<GameFiles>,
 ) -> Result<Vec<Frame>, String> {
+    let net = InstantNet::default();
     let seat = |name: &str| -> Result<Seat, String> {
-        let files = make_files().map_err(|e| e.to_string())?;
-        let game = ArenaGame::new(
-            files,
-            ClientOptions {
-                net: NetMode::Loopback,
-                name: name.to_string(),
-                port: 0,
-                ..ClientOptions::default()
-            },
-        )?;
+        let game = net_client(make_files().map_err(|e| e.to_string())?, name, &net)?;
         Seat::new(game, gpu, size)
     };
     let (mut a, mut b, mut c) = (seat("Ann")?, seat("Bob")?, seat("Carl")?);

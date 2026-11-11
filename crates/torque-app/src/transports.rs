@@ -8,9 +8,12 @@
 //! | `WebClientTransportPlugin` | `web` | `torque.transport-web-client` | `web` feature | `WebTarget`: a game socket over WebSocket (a data channel beside it with the `webrtc` feature) |
 //! | `RoomsClientTransportPlugin` | `rooms` | `torque.transport-rooms-client` | `p2p` feature, browser | `web_join::Target::Room`: a player's host, found by its room's code |
 //! | `RelayClientTransportPlugin` | `relay` | `torque.transport-relay-client` | `p2p` feature, browser | `web_join::Target::Local` and `Page`: the link the page holds |
+//! | [`InstantNetClientTransportPlugin`] | `instant-net` | `torque.transport-instant-net-client` | - | [`InstantNet`]: an in-process network every datagram crosses at once |
 //!
 //! [`ClientTransportPlugins`] is the group of the ones a build has; [`DefaultPlugins`](crate::plugins::DefaultPlugins) has it,
-//! with the server's ([`ServerTransportPlugins`]).
+//! with the server's ([`ServerTransportPlugins`]). The in-process network's pair ([`InstantNetClientTransportPlugin`],
+//! [`InstantNetServerTransportPlugin`]) is in neither: a harness whose pictures must not depend on the system's loopback adds
+//! it to the engine it builds (see [`instant_net`]).
 //!
 //! **Connecting.** A client's socket is opened by the transport registered under an id, given a target of the type that
 //! transport takes. [`ClientNet`](crate::client::ClientNet) picks the engine's own: `Loopback` and `Lan` are `udp`,
@@ -28,13 +31,19 @@ use std::rc::Rc;
 
 pub use torque_app_server::transports::{
     BoundTransport, CustomListen, EngineServerTransports, MemoryServerTransportPlugin, ServerLink,
-    ServerTransportPlugins, UdpServerTransportPlugin, open_listen, unregistered,
+    ServerTransportPlugins, UdpServerTransportPlugin, bound_transport, open_listen, unregistered,
 };
 use torque_client::net::{DatagramQueue, Datagrams, MemoryDatagrams, NetPolicy, UdpDatagrams};
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder};
 
 use crate::server::GameServer;
 use torque_server::net::NetGame;
+
+#[path = "instant_net.rs"]
+pub mod instant_net;
+pub use instant_net::{
+    INSTANT_NET, InstantNet, InstantNetClientTransportPlugin, InstantNetServerTransportPlugin,
+};
 
 /// What a transport opened for a client: the socket, the policy it runs under, and what else it has to say.
 pub struct ClientLink {
@@ -207,6 +216,7 @@ fn builtin_client_plugin(id: &str) -> Option<&'static str> {
         "web" => "torque.transport-web-client (the `web` feature)",
         "rooms" => "torque.transport-rooms-client (the `p2p` feature, in a browser)",
         "relay" => "torque.transport-relay-client (the `p2p` feature, in a browser)",
+        "instant-net" => "torque.transport-instant-net-client",
         _ => return None,
     })
 }

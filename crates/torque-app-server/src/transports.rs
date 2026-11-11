@@ -7,6 +7,7 @@
 //! | `WebServerTransportPlugin` | `web` | `torque.transport-web-server` | `web` feature, native | `Listen::Web`: HTTP and WebSocket on one TCP port, UDP beside it or not |
 //! | `RoomsServerTransportPlugin` | `rooms` | `torque.transport-rooms-server` | `p2p` feature, native | [`Listen::Bound`] with [`BoundTransport::ROOMS`]: a player's host found through a room service |
 //! | `RelayServerTransportPlugin` | `relay` | `torque.transport-relay-server` | `p2p` feature | [`Listen::Bound`] with [`BoundTransport::RELAY`]: a browser host's links, held by its page |
+//! | `InstantNetServerTransportPlugin` (torque-app) | `instant-net` | `torque.transport-instant-net-server` | - | [`Listen::Bound`] of an in-process network's transport: a harness's scripted session |
 //!
 //! [`ServerTransportPlugins`] is the group of the ones a build has; [`MinimalPlugins`](crate::plugins::MinimalPlugins) has it.
 //!
@@ -171,6 +172,7 @@ fn builtin_server_plugin(id: &str) -> Option<&'static str> {
         "web" => "torque.transport-web-server (the `web` feature, not in a browser)",
         "rooms" => "torque.transport-rooms-server (the `p2p` feature, not in a browser)",
         "relay" => "torque.transport-relay-server (the `p2p` feature)",
+        "instant-net" => "torque.transport-instant-net-server (torque-app)",
         _ => return None,
     })
 }
@@ -383,9 +385,9 @@ impl Plugin for WebServerTransportPlugin {
     }
 }
 
-/// Takes a transport made and bound before the server starts, under `id`.
-#[cfg(feature = "p2p")]
-fn bound_transport(id: &'static str) -> impl Fn(&Listen) -> Result<ServerLink, String> {
+/// Takes a transport made and bound before the server starts, under `id`: the open function of a transport registered under
+/// `id` that takes only a [`Listen::Bound`] of that id.
+pub fn bound_transport(id: &'static str) -> impl Fn(&Listen) -> Result<ServerLink, String> {
     move |listen| match listen {
         Listen::Bound(bound) if bound.id == id => Ok(ServerLink::new(Rc::clone(&bound.transport))),
         other => Err(wrong_request(id, other)),

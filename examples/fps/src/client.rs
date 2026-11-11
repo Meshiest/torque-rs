@@ -6,6 +6,9 @@
 //! a game for one); [`NetMode::Lan`] binds it as TGE binds one (every address, with a loopback twin so a server on `127.0.0.1`
 //! hears its LAN query) and talks to LAN addresses only, but for the one public address the player types into the join screen
 //! and connects to (the engine's internet policy with a permit the typed address arms, see [`parse_join_address`]).
+//! [`ClientOptions::instant_net`] puts the socket, and a game the client hosts, on an in-process network instead (the engine's
+//! [`InstantNet`]: the pictures' scripted sessions, which must not wait on the system's loopback). Its transports are not in
+//! [`arena_engine`]: the client must be made from an engine that adds them.
 //!
 //! **Hosting.** The menu's Host game offers a LAN game (the server binds this computer's LAN address, found from the system's
 //! routing, or `--bind`'s; in [`NetMode::Loopback`] the host address) and a public one (`0.0.0.0`: every interface; players
@@ -46,6 +49,7 @@ use torque::app::camera_blend::{CLOSE, CameraBlend};
 use torque::app::camera_boom::CameraBoom;
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::run::EngineRun;
+use torque::app::transports::{INSTANT_NET, InstantNet, open_connect};
 use torque::app::view::{Daylight, WorldView};
 use torque::app::{App, Host};
 use torque::client::conn::tge::TgeWorld as World;
@@ -104,6 +108,9 @@ pub struct ClientOptions {
     pub host_address: Ipv4Addr,
     /// The map a hosted game plays (a path in the game folder); none: the first in `missions/`.
     pub map: Option<String>,
+    /// The in-process network the client's socket and a game it hosts are on (the engine the client is made from needs its
+    /// transports); none: the system's, as `net` says.
+    pub instant_net: Option<InstantNet>,
 }
 
 impl Default for ClientOptions {
@@ -114,6 +121,7 @@ impl Default for ClientOptions {
             port: DEFAULT_PORT,
             host_address: Ipv4Addr::LOCALHOST,
             map: None,
+            instant_net: None,
         }
     }
 }
@@ -186,14 +194,18 @@ impl ArenaGame {
         ArenaGame::from_engine(&engine, files, options, socket)
     }
 
-    /// The client over `files` made by `engine` (the arena's: [`arena_engine`], built), on `socket` if it has one. The server
-    /// it hosts is made by the same engine.
+    /// The client over `files` made by `engine` (the arena's: [`arena_engine`], built), on `socket` if it has one, else on a
+    /// socket of [`ClientOptions::instant_net`] if that names a network. The server it hosts is made by the same engine.
     pub fn from_engine(
         engine: &Engine,
         files: GameFiles,
         options: ClientOptions,
         socket: Option<Box<dyn Datagrams>>,
     ) -> Result<ArenaGame, String> {
+        let socket = match (socket, &options.instant_net) {
+            (None, Some(net)) => Some(open_connect(engine, INSTANT_NET, net)?.socket),
+            (socket, _) => socket,
+        };
         let net = if socket.is_some() {
             ClientNet::External
         } else {
@@ -269,17 +281,22 @@ impl ArenaGame {
         } else {
             self.lan_bind_address()
         };
-        let mut server = ArenaServer::start_from(
-            &self.engine,
-            &self.files,
-            &ServerOptions {
-                address,
-                port,
-                name,
-                mission,
-                public,
-            },
-        )?;
+        let options = ServerOptions {
+            address,
+            port,
+            name,
+            mission,
+            public,
+        };
+        let mut server = match &self.options.instant_net {
+            Some(net) => ArenaServer::start_from_on(
+                &self.engine,
+                &self.files,
+                &options,
+                net.listen(address, port)?,
+            )?,
+            None => ArenaServer::start_from(&self.engine, &self.files, &options)?,
+        };
         // The secret that marks this process's own connection as the host's: only the server and the connection that
         // follows ever see it.
         let key = host_key()?;
