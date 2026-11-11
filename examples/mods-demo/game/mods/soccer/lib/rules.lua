@@ -4,9 +4,9 @@
 local rules = {
     ROUND_MS = 60000, -- the length of a round, in the server's simulation milliseconds
     WIN = 3,          -- goals that win a round before its time is up
-    GOAL_MS = 2000,   -- the pause after a goal, before the next kickoff
+    GOAL_MS = 2000,   -- the pause after a goal, before the ball is put back on the center spot
     BREAK_MS = 3000,  -- the pause between rounds
-    NOTE_MS = 2000,   -- how long the line under the score shows a kickoff
+    NOTE_MS = 2000,   -- how long the line under the score shows its note (a kickoff, the ball put back)
     TICK_MS = 50,     -- how often the mode runs
     HALF_WIDTH = 8,   -- the pitch inside its walls reaches this far from the middle across (x)
     HALF_LENGTH = 12, -- and this far along (y), to the goal lines
@@ -18,6 +18,9 @@ local rules = {
     WALL_HEIGHT = 1.2,
     FLOOR_WIDTH = 22, -- the floor's size, whose picture is drawn for it
     FLOOR_LENGTH = 32,
+    -- The floor's top stands a little over the ground the client's view draws round the pitch (at height 0): at the same height
+    -- the two would tie in the depth test, and the anti-aliasing's jitter would hand the tie to one, then the other, frame by frame.
+    FLOOR_TOP = 0.02,
     FIGURE_HALF = 0.45, -- a player's box reaches this far from its middle across
     KICK_REACH = 0.6, -- how close a player's box must come to the ball to kick it
     KICK_SPEED = 9,   -- the ball's speed off a kick, units a second
@@ -34,7 +37,7 @@ function rules.pitch()
     local w, l, t, h = rules.HALF_WIDTH, rules.HALF_LENGTH, rules.WALL, rules.WALL_HEIGHT
     local g, d, gh, p = rules.GOAL_HALF, rules.GOAL_DEPTH, rules.GOAL_HEIGHT, rules.POST
     local pieces = {
-        { "PitchData", 0, 0, -0.5, rules.FLOOR_WIDTH, rules.FLOOR_LENGTH, 1 },
+        { "PitchData", 0, 0, rules.FLOOR_TOP - 0.5, rules.FLOOR_WIDTH, rules.FLOOR_LENGTH, 1 },
         { "WallData", -(w + t / 2), 0, h / 2, t, 2 * (l + t), h },
         { "WallData", w + t / 2, 0, h / 2, t, 2 * (l + t), h },
     }

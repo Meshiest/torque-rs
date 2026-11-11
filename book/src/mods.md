@@ -202,18 +202,23 @@ with a line that names both versions; an older game joining a newer server sees 
 whenever the messages carry something new (the display name did).
 
 While a player is held, its connection is in `ClientGroup` but your `onConnect` has not run. The held connection sends packets
-every tick and gives the whole packet to the transfer (a **burst**), then goes back to the connection's rate. A server holds only
+every tick and gives the whole packet to the transfer (a **burst**), then goes back to the connection's rate. In the engine's
+protocol a held connection is sent as many packets a tick as its byte rate allows (`$Pref::Server::MaxClientBytesPerSecond`,
+256 KB a second by default), at most 16; in Torque's, one a tick. A server holds only
 `DownloadLimits::max_clients` players at a time, and `max_clients_per_network` of them from one network (an IPv4 /24, an IPv6
 /64): the next is refused with `Server busy, try again.` A player is dropped when it takes less than `min_bytes_per_s` of what
 it asked for over `idle_seconds`, or has not finished within `seconds`. A player may only ask for runs of blocks the offer
-lists, a few at a time and no more often than it can take them; any other request drops it.
+lists, up to 16 at a time and at most three full runs' bytes, and no more often than it can take them; any other request drops
+it.
 
 A player's word that it has the mods (`serverCmdTorqueModsReady`) is taken as given: a server cannot check a client's files, so
 holding a player only keeps an honest client from joining before its content is mounted. A modified client can join without
 the mods, and the server's scripts must not count on a client having them.
 
-Measured through the engine's memory link, 400 KB takes about 11 seconds, 33 KB a second. The same download before the burst, at
-Torque's default rates (10 packets of 200 bytes a second, half of each for the channel), ran at under 1 KB a second.
+In the engine's protocol a mod of 316 KB (a 250 KB file and 24 small ones) takes 39 ticks of the server, 1.25 seconds, against
+38 for its bytes at the default byte rate; at a packet a tick, with three runs asked for at a time, it took about 1,100. The mods
+demo's soccer mod (67 KB in 28 files) arrives in about 0.4 seconds over UDP or a WebSocket on the loopback address, where it took
+7.5. In Torque's protocol, through the engine's memory link, 400 KB takes about 11 seconds, 33 KB a second.
 
 | Limit | Default | Set with |
 |---|---|---|

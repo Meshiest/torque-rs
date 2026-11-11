@@ -7,19 +7,22 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
 
-use torque::app::client::{ClientNet, GameClient, carry_between};
+use torque::app::client::{ClientBuilder, ClientNet, GameClient, carry_between};
 use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
-use torque::app::plugins::{DefaultPlugins, ModsPlugin};
+use torque::app::plugins::{DefaultPlugins, ModsPlugin, set_protocol};
 use torque::app::server::{GameServer, Listen};
-use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId};
+use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
+use torque::engine::{Engine, EngineBuilder, Plugin, PluginGroup, PluginId, ProtocolKind};
 use torque::mods::offer::BLOCK_BYTES;
 use torque::mods::{CacheChoice, DownloadLimits, Mods};
 use torque::net::chunk::{ChannelLimits, Kind};
 use torque::net::connect::{AuthContext, ConnectBlock};
 use torque::net::profile::HandshakeProfile;
 use torque::server::net::channels::{ChannelHub, ChunkChannel};
+use torque::server::net::engine::DEFAULT_BYTE_RATE;
 use torque_example_minimal_engine::{ExamplePlugin, client, files, server};
 
 const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
@@ -51,6 +54,8 @@ struct Pack {
     art: Vec<u8>,
     share: &'static str,
     name: Option<String>,
+    /// Small content files beside the art, each its own run of one block.
+    small: Vec<Vec<u8>>,
 }
 
 const BOOM: [u8; 1_500] = [9; 1_500];
@@ -68,7 +73,13 @@ impl Pack {
             art: pattern(3_000, 1),
             share: "download",
             name: None,
+            small: Vec::new(),
         }
+    }
+
+    fn small_files(mut self, count: u8, bytes: usize) -> Pack {
+        self.small = (0..count).map(|i| pattern(bytes, i)).collect();
+        self
     }
 
     fn art(mut self, art: Vec<u8>) -> Pack {
@@ -109,6 +120,9 @@ impl Pack {
         );
         files.insert("mods/props/art/crate.png", &self.art);
         files.insert("mods/props/sounds/boom.ogg", &BOOM);
+        for (i, bytes) in self.small.iter().enumerate() {
+            files.insert(&format!("mods/props/art/small/{i:02}.png"), bytes);
+        }
     }
 }
 
@@ -710,10 +724,22 @@ fn an_update_sends_only_the_blocks_that_changed() {
     assert_eq!(p.progress(), "0 0 0 0");
 }
 
+/// The bytes a second the engine's protocol sends a held client in the tests that need it to stay held a while: at the default
+/// rate the big pack's 448 KB would arrive in under two seconds. Torque's protocol sends a packet a tick whatever it says.
+const SLOW_BYTE_RATE: u32 = 24 << 10;
+
+/// Holds `server`'s engine connections to [`SLOW_BYTE_RATE`].
+fn slow_downloads(server: &mut GameServer) {
+    server
+        .vm_mut()
+        .set_global_uint(b"$Pref::Server::MaxClientBytesPerSecond", SLOW_BYTE_RATE);
+}
+
 /// A client in the middle of a download, whose connection a test can speak on.
 fn downloading(name: &str) -> Pair {
     let pack = Pack::new("1.2").art(pattern(BLOCK_BYTES * 7, 5));
     let mut p = pair(Some(&pack), server_plugin(), None, client_plugin(name));
+    slow_downloads(p.client.server.as_mut().expect("a hosted server"));
     p.connect();
     p.run_until(2_000, false, |p| p.state() == "downloading");
     p
@@ -938,6 +964,176 @@ fn a_larger_mod_arrives_at_the_speed_of_a_burst() {
     p.run(100);
 }
 
+/// A server on the memory transport and a client of the engine's protocol on a socket of the test's own, so the test carries
+/// every datagram and counts the bytes the server sends the client each tick.
+struct Carried {
+    server: GameServer,
+    client: GameClient,
+    sent: DatagramQueue,
+    incoming: DatagramQueue,
+    /// The bytes the server sent the client in each tick so far.
+    down: Vec<usize>,
+}
+
+impl Carried {
+    fn new(pack: &Pack, cache: &str) -> Carried {
+        let engine_of = |files: &GameFiles, mods: ModsPlugin| {
+            let config = GameConfig::load(files).unwrap();
+            let mut builder = EngineBuilder::new();
+            builder
+                .add_plugins((DefaultPlugins.set(mods), ExamplePlugin(files.clone())))
+                .config(&config);
+            set_protocol(&mut builder, ProtocolKind::Engine);
+            builder.build().expect("the engine builds")
+        };
+        let server = server(
+            &engine_of(&game(Some(pack)), server_plugin()),
+            Listen::Memory(SERVER),
+        )
+        .expect("the server starts");
+        let files = game(None);
+        let engine = engine_of(&files, client_plugin(cache));
+        let mem = MemoryDatagrams {
+            local_port: CLIENT.port(),
+            ..MemoryDatagrams::default()
+        };
+        let (sent, incoming) = (mem.sent.clone(), mem.incoming.clone());
+        let mut builder =
+            ClientBuilder::from_engine(&engine, Some(files.mem_files()), ClientNet::External)
+                .expect("the client builds");
+        builder.set_socket(Box::new(mem), NetPolicy::Loopback);
+        builder.exec_entry().expect("the client's script");
+        let mut client = builder.build();
+        client.call("connectTo", &[&SERVER.to_string()]).unwrap();
+        Carried {
+            server,
+            client,
+            sent,
+            incoming,
+            down: Vec::new(),
+        }
+    }
+
+    /// Carries the datagrams each way; returns the bytes that went to the client.
+    fn carry(&mut self) -> usize {
+        let Some(end) = self.server.memory_end() else {
+            return 0;
+        };
+        for (to, data) in self.sent.borrow_mut().drain(..) {
+            if SocketAddr::V4(to) == SERVER {
+                end.inject(SocketAddr::V4(CLIENT), &data);
+            }
+        }
+        let mut bytes = 0;
+        for (to, data) in end.take_sent() {
+            if to == SocketAddr::V4(CLIENT)
+                && let SocketAddr::V4(from) = SERVER
+            {
+                bytes += data.len();
+                self.incoming.borrow_mut().push_back((from, data));
+            }
+        }
+        bytes
+    }
+
+    /// One tick of the server, then of the client.
+    fn step(&mut self) {
+        let mut bytes = self.carry();
+        self.server.tick();
+        bytes += self.carry();
+        self.client.step(32);
+        bytes += self.carry();
+        self.down.push(bytes);
+    }
+
+    fn state(&mut self) -> String {
+        self.client.call("getModDownloadState", &[]).unwrap()
+    }
+
+    /// Steps until the client's download is in `state`, at most `limit` ticks; the tick it got there.
+    fn run_to(&mut self, state: &str, limit: usize) -> usize {
+        while self.state() != state {
+            assert!(
+                self.down.len() < limit,
+                "not {state} in {limit} ticks: {} why {:?}",
+                self.state(),
+                self.client.global("$Why")
+            );
+            self.step();
+        }
+        self.down.len()
+    }
+}
+
+/// 316 KB: a file of four blocks and 24 small ones, each of those its own run.
+fn few_hundred_kb() -> Pack {
+    Pack::new("1.2")
+        .art(pattern(BLOCK_BYTES * 4 - 6_000, 7))
+        .small_files(24, 2_500)
+}
+
+#[test]
+fn a_mod_of_a_few_hundred_kilobytes_downloads_at_the_connections_byte_rate() {
+    // In the engine's protocol a held connection is sent as many packets a tick as its byte rate allows (256 KB/s by default),
+    // and the small files are asked for together: the mod takes about as many ticks as its bytes at that rate, and a few round
+    // trips more. At a packet a tick with three runs asked for at a time the same download took about 1,100 ticks.
+    let pack = few_hundred_kb();
+    let bytes = pack.art.len() + pack.small.iter().map(Vec::len).sum::<usize>();
+    let mut w = Carried::new(&pack, "wire-speed");
+    let started = Instant::now();
+    let from = w.run_to("downloading", 1_000);
+    let to = w.run_to("done", 2_000);
+    let ticks = to - from;
+    let at_rate = bytes as f64 / f64::from(DEFAULT_BYTE_RATE) * 1_000.0 / 32.0;
+    eprintln!(
+        "{bytes} bytes in {ticks} ticks ({:.2} s of the server's clock, {:.0} at the byte rate; {:.2} s on this machine)",
+        ticks as f64 * 0.032,
+        at_rate,
+        started.elapsed().as_secs_f64()
+    );
+    assert!(
+        (ticks as f64) < at_rate * 1.25 + 15.0,
+        "{bytes} bytes took {ticks} ticks, {at_rate:.0} at the byte rate"
+    );
+    while w.client.ghost_count() != 3 {
+        assert!(w.down.len() < to + 2_000, "the client joins");
+        w.step();
+    }
+    assert!(
+        Mods::of(w.client.vm())
+            .expect("mods")
+            .is_server_file("art/small/23.png")
+    );
+}
+
+#[test]
+fn a_held_connection_in_a_burst_stays_within_its_byte_credit() {
+    // Over any run of ticks a held connection is sent at most the byte rate for that time and the eighth of a second its credit
+    // saves up.
+    let mut w = Carried::new(&few_hundred_kb(), "wire-credit");
+    let from = w.run_to("downloading", 1_000);
+    let to = w.run_to("done", 2_000);
+    let down = &w.down[from..to];
+    let rate = u64::from(DEFAULT_BYTE_RATE);
+    let busiest = down.iter().copied().max().unwrap_or(0);
+    assert!(
+        busiest > 4 * 1_200,
+        "the burst sends several packets a tick: {busiest} bytes at most"
+    );
+    for start in 0..down.len() {
+        let mut sum = 0u64;
+        for (k, &bytes) in down[start..].iter().enumerate() {
+            sum += bytes as u64;
+            let allowed = rate * (k as u64 + 1) * 32 / 1_000 + rate / 8;
+            assert!(
+                sum <= allowed,
+                "{sum} bytes in the {} ticks from tick {start}, over the {allowed} its credit allows",
+                k + 1
+            );
+        }
+    }
+}
+
 #[test]
 fn a_held_client_can_run_no_game_command_and_is_in_no_group_until_it_joins() {
     let mut p = downloading("held-command");
@@ -1008,8 +1204,10 @@ impl Crowd {
     fn new(pack: &Pack, mods: ModsPlugin) -> Crowd {
         let files = game(Some(pack));
         let engine = engine(&files, mods);
+        let mut server = server(&engine, Listen::Memory(SERVER)).expect("the server starts");
+        slow_downloads(&mut server);
         Crowd {
-            server: server(&engine, Listen::Memory(SERVER)).expect("the server starts"),
+            server,
             clients: Vec::new(),
         }
     }

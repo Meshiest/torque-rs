@@ -4,9 +4,10 @@
 -- Each player who enters joins the team with fewer players and gets a player on the pitch. Bots fill the places nobody has taken
 -- (at most $Pref::Soccer::Bots of them), and a bot leaves when a person comes in, so one person always has a match. The ball is a
 -- prop: a player's box pushes it, and a player that comes up to it kicks it toward the goal it attacks (rules.kick). A ball in a
--- goal scores for the team that attacks it; after a short pause both players go back to their places and the team that conceded
--- kicks off. A ball that leaves the pitch or sticks in a corner is put back on the center spot. A round ends at WIN goals or when
--- its clock runs out; the result is shown for a moment and the next round starts at 0 - 0.
+-- goal scores for the team that attacks it; after a short pause the ball is put back on the center spot and play goes on from
+-- wherever the players stand. A ball that leaves the pitch or sticks in a corner is put back on the center spot too. Only a new
+-- round sends the players to their places, the team whose turn it is kicking off. A round ends at WIN goals or when its clock
+-- runs out; the result is shown for a moment and the next round starts at 0 - 0.
 
 local rules = require("lib.rules")
 local bots = require("lib.bots")
@@ -27,15 +28,15 @@ local phase = "play" -- "play", "goal" (the pause after one) or "over" (between 
 local phaseEnds = 0
 local roundEnds = nil
 local ball, radius = nil, 0
-local kicksOff = 1 -- the team that kicks off next
+local kicksOff = 1 -- the team that kicks off the round
 local message = ""
 local goals, kicks = 0, 0
 local lastKick = nil -- when the ball was last kicked
 local rest = nil -- where the ball was when it last moved, and when: { x, y, t }
-local kickedOff = 0 -- when the last kickoff was
+local kickedOff = 0 -- when the ball was last put on the center spot
 local ticks = 0
 
--- The datablock of the ball each kickoff spawns. A mod that loads later replaces this function (a definition in a later mod's
+-- The datablock of each new ball. A mod that loads later replaces this function (a definition in a later mod's
 -- package sits over this one's), which is how big-ball changes the match without touching this file.
 ts.define("soccerBallData", function()
     return "BallData"
@@ -158,15 +159,13 @@ local function steer_bots(bx, by)
     end
 end
 
-local function kickoff()
+-- A new ball on the center spot, and play. The players stay where they stand.
+local function new_ball()
     if ball then
         ts.call("propDelete", ball)
     end
     local spawned = numbers(ts.call("soccerBall", ts.call("soccerBallData")))
     ball, radius = spawned[1], spawned[2]
-    for _, id in ipairs(sorted_ids()) do
-        place(players[id])
-    end
     rest = nil
     kickedOff = now()
     phase = "play"
@@ -177,7 +176,10 @@ local function start_round()
     roundEnds = now() + rules.ROUND_MS
     kicksOff = round % 2 == 1 and 1 or 2
     message = "Round " .. round .. " - kickoff"
-    kickoff()
+    new_ball()
+    for _, id in ipairs(sorted_ids()) do
+        place(players[id])
+    end
 end
 
 local function end_round()
@@ -197,7 +199,6 @@ local function scored(attack)
     local team = attack == TEAMS[1].attack and 1 or 2
     score[team] = score[team] + 1
     goals = goals + 1
-    kicksOff = 3 - team
     phase = "goal"
     phaseEnds = now() + rules.GOAL_MS
     message = "Goal for " .. TEAMS[team].name .. "!"
@@ -229,18 +230,18 @@ end
 local function play(t)
     local x, y, z = ball_position()
     if not x then
-        kickoff()
+        new_ball()
         return
     end
     local attack = rules.goal(x, y)
     if attack then
         scored(attack)
     elseif rules.out(x, y, z) then
-        message = "The ball went out - kickoff"
-        kickoff()
+        message = "The ball went out"
+        new_ball()
     elseif rest and t - rest.t > rules.STUCK_MS then
-        message = "The ball is stuck - kickoff"
-        kickoff()
+        message = "The ball was stuck"
+        new_ball()
     else
         if not rest or math.abs(x - rest.x) + math.abs(y - rest.y) > rules.STUCK_MOVE then
             rest = { x = x, y = y, t = t }
@@ -287,8 +288,8 @@ ts.define("soccerTick", function()
         if math.max(score[1], score[2]) >= rules.WIN or t >= roundEnds then
             end_round()
         else
-            message = TEAMS[kicksOff].name .. " kicks off"
-            kickoff()
+            message = "Play on"
+            new_ball()
         end
     elseif phase == "over" and t >= phaseEnds then
         round = round + 1

@@ -30,7 +30,9 @@
 //! payload layer in that order, as TGE's notifies do. A packet is at most the link's datagram size and the connection's byte
 //! credit: [`DEFAULT_BYTE_RATE`] (or `$Pref::Server::MaxClientBytesPerSecond`, read each tick) a second as a ceiling on every
 //! link, and on a plain link the engine's own loss backoff under it, over every packet (halved past 10% loss over a second,
-//! else 10% more, never under [`MIN_BYTE_RATE`]).
+//! else 10% more, never under [`MIN_BYTE_RATE`]). A connection held while it downloads what the server requires is in a burst:
+//! its session is polled again in the same pass while it has more to send, up to [`BURST_PACKETS`] packets, so the download
+//! runs at the byte credit rather than at a packet a tick.
 //!
 //! **Plain links are LAN only.** A plain link's datagrams are not served while the transport is bound to an address outside
 //! the private set ([`PlainEngineRefusal`](super::transport::PlainEngineRefusal)); the host warns once.
@@ -77,6 +79,9 @@ pub const MIN_BYTE_RATE: u32 = 16 << 10;
 pub const BYTE_RATE_PREF: &str = "$Pref::Server::MaxClientBytesPerSecond";
 /// Milliseconds between two packets each way: one a tick.
 pub const PACKET_INTERVAL_MS: u16 = 32;
+/// The most packets a connection in a burst is sent in one send pass (its byte credit usually allows fewer: the default byte
+/// rate's tick is about seven full packets).
+pub const BURST_PACKETS: u32 = 16;
 /// How long a ticket the server accepted stays refused.
 pub const TICKET_REPLAY_MS: u32 = 120_000;
 /// The tickets the server accepts in all, a second: so many that the cache can never fill within a window
@@ -1155,10 +1160,15 @@ pub(super) fn finish<G: NetGame>(
 struct Sent {
     addr: SocketAddr,
     work: u32,
+    /// Whether a packet went out.
+    packet: bool,
 }
 
-/// The send pass for engine connection `id` (`cap`: the byte rate's ceiling, [`byte_rate_pref`], read once a pass): one poll of its session, whose ghost lane the payload layer writes, then its
-/// events. Returns the work of the bytes sent; a payload error is pushed to `failed`.
+/// The send pass for engine connection `id` (`cap`: the byte rate's ceiling, [`byte_rate_pref`], read once a pass): a poll of
+/// its session, whose ghost lane the payload layer writes, then its events. A connection in a burst (held while it downloads
+/// what the server requires, [`Protocol::set_burst`]) is polled again while its payload layer is busy, up to
+/// [`BURST_PACKETS`] packets: its byte credit ([`Pace`]) still bounds what it is sent. Returns the work of the bytes sent; a
+/// payload error is pushed to `failed`.
 pub(super) fn send_conn<G: NetGame>(
     vm: &mut Vm,
     shared: &Shared<G>,
@@ -1167,11 +1177,33 @@ pub(super) fn send_conn<G: NetGame>(
     cap: u32,
     failed: &mut Vec<(ConnId, NetError)>,
 ) -> u32 {
-    let Some(sent) = poll_conn(vm, shared, id, now, cap, failed) else {
-        return 0;
-    };
-    events(vm, shared, sent.addr, now);
-    sent.work
+    let mut work = 0u32;
+    // What earlier connections of the pass pushed to `failed` is not this one's.
+    let failed_before = failed.len();
+    for _ in 0..BURST_PACKETS {
+        let Some(sent) = poll_conn(vm, shared, id, now, cap, failed) else {
+            break;
+        };
+        events(vm, shared, sent.addr, now);
+        work = work.saturating_add(sent.work);
+        let failed_here = failed.len() > failed_before;
+        if !polls_again(sent.packet, failed_here, || bursting(shared, id)) {
+            break;
+        }
+    }
+    work
+}
+
+/// Whether the send pass polls a connection again in the same pass: its last poll sent a packet, it failed nothing itself, and
+/// it is in a burst with more to send (`bursting`, asked last).
+fn polls_again(sent_packet: bool, failed_here: bool, bursting: impl FnOnce() -> bool) -> bool {
+    sent_packet && !failed_here && bursting()
+}
+
+/// Whether `id` is in a burst and its payload layer has more to send.
+fn bursting<G: NetGame>(shared: &Shared<G>, id: ConnId) -> bool {
+    let sh = shared.borrow();
+    sh.hs.connection(id).is_some_and(|c| c.protocol.is_burst()) && sh.payload.busy(id)
 }
 
 /// Polls `id`'s session once: its RPC batches handed over, its pace kept, the payload layer as its ghost lane's writer.
@@ -1232,15 +1264,15 @@ fn poll_conn<G: NetGame>(
     if let Some(e) = writer.failed {
         failed.push((id, e));
     }
-    let work = match polled {
+    let (work, packet) = match polled {
         Polled::Sent(n) => {
             pace.spend(n);
             counters.packets_sent += 1;
-            cost(n)
+            (cost(n), true)
         }
-        Polled::Idle | Polled::NoRoom | Polled::Closed => 0,
+        Polled::Idle | Polled::NoRoom | Polled::Closed => (0, false),
     };
-    Some(Sent { addr, work })
+    Some(Sent { addr, work, packet })
 }
 
 /// The send pass for the sessions the host has not accepted: their cookies, accepts not yet acknowledged, challenges,

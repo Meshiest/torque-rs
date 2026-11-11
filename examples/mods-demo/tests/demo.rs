@@ -9,7 +9,7 @@
 
 mod common;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use torque::app::server::GameServer;
@@ -184,12 +184,52 @@ fn two_clients_download_the_mod_and_play_a_match() {
     assert_eq!(s.server_eval(figures).unwrap(), "2");
 
     // The Lua game mode runs on the server and the bots play: the ball is kicked, goals are scored, a round ends and the next
-    // starts.
+    // starts. After a goal play goes on from where the players stand: none is sent back to a place.
     let mut scores = BTreeSet::new();
     let mut shown = BTreeSet::new();
+    let places = concat!(
+        "%s = \"\"; for (%i = 0; %i < MissionCleanup.getCount(); %i++) { %o = MissionCleanup.getObject(%i); ",
+        "if (%o.getClassName() $= \"Player\") %s = %s SPC %o.getId() SPC %o.getPosition(); } return %s;"
+    );
+    // Each player's place at the last step and the phase then; the farthest a player moved in one step of a round's play and
+    // its goals (not from a round's end to its next kickoff, when the players are sent to their places); whether play went on
+    // after a goal.
+    let mut last: Option<(String, BTreeMap<u32, [f32; 3]>)> = None;
+    let mut farthest = 0.0f32;
+    let mut played_on = false;
     let done = s.run_until(9_000, |s| {
         scores.insert(s.server_global("$Soccer::Score"));
         shown.insert(s.client_global(1, "$Match::Phase"));
+        let phase = s.server_global("$Soccer::Phase");
+        let words: Vec<f32> = s
+            .server_eval(places)
+            .unwrap()
+            .split_whitespace()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        let at: BTreeMap<u32, [f32; 3]> = words
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[id, x, y, z]| (id as u32, [x, y, z]))
+            .collect();
+        if let Some((was, before)) = &last
+            && [was, &phase]
+                .iter()
+                .all(|p| ["play", "goal"].contains(&p.as_str()))
+        {
+            played_on |= was == "goal" && phase == "play";
+            for (id, p) in &at {
+                if let Some(b) = before.get(id) {
+                    farthest = p
+                        .iter()
+                        .zip(b)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(farthest, f32::max);
+                }
+            }
+        }
+        last = Some((phase, at));
         number(s, "$Soccer::Round") >= 2 && number(s, "$Soccer::Goals") >= 2
     });
     let (goals, kicks) = (number(&s, "$Soccer::Goals"), number(&s, "$Soccer::Kicks"));
@@ -199,6 +239,10 @@ fn two_clients_download_the_mod_and_play_a_match() {
         s.server_global("$Soccer::Round")
     );
     assert!(kicks > goals, "the ball was kicked: {kicks}");
+    assert!(
+        played_on && farthest < 1.0,
+        "play went on after a goal ({played_on}) and no player was sent anywhere: {farthest} at most in a step"
+    );
     assert!(scores.len() >= 3, "the score changed: {scores:?}");
     assert!(
         ["play", "goal", "over"].iter().all(|p| shown.contains(*p)),

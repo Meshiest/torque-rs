@@ -65,10 +65,12 @@
 //! - One server cannot flush the others' cache (`one_server_storing_new_content_cannot_flush_another_servers_entries`), the
 //!   disk cache opens nothing through a link (`a_link_in_the_cache_folder_is_never_read_or_touched_through`), and a server's
 //!   file is never copied to a script's name (`server_sent_script_never_executes_on_a_client`).
-//! - A download asks for `DOWNLOAD_WINDOW` (three) runs at once. The server limits what a client has queued on the mods channel
-//!   alone (not the other channels') to the window and one run (`mods::MAX_OUTSTANDING`), and the client takes the answers in
-//!   the order it asked; a run answered out of turn ends the download
+//! - A download keeps up to `MAX_PENDING_RUNS` (16) runs asked for at once, together at most `DOWNLOAD_WINDOW` (three) full
+//!   runs' bytes, so a mod of many small files takes a few round trips. The server limits what a client has queued on the mods
+//!   channel alone (not the other channels') to the window and one run (`mods::MAX_OUTSTANDING`), and the client takes the
+//!   answers in the order it asked; a run answered out of turn ends the download
 //!   (`a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would`,
+//!   `a_mod_of_many_small_files_asks_for_them_together`,
 //!   `a_download_of_many_runs_completes_with_another_channels_backlog_beside_it` in minimal-engine's tests).
 //! - The browser's cache is a [`MirroredStore`] over IndexedDB (`web_cache`): the cache runs on memory, each change goes to the
 //!   database in a transaction of its own (the browser runs them in order), and what is read back at the page's start is held to

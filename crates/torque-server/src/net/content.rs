@@ -4,12 +4,12 @@
 //! begin (it queues what the client reads first, its list of required mods), sends the accept, and calls the connection's `onConnect`
 //! only once the game says the client is ready (it has what the server requires, mounted), so the datablocks and ghosts a script
 //! starts sending in `onConnect` never reach a client that has not mounted the content they refer to. While it waits, the
-//! connection is in a burst ([`torque_net::protocol::Protocol::set_burst`]): the host sends packets every tick, and the channels
-//! take the whole packet. A client that makes no progress for [`ContentLimits::idle_ms`] (progress is bytes served at
-//! [`ContentLimits::min_bytes_per_s`] at least, so a client that takes a block now and then to look busy stalls), or does not
-//! finish within [`ContentLimits::total_ms`], is dropped; a server already holding [`ContentLimits::max_clients`] such
-//! connections, or [`ContentLimits::per_network_clients`] from the new one's network (an IPv4 /24, an IPv6 /64), refuses it with
-//! `Server busy, try again.`.
+//! connection is in a burst ([`torque_net::protocol::Protocol::set_burst`]): the host sends packets every tick (an engine
+//! connection as many a tick as its byte credit allows), and the channels take the whole packet. A client that makes no progress
+//! for [`ContentLimits::idle_ms`] (progress is bytes served at [`ContentLimits::min_bytes_per_s`] at least, so a client that
+//! takes a block now and then to look busy stalls), or does not finish within [`ContentLimits::total_ms`], is dropped; a server
+//! already holding [`ContentLimits::max_clients`] such connections, or [`ContentLimits::per_network_clients`] from the new one's
+//! network (an IPv4 /24, an IPv6 /64), refuses it with `Server busy, try again.`.
 
 use std::num::NonZeroUsize;
 use std::rc::Rc;

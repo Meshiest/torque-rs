@@ -754,6 +754,22 @@ fn a_download_takes_a_fraction_of_the_round_trips_a_request_at_a_time_would() {
     );
 }
 
+#[test]
+fn a_mod_of_many_small_files_asks_for_them_together() {
+    let small: Files = (0..40u8)
+        .map(|i| (format!("art/{i:02}.png"), pattern(2_500, i)))
+        .collect();
+    let (offer, content) = offered("small", "1.0", &small, true);
+    let r = rig(caps(true));
+    let rounds = r.join_in_rounds(std::slice::from_ref(&offer), &[content]);
+    assert_eq!(r.d.phase(), Phase::Done);
+    assert_eq!(
+        rounds,
+        small.len().div_ceil(MAX_PENDING_RUNS),
+        "{rounds} rounds"
+    );
+}
+
 /// A mod with a client script among its files.
 fn scripted(seed: u8) -> Files {
     let mut files = files(seed);

@@ -149,7 +149,8 @@ impl Drawing {
     }
 }
 
-/// The world view the game draws in: a plain floor round the pitch, under a clear sky.
+/// The world view the game draws in: a plain floor round the pitch, under a clear sky. The floor lies at height 0, a little under
+/// the pitch's own (`FLOOR_TOP` in the mod's `lib/rules.lua`), so the two never tie in the depth test.
 pub fn world_view(gpu: &Gpu) -> WorldView {
     let mut view = WorldView::new(gpu);
     view.set_plain_floor(60.0, [112, 146, 104]);

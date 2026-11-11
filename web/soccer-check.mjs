@@ -1,14 +1,16 @@
 // The soccer game's browser checks (the mods demo, examples/mods-demo), as the arena's (fps-check.mjs, p2p-check.mjs): a
 // soccer server (`mods-demo-server`, its Lua game mode and its bots) and headless Chrome from the cursor guard joining it.
-// The page has none of the server's mods: it must show the download screen with the soccer mod, its files and bytes and a
-// bar part way, then play the match (its player runs with D held), then leave and join again from its menu with nothing to
-// download (the mod is kept for as long as the page is open). Then the page is reloaded: the mod was kept in the browser's
-// storage (IndexedDB), so the join after it has nothing to download either. A stored entry whose bytes were changed is not
-// trusted: the next page's join downloads the mod again, and the one after that finds it kept. No console error may show.
+// The page has none of the server's mods: it must show the download screen with the soccer mod, its files and bytes (and a
+// picture of it part way when a look catches it: the download can be over within a frame or two), then play the match (its
+// player runs with D held), then leave and join again from its menu with nothing to download (the mod is kept for as long as
+// the page is open). Then the page is reloaded: the mod was kept in the browser's storage (IndexedDB), so the join after it has
+// nothing to download either. A stored entry whose bytes were changed is not trusted: the next page's join downloads the mod
+// again, and the one after that finds it kept. No console error may show.
 //
 // Usage: node soccer-check.mjs <web build folder> <screenshot.png> [seconds] [join|rtc|room]
 // - `join`: the server on UDP and the web (`--transport both`) serves the page; the page joins on its game socket.
-// - `rtc`: the same with `--webrtc`: the datagrams (the download among them) must go on the data channel.
+// - `rtc`: the same with `--webrtc`: the datagrams must move to the data channel once it opens (the download, a fraction of a
+//   second, may be over on the game socket first).
 // - `room`: a room service (`torque-rooms`, serving the page) and `mods-demo-server --room`; the page joins by the room's
 //   code on a data channel.
 // Pictures: <screenshot>-download.png (the download screen), <screenshot>.png (the match), <screenshot>-again.png (the
@@ -120,6 +122,7 @@ const state = (page) =>
     return {
       frames: Number(r.dataset.torqueFrames ?? 0),
       join: r.dataset.torqueJoin ?? '',
+      joins: (r.dataset.torqueJoins ?? '').split(' ').filter(Boolean),
       received: received || 0,
       total: total || 0,
       mods: r.dataset.torqueMods ?? '',
@@ -132,13 +135,14 @@ const state = (page) =>
     };
   });
 
-// Waits until `test` holds of the page's state, at most `ms`; the last state, and every join state seen.
-async function wait(page, ms, test, seen) {
+// Waits until `test` holds of the page's state, at most `ms`, looking every `every` ms; the last state, and every join state
+// seen.
+async function wait(page, ms, test, seen, every = 100) {
   const end = Date.now() + ms;
   let s = await state(page);
   while (!test(s) && Date.now() < end) {
     seen?.add(s.join);
-    await pause(100);
+    await pause(every);
     s = await state(page);
   }
   seen?.add(s.join);
@@ -185,30 +189,49 @@ try {
   const limit = Number(seconds) * 1000;
   const stem = out.replace(/\.png$/, '');
 
-  // The download screen, part way.
+  // The download screen, part way when a look catches it: on the loopback address the mod takes a fraction of a second, which
+  // can pass between two of the page's frames while it warms up. The page keeps every state the join went through.
   const seen = new Set();
-  let s = await wait(page, limit, (s) => (s.join === 'downloading' && s.total > 0 && s.received / s.total > 0.3) || s.join === 'playing', seen);
+  let s = await wait(page, limit, (s) => (s.join === 'downloading' && s.total > 0 && s.received / s.total > 0.3) || s.join === 'playing', seen, 5);
   console.log(`download: ${JSON.stringify(s)}`);
-  if (s.join !== 'downloading') problems.push(`the page showed no download part way (${[...seen].join(', ')})`);
-  else await writeFile(`${stem}-download.png`, await page.screenshot());
+  if (s.join === 'downloading') await writeFile(`${stem}-download.png`, await page.screenshot());
+  else console.log('the download was over before a look caught it part way: no picture of it');
   if (s.mods !== 'Soccer 1.0.0') problems.push(`the download screen names ${JSON.stringify(s.mods)}, not Soccer 1.0.0`);
 
   // The match.
-  s = await wait(page, limit, (s) => s.join === 'playing' && s.figure && s.team !== '', seen);
+  s = await wait(page, limit, (s) => s.join === 'playing' && s.figure && s.team !== '', seen, 20);
   console.log(`in the match: ${JSON.stringify(s)}; states seen: ${[...seen].join(', ')}`);
   if (s.join !== 'playing' || !s.figure) problems.push(`the page did not play (${JSON.stringify(s)})`);
   if (s.total === 0 || s.received !== s.total) problems.push(`the download did not finish (${s.received} of ${s.total})`);
-  if (!seen.has('joining')) problems.push('the screen never said it was joining the match');
-  if (mode !== 'join' && s.link !== 'datachannel') problems.push(`the datagrams go on ${s.link || 'nothing'}, not the data channel`);
-  // D runs the player to the screen's right: toward the goal its team attacks.
+  if (!s.joins.includes('downloading')) problems.push(`the join never showed the download (${s.joins.join(', ')})`);
+  if (!s.joins.includes('joining')) problems.push(`the screen never said it was joining the match (${s.joins.join(', ')})`);
+  // The data channel opens beside the game socket while the page joins; the download may be over before it is up.
+  if (mode !== 'join') {
+    s = await wait(page, 20_000, (s) => s.link === 'datachannel');
+    if (s.link !== 'datachannel') problems.push(`the datagrams go on ${s.link || 'nothing'}, not the data channel`);
+  }
+  // D runs the player to the screen's right: toward the goal its team attacks. The page's first frames of the match can be far
+  // apart (its pipelines warm up) and its clock runs at most a frame's step a frame, so D is held until the player has run a
+  // unit, for up to 8 s. A move back (a new round's kickoff places the players) starts the count again.
   await (await page.$('canvas'))?.focus();
   const before = (await state(page)).position;
+  let from = before;
+  let at = before;
+  let ran = 0;
   await page.keyboard.down('d');
-  await pause(1000);
-  const after = (await state(page)).position;
+  for (let t = 0; t < 8000 && ran <= 1; t += 100) {
+    await pause(100);
+    const now = (await state(page)).position;
+    if (now.length !== 3 || from.length !== 3) {
+      from = now;
+      continue;
+    }
+    if ((now[1] - at[1]) * s.attack < -0.5) from = now;
+    ran = (now[1] - from[1]) * s.attack;
+    at = now;
+  }
   await page.keyboard.up('d');
-  const ran = before.length === 3 && after.length === 3 ? (after[1] - before[1]) * s.attack : 0;
-  console.log(`D held: ${before.join(' ')} to ${after.join(' ')}, attack ${s.attack}`);
+  console.log(`D held: ${before.join(' ')} to ${at.join(' ')}, attack ${s.attack}, ran ${ran.toFixed(2)}`);
   if (!(ran > 1)) problems.push(`the player did not run toward the goal it attacks with D held (${ran.toFixed(2)} along it)`);
   await pause(1500);
   await writeFile(out, await page.screenshot());
@@ -218,11 +241,11 @@ try {
   await pause(1000);
   await page.evaluate(() => globalThis.torque.call('joinPage'));
   const again = new Set();
-  s = await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading', again);
+  s = await wait(page, limit, (s) => ['cached', 'downloading', 'playing'].includes(s.join), again, 5);
   if (s.join === 'cached') await writeFile(`${stem}-again.png`, await page.screenshot());
   s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, again);
   console.log(`joined again: ${JSON.stringify(s)}; states seen: ${[...again].join(', ')}`);
-  if (!again.has('cached') || again.has('downloading')) problems.push(`the second join downloaded again (${[...again].join(', ')})`);
+  if (!s.joins.includes('cached') || s.joins.includes('downloading')) problems.push(`the second join downloaded again (${s.joins.join(', ')})`);
   if (s.join !== 'playing') problems.push(`the second join did not play (${JSON.stringify(s)})`);
 
   // The page reloaded: the mod is in the browser's storage, so there is nothing to download.
@@ -230,11 +253,11 @@ try {
   if (kept < 1) problems.push('the browser storage holds no mod after the download');
   await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
   const reloaded = new Set();
-  s = await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading' || s.join === 'playing', reloaded);
+  s = await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading' || s.join === 'playing', reloaded, 5);
   if (s.join === 'cached') await writeFile(`${stem}-reloaded.png`, await page.screenshot());
   s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, reloaded);
   console.log(`joined after a reload: ${JSON.stringify(s)}; states seen: ${[...reloaded].join(', ')}`);
-  if (!reloaded.has('cached') || reloaded.has('downloading')) problems.push(`the join after a reload downloaded again (${[...reloaded].join(', ')})`);
+  if (!s.joins.includes('cached') || s.joins.includes('downloading')) problems.push(`the join after a reload downloaded again (${s.joins.join(', ')})`);
   if (s.join !== 'playing') problems.push(`the join after a reload did not play (${JSON.stringify(s)})`);
 
   // A stored mod whose bytes were changed is not trusted: the next page downloads it again, and keeps the new copy.
@@ -242,18 +265,17 @@ try {
   if (changed < 1) problems.push('there was no stored mod to change');
   await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
   const tampered = new Set();
-  s = await wait(page, limit, (s) => s.join === 'downloading' && s.total > 0 && s.received / s.total > 0.3, tampered);
+  s = await wait(page, limit, (s) => (s.join === 'downloading' && s.total > 0 && s.received / s.total > 0.3) || s.join === 'playing', tampered, 5);
   if (s.join === 'downloading') await writeFile(`${stem}-tampered.png`, await page.screenshot());
   s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, tampered);
   console.log(`joined after a stored mod was changed: ${JSON.stringify(s)}; states seen: ${[...tampered].join(', ')}`);
-  if (!tampered.has('downloading') || tampered.has('cached')) problems.push(`the changed mod was not downloaded again (${[...tampered].join(', ')})`);
+  if (!s.joins.includes('downloading') || s.joins.includes('cached')) problems.push(`the changed mod was not downloaded again (${s.joins.join(', ')})`);
   if (s.join !== 'playing') problems.push(`the join after the change did not play (${JSON.stringify(s)})`);
   await pause(1000);
   await page.goto(noLock(url), { waitUntil: 'load', timeout: 60_000 });
   const healed = new Set();
-  await wait(page, limit, (s) => s.join === 'cached' || s.join === 'downloading' || s.join === 'playing', healed);
   s = await wait(page, limit, (s) => s.join === 'playing' && s.figure, healed);
-  if (!healed.has('cached') || healed.has('downloading')) problems.push(`the copy downloaded again was not kept (${[...healed].join(', ')})`);
+  if (!s.joins.includes('cached') || s.joins.includes('downloading')) problems.push(`the copy downloaded again was not kept (${s.joins.join(', ')})`);
   status = problems.length ? 1 : 0;
 } catch (e) {
   problems.push(e.message);

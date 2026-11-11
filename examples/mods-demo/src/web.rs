@@ -6,7 +6,8 @@
 //! kept in the browser's storage (IndexedDB, [`prepare`]) for the next page load, in memory when it gives none.
 //!
 //! **The page.** `?server=<ws or wss URL>` names a server elsewhere, `?name=<name>` the player's name. The page's root element
-//! carries the game's state for a check to wait on: `data-torque-frames`, `data-torque-join` (`$Join::State`),
+//! carries the game's state for a check to wait on, every frame: `data-torque-frames`, `data-torque-join` (`$Join::State`),
+//! `data-torque-joins` (every state the join went through, `$Join::Seen`),
 //! `data-torque-download` (`received total`, bytes), `data-torque-mods` (the mods the server plays, `id version`),
 //! `data-torque-team`, `data-torque-figure` (`1` once the client holds its own player), `data-torque-position` (where,
 //! `x y z`), `data-torque-attack` (the way its team attacks along y, `1` or `-1`) and `data-torque-status` (the menu's
@@ -152,10 +153,12 @@ impl WebSoccer {
         self.join()
     }
 
+    /// The state on the page's root element; the menu's status line and the link's only every 15th frame (they cost more).
     fn mark(&mut self) {
         let client = &self.game.client;
         mark("frames", &self.frames.to_string());
         mark("join", &client.global("$Join::State"));
+        mark("joins", &client.global("$Join::Seen"));
         mark(
             "download",
             &format!(
@@ -184,6 +187,9 @@ impl WebSoccer {
             .unwrap_or_default();
         mark("position", &position);
         mark("attack", &client.global("$Match::Attack"));
+        if self.frames % 15 != 1 {
+            return;
+        }
         let status = self
             .game
             .client
@@ -236,9 +242,7 @@ impl App for WebSoccer {
     fn frame(&mut self, view: &mut WorldView) -> (GuiDraws, Eye) {
         let drawn = App::frame(&mut self.game, view);
         self.frames += 1;
-        if self.frames % 15 == 1 {
-            self.mark();
-        }
+        self.mark();
         drawn
     }
 }

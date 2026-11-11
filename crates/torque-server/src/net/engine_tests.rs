@@ -238,3 +238,16 @@ fn the_byte_rate_follows_the_preference_each_tick() {
         "a raised cap is earned back, not jumped to"
     );
 }
+
+#[test]
+fn a_connection_bursts_on_whatever_earlier_connections_of_the_pass_failed() {
+    // `send_conn` counts only what its own polls pushed to the pass's `failed`: an earlier connection's failure leaves this
+    // one's burst going.
+    let mut failed: Vec<(ConnId, NetError)> = vec![(ConnId(1), NetError::Overrun)];
+    let before = failed.len();
+    assert!(polls_again(true, failed.len() > before, || true));
+    failed.push((ConnId(2), NetError::Overrun));
+    assert!(!polls_again(true, failed.len() > before, || true));
+    assert!(!polls_again(false, false, || true));
+    assert!(!polls_again(true, false, || false));
+}

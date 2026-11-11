@@ -642,8 +642,8 @@ pub(super) fn handle_request<G: NetGame>(
                         let limits = server.0.limits(vm);
                         {
                             let mut sh = shared.borrow_mut();
-                            // An engine connection's packets are the byte rate's size already: no burst.
-                            if let Some(c) = sh.hs.connection_mut(conn).filter(|c| !c.engine) {
+                            // An engine connection's burst is as many packets a pass as its byte credit allows.
+                            if let Some(c) = sh.hs.connection_mut(conn) {
                                 c.protocol.set_burst(true);
                             }
                             sh.awaiting.push(Awaiting {

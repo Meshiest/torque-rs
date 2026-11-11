@@ -101,10 +101,19 @@ pub(crate) fn get_rpc_ready(vm: &torque_ts_vm::vm::Vm) -> Option<bool> {
     Some(rpc.is_ready())
 }
 
-/// How many runs of blocks a client keeps asked for at once. The server queues each answer behind the one before it and holds a
-/// client to a backlog on the mods channel of the window and one more run (`mods::MAX_OUTSTANDING`), so the window leaves a run
-/// of room for an acknowledgement that comes late: a run is answered once the ones before it were, whatever the link's round trip.
+/// How many full runs of blocks' bytes a client keeps asked for at once. The server queues each answer behind the one before it and
+/// holds a client to a backlog on the mods channel of the window and one more run (`mods::MAX_OUTSTANDING`), so the window leaves
+/// a run of room for an acknowledgement that comes late: a run is answered once the ones before it were, whatever the link's
+/// round trip.
 pub(crate) const DOWNLOAD_WINDOW: usize = 3;
+
+/// The most runs a client keeps asked for at once, whatever their bytes: a mod of many small files has many of them asked for
+/// together (each file is a run of its own), so its download takes a few round trips, not one a file. Well under the messages a
+/// channel queues for a connection (`torque_net::chunk::MAX_QUEUED_MESSAGES`) and the burst of the requests' rate limit.
+pub(crate) const MAX_PENDING_RUNS: usize = 16;
+
+/// The bytes of [`DOWNLOAD_WINDOW`] full runs.
+const WINDOW_BYTES: u64 = DOWNLOAD_WINDOW as u64 * BLOCK_BYTES as u64 * MAX_REQUEST_BLOCKS as u64;
 
 /// The most bytes of one message of the channel: an offer, or the data of a request.
 pub const MAX_MESSAGE: usize = 2 << 20;
@@ -308,8 +317,11 @@ struct Inner {
     /// A job for each mod of the offer that needs fetching.
     jobs: Vec<Option<Job>>,
     todo: VecDeque<Request>,
-    /// The runs asked for and not answered yet, oldest first (at most [`DOWNLOAD_WINDOW`]): the server answers them in order.
-    pending: VecDeque<Request>,
+    /// The runs asked for and not answered yet with the bytes each asks for, oldest first (at most [`MAX_PENDING_RUNS`], of at
+    /// most [`WINDOW_BYTES`] unless one run alone is more): the server answers them in order.
+    pending: VecDeque<(Request, u64)>,
+    /// The bytes of the runs in `pending`.
+    pending_bytes: u64,
     fetched_bytes: u64,
     total_bytes: u64,
     fetching: usize,
@@ -321,6 +333,23 @@ struct Inner {
     started: Option<u32>,
     /// The bytes received when scripts were last told of the progress.
     reported: Option<u64>,
+}
+
+impl Inner {
+    /// The bytes `request` asks for (0 for a mod or file the offer does not have).
+    fn request_bytes(&self, request: &Request) -> u64 {
+        self.offer
+            .get(request.mod_index as usize)
+            .and_then(|o| o.files.get(request.file as usize))
+            .map_or(0, |f| {
+                let (from, to) = run_bytes(
+                    u64::from(f.size),
+                    u64::from(request.start),
+                    u64::from(request.count),
+                );
+                to - from
+            })
+    }
 }
 
 /// A client's downloads: shared by the channel that reads the messages and the code that owns the script engine.
@@ -362,6 +391,7 @@ impl Downloads {
                 jobs: Vec::new(),
                 todo: VecDeque::new(),
                 pending: VecDeque::new(),
+                pending_bytes: 0,
                 fetched_bytes: 0,
                 total_bytes: 0,
                 fetching: 0,
@@ -417,6 +447,7 @@ impl Downloads {
         inner.jobs.clear();
         inner.todo.clear();
         inner.pending.clear();
+        inner.pending_bytes = 0;
         inner.fetched_bytes = 0;
         inner.total_bytes = 0;
         inner.fetching = 0;
@@ -436,6 +467,7 @@ impl Downloads {
         }
         inner.todo.clear();
         inner.pending.clear();
+        inner.pending_bytes = 0;
         inner.jobs.clear();
     }
 
@@ -492,7 +524,7 @@ impl Downloads {
         let at = inner
             .pending
             .front()
-            .map(|r| r.mod_index)
+            .map(|(r, _)| r.mod_index)
             .or_else(|| inner.todo.front().map(|r| r.mod_index))?;
         inner.offer.get(at as usize).map(|o| o.id.clone())
     }
@@ -509,14 +541,20 @@ impl Downloads {
         self.inner.borrow().caps.limits.time_seconds()
     }
 
-    /// What to send the server next, if anything: the next request (up to [`DOWNLOAD_WINDOW`] are outstanding at a time), or the
-    /// ready word once everything is mounted.
+    /// What to send the server next, if anything: the next request (while fewer than [`MAX_PENDING_RUNS`] are outstanding and
+    /// it fits in [`WINDOW_BYTES`] with them, or none is), or the ready word once everything is mounted.
     pub(crate) fn next_command(&self) -> Option<Command> {
         let mut inner = self.inner.borrow_mut();
         match inner.phase {
-            Phase::Downloading if inner.pending.len() < DOWNLOAD_WINDOW => {
-                let request = inner.todo.pop_front()?;
-                inner.pending.push_back(request);
+            Phase::Downloading if inner.pending.len() < MAX_PENDING_RUNS => {
+                let request = *inner.todo.front()?;
+                let bytes = inner.request_bytes(&request);
+                if !inner.pending.is_empty() && inner.pending_bytes + bytes > WINDOW_BYTES {
+                    return None;
+                }
+                inner.todo.pop_front();
+                inner.pending.push_back((request, bytes));
+                inner.pending_bytes += bytes;
                 Some(Command::Get(request))
             }
             Phase::Done if !inner.ready_sent => {
@@ -534,6 +572,7 @@ impl Downloads {
         inner.phase = Phase::Failed;
         inner.todo.clear();
         inner.pending.clear();
+        inner.pending_bytes = 0;
         inner.jobs.clear();
         inner.events.push_back(Event::Failed(reason));
     }
@@ -841,7 +880,7 @@ impl Downloads {
         let at;
         {
             let mut inner = self.inner.borrow_mut();
-            if inner.pending.front() != Some(&request) {
+            if inner.pending.front().map(|(r, _)| r) != Some(&request) {
                 return Err("The server sent data nobody asked for.".to_string());
             }
             at = request.mod_index as usize;
@@ -889,7 +928,9 @@ impl Downloads {
             }
             let done = job.missing.iter().all(|m| m.iter().all(|n| !n));
             inner.fetched_bytes = inner.fetched_bytes.saturating_add(bytes.len() as u64);
-            inner.pending.pop_front();
+            if let Some((_, asked)) = inner.pending.pop_front() {
+                inner.pending_bytes -= asked;
+            }
             if !done {
                 return Ok(());
             }

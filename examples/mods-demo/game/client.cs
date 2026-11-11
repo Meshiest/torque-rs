@@ -38,6 +38,7 @@ function connectTo(%address, %shown)
    $Join::Received = 0;
    $Match::Team = "";
    $Match::Updates = "";
+   $Join::Seen = "";
    setJoinState("connecting");
    %conn = new GameConnection(ServerConnection);
    if ($Pref::Player::Name !$= "")
@@ -165,8 +166,11 @@ function sizeText(%bytes)
    return mFloor(%bytes / 104857.6) / 10 @ " MB";
 }
 
+// $Join::Seen keeps every state this join went through, in order, for a check that looks only now and then.
 function setJoinState(%state)
 {
+   if (%state !$= $Join::State || $Join::Seen $= "")
+      $Join::Seen = trim($Join::Seen SPC %state);
    $Join::State = %state;
    updateJoinScreen();
 }
@@ -723,17 +727,15 @@ new GameTSCtrl(MatchGui)
    new GuiControl(MatchKeys) { profile = ClearProfile; visible = true; enabled = true; position = "0 568"; extent = "500 32"; vertSizing = "top"; };
    new GuiControl(PausePanel)
    {
-      profile = MenuPanelProfile; position = "250 190"; extent = "300 220"; horizSizing = "center"; vertSizing = "center";
+      profile = MenuPanelProfile; position = "250 222"; extent = "300 156"; horizSizing = "center"; vertSizing = "center";
       visible = false;
-      new GuiTextCtrl(PauseTitle) { profile = MenuHeadProfile; visible = true; enabled = true; position = "10 18"; extent = "280 38"; text = "Paused"; };
-      new GuiTextCtrl(PauseNote) { profile = MenuDimCenterProfile; visible = true; enabled = true; position = "10 58"; extent = "280 20"; text = "The match goes on without you."; };
       new GuiButtonCtrl(PauseBack)
       {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "40 92"; extent = "220 48"; text = "Back to the match"; command = "closePause();";
+         profile = MenuButtonProfile; visible = true; enabled = true; position = "40 24"; extent = "220 48"; text = "Continue"; command = "closePause();";
       };
       new GuiButtonCtrl(PauseLeave)
       {
-         profile = MenuButtonProfile; visible = true; enabled = true; position = "40 152"; extent = "220 48"; text = "Leave the match"; command = "leaveMatch();";
+         profile = MenuButtonProfile; visible = true; enabled = true; position = "40 84"; extent = "220 48"; text = "Leave"; command = "leaveMatch();";
       };
    };
 };

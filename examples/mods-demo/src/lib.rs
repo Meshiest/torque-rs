@@ -204,7 +204,7 @@ pub fn engine(files: &GameFiles, role: Role, lua: Option<&Lua>) -> Result<Engine
     builder.build().map_err(|e| e.to_string())
 }
 
-/// The ball as the client of `engine` sees it: the newest prop its book holds (a kickoff replaces the ball with a new one).
+/// The ball as the client of `engine` sees it: the newest prop its book holds (a new ball on the center spot replaces the old one).
 pub fn ball_of(engine: &Engine) -> Option<ClientProp> {
     engine
         .resource::<ClientProps>()?
