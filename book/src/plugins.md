@@ -935,8 +935,8 @@ impl Plugin for ExamplePlugin {
 }
 ```
 
-The example's README (`examples/minimal-engine/README.md`) lists the small differences between the two sessions, and its
-tests check that the engine's script engines carry every native the hand-wired ones have.
+The example's tests (`examples/minimal-engine/tests/`) compare the two sessions, and they
+check that the engine's script engines carry every native the hand-wired ones have.
 
 ## What's next
 
