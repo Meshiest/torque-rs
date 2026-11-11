@@ -26,6 +26,7 @@
 [Native extensions](native-extensions.md)
 [Lua](lua.md)
 [Server scripts](server-scripts.md)
+[Live datablocks](live-datablocks.md)
 [Games in a browser](web-pages.md)
 
 # Reference

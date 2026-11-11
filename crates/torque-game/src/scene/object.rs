@@ -248,13 +248,13 @@ fn world_box_of(vm: &Vm, id: ObjId) -> Option<SceneState> {
 
 /// The observer of a server's static-field writes (`Vm::set_static_write_observer`): a script's write of `position`,
 /// `rotation` or `scale` reaches the scene hierarchy ([`super::links::written`], which compares the transform it holds,
-/// so other fields cost one lookup), then a datablock's write its Players and images
-/// ([`crate::sim::player::datablock_written`]).
+/// so other fields cost one lookup), then a datablock's write marks it for the tick's refresh of its users
+/// ([`super::refresh::written`]).
 pub fn static_written(vm: &mut Vm, id: Option<ObjId>, class: ts_vm::sim::ClassId) {
     if let Some(id) = id {
         super::links::written(vm, id);
     }
-    crate::sim::player::datablock_written(vm, id, class);
+    super::refresh::written(vm, id, class);
 }
 
 /// `GameBase`'s `DataBlockMask`: the update bit that sends a connection the object's datablock again (the ghost codecs' own).
@@ -284,8 +284,8 @@ fn takes_datablock(vm: &Vm, id: ObjId, db: ObjId) -> bool {
 
 /// The classes' `onNewDataBlock` work for `db`, parent classes first: the camera's, the shape's, the Player's, the Item's and
 /// the vehicles'. A class that is not `id`'s, or a datablock that is not its class's, does nothing. It runs for the first
-/// datablock (`GameBase::onAdd`) and again for each later one (`setDataBlock`), so each keeps the state of the datablock it
-/// had.
+/// datablock (`GameBase::onAdd`), again for each later one (`setDataBlock`) and again for the same one once it was declared
+/// again ([`super::refresh`]), so each keeps the state of the datablock it had.
 ///
 /// # Errors
 /// A class's work ran past the script engine's limits.
@@ -320,6 +320,7 @@ pub fn set_data_block(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<bool, VmError
         return Ok(false);
     }
     set_field(vm, id, b"dataBlock", Value::Object(Some(db)));
+    super::refresh::user_added(vm, id, db);
     ghosts::mark(vm, id, DATABLOCK_MASK);
     new_datablock(vm, id, db)?;
     vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()])?;

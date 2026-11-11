@@ -14,7 +14,7 @@
 //!
 //! The expansion is an `impl ScriptClass`: the class's name and parent, one `FieldDecl` constant per field (the console
 //! field's name, its type from the Rust type, doc comment, default and range), the reader that builds the struct from an
-//! object's fields, and the `preload` hook. What the engine knows by type (which console field type a Rust type is, how
+//! object's fields, and the `preload` and `refresh` hooks. What the engine knows by type (which console field type a Rust type is, how
 //! its stored value reads back) stays in `ClassField`, so a field of a type it lacks does not compile.
 
 use proc_macro2::TokenStream;
@@ -28,11 +28,12 @@ use crate::{camel_case, doc_text};
 /// The expansion of `#[derive(EngineClass)]`, with `engine` the engine crate's path
 /// ([`find_engine`](crate::find_engine)).
 ///
-/// The struct takes `#[class(name = "RopeData", parent = "SimDataBlock", preload = path)]`: `name` is the console class
-/// (the struct's name when left out), `parent` the class it goes below (`SimObject` when left out), `preload` a function
-/// `fn(&Self, &mut Vm, ObjId) -> Result<(), String>` that runs for each datablock of the class once it is registered
+/// The struct takes `#[class(name = "RopeData", parent = "SimDataBlock", preload = path, refresh = path)]`: `name` is the
+/// console class (the struct's name when left out), `parent` the class it goes below (`SimObject` when left out), `preload` a
+/// function `fn(&Self, &mut Vm, ObjId) -> Result<(), String>` that runs for each datablock of the class once it is registered
 /// (only datablocks are preloaded), with its fields read into the struct (an `Err` prints the preload failure and
-/// deletes the datablock), and
+/// deletes the datablock), `refresh` a function `fn(&Self, &mut Vm, ObjId, &[ObjId], DatablockChange) -> Result<(), String>`
+/// that runs on a server when a datablock of the class changed under the objects that use it (an `Err` is a console error), and
 /// `crate = path` the engine crate. Each field takes `#[field(...)]`: `name = ".."` (the console field's name: the Rust
 /// name in camelCase when left out), `doc = ".."` (the doc comment when left out), `range = low..=high` (writes are
 /// clamped to it), `default = ..` (a literal: what a fresh object reads) and, on a `Filename` field, `asset = Type` (the
@@ -47,6 +48,7 @@ fn expand(input: TokenStream, engine: &syn::Path) -> syn::Result<TokenStream> {
     let mut name: Option<LitStr> = None;
     let mut parent: Option<LitStr> = None;
     let mut preload: Option<syn::Path> = None;
+    let mut refresh: Option<syn::Path> = None;
     let mut krate: Option<syn::Path> = None;
     for attr in input.attrs.iter().filter(|a| a.path().is_ident("class")) {
         attr.parse_nested_meta(|meta| {
@@ -56,11 +58,13 @@ fn expand(input: TokenStream, engine: &syn::Path) -> syn::Result<TokenStream> {
                 parent = Some(class_name(meta.value()?.parse()?)?);
             } else if meta.path.is_ident("preload") {
                 preload = Some(meta.value()?.parse()?);
+            } else if meta.path.is_ident("refresh") {
+                refresh = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("crate") {
                 krate = Some(meta.value()?.parse()?);
             } else {
                 return Err(meta.error(
-                    "expected `name = \"...\"`, `parent = \"...\"`, `preload = path` or `crate = path`",
+                    "expected `name = \"...\"`, `parent = \"...\"`, `preload = path`, `refresh = path` or `crate = path`",
                 ));
             }
             Ok(())
@@ -169,12 +173,27 @@ fn expand(input: TokenStream, engine: &syn::Path) -> syn::Result<TokenStream> {
             }
         }
     });
+    let refresh_hook = refresh.map(|path| {
+        quote! {
+            const HAS_REFRESH: bool = true;
+            fn refresh(
+                &self,
+                vm: &mut #krate::class::Vm,
+                id: #krate::class::ObjId,
+                users: &[#krate::class::ObjId],
+                change: #krate::class::DatablockChange,
+            ) -> ::core::result::Result<(), ::std::string::String> {
+                #path(self, vm, id, users, change)
+            }
+        }
+    });
     Ok(quote! {
         impl #krate::ScriptClass for #ident {
             const NAME: &'static str = #name;
             const PARENT: &'static str = #parent;
             const FIELDS: &'static [#krate::FieldDecl] = &[#(#decls),*];
             #hook
+            #refresh_hook
             fn from_values(
                 get: &mut dyn ::core::ops::FnMut(
                     &#krate::FieldDecl,

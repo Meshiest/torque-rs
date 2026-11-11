@@ -32,6 +32,51 @@ use torque_ts_vm::sim::ObjId;
 
 pub type NetServer = Server<HostParts<TorqueNet>>;
 
+const GAME_SERVER_ADDR: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 28_000);
+
+/// A server with the game classes over `files` (its shapes), a memory transport bound at port 28,000 and connections
+/// allowed, after its first tick: the shared state of its network host and the transport's other end.
+pub fn game_server(
+    files: torque_ts_vm::host::MemFiles,
+) -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
+    use torque_server::net::torque::{NetPasses, TgeGhostGame};
+    use torque_server::net::transport::{MemoryTransport, SharedTransport};
+    use torque_server::net::{Host, NetClock, attach_host};
+    use torque_server::state::ServerState;
+    use torque_ts_vm::vm::Vm;
+
+    let mut vm = Vm::new();
+    torque_game::specs::install(&mut vm);
+    vm.set_file_host(files);
+    let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
+    let game = torque_server::game::install(&mut vm, &state);
+    let mut s = Server::with_state(vm, Rc::clone(&state));
+    let (transport, end) = MemoryTransport::new();
+    let transport: SharedTransport = Rc::new(RefCell::new(transport));
+    transport
+        .borrow_mut()
+        .bind(GAME_SERVER_ADDR.ip(), GAME_SERVER_ADDR.port())
+        .unwrap();
+    let shared = attach_host(
+        &mut s.vm,
+        Host {
+            transport,
+            game: TorqueNet::default(),
+            engine: Rc::clone(&state),
+            clock: NetClock::Sim,
+            ghosts: TgeGhostGame,
+            container: game.container,
+            static_writes: None,
+        },
+    );
+    s.attach_net(Rc::new(NetPasses(Rc::clone(&shared))))
+        .unwrap();
+    state.borrow_mut().allow_connections = true;
+    s.run(TICK_MS, |_| false);
+    (s, shared, end)
+}
+
 /// A client of the server: torque-net's handshake and packet layer, a ghost table read with TGE's client codec and the
 /// plugins' classes, and the client's world of ghosts.
 pub struct TestClient {

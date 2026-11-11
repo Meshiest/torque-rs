@@ -838,6 +838,10 @@ impl<N: NetParts> Server<N> {
                 let process = this.state.borrow().process.clone();
                 let first_tick = this.ticks;
                 this.ticks = this.ticks.saturating_add(u64::from(steps_in_batch));
+                // The datablocks the scripts changed since the last tick refresh their users, once for the batch, before any
+                // object steps (`torque_game::scene::refresh`).
+                let refresh_errors = torque_game::scene::refresh::drain(&mut this.vm);
+                this.keep_errors(refresh_errors);
                 let hooks = this.tick_hooks.clone();
                 if let Some(hooks) = &hooks {
                     for n in 1..=u64::from(steps_in_batch) {

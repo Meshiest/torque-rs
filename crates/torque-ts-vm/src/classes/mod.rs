@@ -119,6 +119,24 @@ pub trait EngineClass {
         Ok(())
     }
 
+    /// A datablock of the class changed under the objects that use it: `users` are live objects whose `dataBlock` is `db`
+    /// (a host filters the ones a script deleted since it gathered them; a behavior of the chain that deletes one leaves
+    /// the later behaviors to check it is still there), `change` says whether its fields were written or it was declared
+    /// again (its `preload` ran). The behavior brings what those objects built from the datablock up to date and answers
+    /// `Ok(true)`; `Ok(false)` (the default) says the class takes no refresh, and a host may warn that the objects keep
+    /// what they were built with. Run for the whole class chain, root first, like `preload`; a host decides when (a server
+    /// once per tick) and may give the users in several calls.
+    fn datablock_changed(
+        &self,
+        vm: &mut Vm,
+        db: ObjId,
+        users: &[ObjId],
+        change: DatablockChange,
+    ) -> Result<bool, VmError> {
+        let _ = (vm, db, users, change);
+        Ok(false)
+    }
+
     /// The C++ constructor beyond the class's initial values, for the object a declaration (`new Class(...)`) makes: run
     /// before its `: parent` copy and its fields, root class first (a `GuiControlProfile` constructor may copy
     /// `GuiDefaultProfile`'s fields when that profile exists). It runs no script: the objects are read only and only
@@ -151,6 +169,15 @@ pub trait EngineClass {
         let _ = (vm, group, child);
         Ok(())
     }
+}
+
+/// What changed about a datablock that objects use ([`EngineClass::datablock_changed`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DatablockChange {
+    /// One or more static fields were written; the shape and the other preload products are as they were.
+    Written,
+    /// The datablock was declared again and its `preload` ran: its shape and every other preload product may be new.
+    Preloaded,
 }
 
 /// Why a [`EngineClass::preload`] did not succeed.

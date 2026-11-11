@@ -55,6 +55,12 @@
 //! **A flood of info queries runs no script**: the info answer is made from the last second's script output
 //! (`a_flood_of_info_queries_runs_the_info_script_once_a_second_and_every_one_is_answered`).
 //!
+//! **Live datablocks drain once a tick, before the pass** (`server.rs`, the tick branch of `run_ticks_on`:
+//! `torque_game::scene::refresh::drain`, its errors kept with the tick's), after the packets' scripts; `game.rs` installs the set
+//! with the game classes and moves a datablock's user count in `GameBase::onAdd` and `onRemove`, and `net/datablocks.rs` chains
+//! the key behavior onto `SimDataBlock` instead of replacing it, so the redeclare mark the game classes put there stays. A host
+//! that replaces `GameBase`'s behavior keeps the counts or loses the refresh (`tests/datablock_reload.rs`).
+//!
 //! **Nothing a client sends runs free**: a remote command that names no function is charged to its connection's share, and
 //! its warning is the script engine's, limited per connection (`Vm::invoke_from` with the connection as its source; one
 //! limiter, not a second here) (`unknown_commands_cost_the_connections_share_and_their_warnings_are_limited` in

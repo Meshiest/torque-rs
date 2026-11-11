@@ -11,8 +11,11 @@
 //! **The datablock.** [`PlayerInfo`] is built from the `PlayerData`'s fields (the class table's defaults for the unset ones),
 //! the action list of its shape with each action's motion ([`ground`]) and `PlayerData::preload`'s products. Torque reads the
 //! datablock's members live; the engine rebuilds the info, preload products included, on the tick after any static-field write
-//! to that datablock ([`datablock_written`], the `onStaticModified` hook point): a script that changes `maxForwardSpeed`
-//! mid-game is obeyed from the next tick (the preload products such as `runSurfaceCos` are rebuilt too).
+//! to that datablock ([`crate::scene::refresh::written`], the `onStaticModified` hook point, moves its generation; [`refresh_info`]
+//! swaps the info): a script that changes `maxForwardSpeed` mid-game is obeyed from the next tick (the preload products such as
+//! `runSurfaceCos` are rebuilt too). The words the state copied from the datablock (mass, drag, speeds, recharge rate, the box,
+//! the damage and energy as shares of their maxima) follow through the tick's refresh of the datablock's users
+//! ([`crate::scene::refresh`]), which runs [`new_datablock`] again for the Player.
 //!
 //! Credit: this module follows TGE as Torque3D, its MIT-licensed release, keeps it, where the two agree: `T3D/player.cpp` and
 //! `T3D/aiPlayer.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this
@@ -32,7 +35,6 @@ use ::sim::player::{Player, PlayerData, PlayerState};
 use collide::math::{Box3, F3};
 use ts_vm::classes::EngineClass;
 use ts_vm::fields::Value;
-use ts_vm::sim::ClassId;
 use ts_vm::sim::ObjId;
 use ts_vm::vm::{Vm, VmError};
 
@@ -58,6 +60,8 @@ pub struct PlayerInfo {
     pub max_time_scale: f32,
     /// `maxFreelookAngle` as the ghost record divides by it.
     pub max_freelook: f32,
+    /// `rechargeRate`: the state's recharge rate when the Player is made, and again when the datablock's value changes.
+    pub recharge_rate: f32,
     /// The engine's walk action, when the shape has one that moves it forward ([`synced::walk_action`]): a synced Player
     /// walks at walking pace.
     pub walk: Option<u32>,
@@ -74,6 +78,7 @@ impl PartialEq for PlayerInfo {
             && self.look_action == other.look_action
             && self.max_time_scale == other.max_time_scale
             && self.max_freelook == other.max_freelook
+            && self.recharge_rate == other.recharge_rate
             && self.walk == other.walk
             && self.pose_sets == other.pose_sets
     }
@@ -289,6 +294,7 @@ pub fn build_info(vm: &Vm, db: ObjId) -> Option<PlayerInfo> {
     classes.player_preload(&mut d);
     Some(PlayerInfo {
         max_freelook: d.max_freelook_angle,
+        recharge_rate: float(vm, db, b"rechargeRate", 0.0),
         data: d,
         class: kind,
         actions: table,
@@ -327,28 +333,9 @@ pub fn info_of(vm: &mut Vm, db: ObjId) -> Option<Rc<PlayerInfo>> {
     Some(info)
 }
 
-/// A datablock's static-field write count (the `onStaticModified` hook point bumps it).
+/// A datablock's static-field write count (the `onStaticModified` hook point bumps it, [`crate::scene::refresh::written`]).
 pub fn generation(vm: &Vm, db: ObjId) -> u32 {
     ext::get(vm.objects(), db).map_or(0, |e| e.db_generation)
-}
-
-/// The observer's part: a write to a registered `PlayerData` bumps its count, so its Players rebuild their info on their next
-/// tick (and a write to a `ShapeBaseImageData` its view for the image step, [`crate::sim::image`]).
-pub fn datablock_written(vm: &mut Vm, id: Option<ObjId>, class: ClassId) {
-    let Some(id) = id else {
-        return;
-    };
-    let classes = &vm.objects().classes;
-    // A PlayerData's Players rebuild their products; a ShapeBaseImageData's state-machine view is rebuilt (its live members).
-    let watched = [&b"PlayerData"[..], b"ShapeBaseImageData"]
-        .iter()
-        .any(|name| classes.find(name).is_some_and(|c| classes.is_a(class, c)));
-    if !watched {
-        return;
-    }
-    if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
-        e.db_generation = e.db_generation.wrapping_add(1);
-    }
 }
 
 /// The info again when the datablock changed or was written since it was built (the tick's first act).
@@ -502,8 +489,10 @@ pub fn play_action(
 
 /// `Player::onNewDataBlock` after the shape part, and `ShapeBase::onNewDataBlock`'s words: the first PlayerData
 /// makes the Player's state at the transform the fields gave it (the world box as the scene holds it: it is not reset here);
-/// a later one keeps the state, scales damage and energy, and takes the new speeds, mass, drag and box. Any other ShapeBase
-/// gets its [`super::vitals`] words.
+/// a later one keeps the state, scales damage and energy, and takes the new speeds, mass, drag and box. The same datablock
+/// again (its fields changed, [`crate::scene::refresh`]) does the same, scaling the words from the maxima the Player's products
+/// were built with and taking the recharge rate only when the datablock's changed (a `setRechargeRate` stays otherwise). Any
+/// other ShapeBase gets its [`super::vitals`] words.
 pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
     if !is_class(vm, id, "ShapeBase") || !is_class(vm, db, "ShapeBaseData") {
         return Ok(());
@@ -546,7 +535,7 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
             if is_class(vm, id, "AIPlayer") {
                 info.class.make_ai(&mut s);
             }
-            s.recharge_rate = float(vm, db, b"rechargeRate", 0.0);
+            s.recharge_rate = info.recharge_rate;
             if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
                 e.player = Some(Box::new(PlayerExt {
                     body: Some(Player::new(s)),
@@ -562,11 +551,23 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
             super::vitals::update_damage_state(vm, id);
         }
         Some(old) => {
-            super::vitals::new_datablock(vm, id, Some(old), db);
-            let d = info.data.clone();
-            let old_drag = ext::get(vm.objects(), id)
+            let previous = ext::get(vm.objects(), id)
                 .and_then(|e| e.player.as_deref())
-                .map_or(d.drag, |p| p.info.data.drag);
+                .map(|p| Rc::clone(&p.info));
+            let same = old == db;
+            match previous.as_deref().filter(|_| same) {
+                // The datablock's own maxima are the new ones already: the products hold the ones the words were under.
+                Some(was) => {
+                    super::vitals::rescale(vm, id, (was.data.max_damage, was.data.max_energy), db);
+                }
+                None => super::vitals::new_datablock(vm, id, Some(old), db),
+            }
+            let d = info.data.clone();
+            let old_drag = previous.as_deref().map_or(d.drag, |p| p.data.drag);
+            let recharge = previous
+                .as_deref()
+                .filter(|was| !same || was.recharge_rate != info.recharge_rate)
+                .map(|_| info.recharge_rate);
             if let Some(p) =
                 ext::get_mut(vm.objects_mut(), id).and_then(|e| e.player.as_deref_mut())
             {
@@ -577,6 +578,9 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
                     s.mass = d.mass;
                     if old_drag != d.drag {
                         s.drag = d.drag;
+                    }
+                    if let Some(rate) = recharge {
+                        s.recharge_rate = rate;
                     }
                     s.speeds = [
                         d.max_forward_speed,

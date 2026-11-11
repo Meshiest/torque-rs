@@ -25,12 +25,32 @@
 //!   tick), and the vehicle host keeps its buffers across sub-steps.
 //! - Nothing here changes what is charged or returned: every line of `just trace-hash` stays.
 //!
-//! **One list of `onNewDataBlock` work.** `GameBase::onAdd` (torque-server's `game.rs`) and `setDataBlock` both run
-//! [`scene::object::new_datablock`], so a class that keeps state made from its datablock (the shape instance, a Player's
-//! products, a vehicle's preload) adds its step there and must take a second datablock over the state the first made; the
-//! tests are in torque-server's `tests/set_datablock.rs`. `setDataBlock` also marks [`scene::object::DATABLOCK_MASK`] (GameBase's
+//! **One list of `onNewDataBlock` work.** `GameBase::onAdd` (torque-server's `game.rs`), `setDataBlock` and the refresh of a
+//! redeclared datablock all run [`scene::object::new_datablock`], so a class that keeps state made from its datablock (the shape
+//! instance, a Player's products, a vehicle's preload) adds its step there and must take a second datablock, and the same
+//! datablock again, over the state the first made; the tests are in torque-server's `tests/set_datablock.rs` and
+//! `tests/datablock_reload.rs`. `setDataBlock` also marks [`scene::object::DATABLOCK_MASK`] (GameBase's
 //! bit 2, which the ghost codecs' `sim_mask` keeps as it is), and a client reads the new datablock from the next update of the
 //! ghost. On a client it only writes the pointer: a ghost's object runs none of the server's classes.
+//!
+//! **Live datablocks** ([`scene::refresh`]). The flow: the static-write observer ([`scene::object::static_written`]) and the
+//! `SimDataBlock` preload mark a datablock dirty (written or preloaded; one mark per datablock, the stronger kind wins); the
+//! server's tick drains the set once before the process list's pass; the drain reads each dirty datablock's user count
+//! ([`scene::ext::ObjectExt::db_users`], moved by `GameBase::onAdd`, `setDataBlock` and `onRemove`) and scans the process list
+//! only when one has a user; the datablock class's chain refreshes the users (`EngineClass::datablock_changed`, root first, the
+//! engine's on `GameBaseData`); `onReloaded()` follows. Invariants, each held by a test in `tests/datablock_reload.rs`:
+//! - refreshed in place equals built fresh, field for field, for StaticShape, Item and Player (the differential tests over 200
+//!   seeded edits): a class that caches a new field from its datablock adds it to the light refresh ([`scene::refresh`]'s
+//!   `light`: a Player's words are [`sim::player::new_datablock`]'s `Some(old)` branch) or it goes stale;
+//! - a write never rebuilds a shape and costs one light refresh per user per tick; a redeclare costs one heavy refresh per
+//!   user whatever its count in the tick (`ten_thousand_writes...`, `a_thousand_redeclares...`);
+//! - script threads keep sequence and position across a heavy refresh (`script_threads_keep...`);
+//! - no scan while no dirty datablock has a user (`a_drain_scans_nothing...`), so a mission load stays cheap;
+//! - a class with users and no refresh is warned about once (the unit tests in `scene/refresh.rs`).
+//!
+//! Extension points: a game chains its refresh with [`behaviour::chain`] on its datablock class; the drain's caps are
+//! [`scene::refresh::MAX_REFRESHES_PER_DRAIN`] and [`scene::refresh::DRAIN_WORK`]. Check: `cargo test -p torque-game --lib refresh`
+//! and `cargo test -p torque-server --test main datablock_reload`.
 
 pub mod behaviour;
 pub mod charge;

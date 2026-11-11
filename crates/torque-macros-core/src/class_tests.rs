@@ -106,6 +106,21 @@ fn a_preload_hook_is_called_with_the_object_and_the_script_engine() {
     });
     assert!(out.contains("const HAS_PRELOAD : bool = true"), "{out}");
     assert!(out.contains("RopeData :: check (self , vm , id)"), "{out}");
+    assert!(!out.contains("HAS_REFRESH"), "{out}");
+}
+
+#[test]
+fn a_refresh_hook_is_called_with_the_datablocks_users_and_the_change() {
+    let out = class_of(quote! {
+        #[class(refresh = RopeData::rebuild)]
+        struct RopeData { a: i32 }
+    });
+    assert!(out.contains("const HAS_REFRESH : bool = true"), "{out}");
+    assert!(
+        out.contains("RopeData :: rebuild (self , vm , id , users , change)"),
+        "{out}"
+    );
+    assert!(!out.contains("HAS_PRELOAD"), "{out}");
 }
 
 #[test]

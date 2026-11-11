@@ -398,6 +398,8 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
     let instance = match built {
         Ok(instance) => instance,
         Err(_) => {
+            // The object keeps the instance it had: a refresh the budget stopped runs again.
+            state.body = old;
             put_state(vm, id, state);
             return Err(VmError::StepLimit);
         }
@@ -412,9 +414,8 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
     if type_mask(vm, id) & PLAYER_BIT == 0 {
         let b = kept.shape.as_ref().map_or([0.0; 6], |s| s.bounds);
         scene::set_object_box(vm, id, [b[0], b[1], b[2]], [b[3], b[4], b[5]]);
-    } else if is_class(vm, db, "PlayerData") {
-        let field = crate::sim_classes::sim_classes(vm).player_box_field(vm, id);
-        player_box(vm, id, db, field);
+    } else {
+        refresh_box(vm, id, db);
     }
     // The script threads that were playing play the same sequence of the new shape (found by name), from where they were.
     for (slot, before) in positions.iter().copied().enumerate() {
@@ -471,6 +472,50 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) -> Result<(), VmError> {
     put_state(vm, id, state);
     ghosts::mark(vm, id, 0xf0000);
     Ok(())
+}
+
+/// The part of the object box a datablock's fields give without its shape: a Player's box from its PlayerData's box field
+/// (`Player::onNewDataBlock`). Another object's box is its shape's bounds, which only a new shape changes ([`new_datablock`]).
+pub fn refresh_box(vm: &mut Vm, id: ObjId, db: ObjId) {
+    if type_mask(vm, id) & PLAYER_BIT != 0 && is_class(vm, db, "PlayerData") {
+        let field = crate::sim_classes::sim_classes(vm).player_box_field(vm, id);
+        player_box(vm, id, db, field);
+    }
+}
+
+/// The type bits `db`'s `dynamicType` gives an object of `id`'s class: a StaticShape's low 24 bits (`StaticShape::onAdd`), an
+/// Item's within the bits an Item may take (`Item::onAdd`), none for any other class.
+fn dynamic_type_bits(vm: &Vm, id: ObjId, db: ObjId) -> u32 {
+    if is_class(vm, id, "Item") {
+        let allowed = crate::masks::type_masks(vm).item_dynamic_allowed;
+        crate::sim::item::data_of(vm, db).dynamic_type & allowed
+    } else if is_class(vm, id, "StaticShape") {
+        int_field(vm, db, b"dynamicType") as u32 & 0xff_ffff
+    } else {
+        0
+    }
+}
+
+/// Gives the object the `dynamicType` bits of `db` in place of the ones its datablock gave it before (the add's first time,
+/// and again when the datablock changed, [`super::refresh`]): the rest of the type mask is kept, a bit the constructor set
+/// too stays when the datablock drops it.
+pub fn refresh_dynamic_type(vm: &mut Vm, id: ObjId, db: ObjId) {
+    let bits = dynamic_type_bits(vm, id, db);
+    if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
+        let base = e.type_mask & !e.dynamic_bits;
+        e.type_mask = base | bits;
+        e.dynamic_bits = bits & !base;
+    }
+}
+
+/// Takes the `dynamicType` bits the object's datablock gave it out of its type mask, leaving the mask the constructor made:
+/// what an object's `onNewDataBlock` work sees when it runs again ([`super::refresh`]), as it ran before the add gave the
+/// bits the first time.
+pub fn clear_dynamic_type(vm: &mut Vm, id: ObjId) {
+    if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
+        e.type_mask &= !e.dynamic_bits;
+        e.dynamic_bits = 0;
+    }
 }
 
 fn put_state(vm: &mut Vm, id: ObjId, state: Box<ShapeBaseState>) {
@@ -839,10 +884,7 @@ impl EngineClass for StaticShapeClass {
         let Some(db) = object_field(vm, id, b"dataBlock") else {
             return Ok(false);
         };
-        let dynamic = int_field(vm, db, b"dynamicType") as u32 & 0xff_ffff;
-        if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
-            e.type_mask |= dynamic;
-        }
+        refresh_dynamic_type(vm, id, db);
         scene::add_to_scene(vm, &self.container, id);
         vm.call_method(db, b"onAdd", &[id.to_string().into_bytes()])?;
         Ok(true)

@@ -5,20 +5,14 @@
 use crate::net_client;
 
 use std::cell::RefCell;
-use std::net::SocketAddr;
 use std::rc::Rc;
 
 use net_client::{NetServer, TestClient, connection_of, eval, run};
-use torque_server::net::torque::{NetPasses, TgeGhostGame, TorqueNet};
-use torque_server::net::transport::{MemoryEnd, MemoryTransport, SharedTransport};
-use torque_server::net::{Host, HostParts, NetClock, NetShared, attach_host};
-use torque_server::server::{Server, TICK_MS};
-use torque_server::state::ServerState;
+use torque_server::net::NetShared;
+use torque_server::net::torque::TorqueNet;
+use torque_server::net::transport::MemoryEnd;
+use torque_server::server::TICK_MS;
 use torque_ts_vm::host::MemFiles;
-use torque_ts_vm::vm::Vm;
-
-const SERVER_ADDR: SocketAddr =
-    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 28_000);
 
 /// The scene every test starts from: two StaticShape datablocks that record their callbacks, a PlayerData, a camera for a
 /// connection to scope from, and a StaticShape on the first datablock.
@@ -34,42 +28,15 @@ function Second::onNewDataBlock(%this, %obj) { $calls = $calls @ "second:" @ %ob
 new StaticShape(Prop) { dataBlock = First; };
 "#;
 
+/// Two box shapes, one unit and two units across.
 fn game_server() -> (NetServer, Rc<RefCell<NetShared<TorqueNet>>>, MemoryEnd) {
-    let mut vm = Vm::new();
-    torque_game::specs::install(&mut vm);
     let files = MemFiles::new();
     for (name, half) in [("a.dts", 1.0), ("b.dts", 2.0)] {
         let b = [-half, -half, 0.0, half, half, half];
         let shape = torque_shapes::synth::hull_shape(b, &[("detail2", b)], &[], &[]);
         files.insert(name, &torque_shapes::write::write_dts(&shape));
     }
-    vm.set_file_host(files);
-    let state = Rc::new(RefCell::new(ServerState::<HostParts<TorqueNet>>::default()));
-    let game = torque_server::game::install(&mut vm, &state);
-    let mut s = Server::with_state(vm, Rc::clone(&state));
-    let (transport, end) = MemoryTransport::new();
-    let transport: SharedTransport = Rc::new(RefCell::new(transport));
-    transport
-        .borrow_mut()
-        .bind(SERVER_ADDR.ip(), SERVER_ADDR.port())
-        .unwrap();
-    let shared = attach_host(
-        &mut s.vm,
-        Host {
-            transport,
-            game: TorqueNet::default(),
-            engine: Rc::clone(&state),
-            clock: NetClock::Sim,
-            ghosts: TgeGhostGame,
-            container: game.container,
-            static_writes: None,
-        },
-    );
-    s.attach_net(Rc::new(NetPasses(Rc::clone(&shared))))
-        .unwrap();
-    state.borrow_mut().allow_connections = true;
-    s.run(TICK_MS, |_| false);
-    (s, shared, end)
+    net_client::game_server(files)
 }
 
 fn global(s: &NetServer, name: &str) -> String {

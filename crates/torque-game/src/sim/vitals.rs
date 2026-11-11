@@ -139,23 +139,36 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId, old: Option<ObjId>, db: ObjId) {
             v.damage_state = 0;
             v.repair_reserve = 0.0;
         }
-        Some(old) => {
-            let ratio = |x: f32, max: f32| {
-                if max <= 0.0 { 0.0 } else { x / max }
-            };
-            let (od, oe) = (
-                db_float(vm, Some(old), b"maxDamage", 1.0),
-                db_float(vm, Some(old), b"maxEnergy", 0.0),
-            );
-            let (nd, ne) = (
-                db_float(vm, Some(db), b"maxDamage", 1.0),
-                db_float(vm, Some(db), b"maxEnergy", 0.0),
-            );
-            v.damage = nd * ratio(v.damage, od);
-            v.energy = ne * ratio(v.energy, oe);
-        }
+        Some(old) => scale_words(&mut v, maxima(vm, old), maxima(vm, db)),
     }
     v.recharge_rate = recharge;
+    put(vm, id, &v);
+}
+
+/// A datablock's `maxDamage` (1 unset) and `maxEnergy` (0 unset), the pair the words are scaled by.
+pub fn maxima(vm: &Vm, db: ObjId) -> (f32, f32) {
+    (
+        db_float(vm, Some(db), b"maxDamage", 1.0),
+        db_float(vm, Some(db), b"maxEnergy", 0.0),
+    )
+}
+
+/// The damage and energy as the same share of new maxima (`onNewDataBlock`'s scaling; a share of a maximum of zero is zero).
+fn scale_words(v: &mut Vitals, (old_damage, old_energy): (f32, f32), (damage, energy): (f32, f32)) {
+    let ratio = |x: f32, max: f32| if max <= 0.0 { 0.0 } else { x / max };
+    v.damage = damage * ratio(v.damage, old_damage);
+    v.energy = energy * ratio(v.energy, old_energy);
+}
+
+/// The words scaled from the maxima `old` the object was running under to the ones `db` has now: the refresh of an object
+/// whose own datablock was edited, where the old values are gone from the datablock and the caller kept them.
+pub fn rescale(vm: &mut Vm, id: ObjId, old: (f32, f32), db: ObjId) {
+    let new = maxima(vm, db);
+    if old == new {
+        return;
+    }
+    let mut v = get(vm, id);
+    scale_words(&mut v, old, new);
     put(vm, id, &v);
 }
 

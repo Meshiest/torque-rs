@@ -2,14 +2,15 @@
 //! a C++ override calls `Parent::onAdd()` first.
 //!
 //! `Vm::set_class_behaviour` replaces; [`chain`] keeps what the class had (`parent`) and runs it around the new one (`own`):
-//! `on_add`, `preload`, `on_construct` and `on_add_object` parent first (an `on_add` the parent refuses stops there, as `if
-//! (!Parent::onAdd()) return false;` does), `on_remove` own first. The VM runs the behaviours of an object's class chain the
+//! `on_add`, `preload`, `on_construct`, `on_add_object` and `datablock_changed` parent first (an `on_add` the parent refuses
+//! stops there, as `if (!Parent::onAdd()) return false;` does; a `datablock_changed` is taken when either takes it), `on_remove`
+//! own first. The VM runs the behaviours of an object's class chain the
 //! same way, so a chained behaviour behaves as one registered on a subclass would. No borrow is held across either call: each
 //! may run script.
 
 use std::rc::Rc;
 
-use ts_vm::classes::{EngineClass, PreloadError};
+use ts_vm::classes::{DatablockChange, EngineClass, PreloadError};
 use ts_vm::sim::{ObjId, Objects, SimObject};
 use ts_vm::vm::{Vm, VmError};
 
@@ -45,6 +46,18 @@ impl EngineClass for Chained {
     fn on_add_object(&self, vm: &mut Vm, group: ObjId, child: ObjId) -> Result<(), VmError> {
         self.parent.on_add_object(vm, group, child)?;
         self.own.on_add_object(vm, group, child)
+    }
+
+    fn datablock_changed(
+        &self,
+        vm: &mut Vm,
+        db: ObjId,
+        users: &[ObjId],
+        change: DatablockChange,
+    ) -> Result<bool, VmError> {
+        let parent = self.parent.datablock_changed(vm, db, users, change)?;
+        let own = self.own.datablock_changed(vm, db, users, change)?;
+        Ok(parent || own)
     }
 }
 

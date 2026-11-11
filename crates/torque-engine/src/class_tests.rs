@@ -1,6 +1,9 @@
 //! Classes declared in Rust: registered below their parent with typed fields, read back as the struct, with docs and
-//! ranges in the dump, and a preload hook.
+//! ranges in the dump, a preload hook and a refresh hook.
 
+use std::cell::RefCell;
+
+use torque_ts_vm::classes::DatablockChange;
 use torque_ts_vm::vm::Vm;
 
 use crate::class::{ObjId, Vm as ClassVm};
@@ -51,11 +54,43 @@ struct Marker {
     note: String,
 }
 
+thread_local! {
+    /// What `ChainData::rebuild` was called with: (the datablock's `links`, its users, the change).
+    static REFRESHED: RefCell<Vec<(i32, Vec<ObjId>, DatablockChange)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A datablock with a refresh hook and no preload.
+#[derive(EngineClass)]
+#[class(parent = "SimDataBlock", refresh = ChainData::rebuild)]
+struct ChainData {
+    links: i32,
+}
+
+impl ChainData {
+    fn rebuild(
+        &self,
+        _vm: &mut ClassVm,
+        _id: ObjId,
+        users: &[ObjId],
+        change: DatablockChange,
+    ) -> Result<(), String> {
+        REFRESHED.with(|r| r.borrow_mut().push((self.links, users.to_vec(), change)));
+        if self.links < 0 {
+            return Err("a chain has at least one link".to_string());
+        }
+        Ok(())
+    }
+}
+
 struct Plain;
 
 impl Plugin for Plain {
     fn build(&self, engine: &mut EngineBuilder) {
-        engine.script().class::<RopeData>().class::<Marker>();
+        engine
+            .script()
+            .class::<RopeData>()
+            .class::<Marker>()
+            .class::<ChainData>();
     }
     fn id(&self) -> Option<&str> {
         Some("plain")
@@ -132,7 +167,11 @@ fn the_class_is_registered_below_its_parent_and_listed() {
         .collect();
     assert_eq!(
         classes,
-        [("RopeData", "SimDataBlock", 9), ("Marker", "SimObject", 2)]
+        [
+            ("RopeData", "SimDataBlock", 9),
+            ("Marker", "SimObject", 2),
+            ("ChainData", "SimDataBlock", 1)
+        ]
     );
     let mut vm = server();
     assert_eq!(
@@ -277,6 +316,47 @@ fn preload_runs_with_the_fields_read_and_a_failure_deletes_the_object() {
         &vm,
         "preload failed for Bad: the material art/rope.bad is not a picture."
     ));
+}
+
+/// The class chain's `datablock_changed` for `db`, as a server's drain runs it: whether a behavior took it.
+fn changed(vm: &mut Vm, db: ObjId, users: &[ObjId], change: DatablockChange) -> bool {
+    let class = vm.objects().get(db).expect("the datablock").class();
+    let behaviors = vm.objects().classes.behaviours(class);
+    behaviors.iter().fold(false, |taken, b| {
+        taken | b.datablock_changed(vm, db, users, change).expect("runs")
+    })
+}
+
+#[test]
+fn the_refresh_hook_runs_with_the_fields_as_they_are_now_and_a_failure_is_an_error() {
+    let mut vm = server();
+    REFRESHED.with(|r| r.borrow_mut().clear());
+    vm.eval(b"datablock ChainData(Links) { links = 3; };")
+        .expect("runs");
+    let db = object(&vm, "Links");
+    assert!(
+        changed(&mut vm, db, &[7, 9], DatablockChange::Written),
+        "the class takes the refresh"
+    );
+    vm.eval(b"Links.links = -1;").expect("runs");
+    assert!(changed(&mut vm, db, &[7], DatablockChange::Preloaded));
+    assert_eq!(
+        REFRESHED.with(|r| r.borrow().clone()),
+        [
+            (3, vec![7, 9], DatablockChange::Written),
+            (-1, vec![7], DatablockChange::Preloaded),
+        ]
+    );
+    assert!(logged(
+        &vm,
+        "ChainData: refresh failed: a chain has at least one link"
+    ));
+    // A class without the hook takes no refresh (a host warns about its users).
+    vm.eval(b"datablock RopeData(Plain) { material = \"art/rope.png\"; };")
+        .expect("runs");
+    let plain = object(&vm, "Plain");
+    assert!(!changed(&mut vm, plain, &[7], DatablockChange::Written));
+    const { assert!(ChainData::HAS_REFRESH && !RopeData::HAS_REFRESH && !ChainData::HAS_PRELOAD) };
 }
 
 #[test]

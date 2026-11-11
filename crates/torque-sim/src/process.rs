@@ -195,6 +195,11 @@ impl<T> ProcessList<T> {
         (t.serial == serial).then_some(target)
     }
 
+    /// Every key in the list, in no particular order and without an allocation (a scan that reads each object once).
+    pub fn keys(&self) -> impl Iterator<Item = ObjectKey> + '_ {
+        self.nodes.keys().copied()
+    }
+
     /// The keys in list order (the real list; during a pass, the objects visited so far and the ones made since).
     pub fn order(&self) -> Vec<ObjectKey> {
         let mut out = Vec::with_capacity(self.nodes.len());

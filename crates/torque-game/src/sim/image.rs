@@ -478,6 +478,7 @@ fn stand_in_info(vm: &Vm) -> Rc<PlayerInfo> {
         motions: Vec::new(),
         look_action: 0,
         max_time_scale: 1.5,
+        recharge_rate: 0.0,
         max_freelook: 0.0,
         walk: None,
         pose_sets: Default::default(),

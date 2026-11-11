@@ -194,12 +194,17 @@ pub fn install_keys(vm: &mut Vm, keys: &DatablockKeys) {
 
 /// [`install_keys`] with a game's rule for the static writes it takes itself.
 pub fn install_keys_with(vm: &mut Vm, keys: &DatablockKeys, rule: Option<StaticWriteRule>) {
-    vm.set_class_behaviour("SimDataBlock", Rc::new(KeyedClass { keys: keys.clone() }));
+    // Chained after what the class has (the game classes' mark of a redeclared datablock), not in its place.
+    torque_game::behaviour::chain(
+        vm,
+        "SimDataBlock",
+        Rc::new(KeyedClass { keys: keys.clone() }),
+    );
     let keys = keys.clone();
     vm.set_static_write_observer(Some(Rc::new(
         move |vm: &mut Vm, id: Option<ObjId>, class: ClassId| {
-            // The observer this one replaces (the scene hierarchy hears a moved object; a PlayerData's Players rebuild their
-            // products).
+            // The observer this one replaces (the scene hierarchy hears a moved object; a datablock is marked for the tick's
+            // refresh of its users).
             torque_game::scene::object::static_written(vm, id, class);
             let classes = &vm.objects().classes;
             if !classes.is_a(class, SIM_DATA_BLOCK) {

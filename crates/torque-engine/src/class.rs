@@ -49,7 +49,9 @@ use torque_ts_vm::classes::{EngineClass as ClassBehavior, PreloadError, Validato
 use torque_ts_vm::convert::Filename;
 use torque_ts_vm::fields::{FieldType, Value};
 use torque_ts_vm::sim::StaticField;
+use torque_ts_vm::vm::VmError;
 
+pub use torque_ts_vm::classes::DatablockChange;
 pub use torque_ts_vm::fields::Value as FieldValue;
 pub use torque_ts_vm::sim::ObjId;
 pub use torque_ts_vm::vm::Vm;
@@ -265,6 +267,8 @@ pub trait ScriptClass: Sized + 'static {
     const FIELDS: &'static [FieldDecl];
     /// Whether [`preload`](Self::preload) is set (`#[class(preload = ..)]`).
     const HAS_PRELOAD: bool = false;
+    /// Whether [`refresh`](Self::refresh) is set (`#[class(refresh = ..)]`).
+    const HAS_REFRESH: bool = false;
 
     /// Builds the struct from what `get` gives for each field; `Err` names the field that could not be read.
     fn from_values(get: &mut dyn FnMut(&FieldDecl) -> Option<Value>) -> Result<Self, &'static str>;
@@ -277,6 +281,22 @@ pub trait ScriptClass: Sized + 'static {
         Ok(())
     }
 
+    /// Runs on a server when a datablock of the class changed under the objects that use it, with its fields read as they
+    /// are now: `users` are the objects whose `dataBlock` is `id`, `change` whether fields were written or the datablock was
+    /// declared again (its [`preload`](Self::preload) ran). The hook brings what those objects built from the datablock up
+    /// to date; `Err` is a console error and the objects keep what they have. A datablock class with users and no hook is
+    /// warned about once, as its objects go stale. Server side only, once per tick for every changed datablock.
+    fn refresh(
+        &self,
+        vm: &mut Vm,
+        id: ObjId,
+        users: &[ObjId],
+        change: DatablockChange,
+    ) -> Result<(), String> {
+        let _ = (vm, id, users, change);
+        Ok(())
+    }
+
     /// The struct of the fields the object `id` holds now.
     fn read(vm: &Vm, id: ObjId) -> Result<Self, ClassReadError> {
         read_fields(vm, id, Self::NAME, &mut |get| Self::from_values(get))
@@ -286,7 +306,7 @@ pub trait ScriptClass: Sized + 'static {
 /// What gives a field's stored value for its declaration.
 type FieldGetter<'a> = dyn FnMut(&FieldDecl) -> Option<Value> + 'a;
 
-/// Makes the console class's behavior for an engine (its preload).
+/// Makes the console class's behavior for an engine (its preload and its refresh).
 type MakeBehavior = fn(&Engine) -> Rc<dyn ClassBehavior>;
 
 /// What `id`'s fields give `build` (each the value of the class field a declaration names), once `id` is checked to be a
@@ -330,7 +350,8 @@ pub struct ClassInfo {
     pub parent: &'static str,
     /// Its own fields.
     pub fields: &'static [FieldDecl],
-    preload: Option<MakeBehavior>,
+    /// The behavior of a class with a preload or a refresh.
+    hooks: Option<MakeBehavior>,
 }
 
 impl ClassInfo {
@@ -340,13 +361,13 @@ impl ClassInfo {
             name: T::NAME,
             parent: T::PARENT,
             fields: T::FIELDS,
-            preload: (T::HAS_PRELOAD || T::FIELDS.iter().any(|f| f.asset.is_some()))
+            hooks: (T::HAS_PRELOAD || T::HAS_REFRESH || has_assets(T::FIELDS))
                 .then_some(behavior::<T>),
         }
     }
 
-    /// Registers the class in `vm`: below its parent, with its typed fields and their defaults and, when it has one, its
-    /// preload. A name another class has, or a parent that is not there, is a console error and registers nothing.
+    /// Registers the class in `vm`: below its parent, with its typed fields and their defaults and, when it has them, its
+    /// preload and refresh. A name another class has, or a parent that is not there, is a console error and registers nothing.
     pub(crate) fn install(&self, vm: &mut Vm, engine: &Engine) {
         let fields = self.fields.iter().map(FieldDecl::static_field).collect();
         let Some(class) = vm.register_class_typed(self.name, self.parent, fields, true) else {
@@ -364,7 +385,7 @@ impl ClassInfo {
         if !defaults.is_empty() {
             vm.apply_defaults(class, &defaults, true);
         }
-        if let Some(make) = self.preload {
+        if let Some(make) = self.hooks {
             vm.set_class_behaviour(self.name, make(engine));
         }
     }
@@ -380,19 +401,61 @@ impl fmt::Debug for ClassInfo {
     }
 }
 
-/// The behavior of a class with a preload: reads the object as `T`, loads the assets its fields name, and runs
-/// `T::preload`.
-struct Preload<T> {
+/// The behavior of a class with a preload or a refresh: reads the object as `T`, loads the assets its fields name, and runs
+/// `T::preload`; a changed datablock runs `T::refresh` on its users.
+struct Hooks<T> {
     /// The engine whose asset loaders the script engine's cache gets, when it has none yet.
     engine: Engine,
     class: PhantomData<fn() -> T>,
 }
 
-impl<T: ScriptClass> ClassBehavior for Preload<T> {
+impl<T: ScriptClass> Hooks<T> {
+    /// Whether the class preloads at all (a hook, or an asset field to load).
+    const PRELOADS: bool = T::HAS_PRELOAD || has_assets(T::FIELDS);
+}
+
+const fn has_assets(fields: &[FieldDecl]) -> bool {
+    let mut i = 0;
+    while i < fields.len() {
+        if fields[i].asset.is_some() {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+impl<T: ScriptClass> ClassBehavior for Hooks<T> {
     fn preload(&self, vm: &mut Vm, id: ObjId) -> Result<(), PreloadError> {
+        if !Self::PRELOADS {
+            return Ok(());
+        }
         let value = T::read(vm, id).map_err(|error| PreloadError::Failed(error.to_string()))?;
         load_assets(&self.engine, T::NAME, T::FIELDS, vm, id).map_err(PreloadError::Failed)?;
         value.preload(vm, id).map_err(PreloadError::Failed)
+    }
+
+    fn datablock_changed(
+        &self,
+        vm: &mut Vm,
+        db: ObjId,
+        users: &[ObjId],
+        change: DatablockChange,
+    ) -> Result<bool, VmError> {
+        if !T::HAS_REFRESH {
+            return Ok(false);
+        }
+        let value = match T::read(vm, db) {
+            Ok(value) => value,
+            Err(error) => {
+                vm.error(format!("{}: refresh skipped: {error}", T::NAME));
+                return Ok(true);
+            }
+        };
+        if let Err(why) = value.refresh(vm, db, users, change) {
+            vm.error(format!("{}: refresh failed: {why}", T::NAME));
+        }
+        Ok(true)
     }
 }
 
@@ -432,7 +495,7 @@ fn load_assets(
 }
 
 fn behavior<T: ScriptClass>(engine: &Engine) -> Rc<dyn ClassBehavior> {
-    Rc::new(Preload::<T> {
+    Rc::new(Hooks::<T> {
         engine: engine.clone(),
         class: PhantomData,
     })

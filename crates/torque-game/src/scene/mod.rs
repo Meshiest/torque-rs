@@ -4,7 +4,8 @@
 //! ([`rays`]; a Player's posed hitboxes, [`hitboxes`]; lag compensation's rewound casts, [`lag`]), an `InteriorInstance`'s
 //! `.dif` and its collision ([`interior`]), and the server container with its queries ([`container`]) and its view as `collide`'s world
 //! ([`container_world`]), the per-class answers a game adds for its own scene classes ([`classes`]), and the seam a scene
-//! hierarchy plugs into ([`links`]).
+//! hierarchy plugs into ([`links`]), and the server's live datablocks ([`refresh`]: the objects built from a datablock follow its
+//! edits).
 //!
 //! **State.** An object's Rust state is one [`ext::ObjectExt`] in its `SimObject::ext` slot; the host's own state for the
 //! object is one value in that struct's [`game`](ext::ObjectExt::game) slot. The scripts' fields stay the VM's static field
@@ -30,4 +31,5 @@ pub mod lights;
 pub mod links;
 pub mod object;
 pub mod rays;
+pub mod refresh;
 pub mod shapebase;

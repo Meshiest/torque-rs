@@ -67,6 +67,12 @@
 //! scripts wrote. [`Engine::replay`] is unchanged for every other host
 //! (`a_shared_replay_registers_only_the_clients_own_entries_over_the_servers` in `script_tests.rs`).
 //!
+//! **A plugin datablock class's hooks are one behavior** (`class.rs`, `Hooks<T>`): `preload` runs only for a class with a
+//! preload hook or an asset field, as before, and `datablock_changed` only for one with a refresh hook (`#[class(refresh = ..)]`,
+//! `ScriptClass::HAS_REFRESH`), answering `true` so a server's drain does not warn about the class; the hook's `Err` is a console
+//! error, never a deleted datablock (`the_refresh_hook_runs_with_the_fields_as_they_are_now_and_a_failure_is_an_error` in
+//! `class_tests.rs`). A class with datablock users and neither hook is warned about once by the server's drain.
+//!
 //! A native, global or pref that writes or deletes files, runs code from text, changes the engine as a whole (mods, limits,
 //! quitting) or connects out declares it where it is registered ([`ScriptRegistry::with_effects`], `effects = "..."` on
 //! [`function`]): the extensions' call policy reads it, and torque-plugin-loader's

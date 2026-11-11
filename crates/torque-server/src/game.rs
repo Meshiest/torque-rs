@@ -5,12 +5,13 @@
 //!   values are the server's [`ServerState::db_values`]);
 //! - the scene classes over one container ([`torque_game::scene::object`], the container natives, [`torque_game::scene::shapebase`],
 //!   the Player, the Item, the camera methods, the Projectile), the movers' environment over the same container and shapes, set on the
-//!   process list, and the write observer that rebuilds a Player's datablock after a script changes it;
+//!   process list, and the write observer that marks a datablock a script changes for the tick's refresh of its users
+//!   ([`torque_game::scene::refresh`]; the server's tick drains the marks before the pass);
 //! - `GameBase::onAdd`: an object with no datablock is refused (its script `onRemove` runs first); otherwise it takes the type
 //!   mask its class's constructor sets, the classes' `onNewDataBlock` run ([`torque_game::scene::object::new_datablock`]: the
 //!   camera's, the shape's, the Player's, the Item's, the vehicles'), then the datablock's script `onNewDataBlock(%obj)`, and the
-//!   object joins the process list at the tail. `onRemove` takes it out again. `setDataBlock` on an object added this way runs the
-//!   same list for the new datablock ([`torque_game::scene::object::set_data_block`]);
+//!   object joins the process list at the tail and counts as a user of its datablock. `onRemove` takes it out again. `setDataBlock`
+//!   on an object added this way runs the same list for the new datablock ([`torque_game::scene::object::set_data_block`]);
 //! - the engine's own light and sky classes' methods ([`torque_game::scene::lights`]), and a `TimeOfDay` joins the process list
 //!   when it is added (it ticks its day).
 //!
@@ -62,7 +63,13 @@ impl EngineClass for GameBaseClass {
             e.type_mask |= mask;
         }
         torque_game::scene::object::new_datablock(vm, id, db)?;
-        vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()])?;
+        // Counted before the datablock's script runs, so a field the script writes there marks the datablock for this
+        // object's refresh; an add the script ends runs no `onRemove` for this class, so the count goes back here.
+        torque_game::scene::refresh::user_added(vm, id, db);
+        if let Err(error) = vm.call_method(db, b"onNewDataBlock", &[id.to_string().into_bytes()]) {
+            torque_game::scene::refresh::user_removed(vm, id);
+            return Err(error);
+        }
         if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
             e.process = Some(self.process.clone());
         }
@@ -72,6 +79,7 @@ impl EngineClass for GameBaseClass {
 
     fn on_remove(&self, vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
         self.process.unregister(id);
+        torque_game::scene::refresh::user_removed(vm, id);
         torque_game::scene::camera::orbit_removed(vm, id);
         Ok(())
     }
@@ -140,6 +148,7 @@ pub fn install<N: NetParts>(vm: &mut Vm, state: &Rc<RefCell<ServerState<N>>>) ->
     ));
     torque_game::sim::image::register(vm, &env);
     process.set_env(env);
+    torque_game::scene::refresh::install(vm, &process);
     vm.set_static_write_observer(Some(Rc::new(torque_game::scene::object::static_written)));
     torque_game::scene::camera::register(vm);
     GameParts { container, shapes }

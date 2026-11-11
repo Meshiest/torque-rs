@@ -143,9 +143,18 @@ pub struct ObjectExt {
     /// The cameras whose orbit took a delete notify on this object (`deleteNotify`): its removal
     /// runs their `onDeleteNotify` ([`super::camera::orbit_removed`]). Only cameras that still orbit it are kept.
     pub orbit_notify: Vec<ObjId>,
-    /// A datablock's count of static-field writes (the `onStaticModified` hook point): its Players rebuild their products when
-    /// it moves.
+    /// A datablock's count of static-field writes (the `onStaticModified` hook point, [`super::refresh::written`]): the products
+    /// built from it (a PlayerData's [`player_info`](Self::player_info), an image's view) are rebuilt when it moves.
     pub db_generation: u32,
+    /// A datablock's count of objects whose `dataBlock` it is ([`super::refresh`]): the tick's drain scans for its users only
+    /// while this is not zero.
+    pub db_users: u32,
+    /// The datablock this object is counted on ([`super::refresh::user_added`]), the one its removal takes it off: a
+    /// `dataBlock` field written directly moves no count.
+    pub counted_db: Option<ObjId>,
+    /// The type bits only the object's datablock gave it (`dynamicType`, a StaticShape's or an Item's, less what the constructor
+    /// set), so a refresh can swap them ([`super::shapebase::refresh_dynamic_type`]).
+    pub dynamic_bits: u32,
     /// A PlayerData's products for its Players, with the write count they were built at (one rebuild per write, shared by every
     /// Player).
     pub player_info: Option<(u32, std::rc::Rc<crate::sim::player::PlayerInfo>)>,

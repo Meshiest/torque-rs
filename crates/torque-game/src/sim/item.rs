@@ -182,7 +182,7 @@ fn sync_fields(vm: &mut Vm, id: ObjId) {
 
 /// `Item::onNewDataBlock` after the shape part: the first ItemData makes the state at the transform the fields gave (raw,
 /// as the `position`/`rotation` fields store it), with the scene's box and scale; a later one keeps it (the step reads the
-/// datablock live).
+/// datablock live, and the tick's `sync_fields` takes the box and type mask the shape part and the `dynamicType` refresh set).
 pub fn new_datablock(vm: &mut Vm, id: ObjId, db: ObjId) {
     if !is_class(vm, id, "Item") || !is_class(vm, db, "ItemData") {
         return;
@@ -605,9 +605,8 @@ impl EngineClass for ItemClass {
             return Ok(true);
         };
         let masks = crate::masks::type_masks(vm);
-        let bit = d.dynamic_type & masks.item_dynamic_allowed;
-        if let Some(e) = ext::get_mut(vm.objects_mut(), id) {
-            e.type_mask |= bit;
+        if let Some(db) = object_field(vm, id, b"dataBlock") {
+            crate::scene::shapebase::refresh_dynamic_type(vm, id, db);
         }
         sync_fields(vm, id);
         if let Some(e) = ext::get_mut(vm.objects_mut(), id).and_then(|e| e.item.as_deref_mut())

@@ -13,6 +13,14 @@ different.
 
 ### Added
 
+#### Datablocks
+
+- A datablock edited while the server runs (a field written, or the datablock declared again) refreshes the objects built from
+  it at the next tick, where TGE leaves them stale until the mission loads again: one coalesced refresh per user per tick, light
+  for a write (the fields an object copied) and whole for a redeclare (`onNewDataBlock` again, script threads kept by sequence
+  name and position), for ShapeBase, StaticShape, Item and Player; a game's class registers its own on `EngineClass::datablock_changed`
+  (`#[class(refresh = ..)]` on a plugin class), and `%db.onReloaded()` runs after a refresh. The book's "Live datablocks" chapter.
+
 #### Mods
 
 - `torque-mods`: servers that require mods (`ModsPlugin::required_mods`). The server sends the mods it requires (id, display name, version,
