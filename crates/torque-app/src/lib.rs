@@ -106,11 +106,26 @@
 //! - A client over its server ([`ClientBuilder::over_server`]) is made by the same body as a client of its own
 //!   (`ClientBuilder::make`, generic over the conn game only) on the server's script engine, taken out of the server for the
 //!   stages and given back in [`ClientBuilder::build`], so the client host's server host is the server and each pass ticks
-//!   its main loop. On it the client's stages replay with `Engine::replay_shared`, and the build's warnings, the files and
-//!   the plugins' collision are the server's; a client native over a server native is listed, not printed
+//!   its main loop. Every difference between the two is a method of the private `Sharing` in `client.rs` (the replay, the
+//!   server's natives listed, the build's warnings, the plugins' collision), so `make` itself has no branch on it: on a
+//!   shared engine the client's stages replay with `Engine::replay_shared`, and the build's warnings, the files and the
+//!   plugins' collision are the server's; a client native over a server native is listed, not printed
 //!   ([`ClientBuilder::replaced_natives`]). A client of its own takes none of these branches, so its natives and bytes do
 //!   not move (`client_over_server_tests.rs`; the native snapshots; the wire goldens). [`GameApp::Server`] names the server
-//!   host to the runners; every [`App`] has [`Server`].
+//!   host to the runners; every [`App`] has [`Server`]. A new difference goes on `Sharing`, not into `make`.
+//! - A client fails to be made with a [`ClientError`], one variant a cause (no client host, no GUI, two GUIs, a recipe off a
+//!   client, the wrong conn game, RPC lanes over a shared engine, the engine's build, channels, RPCs and socket), which the
+//!   tests match by variant (`a_client_needs_its_gui_and_its_host`, `a_second_gui_given_to_a_client_is_refused`, in
+//!   `plugins_tests.rs`; `a_second_gui_is_refused`, in `client_over_server_tests.rs`;
+//!   `conn_game_wiring_is_typed_and_the_parts_are_not`, in `torque-trace-hash/tests/conn_game.rs`). A client recipe returns
+//!   the engine's `String` error, so the helpers a recipe calls ([`plugins::ClientWiring::of`],
+//!   [`plugins::ClientParts::set_gui`], `client_parts`, `client_gui`) return a `ClientError` that `?` turns into its message
+//!   (`From<ClientError> for String`); one raised in a recipe reaches the builder as [`ClientError::Recipe`], with the plugin
+//!   and the stage. A new cause gets a variant, never a `String` (the enum is `#[non_exhaustive]`).
+//! - [`plugins::ClientHostSetup::hosts_server_global`] is the one place the hosting global's name lives: `build`,
+//!   `start_hosting` and `stop_hosting` set it through `GameClient::mark_hosting`, and `None` sets nothing
+//!   (`the_hosting_global_follows_hosting_unless_the_host_names_none`, in `plugins_tests.rs`). [`plugins::ClientHostPlugin`]
+//!   defaults it to [`client::HOSTS_SERVER_GLOBAL`], so every game on the engine's host keeps it.
 //! - [`view::WorldView`] is generic over the renderer's extension (`WorldView<E = NoExtension>`): `new` stays on the default
 //!   type and [`view::WorldView::with_extension`] makes any other, so every game that names no extension builds the same code
 //!   as before; [`GameApp::Ext`] names it for the runners (`NoExtension` for every [`App`]). The view reaches the frame only
@@ -223,7 +238,7 @@ mod shots_tests;
 #[cfg(test)]
 mod transports_tests;
 
-pub use client::{ClientBuilder, ClientNet, ClientSetup, GameClient};
+pub use client::{ClientBuilder, ClientError, ClientNet, ClientSetup, GameClient};
 pub use files::GameFiles;
 pub use server::{GameServer, Listen};
 pub use view::{Daylight, SceneShape, WorldView};

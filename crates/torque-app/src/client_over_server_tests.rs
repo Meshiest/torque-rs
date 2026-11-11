@@ -9,6 +9,7 @@ use std::rc::Rc;
 use torque_client::conn::tge::TgeConn;
 use torque_engine::{
     ClientStage, Engine, EngineBuilder, Plugin, PluginGroup, PluginId, PluginType, ProtocolKind,
+    RecipeError, Stage,
 };
 use torque_gui::GuiDraws;
 use torque_render_core::Gpu;
@@ -19,7 +20,7 @@ use torque_ts_text::atoi;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Native;
 
-use crate::client::{ClientBuilder, ClientNet, GameClient, carry_between};
+use crate::client::{ClientBuilder, ClientError, ClientNet, GameClient, carry_between};
 use crate::orbit::Orbit;
 use crate::plugins::{
     ClientParts, DefaultPlugins, GuiPlugin, OffscreenRunnerPlugin, WindowRunnerPlugin, set_protocol,
@@ -423,7 +424,7 @@ fn own_gui(engine: &mut EngineBuilder) {
         let parts = vm
             .extension::<ClientParts>()
             .ok_or("no client is being made")?;
-        parts.set_gui(torque_gui::register(vm))
+        Ok(parts.set_gui(torque_gui::register(vm))?)
     });
 }
 
@@ -465,7 +466,15 @@ fn a_second_gui_is_refused() {
     let Err(error) = ClientBuilder::<TgeConn>::over_server(&engine, server, ClientNet::None) else {
         panic!("two GUI plugins made the client's GUI");
     };
-    assert!(error.contains("two GUI plugins"), "{error}");
+    // The second GUI recipe's `set_gui` fails inside the recipe, so the builder gets its message.
+    assert!(
+        matches!(
+            &error,
+            ClientError::Recipe(RecipeError { stage: Stage::Client(ClientStage::Gui), message, .. })
+                if *message == ClientError::TwoGuis.to_string()
+        ),
+        "{error}"
+    );
 }
 
 #[test]
@@ -484,7 +493,7 @@ fn a_client_over_a_server_in_the_engines_protocol_with_an_rpc_is_refused() {
     else {
         panic!("the client is made over RPC lanes it would share");
     };
-    assert!(error.contains("RPC lanes"), "{error}");
+    assert!(matches!(error, ClientError::SharedRpcLanes), "{error}");
     // A client of its own carries them.
     assert!(ClientBuilder::from_engine(&engine, None, ClientNet::External).is_ok());
 }

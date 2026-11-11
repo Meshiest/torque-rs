@@ -51,6 +51,8 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11
 png = "0.18"
 # The page bridge's JSON.
 serde_json = "1.0.140"
+# The client builder's error type (`ClientError`).
+thiserror = { workspace = true }
 
 # The QUIC link (the `quic` feature, never on the web): the client endpoint, the server's identity pinned or trusted on
 # first use.

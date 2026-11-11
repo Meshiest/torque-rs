@@ -17,16 +17,16 @@ use torque_game::sim_classes::SimClasses;
 use torque_ts_vm::host::MemFiles;
 use torque_ts_vm::vm::Vm;
 
-use crate::client::{ClientBuilder, ClientNet, ClientSetup};
+use crate::client::{ClientBuilder, ClientError, ClientNet, ClientSetup, GameClient};
 use crate::plugins::{
     ActionMapPlugin, AmbientOcclusionPlugin, AntiAliasingPlugin, AudioPlugin, BloomPlugin,
-    CameraModesPlugin, ClearWaterPlugin, ClientHostPlugin, CloudsPlugin, ConnPlugin,
-    DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin, HierarchyPlugin,
-    LivePerfPlugin, MinimalPlugins, ModsPlugin, NetHostPlugin, ParticleLightPlugin,
-    ReflectionsPlugin, RendererPlugin, RendererSlotPlugin, ScreenPlugin, ServerGamePlugin,
-    ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin, SurfaceDetailPlugin, TerrainPlugin,
-    TransparencyPlugin, VolumetricsPlugin, WaterPlugin, WebPageRunnerPlugin, WindowRunnerPlugin,
-    ZoomPlugin, protocol_from_env, protocol_plugin_id,
+    CameraModesPlugin, ClearWaterPlugin, ClientHostPlugin, ClientParts, CloudsPlugin, ConnPlugin,
+    DefaultPlugins, GameClassesPlugin, GlowLightsPlugin, GradingPlugin, GuiPlugin,
+    HOSTS_SERVER_GLOBAL, HierarchyPlugin, LivePerfPlugin, MinimalPlugins, ModsPlugin,
+    NetHostPlugin, ParticleLightPlugin, ReflectionsPlugin, RendererPlugin, RendererSlotPlugin,
+    ScreenPlugin, ServerGamePlugin, ServerQueryPlugin, ShadowsPlugin, SimClassesPlugin,
+    SurfaceDetailPlugin, TerrainPlugin, TransparencyPlugin, VolumetricsPlugin, WaterPlugin,
+    WebPageRunnerPlugin, WindowRunnerPlugin, ZoomPlugin, protocol_from_env, protocol_plugin_id,
 };
 use crate::server::{GameServer, Listen, ServerStart};
 
@@ -571,12 +571,48 @@ fn a_client_needs_its_gui_and_its_host() {
     let Err(error) = ClientBuilder::from_engine(&off, None, ClientNet::None) else {
         panic!("a client is made without a GUI");
     };
-    assert!(error.contains("GuiPlugin"), "{error}");
+    // The screen is the first recipe to build on the GUI.
+    assert!(
+        matches!(&error, ClientError::Recipe(e) if e.plugin == ScreenPlugin::ID),
+        "{error}"
+    );
     let off = engine(DefaultPlugins.disable::<ClientHostPlugin>());
     let Err(error) = ClientBuilder::from_engine(&off, None, ClientNet::None) else {
         panic!("a client is made without a host");
     };
-    assert!(error.contains("ClientHostPlugin"), "{error}");
+    assert!(matches!(error, ClientError::NoClientHost), "{error}");
+}
+
+#[test]
+fn a_second_gui_given_to_a_client_is_refused() {
+    let state = Rc::new(RefCell::new(ClientState::<TgeConn>::default()));
+    let parts = ClientParts::for_conn(&state, ClientNet::None);
+    parts
+        .set_gui(torque_gui::register(&mut Vm::new()))
+        .expect("the first GUI");
+    let second = parts.set_gui(torque_gui::register(&mut Vm::new()));
+    assert!(matches!(second, Err(ClientError::TwoGuis)), "{second:?}");
+}
+
+#[test]
+fn the_hosting_global_follows_hosting_unless_the_host_names_none() {
+    let on = engine(DefaultPlugins);
+    let mut hosting: GameClient = client(&on, ClientNet::None).build();
+    assert_eq!(hosting.global(HOSTS_SERVER_GLOBAL), "0");
+    hosting.start_hosting(server(&on));
+    assert_eq!(hosting.global(HOSTS_SERVER_GLOBAL), "1");
+    hosting.stop_hosting();
+    assert_eq!(hosting.global(HOSTS_SERVER_GLOBAL), "0");
+
+    let off = engine(DefaultPlugins.set(ClientHostPlugin {
+        hosts_server_global: None,
+    }));
+    let mut quiet: GameClient = client(&off, ClientNet::None).build();
+    assert!(quiet.vm().global(HOSTS_SERVER_GLOBAL).is_none());
+    quiet.start_hosting(server(&off));
+    assert!(quiet.vm().global(HOSTS_SERVER_GLOBAL).is_none());
+    quiet.stop_hosting();
+    assert!(quiet.vm().global(HOSTS_SERVER_GLOBAL).is_none());
 }
 
 #[test]

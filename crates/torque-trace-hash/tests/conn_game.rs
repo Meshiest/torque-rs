@@ -13,7 +13,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
 
 use sha2::{Digest, Sha256};
-use torque::app::client::{ClientBuilder, ClientNet, GameClient};
+use torque::app::client::{ClientBuilder, ClientError, ClientNet, GameClient};
 use torque::app::config::{EngineConfig, GameConfig};
 use torque::app::files::GameFiles;
 use torque::app::hosting::HostingPlugin;
@@ -363,12 +363,21 @@ fn conn_game_wiring_is_typed_and_the_parts_are_not() {
     let err = ClientWiring::<TgeConn>::of(&builder.vm, "the test")
         .err()
         .expect("another conn game");
-    assert!(err.contains("TgeConn") && err.contains("TestConn"), "{err}");
+    assert!(
+        matches!(
+            &err,
+            ClientError::WrongConnGame { plugin, wanted, found }
+                if plugin == "the test"
+                    && *wanted == std::any::type_name::<TgeConn>()
+                    && *found == std::any::type_name::<TestConn>()
+        ),
+        "{err}"
+    );
     let err = ClientWiring::<TestConn>::of(&Vm::new(), "the test")
         .err()
         .expect("no client");
     assert!(
-        err.contains("runs only when a game client is made"),
+        matches!(&err, ClientError::NotAClient { plugin } if plugin == "the test"),
         "{err}"
     );
 }
@@ -423,7 +432,7 @@ fn conn_game_needs_the_client_host() {
     let err = ClientBuilder::<TestConn>::from_engine_with_conn(&bare, None, ClientNet::None)
         .err()
         .expect("no client host");
-    assert!(err.contains("ClientHostPlugin"), "{err}");
+    assert!(matches!(err, ClientError::NoClientHost), "{err}");
 }
 
 #[test]

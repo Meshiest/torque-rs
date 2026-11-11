@@ -7,7 +7,7 @@ use torque_client::net::{MemoryDatagrams, NetPolicy};
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginGroup};
 use torque_ts_vm::host::MemFiles;
 
-use crate::client::{ClientBuilder, ClientNet};
+use crate::client::{ClientBuilder, ClientError, ClientNet};
 use crate::plugins::DefaultPlugins;
 use crate::server::{GameServer, Listen, ServerStart};
 use crate::transports::{
@@ -41,8 +41,17 @@ fn start(engine: &Engine, listen: Listen) -> Result<GameServer, String> {
     )
 }
 
-fn builder(engine: &Engine, net: ClientNet) -> Result<ClientBuilder, String> {
+fn builder(engine: &Engine, net: ClientNet) -> Result<ClientBuilder, ClientError> {
     ClientBuilder::from_engine(engine, None, net)
+}
+
+/// The transport's message of a client whose socket did not open.
+fn socket_error(made: Result<ClientBuilder, ClientError>) -> String {
+    match made {
+        Err(ClientError::Socket(message)) => message,
+        Err(other) => panic!("not a socket error: {other}"),
+        Ok(_) => panic!("the client's socket opened"),
+    }
 }
 
 #[test]
@@ -106,9 +115,7 @@ fn turning_a_transport_plugin_off_refuses_that_id_on_its_side_only() {
     builder(&no_udp_server, ClientNet::Loopback).expect("the udp client");
 
     let no_udp_client = engine(DefaultPlugins.disable::<UdpClientTransportPlugin>());
-    let error = builder(&no_udp_client, ClientNet::Loopback)
-        .err()
-        .expect("no udp client");
+    let error = socket_error(builder(&no_udp_client, ClientNet::Loopback));
     assert!(
         error.contains("connect over the transport \"udp\""),
         "{error}"
@@ -134,15 +141,13 @@ fn a_game_played_alone_needs_the_memory_transport() {
         .err()
         .expect("no memory");
     assert!(error.contains("torque.transport-memory-server"), "{error}");
-    let error = builder(
+    let error = socket_error(builder(
         &engine,
         ClientNet::Memory {
             client: CLIENT,
             server: SERVER,
         },
-    )
-    .err()
-    .expect("no memory");
+    ));
     assert!(error.contains("torque.transport-memory-client"), "{error}");
 }
 

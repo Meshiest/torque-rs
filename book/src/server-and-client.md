@@ -170,10 +170,42 @@ engine's `GameServer`, or a game's own. Where the halves meet:
   alone. The loader's script languages keep the server's side. State each side reads by keys of its own is kept per side:
   the Players' tether sources (`torque_game::player_tether::add(vm, side, source)`), which the server asks by object id and
   the prediction by ghost index.
-- **Refused.** A client in the engine's protocol whose RPCs would ride the RPC lanes the server keeps on the engine.
+- **Refused.** A client in the engine's protocol whose RPCs would ride the RPC lanes the server keeps on the engine
+  (`ClientError::SharedRpcLanes`).
 
 The game's app names the server host with `type Server` on `GameApp` (every `App` has `torque_server::server::Server`, a
 script engine of its own), and the runners drive it as they drive any other.
+
+## When a client is not made
+
+Every `ClientBuilder` constructor fails with a `torque::app::ClientError`, one variant a cause, so a game can tell them
+apart without reading the message: `NoClientHost` (no `ClientHostPlugin` or a game's own host setup), `NoGui` (no plugin
+made the GUI), `SharedRpcLanes` (above), `Recipe` (a client recipe failed; it carries the plugin and the stage), and the
+engine's own build, channel, RPC and socket errors. The helpers a game's recipe calls fail with one too:
+`ClientWiring::<C>::of` with `NotAClient { plugin }` or `WrongConnGame { plugin, wanted, found }`, and
+`ClientParts::set_gui` with `TwoGuis`. A recipe returns `Result<(), String>`, so `?` on these gives their message, and the
+builder sees that message in its `Recipe` error:
+
+```rust,ignore
+engine.client(ClientStage::Gui, |vm, _| {
+    let parts = vm.extension::<ClientParts>().ok_or("no client is being made")?;
+    Ok(parts.set_gui(my_gui(vm))?)
+});
+```
+
+## The hosting global
+
+A client sets `$Client::HostsServer` to `1` while it hosts a server (`GameClient::start_hosting`, `start_local`) and to
+`0` otherwise, from the moment it is built. The name comes from `ClientHostSetup::hosts_server_global`; a game whose
+scripts keep no such global sets it to `None` and the client sets nothing:
+
+```rust,ignore
+let engine = EngineBuilder::new()
+    .add_plugins(DefaultPlugins.set(ClientHostPlugin { hosts_server_global: None }))
+    .build()?;
+```
+
+A game with a host plugin of its own fills the same field in the `ClientHostSetup` it inserts.
 
 ## What the example leaves out
 

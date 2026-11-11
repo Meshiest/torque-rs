@@ -77,7 +77,8 @@ pub use torque_app_server::plugins::{
 };
 
 pub use crate::camera_modes::CameraModesPlugin;
-use crate::client::ClientNet;
+pub use crate::client::HOSTS_SERVER_GLOBAL;
+use crate::client::{ClientError, ClientNet};
 pub use crate::gizmos::GizmosPlugin;
 use crate::hosting::{Resolver, register_join_natives_with};
 pub use crate::renderers::RendererSlotPlugin;
@@ -129,7 +130,7 @@ impl PluginGroup for DefaultPlugins {
             .add_group(ClientTransportPlugins)
             .add(AudioPlugin)
             .add(CameraModesPlugin)
-            .add(ClientHostPlugin)
+            .add(ClientHostPlugin::default())
             .add(RendererSlotPlugin);
         #[cfg(feature = "renderer")]
         let group = group.add(RendererPlugin).add_group(RenderFeaturePlugins);
@@ -175,17 +176,18 @@ impl<C: ConnGame> ClientWiring<C> {
     /// The wiring of the client `vm` is being made for, a client of conn game `C`, for the recipe of `plugin`.
     ///
     /// # Errors
-    /// No client is being made, or the client is of another conn game (the message names both).
-    pub fn of(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring<C>>, String> {
+    /// No client is being made ([`ClientError::NotAClient`]), or the client is of another conn game
+    /// ([`ClientError::WrongConnGame`], naming both).
+    pub fn of(vm: &Vm, plugin: &str) -> Result<Rc<ClientWiring<C>>, ClientError> {
         if let Some(wiring) = vm.extension::<ClientWiring<C>>() {
             return Ok(wiring);
         }
         let parts = client_parts(vm, plugin)?;
-        Err(format!(
-            "{plugin} needs a client of the conn game {}, and this client is of {}",
-            std::any::type_name::<C>(),
-            parts.conn
-        ))
+        Err(ClientError::WrongConnGame {
+            plugin: plugin.to_owned(),
+            wanted: std::any::type_name::<C>(),
+            found: parts.conn,
+        })
     }
 }
 
@@ -232,11 +234,11 @@ impl ClientParts {
     /// sets its own here): the later stages' recipes and the client find it in [`gui`](Self::gui).
     ///
     /// # Errors
-    /// The client has a GUI already: two plugins made one.
-    pub fn set_gui(&self, gui: Gui) -> Result<(), String> {
+    /// The client has a GUI already: two plugins made one ([`ClientError::TwoGuis`]).
+    pub fn set_gui(&self, gui: Gui) -> Result<(), ClientError> {
         let mut slot = self.gui.borrow_mut();
         if slot.is_some() {
-            return Err("the client has a GUI already: two GUI plugins made one".to_owned());
+            return Err(ClientError::TwoGuis);
         }
         *slot = Some(gui);
         Ok(())
@@ -297,16 +299,18 @@ impl<C: ConnGame> ClientInstalls for Installs<C> {
 }
 
 /// The client parts a recipe is replayed with.
-pub(crate) fn client_parts(vm: &Vm, plugin: &str) -> Result<Rc<ClientParts>, String> {
+pub(crate) fn client_parts(vm: &Vm, plugin: &str) -> Result<Rc<ClientParts>, ClientError> {
     vm.extension::<ClientParts>()
-        .ok_or_else(|| format!("{plugin} runs only when a game client is made"))
+        .ok_or_else(|| ClientError::NotAClient {
+            plugin: plugin.to_owned(),
+        })
 }
 
 /// The GUI, for a plugin that builds on it.
-fn client_gui(parts: &ClientParts, plugin: &str) -> Result<Gui, String> {
-    parts
-        .gui()
-        .ok_or_else(|| format!("{plugin} needs the GUI (GuiPlugin, or a game's GUI plugin: ClientParts::set_gui), which has not run"))
+fn client_gui(parts: &ClientParts, plugin: &str) -> Result<Gui, ClientError> {
+    parts.gui().ok_or_else(|| ClientError::GuiNotMade {
+        plugin: plugin.to_owned(),
+    })
 }
 
 /// The GUI's classes and natives. `layout_fonts`: the GUI's layout measures text with the fonts it is drawn with
@@ -335,7 +339,7 @@ impl Plugin for GuiPlugin {
             }
             // The extensions the plugins added (`gui_primary`, `gui_extension`), made for this client's GUI.
             gui.install_extensions(vm, engine);
-            parts.set_gui(gui)
+            Ok(parts.set_gui(gui)?)
         });
     }
 }
@@ -456,23 +460,42 @@ impl Plugin for LivePerfPlugin {
     }
 }
 
-/// What [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the client host from: the draw cache and the
-/// window's mode. The pass that drives the engine's half of each tick is the engine's slot of `dyn ClientPass<C>` for the
-/// client's conn game `C` when a game set one, else [`EnginePass`]. [`ClientHostPlugin`] sets this, and the slot for TGE's.
+/// What [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes the client host from: the draw cache, the
+/// window's mode and the global that tells the scripts whether the client hosts a server. The pass that drives the engine's
+/// half of each tick is the engine's slot of `dyn ClientPass<C>` for the client's conn game `C` when a game set one, else
+/// [`EnginePass`]. [`ClientHostPlugin`] sets this, and the slot for TGE's.
 #[derive(Clone, Copy)]
 pub struct ClientHostSetup {
     /// Makes the GUI's draw cache ([`draw_cache`](crate::draw_cache)).
     pub draw_cache: fn() -> DrawCache,
     /// Whether the host is made in a window's mode ([`ClientHost::set_windowed`](torque_client::host::ClientHost::set_windowed)).
     pub windowed: bool,
+    /// The global the client sets to `1` while it hosts a server and to `0` otherwise, from the moment it is built
+    /// ([`HOSTS_SERVER_GLOBAL`] by default); `None` for a game whose scripts keep no such global, which is then never set.
+    pub hosts_server_global: Option<&'static str>,
 }
 
 /// The client host that runs the frames: the engine's per-tick pass and draw cache, in a window's mode. The host takes the
 /// script engine by value, so [`ClientBuilder::build`](crate::client::ClientBuilder::build) makes it from the slot and
 /// resource this plugin sets, once the game's scripts are loaded.
-#[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
+///
+/// `hosts_server_global` becomes [`ClientHostSetup::hosts_server_global`]: a game whose scripts have no such global turns it
+/// off with `DefaultPlugins.set(ClientHostPlugin { hosts_server_global: None })`.
+#[derive(Clone, Copy, Debug, torque_engine::PluginId)]
 #[plugin(id = "torque.frame-host")]
-pub struct ClientHostPlugin;
+pub struct ClientHostPlugin {
+    /// The global the client sets to whether it hosts a server ([`HOSTS_SERVER_GLOBAL`] by default); `None` sets none.
+    pub hosts_server_global: Option<&'static str>,
+}
+
+impl Default for ClientHostPlugin {
+    /// The host that sets [`HOSTS_SERVER_GLOBAL`].
+    fn default() -> ClientHostPlugin {
+        ClientHostPlugin {
+            hosts_server_global: Some(HOSTS_SERVER_GLOBAL),
+        }
+    }
+}
 
 impl Plugin for ClientHostPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
@@ -481,6 +504,7 @@ impl Plugin for ClientHostPlugin {
         engine.insert_resource(ClientHostSetup {
             draw_cache: crate::draw_cache,
             windowed: true,
+            hosts_server_global: self.hosts_server_global,
         });
     }
 }
