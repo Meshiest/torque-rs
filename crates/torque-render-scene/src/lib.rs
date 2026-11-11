@@ -38,6 +38,9 @@
 //!   `a_shape_seen_in_the_water_or_the_capture_or_in_a_lights_reach_is_kept`). A shape left out keeps time: its live pose and
 //!   images' clocks advance ([`moving::Hooks::advance_unseen`]) with nothing posed or built
 //!   (`a_player_the_cull_leaves_out_keeps_time_but_is_not_posed_or_built`).
+//! - Every world position a frame holds moves with [`hd::origin::Shift`], so a frame measured from a [`hd::RenderOrigin`] near
+//!   the eye draws the same pixels as one built about the world's origin (`every_position_a_frame_holds_moves_with_it`;
+//!   torque-render-hd's `render_origin` test draws it). A new position field joins its type's implementation.
 //!
 //! Costs a frame must not grow back (the benches in `benches/scene.rs`, timed under the bench lock):
 //! - A ghost posed as it was costs its cache key: its object is the last frame's, its draws moved over, not converted

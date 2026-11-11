@@ -22,6 +22,7 @@ pub mod grade;
 pub mod kit;
 pub mod lut;
 pub mod objects;
+pub mod origin;
 pub mod particle_light;
 pub mod post;
 pub mod reflect;
@@ -35,6 +36,7 @@ pub mod sync;
 pub mod view_cull;
 
 pub use camera::HdCamera;
+pub use origin::{RenderOrigin, Shift};
 pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
 pub use settings::{HdMode, ImageSettings};
 
