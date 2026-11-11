@@ -839,6 +839,11 @@ what a dedicated server needs: its files, where it listens, the script function 
 (after a number of ticks, or when a `Stop` you hold is requested); give it to the engine with `dedicated(server)`
 (`EngineDedicated`). The window, web page and offscreen runners need the game from `app`; a dedicated server does not.
 
+`window::run(game)` makes the window's event loop itself with `EventLoop::new`, which panics off the main thread on Windows. A
+game that runs its client on another thread builds the loop on that thread with its platform's builder extension (on Windows
+`EventLoopBuilderExtWindows::with_any_thread(true)`, with the same `winit` 0.30 as the engine) and calls
+`window::run_with(game, event_loop)`; the two run the same window.
+
 An engine does not need `DefaultPlugins` to run. It needs a plugin that sets the runner slot, and you can write that
 plugin yourself (a type that implements `Runner`, set with `set_slot::<dyn Runner>`).
 

@@ -34,11 +34,13 @@ pub mod shadow;
 pub mod sky;
 pub mod sync;
 pub mod view_cull;
+pub mod view_scene;
 
 pub use camera::HdCamera;
 pub use origin::{RenderOrigin, Shift};
 pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
 pub use settings::{HdMode, ImageSettings};
+pub use view_scene::ViewScene;
 
 /// The texture table: each distinct texture once, kept across syncs (the GPU uploads only the new ones).
 #[derive(Debug, Clone, Default, PartialEq)]

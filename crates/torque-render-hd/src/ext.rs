@@ -3,11 +3,12 @@
 //! buffers in the slots the renderer's groups keep for it ([`ExtSlots`]), its coarser levels of the cells, its extra draws in
 //! the prepass, the opaque pass and the sun's cascades, and the moving objects it draws after the anti-aliasing. Every hook
 //! but the scene's has a default that adds nothing; [`NoExtension`] is the engine's own (plain cells). A scene a world view fills
-//! is a [`ViewScene`] too ([`PlainScene`] is the engine's).
+//! is a [`ViewScene`] too ([`PlainScene`] is the engine's; the trait is torque-render-scene's, re-exported here).
 
 use std::ops::{Deref, DerefMut};
 
 use torque_render_core::wgpu;
+pub use torque_render_scene::hd::ViewScene;
 use torque_render_scene::hd::cells::{Cell, StaticCells, StaticGeometry};
 use torque_render_scene::hd::settings::ImageSettings;
 use torque_render_scene::hd::{HdCamera, HdMode, HdScene, HdVertex, Quality, SURFACE_FLOATS};
@@ -384,23 +385,6 @@ impl Deref for PlainScene {
 impl DerefMut for PlainScene {
     fn deref_mut(&mut self) -> &mut HdScene<StaticCells> {
         &mut self.frame
-    }
-}
-
-/// The scene a world view fills: the engine's frame by deref, and the parts the view sets beside it. An extension whose scene
-/// is one can be drawn by a world view (`torque_app::view::WorldView<E>`); its own data stays in the scene beside the frame,
-/// filled by the game.
-pub trait ViewScene: Default + DerefMut + 'static {
-    /// How the scene is drawn from the next frame (None: not by the enhanced renderer).
-    fn set_mode(&mut self, mode: Option<HdMode>);
-
-    /// The effects' time (seconds).
-    fn set_time(&mut self, seconds: f32);
-
-    /// The cells the view's static meshes and batches go in (None: this scene's geometry takes none, and the view refuses
-    /// them).
-    fn batch_cells(&mut self) -> Option<&mut StaticCells> {
-        None
     }
 }
 

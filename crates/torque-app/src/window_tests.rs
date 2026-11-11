@@ -176,3 +176,11 @@ fn a_frame_counts_the_frame_average_only_when_the_game_chose_it() {
     // The average starts at nothing and weighs each new frame by 0.07: above the 10 a second it settles toward.
     assert!(real >= 10.0, "{real} frames a second");
 }
+
+/// A window cannot be opened in a test, so the loop a caller builds (off the main thread, with its platform's extension) is
+/// checked to be what `run_with` takes, and `run` to be the same call with a loop of its own.
+#[test]
+fn run_takes_a_game_and_run_with_a_game_and_an_event_loop_the_caller_built() {
+    let _: fn(Chooser) -> Result<(), String> = super::run;
+    let _: fn(Chooser, winit::event_loop::EventLoop<()>) -> Result<(), String> = super::run_with;
+}

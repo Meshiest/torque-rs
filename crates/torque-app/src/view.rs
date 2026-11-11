@@ -495,11 +495,48 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// old upload. The anti-aliasing's and the occlusion's histories start over, and the automatic exposure (when on) adapts
     /// again from its start, so the first frames after a restore settle briefly. The meshes dropped cannot be sent again, so the game builds them again (a scene without [`ViewScene::batch_cells`]
     /// counts and clears none: its game marks its own cells). A view that holds its world is left as it is (0).
+    ///
+    /// The world is built here, on the calling thread, cold: its first frames compile what the renderer needs, a stall on a
+    /// window's thread. A game that switches looks and can build the world elsewhere uses [`adopt_gpu`](Self::adopt_gpu).
     pub fn restore_gpu(&mut self) -> usize {
-        let Some(carried) = self.carried.take() else {
+        if self.carried.is_none() {
             return 0;
-        };
-        let mut world = HdWorld::new(&self.gpu);
+        }
+        let world = HdWorld::new(&self.gpu);
+        self.install_world(world)
+    }
+
+    /// Takes a GPU world built elsewhere (on a worker thread, warmed there) in place of the view's own: the one it holds is
+    /// dropped as [`release_gpu`](Self::release_gpu) drops it (settings kept, the device waited for), then `world` is set up
+    /// exactly as [`restore_gpu`](Self::restore_gpu) sets up the one it builds (the released world's settings applied, the
+    /// slot's passes and batch sources made again, every scene cell marked not resident, the statics changed), and the same
+    /// count of cells whose meshes the scene had dropped is returned. A view whose world was released takes it too.
+    ///
+    /// Use it to switch looks without building and compiling a world on the window's thread (the release still waits for the
+    /// device): build the new world with [`HdWorld::new`] on a worker thread, call
+    /// [`HdWorld::warm_effects`] there and let it finish, hand it in on the window's thread. [`restore_gpu`](Self::restore_gpu)
+    /// is for a view that released its world and has no other to give.
+    ///
+    /// `world` must be an `HdWorld<E>` of the same extension as the view's, made on the device of the [`Gpu`] the view was
+    /// made on (a buffer or texture of another device is rejected by wgpu at its first use). Whatever was set on `world`
+    /// before is replaced by the view's carried settings, so set the game's settings through [`renderer`](Self::renderer)
+    /// after, or before the release.
+    pub fn adopt_gpu(&mut self, world: HdWorld<E>) -> usize {
+        debug_assert!(
+            world.device() == self.gpu.device(),
+            "adopt_gpu: the world was made on another device"
+        );
+        self.release_gpu();
+        self.install_world(world)
+    }
+
+    /// Sets up `world` as the view's after a release (`carried` is Some): [`restore_gpu`](Self::restore_gpu) and
+    /// [`adopt_gpu`](Self::adopt_gpu)'s common end.
+    fn install_world(&mut self, mut world: HdWorld<E>) -> usize {
+        let carried = self
+            .carried
+            .take()
+            .expect("a world is installed only after a release");
         world.apply_settings(carried);
         if self.slot.is_some() {
             world.features = self.features.features;

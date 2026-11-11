@@ -145,6 +145,15 @@
 //!   world to the app (`own_look`: no clear, the GUI over it) and `renderer()` panics, so a new use of `world` handles `None`.
 //!   A new GPU-held part of the view (not the scene) belongs in `release_gpu`, and a new plain renderer setting that must
 //!   survive belongs in `HdSettings` (`settings`/`apply_settings` in torque-render-hd); `tests/view_rebuild.rs` compares pictures, so a part missed shows as a differing pixel.
+//!   `WorldView::adopt_gpu` takes an `HdWorld<E>` built elsewhere (a worker thread, warmed there) in place of the one the view
+//!   holds: it is `release_gpu` and then the end of `restore_gpu` (`install_world`) with the given world, so the two share one
+//!   body and cannot differ in what they re-apply; it draws the pixels a restore does (`a_world_built_elsewhere_draws_the_picture_a_restore_does`
+//!   and `adopting_a_world_replaces_the_one_a_view_holds_and_counts_the_cells_without_meshes`, in `tests/view_rebuild.rs`). The world must
+//!   be the view's extension on the view's device.
+//! - [`window::run`] makes its event loop and calls [`window::run_with`], which takes one the caller built, so a client run off
+//!   the main thread (where `EventLoop::new` panics on Windows) builds its own with the platform's builder extension; the
+//!   two are one body, so a change to the window's run goes in `run_with` (`run_takes_a_game_and_run_with_a_game_and_an_event_loop_the_caller_built`,
+//!   in `window_tests.rs`, pins both signatures: no test opens a window).
 //! - A page's `?room=` code passes `web_join::room_code` before it goes to the room service (`web_join::Target::from_page`;
 //!   the module is built for the web only, so no native test runs it).
 //! - The client recipes name no conn game: a client of any [`ConnGame`] is made by the same

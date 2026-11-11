@@ -15,7 +15,8 @@
 //!   `a_table_of_mesh_places_past_the_largest_buffer_leaves_the_loose_draws_out`,
 //!   `particles_past_the_largest_buffer_are_left_out_and_counted`).
 //! - A world view's scene is an extension's `Scene` that is also an [`ext::ViewScene`] (mode, time, the cells static batches
-//!   go in); [`ext::PlainScene`]'s is the engine's own. The shader modules are composed with one extension's chunks a process
+//!   go in); [`ext::PlainScene`]'s is the engine's own. The trait is defined in `torque_render_scene::hd` (free of wgpu, so a
+//!   crate built on it can implement it for its scene) and `ext` re-exports it, so a path through either names one trait. The shader modules are composed with one extension's chunks a process
 //!   ([`shaders::register`]; [`HdWorld::try_from_device`] panics on a second), so a test comparing two extensions' pictures
 //!   draws one of them in another process (`torque-app`'s `tests/render_ext.rs`).
 //!

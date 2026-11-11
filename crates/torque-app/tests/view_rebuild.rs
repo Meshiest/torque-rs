@@ -7,6 +7,7 @@ use torque_app::renderers::{RenderFeatures, RendererEntry, RendererPlugin, Rende
 use torque_app::view::{Daylight, WorldView, static_mesh_key};
 use torque_engine::{Engine, EngineBuilder};
 use torque_render_core::{Frame, Gpu};
+use torque_render_hd::HdWorld;
 use torque_render_scene::hd::HdLight;
 use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::source::Eye;
@@ -308,4 +309,79 @@ fn a_cell_that_dropped_its_mesh_is_counted_for_the_game_to_build_again() {
     let cell = &view.scene().frame.cells.cells[&static_mesh_key(0)];
     assert!(!cell.resident, "the flag is cleared");
     shot(&mut view, &gpu);
+}
+
+#[test]
+fn a_world_built_elsewhere_draws_the_picture_a_restore_does() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut restored = view(&gpu, 3.0);
+    let mut adopted = view(&gpu, 3.0);
+    restored.renderer().features.clouds = false;
+    adopted.renderer().features.clouds = false;
+    let before = shot(&mut adopted, &gpu);
+    restored.release_gpu();
+    adopted.release_gpu();
+    restored.restore_gpu();
+    let world = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let mut world = HdWorld::new(&gpu);
+                world.warm_effects();
+                world
+            })
+            .join()
+            .expect("the world is built")
+    });
+    assert_eq!(adopted.adopt_gpu(world), 0, "no cell dropped its mesh");
+    assert!(adopted.has_gpu());
+    assert!(
+        !adopted.renderer().features.clouds,
+        "the carried settings are applied to it"
+    );
+    let (a, b) = (shot(&mut adopted, &gpu), shot(&mut restored, &gpu));
+    assert!(
+        a.rgba == b.rgba,
+        "the adopted world draws what the restored one does"
+    );
+    assert!(
+        a.rgba == before.rgba,
+        "and what the view drew before the release"
+    );
+}
+
+#[test]
+fn adopting_a_world_replaces_the_one_a_view_holds_and_counts_the_cells_without_meshes() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut view = view(&gpu, 3.0);
+    view.renderer().grain = 0.25;
+    let before = shot(&mut view, &gpu);
+    let held = view.gpu_geometry_bytes();
+    assert_eq!(view.adopt_gpu(HdWorld::new(&gpu)), 0);
+    assert!(view.has_gpu());
+    assert_eq!(
+        view.renderer().grain,
+        0.25,
+        "the settings are the old world's"
+    );
+    let after = shot(&mut view, &gpu);
+    assert_eq!(view.gpu_geometry_bytes(), held, "the scene is sent again");
+    assert!(before.rgba == after.rgba, "the picture is the same");
+
+    let cell = view
+        .scene_mut()
+        .frame
+        .cells
+        .cells
+        .get_mut(&static_mesh_key(0))
+        .expect("the static cube's cell");
+    cell.resident = true;
+    cell.vertices.clear();
+    cell.indices.clear();
+    cell.batches.clear();
+    cell.clusters.clear();
+    assert_eq!(view.adopt_gpu(HdWorld::new(&gpu)), 1);
 }

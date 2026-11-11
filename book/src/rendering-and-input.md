@@ -133,7 +133,8 @@ shares state with it through what its factory captures.
 A game whose world has static geometry of its own (cells with its own data per vertex, its own tables, its own WGSL) gives
 the engine's renderer an `HdExtension` (`torque_render_hd::ext`). The world view draws with it as `WorldView<E>`:
 `WorldView::new(gpu)` is the engine's plain cells (`NoExtension`), `WorldView::<MyExt>::with_extension(gpu)` a game's. The
-extension's scene is a `ViewScene`: the engine's frame by deref, plus whatever the game keeps beside it, which it reaches with
+extension's scene is a `ViewScene` (defined in `torque_render_scene::hd`, so a crate built on the scene types alone, with no wgpu,
+can implement it; `torque_render_hd::ext` re-exports it): the engine's frame by deref, plus whatever the game keeps beside it, which it reaches with
 `view.scene_mut()`. What the extension reads every frame (its uniform block, its mode) can change there freely; an edit to
 the frame's cells, planes or lights is seen after `view.mark_statics_changed()`, which costs the next frame the renderer's
 full compare of them (a frame where only the moving objects changed skips it), so call it once after such an edit, not every
@@ -174,6 +175,14 @@ error, and `view.renderer()` panics (`view.has_gpu()` says which). Releasing a r
 world, does nothing. `restore_gpu` returns the number of cells whose meshes the scene had dropped after the old upload
 (`Cell::resident`): those cannot be sent again, so the game builds them again. The slot rule stays: a view with a game's
 extension still refuses another renderer on the slot.
+
+`restore_gpu` builds the new world on the calling thread, cold, so the first frames after it compile what the renderer needs: a
+stall on the window's thread. A game that switches looks and can build the world elsewhere builds an `HdWorld<E>` on a worker
+thread (`HdWorld::new(&gpu)`, then `warm_effects()`), waits for it, and hands it to `view.adopt_gpu(world)` on the window's
+thread. `adopt_gpu` drops the world the view holds as `release_gpu` does (a released view takes it too), applies the carried
+settings to the new one and does the rest of `restore_gpu` (the slot's passes, every cell not resident, the statics changed), and
+returns the same count; the picture is the one a restore draws. The world must be of the view's extension and made on the
+view's own device (the `Gpu` the view was made with, or a clone of it): a world of another device fails at its first use.
 
 ## Input, cameras, controls and assets
 

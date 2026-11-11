@@ -1,7 +1,8 @@
-//! A game in a window: [`run`] drives a [`GameApp`] through the client's window driver ([`torque_client::platform::window`]),
-//! drawing each frame into a [`WindowSurface`] (a window's GPU device and surface, kept to the window's size). The game draws
-//! the frame itself ([`GameApp::draw`]), makes the device ([`GameApp::window_gpu`]) and makes the window's per-pass choices
-//! ([`WindowChoices`], [`GameApp::upkeep`], [`GameApp::pass_work`]).
+//! A game in a window: [`run`] (or [`run_with`], on an event loop the caller made) drives a [`GameApp`] through the client's
+//! window driver ([`torque_client::platform::window`]), drawing each frame into a [`WindowSurface`] (a window's GPU device and
+//! surface, kept to the window's size). The game draws the frame itself ([`GameApp::draw`]), makes the device
+//! ([`GameApp::window_gpu`]) and makes the window's per-pass choices ([`WindowChoices`], [`GameApp::upkeep`],
+//! [`GameApp::pass_work`]).
 
 use std::sync::Arc;
 
@@ -557,8 +558,25 @@ impl<G: GameApp> WindowGame for AppWindow<G> {
 
 /// Opens the window and runs `game` until it is closed or quits. In a browser the window is a canvas on the page and this
 /// returns at once: the page's event loop runs the game from then on.
+///
+/// The event loop is made here with `EventLoop::new`, which panics off the process's main thread on Windows (and on macOS and
+/// in a browser's worker): call this from the main thread, or build the loop yourself and use [`run_with`].
 pub fn run<G: GameApp>(game: G) -> Result<(), String> {
     let event_loop = winit::event_loop::EventLoop::new().map_err(|e| e.to_string())?;
+    run_with(game, event_loop)
+}
+
+/// [`run`] on an event loop the caller made, for a game whose client runs on a thread other than the main one.
+///
+/// Threading rule: winit makes a window and runs its loop on the thread that owns the loop, and refuses a loop made off the
+/// main thread unless the platform allows it (on Windows, `EventLoopBuilderExtWindows::with_any_thread(true)`; on X11 and
+/// Wayland, `EventLoopBuilderExtX11` / `EventLoopBuilderExtWayland`; macOS and the web allow only the main thread). Build the
+/// loop on the thread that calls this (the loop is not `Send`), with the builder's platform extension, and pass it in. `game`
+/// and the loop must be made with the same `winit` (0.30). Everything else is as [`run`].
+pub fn run_with<G: GameApp>(
+    game: G,
+    event_loop: winit::event_loop::EventLoop<()>,
+) -> Result<(), String> {
     // Mutable for the sound card's note alone.
     #[cfg_attr(
         not(all(not(target_arch = "wasm32"), feature = "audio-device")),

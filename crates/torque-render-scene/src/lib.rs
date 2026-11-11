@@ -41,6 +41,11 @@
 //! - Every world position a frame holds moves with [`hd::origin::Shift`], so a frame measured from a [`hd::RenderOrigin`] near
 //!   the eye draws the same pixels as one built about the world's origin (`every_position_a_frame_holds_moves_with_it`;
 //!   torque-render-hd's `render_origin` test draws it). A new position field joins its type's implementation.
+//! - This crate has no GPU and no wgpu in its normal dependencies (`cargo tree -p torque-render-scene -e normal | rg wgpu`
+//!   prints nothing), so the traits a game implements on its own scene types live here, not in torque-render-hd: the orphan
+//!   rule lets a crate built on this one implement [`hd::ViewScene`] (the scene a world view fills, mode, time and the cells
+//!   static batches go in) for its types, and torque-render-hd re-exports it as `ext::ViewScene`
+//!   (`hd::view_scene::tests::a_scene_without_batch_cells_takes_the_modes_and_time_and_offers_no_cells` implements it from here).
 //!
 //! Costs a frame must not grow back (the benches in `benches/scene.rs`, timed under the bench lock):
 //! - A ghost posed as it was costs its cache key: its object is the last frame's, its draws moved over, not converted

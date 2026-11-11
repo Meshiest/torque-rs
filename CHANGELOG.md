@@ -87,6 +87,11 @@ different.
 - `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
   scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
   identical picture (`has_gpu`, `gpu_geometry_bytes`).
+- `torque-render-scene`: `hd::ViewScene` (the scene a world view fills) lives here, free of wgpu, so a crate built on the scene
+  types can implement it; `torque_render_hd::ext::ViewScene` re-exports it.
+- `torque-app`: `WorldView::adopt_gpu(world)` takes an `HdWorld` built and warmed on a worker thread in place of the view's own,
+  as `restore_gpu` does without building a cold one on the window's thread; `window::run_with(game, event_loop)` is `window::run`
+  on an event loop the caller built, for a client run off the main thread.
 - `torque::app`: `GameApp` gains `type Ext`, the render extension its world view draws with (`WorldView<E>`).
 - `torque-render-hd`: passes at the opaque and translucent stages can sample the sun's shadows (`PassCx::sun_shadows`,
   `SUN_SHADOW_WGSL`, a bind group layout and group), with the lookup the forward pass shades with.
