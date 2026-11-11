@@ -7,6 +7,7 @@
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use torque_engine::{EngineBuilder, ServerStage};
@@ -99,9 +100,31 @@ pub fn listener() -> (TcpListener, u16) {
     (listener, port)
 }
 
-/// A port on 127.0.0.1 nothing listens on (picked by the system, then let go).
+/// The range [`closed_port`] hands out of: below the ports the system picks for `bind(0)` (Windows and the BSDs start at
+/// 49152, Linux at 32768), so a parallel test's `listener()` never takes one between the pick and the script's `listen`.
+const CLOSED_PORTS: std::ops::Range<u16> = 20_000..30_000;
+
+/// A port on 127.0.0.1 nothing listens on, free for the caller to bind. Each call in this process gets a different one, and
+/// one the system would not hand to a `bind(0)` meanwhile, so it stays free until the caller binds it.
 pub fn closed_port() -> u16 {
-    listener().1
+    static NEXT: AtomicU16 = AtomicU16::new(0);
+    let span = CLOSED_PORTS.end - CLOSED_PORTS.start;
+    // Another process running the same tests starts elsewhere in the range: the process id hashed with this process's random
+    // keys (process ids alone step by 4 on Windows, so neighbors would overlap).
+    let start = {
+        use std::hash::{BuildHasher, Hasher};
+        let mut h = std::hash::RandomState::new().build_hasher();
+        h.write_u32(std::process::id());
+        (h.finish() % u64::from(span)) as u16
+    };
+    for _ in 0..span {
+        let step = NEXT.fetch_add(1, Ordering::Relaxed);
+        let port = CLOSED_PORTS.start + (start.wrapping_add(step)) % span;
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    panic!("no free port in {CLOSED_PORTS:?}");
 }
 
 /// Reads `stream` up to and with the first `\r\n\r\n`, then the `Content-Length` bytes that follow: an HTTP request.

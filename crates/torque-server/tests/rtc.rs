@@ -391,52 +391,77 @@ fn a_data_channel_carries_datagrams_both_ways_and_falls_back_to_the_socket() {
     assert!(t.take_gone().contains(&d_in));
 }
 
+/// The longest run of consecutive sequence numbers in `0..total` that are missing from `got` (ascending).
+fn longest_missing_run(got: &[u32], total: u32) -> u32 {
+    let mut longest = 0;
+    let mut next = 0;
+    for &n in got.iter().chain(&[total]) {
+        longest = longest.max(n.saturating_sub(next));
+        next = n + 1;
+    }
+    longest
+}
+
+#[test]
+fn longest_missing_run_counts_gaps_and_the_tail() {
+    assert_eq!(longest_missing_run(&[0, 1, 2], 3), 0);
+    assert_eq!(longest_missing_run(&[0, 3, 4], 5), 2);
+    assert_eq!(longest_missing_run(&[1, 2], 5), 2);
+    assert_eq!(longest_missing_run(&[1], 5), 3);
+    assert_eq!(longest_missing_run(&[], 4), 4);
+}
+
+/// The most consecutive datagrams that may be missing. Each is lost with probability 0.1, so a run this long happens by
+/// chance about once in 10^11 positions; a channel that stopped delivering misses every datagram after it stopped.
+const MAX_MISSING_RUN: u32 = 10;
+
+fn datagram_number(data: &[u8]) -> Option<u32> {
+    Some(u32::from_be_bytes(data.try_into().ok()?))
+}
+
 #[test]
 fn ten_percent_loss_never_stalls_the_channel() {
+    const SENT: u32 = 400;
     let (mut t, addr) = site(RtcSetup {
         loss_percent: 10,
         ..RtcSetup::default()
     });
     let (mut c, stand_in) = opened(&mut t, addr);
-    // 400 numbered datagrams each way, 5 ms apart.
-    let mut arrived: Vec<(Instant, u32)> = Vec::new();
+    let mut up: Vec<u32> = Vec::new();
+    let mut take_up = |t: &mut WebTransport| {
+        while let Some((from, data)) = recv(t) {
+            if from == stand_in
+                && let Some(n) = datagram_number(&data)
+            {
+                up.push(n);
+            }
+        }
+    };
+    // Numbered datagrams each way, paced 5 ms apart. The pacing only gives the transport time between sends; how long a
+    // pass takes is not measured, so a slow machine cannot fail the test, a channel that stops delivering does.
     let start = Instant::now();
-    for n in 0u32..400 {
+    for n in 0..SENT {
         c.send_channel(&n.to_be_bytes(), true);
         t.send_to(stand_in, &n.to_be_bytes());
         let until = start + Duration::from_millis(5 * u64::from(n + 1));
-        while Instant::now() < until {
+        loop {
             t.pump();
             c.step();
-            while let Some((from, data)) = recv(&mut t) {
-                if from == stand_in && data.len() == 4 {
-                    arrived.push((
-                        Instant::now(),
-                        u32::from_be_bytes(data[..4].try_into().unwrap()),
-                    ));
-                }
+            take_up(&mut t);
+            if Instant::now() >= until {
+                break;
             }
             sleep(Duration::from_millis(1));
         }
     }
     run(&mut t, &mut [&mut c], 300, |_, _| false);
-    while let Some((from, data)) = recv(&mut t) {
-        if from == stand_in && data.len() == 4 {
-            arrived.push((
-                Instant::now(),
-                u32::from_be_bytes(data[..4].try_into().unwrap()),
-            ));
-        }
-    }
-    let up: Vec<u32> = arrived.iter().map(|&(_, n)| n).collect();
-    let down: Vec<(Instant, u32)> = c
+    take_up(&mut t);
+    let down: Vec<u32> = c
         .on_channel
         .iter()
-        .filter(|(_, d)| d.len() == 4)
-        .map(|(at, d)| (*at, u32::from_be_bytes(d[..4].try_into().unwrap())))
+        .filter_map(|(_, d)| datagram_number(d))
         .collect();
-    for (name, got) in [("up", arrived.clone()), ("down", down)] {
-        let numbers: Vec<u32> = got.iter().map(|&(_, n)| n).collect();
+    for (name, numbers) in [("up", &up), ("down", &down)] {
         assert!(
             numbers.windows(2).all(|w| w[0] < w[1]),
             "{name}: in the order sent: {numbers:?}"
@@ -446,18 +471,13 @@ fn ten_percent_loss_never_stalls_the_channel() {
             "{name}: some lost, most through: {}",
             numbers.len()
         );
-        let gap = got
-            .windows(2)
-            .map(|w| w[1].0.duration_since(w[0].0))
-            .max()
-            .unwrap();
+        let run = longest_missing_run(numbers, SENT);
         assert!(
-            gap < Duration::from_millis(150),
-            "{name}: no stall, the longest gap {gap:?}"
+            run <= MAX_MISSING_RUN,
+            "{name}: no stall, {run} datagrams in a row missing: {numbers:?}"
         );
     }
     assert!(t.rtc_counters().loss_dropped > 40, "{:?}", t.rtc_counters());
-    assert!(up.len() < 400);
 }
 
 /// Sends `count` datagrams of `make(i)` from `udp` to `to` while the transport is pumped; returns the longest pass.
