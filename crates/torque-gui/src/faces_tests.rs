@@ -263,3 +263,62 @@ fn a_face_the_fonts_fallback_would_make_is_refused() {
     assert!(console(&mut vm).contains("in use already"));
     assert!(register_font(&mut vm, "Free Face", "mods/fonts/a.ttf"));
 }
+
+#[test]
+fn a_draw_cache_whose_own_fallback_makes_a_face_is_not_given_the_registered_one() {
+    use torque_fonts::faces::FaceCache;
+    use torque_fonts::{Fallback, Font};
+
+    /// A system's fonts that have `Sys Face`, which the layout's fonts (no fallback) do not.
+    struct System;
+    impl Fallback for System {
+        fn make(&self, _face: &str, _size: i32) -> Option<Font> {
+            None
+        }
+        fn resolves(&self, face: &str) -> bool {
+            face.eq_ignore_ascii_case("Sys Face")
+        }
+        fn name(&self) -> &'static str {
+            "system"
+        }
+    }
+
+    let (mut vm, gui, _) = rig();
+    assert!(canvas::create_canvas(&mut vm, &gui).unwrap());
+    vm.eval(b"new GuiControl(Top) { extent = \"200 100\"; }; Canvas.setContent(Top);")
+        .unwrap();
+    // The layout's fonts do not have it, so the registration is accepted.
+    assert!(register_font(&mut vm, "Sys Face", "mods/fonts/a.ttf"));
+    let own = || {
+        let cache = FaceCache::new(
+            "fonts",
+            Box::new(System),
+            Box::new(torque_fonts::uft::Uft::default()),
+            std::convert::identity,
+        );
+        DrawCache::new(Box::new(cache))
+    };
+    let has = |cache: &DrawCache| {
+        cache
+            .fonts
+            .as_any()
+            .downcast_ref::<FaceCache>()
+            .expect("a face cache")
+            .is_registered("sys face")
+    };
+    let (mut withheld, mut plain) = (own(), DrawCache::default());
+    for _ in 0..2 {
+        gui.frame(&mut vm);
+        draw_canvas(&vm, &gui, &mut withheld);
+        draw_canvas(&vm, &gui, &mut plain);
+    }
+    // The draw cache that has the face of its own keeps it; the other is given the registered one.
+    assert!(!has(&withheld));
+    assert!(has(&plain));
+    assert_eq!(
+        console(&mut vm)
+            .matches("a font with this name already exists")
+            .count(),
+        1
+    );
+}

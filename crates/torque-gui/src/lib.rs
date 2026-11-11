@@ -595,6 +595,11 @@ impl Gui {
             vm.end_host_budget(saved);
         }
         self.0.borrow_mut().frames += 1;
+        // What the draw caches withheld of the registered faces (`faces::sync`) is said once.
+        let notes = self.0.borrow_mut().faces.take_notes();
+        for note in notes {
+            vm.print(note.as_bytes());
+        }
         let fonts = self.0.borrow().fonts.0.clone();
         fonts.borrow_mut().next_frame();
         // `preRender` (`renderFrame` runs it over the canvas's children after the resize, before drawing): the dirty ML text

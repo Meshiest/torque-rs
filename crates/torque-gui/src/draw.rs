@@ -2553,7 +2553,7 @@ pub fn draw_canvas(vm: &Vm, gui: &Gui, cache: &mut DrawCache) -> Frame {
     }
     let ext = gui.ext();
     cache.fonts.next_frame();
-    crate::faces::sync(gui, cache.fonts.as_mut(), &mut cache.faces_taken);
+    crate::faces::sync(vm, gui, cache.fonts.as_mut(), &mut cache.faces_taken);
     ext.begin_draw(gui, cache.fonts.as_mut());
     let mut walk = Walk {
         vm,

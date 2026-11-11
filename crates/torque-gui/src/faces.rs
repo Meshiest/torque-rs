@@ -2,7 +2,8 @@
 //! host (so a zip's file counts, and the host's rules apply), checks it ([`torque_fonts::ttf::TtfFace::parse`]) and registers it
 //! under `face` with the font source ([`FontSource::register_face`]), which looks a registered face up before the font cache
 //! files. The layout's fonts take it at once; each draw cache takes it up before its next frame (`sync`), so every one of them sees
-//! it. A face is registered for the session.
+//! it, unless its own fonts (their folder or fallback, which need not be the layout's) have a face of that name: then it keeps its
+//! own and one console line says so. A face is registered for the session.
 //!
 //! What is refused, each with a console line `registerFont: <face> (<path>): <why>` and the answer 0 ([`Refused`]):
 //! - a `face` that is empty, longer than [`MAX_FACE_BYTES`], or holds a byte outside `[0-9A-Za-z _-]` (or starts or ends with a
@@ -93,6 +94,17 @@ impl fmt::Display for Refused {
 pub struct Registered {
     faces: Vec<(String, SharedFace)>,
     attempts: u32,
+    /// The faces (lower case) a draw cache's own fonts have, which it was not given, and the console lines about them not yet
+    /// printed ([`Gui::frame`] prints them).
+    withheld: Vec<String>,
+    notes: Vec<String>,
+}
+
+impl Registered {
+    /// The console lines about faces withheld from a draw cache since the last call.
+    pub(crate) fn take_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notes)
+    }
 }
 
 impl Registered {
@@ -192,14 +204,17 @@ fn in_use(vm: &Vm, gui: &Gui, face: &str) -> Result<bool, Refused> {
     if named_by_a_profile(vm, face)? {
         return Ok(true);
     }
-    let lower = face.to_ascii_lowercase();
     let fonts = gui.0.borrow().fonts.0.clone();
     let fonts = fonts.borrow();
+    source_has(vm, &**fonts, face)
+}
+
+/// Whether the font source `fonts` has `face` (any case) of itself: its fallback would make it, it found it, or a cache file of
+/// its folder names it. A face registered over such a source would shadow what its text draws with.
+fn source_has(vm: &Vm, fonts: &dyn FontSource, face: &str) -> Result<bool, Refused> {
+    let lower = face.to_ascii_lowercase();
     let cache = fonts.cache();
-    if cache.fallback_resolves(face) {
-        return Ok(true);
-    }
-    if cache.found().iter().any(|(f, _, _)| *f == lower) {
+    if cache.fallback_resolves(face) || cache.found().iter().any(|(f, _, _)| *f == lower) {
         return Ok(true);
     }
     for file in vm.file_host().files().iter() {
@@ -267,7 +282,9 @@ fn register_face(vm: &Vm, gui: &Gui, face: &[u8], path: &[u8]) -> Result<(), Ref
 }
 
 /// Gives `fonts` the faces registered since it took `taken` of them (a draw cache calls it each frame): `taken` is how many it has.
-pub(crate) fn sync(gui: &Gui, fonts: &mut dyn FontSource, taken: &mut usize) {
+/// A face the source has of itself ([`source_has`]; its folder and fallback need not be the layout's, which the registration
+/// checked) is not given to it, so the registered file never replaces what its text draws with: one console line says so.
+pub(crate) fn sync(vm: &Vm, gui: &Gui, fonts: &mut dyn FontSource, taken: &mut usize) {
     let pending: Vec<(String, SharedFace)> = {
         let state = gui.0.borrow();
         let Some(rest) = state.faces.faces.get(*taken..).filter(|r| !r.is_empty()) else {
@@ -277,6 +294,18 @@ pub(crate) fn sync(gui: &Gui, fonts: &mut dyn FontSource, taken: &mut usize) {
     };
     *taken += pending.len();
     for (face, ttf) in pending {
+        // A source that cannot be asked (the work budget is spent) is left without the face.
+        if source_has(vm, fonts, &face).unwrap_or(true) {
+            let mut state = gui.0.borrow_mut();
+            let lower = face.to_ascii_lowercase();
+            if !state.faces.withheld.contains(&lower) {
+                state.faces.notes.push(format!(
+                    "registerFont: {face}: a font with this name already exists, so it is kept"
+                ));
+                state.faces.withheld.push(lower);
+            }
+            continue;
+        }
         fonts.register_face(&face, ttf);
     }
 }
