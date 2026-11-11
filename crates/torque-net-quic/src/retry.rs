@@ -12,7 +12,7 @@
 //! all-address window has room, and a network refused for its own cap is touched (kept recent) there without being charged.
 //! So the networks newly entered in a second are at most those the all-address cap admits, at most twice that cap (a second's
 //! window may straddle two all-address windows) of other networks come between two arrivals of one network, and the table is
-//! sized above that (up to [`MAX_NETWORKS_CEILING`]): a flood of spoofed networks cannot push a held network's count out
+//! sized above that (up to `MAX_NETWORKS_CEILING`): a flood of spoofed networks cannot push a held network's count out
 //! however high the caps are set.
 
 use std::net::IpAddr;

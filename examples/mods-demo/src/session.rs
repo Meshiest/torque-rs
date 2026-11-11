@@ -1,5 +1,5 @@
 //! One server and its clients in one process over the memory transport, stepped by hand: a tick of the server, then a step of
-//! each client (its [`bot`](crate::bot) steering first), the datagrams carried across around each. No clock is read and no
+//! each client (its [`bot`] steering first), the datagrams carried across around each. No clock is read and no
 //! socket is opened.
 
 use std::net::{Ipv4Addr, SocketAddrV4};

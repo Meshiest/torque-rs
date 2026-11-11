@@ -19,7 +19,7 @@ use flate2::{Compression, Crc, write::DeflateEncoder};
 pub const EPOCH: u64 = 315_532_800;
 
 const FOLDER_MODE: u32 = 0o755;
-const EXECUTABLE_MODE: u32 = 0o755;
+pub(crate) const EXECUTABLE_MODE: u32 = 0o755;
 const FILE_MODE: u32 = 0o644;
 
 /// The archive formats.

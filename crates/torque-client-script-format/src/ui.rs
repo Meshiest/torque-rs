@@ -1268,12 +1268,12 @@ fn check_track(track: &Track) -> Result<(), &'static str> {
 }
 
 /// The most characters one number of [`field_text`] takes: a sign, up to ten digits (the widest range is 1e9), a point and
-/// [`NUMBER_DECIMALS`] decimals.
+/// `NUMBER_DECIMALS` decimals.
 pub const MAX_NUMBER_TEXT: usize = 16;
 /// The decimals [`number_text`] keeps.
 const NUMBER_DECIMALS: usize = 4;
 
-/// A finite number as short text: at most [`NUMBER_DECIMALS`] decimals, none trailing, and no `-0` (a value that rounds to
+/// A finite number as short text: at most `NUMBER_DECIMALS` decimals, none trailing, and no `-0` (a value that rounds to
 /// nothing is `0`). `1e-300` is `0`, not three hundred digits.
 pub fn number_text(n: f64) -> String {
     let fixed = format!("{n:.NUMBER_DECIMALS$}");

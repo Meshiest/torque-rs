@@ -214,7 +214,7 @@ impl EngineClass for Rederive {
     }
 }
 
-/// `add` wrapped so that its checks rebuild the state they compute on a redeclare ([`Rederive`]); for a class whose add-time
+/// `add` wrapped so that its checks rebuild the state they compute on a redeclare (`Rederive`); for a class whose add-time
 /// behavior computes such state (the emitter's particle list).
 pub fn rederived(values: &DbValues, add: Rc<dyn EngineClass>) -> Rc<dyn EngineClass> {
     Rc::new(Rederive {

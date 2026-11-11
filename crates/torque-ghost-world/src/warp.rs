@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use collide::math::transcendental;
 use ghosts::Xf;
 
 use crate::images::TICK_MS;
@@ -44,11 +45,11 @@ fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let (s1, s2) = if 1.0 - dot <= 1.0e-4 {
         (1.0 - t, sign * t)
     } else {
-        let omega = dot.clamp(-1.0, 1.0).acos();
-        let sin = omega.sin();
+        let omega = transcendental::acos_f32(dot.clamp(-1.0, 1.0));
+        let sin = transcendental::sin_f32(omega);
         (
-            (omega * (1.0 - t)).sin() / sin,
-            sign * (omega * t).sin() / sin,
+            transcendental::sin_f32(omega * (1.0 - t)) / sin,
+            sign * transcendental::sin_f32(omega * t) / sin,
         )
     };
     let q: [f32; 4] = std::array::from_fn(|i| a[i] * s1 + b[i] * s2);

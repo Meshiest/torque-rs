@@ -26,7 +26,7 @@ fn is_zero(x: f32) -> bool {
 
 /// `mAtan(x, y)`: `atan2(x, y)`.
 fn atan(x: f32, y: f32) -> f32 {
-    x.atan2(y)
+    torque_collide::math::transcendental::atan2_f32(x, y)
 }
 
 fn ai(s: &mut PlayerState) -> Option<&mut AiState> {

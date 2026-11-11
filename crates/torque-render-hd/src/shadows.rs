@@ -8,7 +8,7 @@
 //!   cascade at all ([`ShadowStats::static_redraws`]).
 //! - **The dynamic overlay**: a cascade (or a face) with shapes in it is copied from the static map and the shapes are drawn over
 //!   the copy; one that had shapes last frame but none now is copied back clean. The overlay is kept while nothing it shows
-//!   changed: the same caster, the same shapes with the same vertices and mesh places ([`ObjectCaster::content`]) and a static
+//!   changed: the same caster, the same shapes with the same vertices and mesh places (`ObjectCaster::content`) and a static
 //!   map not drawn again leave the working map as it is (a room of lamps around a standing figure copied and drew every face
 //!   every frame: most of the frame's passes).
 //! - **Point lights** (`assign_slots`): every light whose lit sphere meets the view gets a cube, at a resolution by its importance:

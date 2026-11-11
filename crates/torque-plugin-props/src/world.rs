@@ -1581,7 +1581,7 @@ impl PropWorld {
 
     /// Boxes that block props and keep a held prop out like a pusher's, but push nothing: the other players and vehicles a
     /// client's prediction knows only by their records. Kept, in place of the last, until set again; each is a pusher's box in
-    /// every other way ([`PropWorld::place_pushers`]). Boxes are made in ascending id order (the physics world's rule), a
+    /// every other way (`PropWorld::place_pushers`). Boxes are made in ascending id order (the physics world's rule), a
     /// second with an id taken is dropped.
     pub fn set_bystanders(&mut self, mut boxes: Vec<Pusher>) {
         boxes.sort_by_key(|p| p.id);

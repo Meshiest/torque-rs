@@ -3,7 +3,7 @@
 //! Each kind's shape (the first item of that kind in `levels/office.bbmodel`, built as the office's props are) is seen by a fixed
 //! camera: the same three-quarter direction for every kind, a key light from the front and a little to the left of the picture, and a distance that makes its
 //! bounding sphere fit. The renderer has no orthographic projection, so the camera is as far away and its field of view as narrow
-//! ([`FOV`] degrees) as makes perspective vanish. The background is transparent: the prop hangs high above a plain floor (so that its shadow
+//! (`FOV` degrees) as makes perspective vanish. The background is transparent: the prop hangs high above a plain floor (so that its shadow
 //! falls out of the picture) that fills the view, each picture is drawn twice over a black and a white floor, and the alpha is what
 //! the two differ by. The pictures are `size` pixels square. [`write_icons`] writes
 //! `<kind word>.png` for each kind into a folder; the catalog mod's `icons/` folder is where they go.

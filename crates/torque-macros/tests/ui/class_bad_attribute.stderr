@@ -1,4 +1,4 @@
-error: expected `name = "..."`, `parent = "..."`, `preload = path` or `crate = path`
+error: expected `name = "..."`, `parent = "..."`, `preload = path`, `refresh = path` or `crate = path`
  --> tests/ui/class_bad_attribute.rs:4:9
   |
 4 | #[class(kind = "datablock")]

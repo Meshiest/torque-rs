@@ -5,7 +5,7 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/vehicles/wheeledVehicle.cpp`
 //! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
-use torque_collide::math::{F3, Matrix, mul_p, mul_v, normalize, quat_matrix};
+use torque_collide::math::{F3, Matrix, mul_p, mul_v, normalize, quat_matrix, transcendental};
 use torque_collide::{Exhausted, ObjectId};
 
 use crate::Move;
@@ -254,7 +254,7 @@ pub fn plain_update_forces(
     let ax = Axes::of(&s.rigid.ang_pos);
     let (bx, by, bz) = (ax.right, ax.fwd, ax.up);
     let quadratic_steering = -(s.steering[0] * s.steering[0].abs());
-    let (sin_steering, cos_steering) = quadratic_steering.sin_cos();
+    let (sin_steering, cos_steering) = transcendental::sin_cos_f32(quadratic_steering);
     let (engine_torque, brake_vel) = if k.brake {
         (0.0, (db.brake_torque / a_momentum) * dt)
     } else if s.throttle != 0.0 {

@@ -44,7 +44,7 @@ sha2 = "0.10"
 
 # The QUIC link (the `quic` feature, never on the web): the server endpoint, its identity key and the ticket binding.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-torque-net-quic = { path = "../torque-net-quic", optional = true }
+torque-net-quic = { path = "../torque-net-quic", default-features = false, optional = true }
 
 [features]
 # Browsers as players: a server listening on the web (`Listen::Web`).

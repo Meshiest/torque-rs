@@ -19,7 +19,7 @@
 //!
 //! **Refresh.** The class chain of the datablock refreshes its users through [`EngineClass::datablock_changed`]
 //! (root first, as `preload` runs): the engine's own classes answer from the behavior [`install`] chains onto `GameBaseData`
-//! ([`EngineRefresh`]: a [`Written`] mark runs the light refresh, the fields an object copies from its datablock, a vehicle's
+//! (`EngineRefresh`: a [`Written`] mark runs the light refresh, the fields an object copies from its datablock, a vehicle's
 //! rigid body among them; a [`Preloaded`] mark runs the class's whole `onNewDataBlock` work again,
 //! [`super::object::new_datablock`], which keeps the script threads by sequence name and position and, for a vehicle, the
 //! tires and springs its wheels were fitted with; it takes the refresh of CameraData, ProjectileData (a Projectile reads its

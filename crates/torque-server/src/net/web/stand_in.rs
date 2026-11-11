@@ -131,6 +131,10 @@ mod tests {
         assert_eq!(again.ip(), a1.ip());
         assert_eq!(IpAddr::V4(s.ip_of(b)), b1.ip());
         assert!(!is_stand_in("127.0.0.1:5".parse().unwrap()));
-        assert!(is_stand_in("255.255.255.255:5".parse().unwrap()));
+        let top = "255.255.255.255:5".parse().unwrap();
+        assert!(
+            !is_stand_in(top) && is_reserved(top),
+            "the top of the /4 is the QUIC link's half"
+        );
     }
 }

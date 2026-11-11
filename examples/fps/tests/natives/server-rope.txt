@@ -1,3 +1,14 @@
+AIPlayer::clearAim 2..2 ()
+AIPlayer::getAimLocation 2..2 ()
+AIPlayer::getAimObject 2..2 ()
+AIPlayer::getMoveDestination 2..2 ()
+AIPlayer::getMoveSpeed 2..2 ()
+AIPlayer::setAimLocation 3..3 (Point3F target)
+AIPlayer::setAimObject 3..4 (GameBase obj, Point3F offset)
+AIPlayer::setMoveDestination 3..4 (Point3F goal, bool slowdown)
+AIPlayer::setMoveSpeed 3..3 (float speed)
+AIPlayer::setMoveTolerance 3..3 (float tolerance)
+AIPlayer::stop 2..2 ()
 Camera::getPosition 2..2 ()
 Camera::setFlyMode 2..2 ()
 Camera::setOrbitMode 7..8 (GameBase orbitObject, transform mat, float minDistance, float maxDistance, float curDistance, bool ownClientObject)
@@ -132,6 +143,9 @@ ShapeBase::stopThread 3..3 (int slot)
 ShapeBase::unmount 2..2 ()
 ShapeBase::unmountImage 3..3 (int slot)
 ShapeBase::unmountObject 3..3 (ShapeBase obj)
+SimDataBlock::delete 2..2 datablock.delete() - deletes the datablock, or retires it until its last user is gone
+SimDataBlock::getUserCount 2..2 datablock.getUserCount() - how many objects have the datablock
+SimDataBlock::getUsers 2..3 datablock.getUsers([max]) - the ids of the objects that have the datablock, at most max (256 by default, 4096 at most)
 SimObject::delete 2..2 object.delete() - deletes the object
 SimObject::dump 2..2 object.dump() - prints the object's fields and methods
 SimObject::getClassName 2..2 object.getClassName() - the object's class
@@ -223,6 +237,7 @@ firstWord 2..2 firstWord(text) - the text up to its first space
 getBoxCenter 2..2 getBoxCenter(box) - the middle of a box given by its two corners
 getBuildString 1..1 getBuildString() - the kind of build
 getCompileTimeString 1..1 getCompileTimeString() - when the build was made
+getDataBlockUsers 2..3 getDataBlockUsers(datablock [, max]) - the ids of the objects that have the datablock, at most max (256 by default, 4096 at most)
 getField 3..3 getField(text, index) - one tab- or newline-separated field
 getFieldCount 2..2 getFieldCount(text) - how many fields the text has
 getFields 3..4 getFields(text, first [, last]) - the fields from first to last
@@ -287,6 +302,9 @@ mTan 2..2 mTan(radians) - the tangent
 nameToID 2..2 nameToID(name) - the id of the object of that name
 purgeResources 1..1 Purge resources from the resource manager.
 quit 1..1 quit() - asks the main loop to stop
+refreshRequiredMods 1..1 refreshRequiredMods() - reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
+reloadDataBlocks 2..3 reloadDataBlocks(file [, removeMissing]) - development only: runs the script file again, refreshes the objects built from the datablocks it declares and sends the changed datablocks to the connected clients; reports the datablocks the file no longer declares, and removes the ones no object uses when removeMissing is true; returns changed:N added:N removed:N
+removeDataBlock 2..3 removeDataBlock(datablock [, fallback | "deleteUsers"]) - removes a datablock no object or datablock uses; with a fallback datablock of its class moves its users and references to that first; with "deleteUsers" deletes its users first. False, with the reason printed, when it stays
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
@@ -314,7 +332,7 @@ ropeNetUndrive 2..2 ropeNetUndrive(rope) - lets a networked rope go of its drive
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
-serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced
@@ -332,4 +350,5 @@ strreplace 4..4 strreplace(text, from, to) - the text with every from replaced b
 strstr 3..3 strstr(text, needle) - where the needle first occurs, or -1
 strupr 2..2 strupr(text) - the text in upper case
 trim 2..2 trim(text) - the text without leading and trailing white space
+updateDataBlocks 1..1 updateDataBlocks() - sends every client past its mission's datablocks the datablocks added or changed since it last got them, one round per client (a client still being sent its datablocks gets the round after them; each client's GameConnection::onDataBlocksUpdated(%client, %count) runs when its round is in); returns the number of clients reached
 warn 2..* warn(text...) - prints a warning line

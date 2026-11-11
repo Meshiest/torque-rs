@@ -77,10 +77,19 @@ pub fn abi_version_at(bytes: &[u8]) -> Result<(usize, u32), String> {
         })
         .ok_or("it exports no torque_plugin_abi_version: it is not a native extension")?;
     let address = export.address();
-    // Only a data section holding all four bytes: never code, or bytes the file does not hold.
+    // Only a data section holding all four bytes: never code, or bytes the file does not hold. A linker that merges string
+    // constants into `.rodata` (rust-lld) flags the whole section as strings, so that kind is read-only data too.
     let data = file
         .sections()
-        .filter(|s| matches!(s.kind(), SectionKind::Data | SectionKind::ReadOnlyData))
+        .filter(|s| {
+            matches!(
+                s.kind(),
+                SectionKind::Data
+                    | SectionKind::ReadOnlyData
+                    | SectionKind::ReadOnlyDataWithRel
+                    | SectionKind::ReadOnlyString
+            )
+        })
         .filter(|s| {
             address >= s.address()
                 && address

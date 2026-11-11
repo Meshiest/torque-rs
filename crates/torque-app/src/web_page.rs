@@ -6,8 +6,8 @@
 //! list's; `addFileDigest` takes the hash the page computed with the browser's crypto, off the module's thread), the game's
 //! start (on the files fetched, [`take_fetched`], or on those the module carries), the page bridge's
 //! ([`crate::page_bridge`]), and the page's WebTransport session to the server that served it (`webTransportOpened`,
-//! `webTransportDatagram`, `webTransportEnded`, from `web/webtransport.js`: [`web_transport_opened`] and the two with it,
-//! which hand it to [`crate::web_join`] in a build with the `p2p` feature and do nothing in one without).
+//! `webTransportDatagram`, `webTransportEnded`, from `web/webtransport.js`: `web_transport_opened` and the two with it,
+//! which hand it to `web_join` in a build with the `p2p` feature and do nothing in one without).
 //!
 //! **The quality** is the page's to pick (its settings panel; Firefox starts at Medium until the player picks): the panel calls
 //! the script engine's `setRenderQuality` through the bridge ([`request_quality`]), and the window applies it at its next

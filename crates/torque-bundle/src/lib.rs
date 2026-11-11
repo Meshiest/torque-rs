@@ -425,6 +425,11 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
             ));
         }
     }
+    let executable: Vec<String> = built
+        .bins
+        .iter()
+        .filter_map(|(_, exe)| file_name(exe).ok())
+        .collect();
     let staging = out.join(format!("{name}.partial"));
     own_folder(&staging)?;
     for (path, bytes) in &written {
@@ -432,7 +437,8 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::write(&dest, bytes).map_err(|e| format!("{path}: {e}"))?;
+        write_file(&dest, bytes, is_executable(path, &executable))
+            .map_err(|e| format!("{path}: {e}"))?;
     }
     std::fs::remove_file(staging.join(MARKER)).map_err(|e| format!("{MARKER}: {e}"))?;
     if folder.exists() {
@@ -463,11 +469,6 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     };
 
     let archive = if options.archive {
-        let executable: Vec<String> = built
-            .bins
-            .iter()
-            .filter_map(|(_, exe)| file_name(exe).ok())
-            .collect();
         Some(write_archive(&out, &name, &target, &written, &executable)?)
     } else {
         None
@@ -523,6 +524,23 @@ fn refuse_system_libraries(bins: &[(String, PathBuf)]) -> Result<(), String> {
         found.len(),
         found.join("\n  ")
     ))
+}
+
+/// Writes a file of the bundle folder: on Unix an executable one ([`is_executable`]) gets the archive's executable mode, so
+/// the folder's binaries run as they are, the check's among them.
+fn write_file(dest: &Path, bytes: &[u8], executable: bool) -> std::io::Result<()> {
+    std::fs::write(dest, bytes)?;
+    #[cfg(unix)]
+    if executable {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(
+            dest,
+            std::fs::Permissions::from_mode(archive::EXECUTABLE_MODE),
+        )?;
+    }
+    #[cfg(not(unix))]
+    let _ = executable;
+    Ok(())
 }
 
 /// Whether `path` of the bundle gets the executable mode: a binary of the bundle, or a shared library in `plugins/`.

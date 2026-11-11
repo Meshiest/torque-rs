@@ -29,6 +29,8 @@ torque-images = { path = "../torque-images" }
 torque-render-scene = { path = "../torque-render-scene" }
 torque-ts-text = { path = "../torque-ts-text" }
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The simulation's exponentials as every target rounds them (`transcendental`), and the matrix the client resolves a ghost to.
+torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
 # The engine's renderer, to draw the ropes in the pictures' tests.
@@ -38,8 +40,6 @@ torque-server = { path = "../torque-server" }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
 torque-client = { path = "../torque-client" }
 torque-ghost-world = { path = "../torque-ghost-world" }
-# The matrix the client resolves a ghost to.
-torque-collide = { path = "../torque-collide" }
 # The hash a run is folded into.
 torque-trace-hash = { path = "../torque-trace-hash" }
 criterion = { workspace = true }

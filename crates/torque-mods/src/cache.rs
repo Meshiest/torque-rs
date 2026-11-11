@@ -196,7 +196,7 @@ fn normalized_address(url: &str) -> Option<String> {
     Some(format!("{scheme}://{host}:{port}"))
 }
 
-/// What a client in a browser calls the server at the WebSocket address `url`: the address in one form (see [`normalized_address`]),
+/// What a client in a browser calls the server at the WebSocket address `url`: the address in one form (see `normalized_address`),
 /// so `ws://h` and `ws://h:80` are one server and `ws://h` and `wss://h` are two. `None` for an address a browser might read
 /// differently than this does: that client keeps its mods in memory. For [`crate::ModsPlugin::cache_server`].
 pub fn server_name_of_url(url: &str) -> Option<String> {

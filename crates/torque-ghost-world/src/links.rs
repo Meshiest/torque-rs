@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use collide::math::{IDENTITY, Matrix, plain_quat_normalize};
+use collide::math::{IDENTITY, Matrix, plain_quat_normalize, transcendental};
 use ghosts::block::{GhostBlock, LinkField, PoseField};
 use hierarchy::{
     Caps, HARD_CHILDREN, HARD_DEPTH, HARD_DESCENDANTS, HARD_TOTAL, Hierarchy, Host, Keep, Local,
@@ -491,7 +491,7 @@ pub fn record_matrix(pose: &RecordPose) -> Matrix {
         m
     };
     let turn_z = |a: f32| {
-        let (s, c) = a.sin_cos();
+        let (s, c) = transcendental::sin_cos_f32(a);
         let mut m = IDENTITY;
         [m[0], m[1], m[4], m[5]] = [c, s, -s, c];
         m
@@ -509,7 +509,7 @@ pub fn record_matrix(pose: &RecordPose) -> Matrix {
         RecordPose::Euler { position, yaw, .. } => placed(turn_z(*yaw), *position),
         RecordPose::Quat { position, rotation } => placed(quat_matrix(*rotation), *position),
         RecordPose::Item { position, rotation } => {
-            let (s, c) = (RecordPose::item_angle(*rotation) * 0.5).sin_cos();
+            let (s, c) = transcendental::sin_cos_f32(RecordPose::item_angle(*rotation) * 0.5);
             placed(quat_matrix([0.0, 0.0, s, c]), *position)
         }
     }

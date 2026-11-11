@@ -18,6 +18,8 @@ categories = ["game-development", "simulation", "mathematics"]
 torque-mapcore = { path = "../torque-mapcore" }
 # The hash of the engine's own ids in the movers' hot maps (`hash`).
 rustc-hash = { workspace = true }
+# The transcendentals (`math::transcendental`): the same bits on every target.
+libm = "0.2.16"
 
 [dev-dependencies]
 # The Torque map importer and synthetic files for the map collision's tests.

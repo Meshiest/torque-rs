@@ -407,7 +407,8 @@ fn a_binary_that_holds_the_build_servers_user_name_bundles_with_a_warning() {
 exclude =",
         )
     });
-    // CI names its user `runner` and its home `/home/runner`: the word is in the binary, as a path component too.
+    // CI names its user `runner`: the word is in the binary, as a path component too, under a folder that is not the real
+    // home (on a CI runner whose home is `/home/runner`, that spelling is the home folder, which fails a bundle).
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
         .arg(&crate_dir)
         .args(["--no-check", "--out"])

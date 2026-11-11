@@ -5,7 +5,7 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/player.cpp` and `T3D/shapeBase.cpp`
 //! (each Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
 
-use torque_collide::math::float_to_int;
+use torque_collide::math::{float_to_int, transcendental};
 
 /// One entry of `PlayerData::actionList`: the fields of an action the step reads.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -199,7 +199,7 @@ impl PlayerData {
 
     /// `preload_with` in plain arithmetic: [`PLAIN`](crate::library::PLAIN)'s entry.
     pub fn plain_preload_with(&mut self, h: f32) {
-        let cos_of = |deg: f32| ((deg * std::f32::consts::PI) / 180.0).cos();
+        let cos_of = |deg: f32| transcendental::cos_f32((deg * std::f32::consts::PI) / 180.0);
         self.run_surface_cos = cos_of(self.run_surface_angle);
         self.jump_surface_cos = cos_of(self.jump_surface_angle);
         if self.min_jump_energy < self.jump_energy_drain {

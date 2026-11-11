@@ -25,7 +25,7 @@ mod update_pos;
 #[cfg(test)]
 mod tests;
 
-use torque_collide::math::{Box3, F3, IDENTITY, Matrix, set_euler};
+use torque_collide::math::{Box3, F3, IDENTITY, Matrix, set_euler, transcendental};
 use torque_collide::{
     EarlyOutPolyList, ExtrudedPolyList, ObjectId, Polyhedron, TypeMasks, WorkingSet, types,
 };
@@ -278,5 +278,5 @@ pub fn plain_set_velocity(s: &mut ItemState, v: F3) {
 
 /// The yaw `setTransform` keeps of a matrix: `atan2(-m[1], m[5])`. [`PLAIN`](crate::library::PLAIN)'s `item_yaw`.
 pub fn plain_yaw(m: &Matrix) -> f32 {
-    (-m[1]).atan2(m[5])
+    transcendental::atan2_f32(-m[1], m[5])
 }

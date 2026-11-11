@@ -6,7 +6,9 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/rigid.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
 
-use torque_collide::math::{F3, IDENTITY, Matrix, matrix_product, mul_v, quat_matrix, transpose};
+use torque_collide::math::{
+    F3, IDENTITY, Matrix, matrix_product, mul_v, quat_matrix, transcendental, transpose,
+};
 
 use crate::library;
 use crate::math::{
@@ -199,7 +201,7 @@ impl Rigid {
     pub fn plain_integrate(&mut self, dt: f32) {
         let angle = len_sq(self.ang_vel).sqrt();
         if angle != 0.0 {
-            let (sin_half, cos_half) = (angle * dt * -0.5).sin_cos();
+            let (sin_half, cos_half) = transcendental::sin_cos_f32(angle * dt * -0.5);
             let k = sin_half * (1.0 / angle);
             let av = self.ang_vel;
             let dq: Quat = [av[0] * k, av[1] * k, av[2] * k, cos_half];

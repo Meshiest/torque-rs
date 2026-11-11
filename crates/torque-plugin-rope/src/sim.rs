@@ -21,6 +21,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use glam::Vec3;
+use torque_collide::math::transcendental;
 use torque_ts_vm::sim::ObjId;
 
 use crate::data::{MAX_LENGTH, RopeLook, RopeParams, RopeStyle};
@@ -945,7 +946,7 @@ impl Rope {
     fn substep(&mut self, dt: f32, floor: Option<f32>) {
         let n = self.pos.len();
         let gravity = Vec3::new(0.0, 0.0, -self.params.gravity);
-        let keep = (-self.params.damping * dt).exp();
+        let keep = transcendental::exp_f32(-self.params.damping * dt);
         let reach = MAX_SPEED * dt;
         for i in 0..n {
             if self.fixed(i) {
@@ -1531,7 +1532,7 @@ impl RopeWorld {
         }
         self.left -= steps as f32 * SUBSTEP_SECONDS;
         let ran = steps as f32 * SUBSTEP_SECONDS;
-        let alpha = 1.0 - (-ran / ANCHOR_SMOOTHING).exp();
+        let alpha = 1.0 - transcendental::exp_f32(-ran / ANCHOR_SMOOTHING);
         let floor = self.floor;
         let mut changed = false;
         for rope in self.ropes.values_mut() {

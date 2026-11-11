@@ -501,7 +501,7 @@ fn the_names_of_this_computer_come_from_the_variables_the_home_folder_and_the_ho
         "/proc/sys/kernel/hostname" => Some("kernelhost\n".to_string()),
         _ => None,
     };
-    let needles = name_needles(var, read, Some(Path::new(r"C:\People\alexander")));
+    let needles = name_needles(var, read, Some(Path::new("/People/alexander")));
     let s = scanner(needles);
     let found = |text: &str| -> Vec<String> { labels(&s, text.as_bytes()) };
     assert_eq!(found("/home/alexandra/x"), ["the user name"]);

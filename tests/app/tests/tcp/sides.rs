@@ -165,6 +165,9 @@ fn a_client_over_its_server_polls_the_one_host_once_a_tick() {
     )
     .expect("the client over the server")
     .build::<GameServer>();
+    // The server's first pass is 32 ticks at once (to `FIRST_PASS_MS`), each with its poll: it runs before the connect, so a
+    // peer that answers at once (a fast loopback) cannot be read 32 lines in one step.
+    client.step(32);
     let port = peer(b"1\n2\n3\n4\n5\n6\n7\n8\n");
     client
         .vm_mut()

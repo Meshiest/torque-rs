@@ -6,8 +6,9 @@
 //!   `quinn_proto::Endpoint`, one stand-in address per connection toward the host, Retry under load, per-address checks
 //!   run again when a connection migrates. [`QuicServerTransport`] is the real one; the tests run the same code over an
 //!   in-process [`Pipe`] with a [`FakeClock`].
-//! - [`QuicClient`] is a client [`Datagrams`](torque_client::net::Datagrams): one connection to one server, the server's key
-//!   pinned by its identity ([`Trust`]) or trusted on first use and remembered ([`KnownServers`]).
+//! - [`QuicClient`] (the `client` feature, on by default) is a client [`Datagrams`](torque_client::net::Datagrams): one
+//!   connection to one server, the server's key pinned by its identity ([`Trust`]) or trusted on first use and remembered
+//!   ([`KnownServers`]). A server depends on the crate without it, so its tree holds none of the client's crates.
 //! - [`ServerKey`] is the server's long-lived ECDSA P-256 key ([`IDENTITY_FILE`] in its data folder) and the self-signed
 //!   certificate it presents; its identity is the SHA-256 of the key's SubjectPublicKeyInfo, `sha256:<hex>`.
 //! - Both ends derive a [`ChannelBinding`] (the TLS exporter, RFC 8446 section 7.5) once the handshake is done, and the hosts
@@ -106,10 +107,12 @@ pub mod retry;
 pub mod stand_in;
 pub mod tls;
 
+#[cfg(feature = "client")]
 mod client;
 mod server;
 
 pub use certs::{CertHash, Certificates, Rotation};
+#[cfg(feature = "client")]
 pub use client::{
     CLIENT_INBOX, CLIENT_INBOX_BYTES, LinkState, QuicClient, QuicDatagrams, QuicWatch, SessionKind,
     Trust, client_socket,

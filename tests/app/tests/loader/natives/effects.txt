@@ -131,6 +131,7 @@ getBuildString -
 getCameraMode -
 getCameraModes -
 getCompileTimeString -
+getDataBlockUsers -
 getField -
 getFieldCount -
 getFields -
@@ -397,7 +398,10 @@ queryLanServers network
 queryMasterServer -
 querySingleServer -
 quit engine
+refreshRequiredMods engine
 registerFont -
+reloadDataBlocks files+code
+removeDataBlock -
 removeField -
 removeRecord -
 removeTaggedString -
@@ -574,6 +578,9 @@ ShapeBase::stopThread -
 ShapeBase::unmount -
 ShapeBase::unmountImage -
 ShapeBase::unmountObject -
+SimDataBlock::delete -
+SimDataBlock::getUserCount -
+SimDataBlock::getUsers -
 SimObject::delete -
 SimObject::dump -
 SimObject::getClassName -
@@ -622,6 +629,7 @@ TimeOfDay::setPlay -
 TimeOfDay::setTimeOfDay -
 toggleFullScreen -
 trim -
+updateDataBlocks -
 VectorAdd -
 VectorCross -
 VectorDist -

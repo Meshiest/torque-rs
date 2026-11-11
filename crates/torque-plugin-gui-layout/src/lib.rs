@@ -11,7 +11,7 @@
 //! It is not in `DefaultPlugins`: a game adds it.
 //!
 //! It also gives a server's client scripts (the realm of `torque-plugin-client-script`) their `flex` and `grid` controls: it
-//! registers a [`RealmLayout`](torque_gui::client_script::RealmLayout) naming these two classes and the field each layout prop
+//! registers a [`torque_gui::client_script::RealmLayout`] naming these two classes and the field each layout prop
 //! goes to, so the realm's applier (in `torque-gui`, which cannot depend on this crate) makes its containers as these classes.
 //! The applier has checked every value against the format's caps first. A game that wants server scripts without layout leaves
 //! this plugin out, and the containers are plain groups.

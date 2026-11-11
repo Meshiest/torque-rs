@@ -19,5 +19,5 @@ fn main() {
     #[cfg(feature = "leak")]
     println!("built in {}", env!("CARGO_MANIFEST_DIR"));
     #[cfg(feature = "runner-text")]
-    println!("the runner finished; it ran in /home/runner/work");
+    println!("the runner finished; it ran in /builds/runner/work");
 }

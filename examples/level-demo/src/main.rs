@@ -16,9 +16,9 @@
 //! `example-level-demo --web-pack <file>` writes the pack alone, for a build that carries it (the `embed-pack` feature).
 //!
 //! The window's menu also hosts the office for others and joins theirs (Host a match, Join a match): `--name <name>` is the
-//! player's name, `--port <port>` the UDP port number the list of matches asks on and a hosted match binds (28000), `--bind
-//! <address>` the address a hosted match binds (this computer's LAN address), and `--cache <dir>` where the servers' mods are
-//! kept (the per-user cache). The catalog's menu needs the realm guest (`just lua-client-web`, or `TORQUE_CLIENT_GUEST`); without
+//! player's name, `--port <port>` the UDP port number the list of matches asks on and a hosted match binds (28000),
+//! `--bind <address>` the address a hosted match binds (this computer's LAN address), and `--cache <dir>` where the servers'
+//! mods are kept (the per-user cache). The catalog's menu needs the realm guest (`just lua-client-web`, or `TORQUE_CLIENT_GUEST`); without
 //! it the office is played without the catalog. `--match-shots <dir>` draws that path offscreen into `dir` instead: the menu,
 //! the list of matches, the download, the consent prompt and the catalog with another player.
 //!

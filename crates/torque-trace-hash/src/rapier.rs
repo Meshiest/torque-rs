@@ -217,7 +217,7 @@ pub fn drop() -> Result<Outcome, String> {
     run(bodies())
 }
 
-/// The second scenario's run: [`compound_bodies`] dropped the same way.
+/// The second scenario's run: `compound_bodies` dropped the same way.
 pub fn compound() -> Result<Outcome, String> {
     run(compound_bodies())
 }

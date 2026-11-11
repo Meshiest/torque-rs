@@ -19,8 +19,8 @@ categories = ["network-programming", "game-development"]
 torque-net = { path = "../torque-net" }
 # The server's `Transport` trait, its bind policy and `Recv`.
 torque-server = { path = "../torque-server" }
-# The client's `Datagrams` trait.
-torque-client = { path = "../torque-client" }
+# The client's `Datagrams` trait (the `client` feature).
+torque-client = { path = "../torque-client", optional = true }
 # The QUIC state machines (RFC 9000, 9001, 9002, 9221): no sockets, no clock of their own, a seedable RNG. TLS through rustls
 # with the ring provider, the one provider the tree already has for TLS; no token log (tokens are checked by signature alone).
 quinn-proto = { version = "0.11.19", default-features = false, features = ["rustls-ring"] }
@@ -35,11 +35,38 @@ time = { version = "0.3.55", default-features = false }
 # The datagram buffers quinn-proto takes and hands out.
 bytes = "1.12"
 
+[features]
+default = ["client"]
+# The client endpoint (`QuicClient`) and its socket. A server depends on this crate with `default-features = false`, so its
+# tree holds none of the client's crates.
+client = ["dep:torque-client"]
+
 [dev-dependencies]
 # The deterministic pair test's engine sessions over the QUIC link against the memory link.
 torque-net = { path = "../torque-net" }
 # The web transport beside the QUIC link on one transport (`MultiTransport`), as a server with a page runs them.
 torque-server = { path = "../torque-server", features = ["web"] }
+
+# The tests that drive a QUIC client need the client endpoint.
+[[test]]
+name = "h3_fuzz"
+required-features = ["client"]
+
+[[test]]
+name = "combined"
+required-features = ["client"]
+
+[[test]]
+name = "pair"
+required-features = ["client"]
+
+[[test]]
+name = "quic_fuzz"
+required-features = ["client"]
+
+[[test]]
+name = "web_transport"
+required-features = ["client"]
 
 [lints]
 workspace = true
