@@ -10,10 +10,12 @@ publish.workspace = true
 keywords = ["torque", "scene", "spatial", "gamedev"]
 categories = ["game-development"]
 
-# The scene container's core: the bins, the search lists and their sort, and the transform maths. Std only; a host answers what
-# the walks read of its objects.
+# The scene container's core: the bins, the search lists and their sort, the transform maths, and the engine's plain vector,
+# quaternion and matrix arithmetic. Std and libm only; a host answers what the walks read of its objects.
 
 [dependencies]
+# The transcendentals (`math::transcendental`): the same bits on every target.
+libm = "0.2.16"
 
 [lints]
 workspace = true

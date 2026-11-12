@@ -374,11 +374,8 @@ fn parse_tangent(text: &str) -> Result<Tangent, ScriptError> {
         return Ok(Tangent::Mount);
     }
     let bad = || ScriptError::new("a direction must be \"x y z\", \"mount\" or empty");
-    let [x, y, z] = parse_point(text, "a direction").map_err(|_| bad())?;
-    if !(x.is_finite() && y.is_finite() && z.is_finite()) || (x == 0.0 && y == 0.0 && z == 0.0) {
-        return Err(bad());
-    }
-    Ok(Tangent::Fixed([x, y, z]))
+    let direction = parse_point(text, "a direction").map_err(|_| bad())?;
+    Tangent::fixed(direction).ok_or_else(bad)
 }
 
 /// gives one rope a driven shape: a curve from its start to its far end, not simulated (a beam from a muzzle)

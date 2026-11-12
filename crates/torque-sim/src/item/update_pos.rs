@@ -10,6 +10,7 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/item.cpp` (Copyright (c) 2012
 //! GarageGames, LLC); the code here is this crate's own.
 
+use torque_collide::math::vec3::dot;
 use torque_collide::math::{Box3, F3, Matrix, Plane, mul_box, mul_p};
 use torque_collide::{Exhausted, MAX_COLLISIONS, types, work};
 
@@ -22,10 +23,6 @@ use crate::scene::{RayHit, queue_collision};
 const BOUNCE_MARGIN: f32 = 0.002;
 /// Below this speed a hit on solid world stops the item.
 const STOP_SPEED: f32 = 0.15;
-
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
 
 /// The velocity response of a hit with normal `n` at impact speed `impact` (`-(n . v)`): the tangential speed clipped to
 /// `friction * impact`, then `v = (v + n (impact (elasticity + 1) + 0.002)) - s`. The same in the first ray and the loop.

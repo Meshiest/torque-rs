@@ -1,6 +1,6 @@
 //! The collision library: Torque's convexes, GJK `CollisionState`, `CollisionList` and the polygon lists, following the Torque
-//! code, and the math module. Std and a fast hash ([`hash`]) only. The world (the object octree, the bins, the shape meshes) is reached through
-//! [`World`], which the host implements.
+//! code, and the math module. Std, a fast hash ([`hash`]) and torque-scene's plain math only. The world (the object octree,
+//! the bins, the shape meshes) is reached through [`World`], which the host implements.
 //!
 //! **Credits.** This crate follows the MIT-licensed Torque3D release of the Torque engine (GarageGames), whose code TGE 1.4
 //! shares; where TGE 1.4 differs, it follows TGE and names the TGE routine. The files followed:
@@ -13,8 +13,8 @@
 //!   GarageGames, LLC`.
 //!
 //! **What is here:**
-//! - [`math`]: `Point3F`/`MatrixF`/`PlaneF` arithmetic, the matrix product, the float-to-int conversion and the
-//!   transcendentals.
+//! - [`math`]: `Point3F`/`MatrixF`/`PlaneF` arithmetic, the matrix product, the float-to-int conversion, and the
+//!   transcendentals and plain vector, quaternion and matrix bodies re-exported from [`torque_scene::math`].
 //! - [`library`]: the math library table the arithmetic goes through, which a host may replace (Torque's `mMathFn.h`
 //!   pointers).
 //! - [`poly`]: the polygon lists `Player::updatePos`, `findContact` and `step` use, and
@@ -105,6 +105,5 @@ pub mod work {
     pub const FEATURE: u64 = 1;
 }
 
-/// The query ran out of budget or hit a cap: it stopped where it was, deterministically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Exhausted;
+/// The query ran out of budget or hit a cap: it stopped where it was, deterministically (the scene crate's type).
+pub use torque_scene::Exhausted;

@@ -102,11 +102,7 @@ pub const MAX_STEP: f32 = 10.0;
 
 /// `v` when finite (held to `lo..=hi`), else `default`.
 fn held(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(lo, hi)
-    } else {
-        default
-    }
+    crate::math::finite_clamp(v, lo, hi).unwrap_or(default)
 }
 
 /// `t` wrapped into 0 to 1 (a whole number of days off; 1 stays 1); 0 for a value that is not finite.

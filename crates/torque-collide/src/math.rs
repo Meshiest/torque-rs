@@ -5,19 +5,23 @@
 //! the same names call the installed table, whose default ([`crate::library::PLAIN`]) is the [`plain`] module, plain `f32`
 //! arithmetic in the source's order. The matrix product, the box transform and the transpose are plain `f32` code with no
 //! table entry.
+//!
+//! The plain bodies live in [`torque_scene::math`], the engine's one copy of them, re-exported here: [`vec3`], [`quat`],
+//! [`matrix`], [`transcendental`] and the finite-value guards ([`finite_clamp`], [`finite_coords`], [`all_finite`]). The
+//! names of this module that go through the table stay table-routed; code that wants the plain arithmetic whatever table is
+//! installed calls those modules.
+
+pub use torque_scene::math::{
+    all_finite, finite_clamp, finite_coords, matrix, quat, transcendental, vec3,
+};
 
 use crate::library;
 
 /// A point or a vector (`Point3F`).
-pub type F3 = [f32; 3];
+pub use torque_scene::math::vec3::F3;
 
-/// A 4x4 matrix as `MatrixF` holds it: row-major, the translation in the last column (elements 3, 7 and 11).
-pub type Matrix = [f32; 16];
-
-/// The identity (`MatrixF::identity`).
-pub const IDENTITY: Matrix = [
-    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
+/// A 4x4 matrix as `MatrixF` holds it (row-major, the translation in elements 3, 7 and 11), and the identity.
+pub use torque_scene::math::matrix::{IDENTITY, Matrix};
 
 /// An axis-aligned box (`Box3F`): `min` then `max`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -94,20 +98,9 @@ pub fn sqrt_f32(x: f32) -> f32 {
     x.sqrt()
 }
 
-/// `m_matF_x_matF` (`default_matF_x_matF_C`): row `i` of the result is `a[i0]*b[0j] + a[i1]*b[1j] + a[i2]*b[2j] +
-/// a[i3]*b[3j]`, summed left to right.
-pub fn matrix_product(a: &Matrix, b: &Matrix) -> Matrix {
-    let mut out = [0.0f32; 16];
-    for i in 0..4 {
-        for j in 0..4 {
-            out[i * 4 + j] = a[i * 4] * b[j]
-                + a[i * 4 + 1] * b[4 + j]
-                + a[i * 4 + 2] * b[8 + j]
-                + a[i * 4 + 3] * b[12 + j];
-        }
-    }
-    out
-}
+/// `m_matF_x_matF` and `m_matF_transpose`: the matrix product (summed left to right) and the full 4x4 transpose, plain `f32`
+/// with no table entry.
+pub use torque_scene::math::matrix::{product as matrix_product, transpose};
 
 /// `MatrixF::mulP` (through the table).
 pub fn mul_p(m: &Matrix, p: F3) -> F3 {
@@ -124,40 +117,10 @@ pub fn mul_v(m: &Matrix, v: F3) -> F3 {
     (library::get().mul_v)(m, v)
 }
 
-/// `m_matF_x_box3F` (Graphics Gems I, 548): the box moved by `m`. Each axis starts at the translation; for each element `r`
-/// of the row `a = r * min[j]`, `b = r * max[j]`; when `a < b` the minimum gains `a` and the maximum `b`, else the minimum
-/// gains `b` and the maximum `a`.
+/// `m_matF_x_box3F` (Graphics Gems I, 548): the box moved by `m` ([`matrix::mul_box`]).
 pub fn mul_box(m: &Matrix, b: &Box3) -> Box3 {
-    let omin = b.min;
-    let omax = b.max;
-    let mut min = [m[3], m[7], m[11]];
-    let mut max = min;
-    for i in 0..3 {
-        for j in 0..3 {
-            let r = m[4 * i + j];
-            let a = r * omin[j];
-            let bb = r * omax[j];
-            if a < bb {
-                min[i] += a;
-                max[i] += bb;
-            } else {
-                min[i] += bb;
-                max[i] += a;
-            }
-        }
-    }
+    let (min, max) = matrix::mul_box(m, b.min, b.max);
     Box3 { min, max }
-}
-
-/// `m_matF_transpose`: the full 4x4 transpose.
-pub fn transpose(m: &Matrix) -> Matrix {
-    let mut o = *m;
-    for i in 0..4 {
-        for j in 0..4 {
-            o[i * 4 + j] = m[j * 4 + i];
-        }
-    }
-    o
 }
 
 /// `m_matF_determinant` of the 3x3 part (through the table).
@@ -260,59 +223,27 @@ pub fn quat_matrix(q: [f32; 4]) -> Matrix {
     (library::get().quat_matrix)(q)
 }
 
-/// A quaternion `(x, y, z, w)` as `QuatF` stores it.
-pub type Quat = [f32; 4];
-
-/// The identity quaternion.
-pub const QUAT_IDENTITY: Quat = [0.0, 0.0, 0.0, 1.0];
-
-/// `QuatF::normalize()`: a zero quaternion becomes the identity.
-pub fn plain_quat_normalize(q: &Quat) -> Quat {
-    let [x, y, z, w] = *q;
-    let l = (x * x + y * y + z * z + w * w).sqrt();
-    if l == 0.0 {
-        return QUAT_IDENTITY;
-    }
-    [x / l, y / l, z / l, w / l]
-}
-
-/// `QuatF::set(const MatrixF&)`: from the trace when it is positive, else from the largest diagonal element. The inverse of
-/// [`quat_matrix`].
-pub fn plain_quat_from_matrix(m: &Matrix) -> Quat {
-    let trace = m[0] + m[5] + m[10];
-    if trace > 0.0 {
-        let s = (trace + 1.0).sqrt();
-        let w = s * 0.5;
-        let s = 0.5 / s;
-        return [(m[6] - m[9]) * s, (m[8] - m[2]) * s, (m[1] - m[4]) * s, w];
-    }
-    let mut i = 0usize;
-    if m[5] > m[0] {
-        i = 1;
-    }
-    if m[10] > m[5 * i] {
-        i = 2;
-    }
-    let j = (i + 1) % 3;
-    let k = (j + 1) % 3;
-    let s = ((m[5 * i] - (m[5 * j] + m[5 * k])) + 1.0).sqrt();
-    let mut q = [0.0f32; 4];
-    q[i] = s * 0.5;
-    let s = 0.5 / s;
-    q[j] = (m[4 * i + j] + m[4 * j + i]) * s;
-    q[k] = (m[4 * i + k] + m[4 * k + i]) * s;
-    q[3] = (m[4 * j + k] - m[4 * k + j]) * s;
-    q
-}
+/// A quaternion `(x, y, z, w)` as `QuatF` stores it, the identity, `QuatF::normalize()` (a zero quaternion becomes the
+/// identity) and `QuatF::set(const MatrixF&)` (the inverse of [`quat_matrix`]): [`quat`]'s.
+pub use torque_scene::math::quat::{
+    IDENTITY as QUAT_IDENTITY, Quat, from_matrix as plain_quat_from_matrix,
+    normalize as plain_quat_normalize,
+};
 
 /// `m_point3F_interpolate` (through the table): `from * (1 - t) + to * t` per component.
 pub fn interpolate(from: F3, to: F3, t: f32) -> F3 {
     (library::get().interpolate)(from, to, t)
 }
 
-/// The routines of [`crate::library::PLAIN`]: plain `f32` arithmetic, each written as its Torque routine is.
+/// The routines of [`crate::library::PLAIN`]: plain `f32` arithmetic, each written as its Torque routine is. Most are
+/// [`torque_scene::math`]'s, re-exported.
 pub mod plain {
-    use super::{F3, IDENTITY, Matrix, Plane, transcendental};
+    use super::{F3, Plane};
+
+    pub use torque_scene::math::matrix::{
+        affine_inverse, determinant, from_quat as quat_matrix, inverse, mul_p, mul_v, set_euler,
+    };
+    pub use torque_scene::math::vec3::{cross, dot, interpolate, is_zero, normalize};
 
     /// The `(S32)` cast: Rust's `as`, which cuts toward zero, saturates at the ends of the range and gives 0 for a NaN.
     pub fn float_to_int(x: f64) -> i32 {
@@ -320,200 +251,9 @@ pub mod plain {
     }
 
     /// The sphere around a world box (`resetWorldBox`): the centre `(min + max) * 0.5` and the radius, the length of
-    /// `max - centre`.
+    /// `max - centre` (the scene's [`torque_scene::transform::plain::world_sphere`]).
     pub fn world_sphere(w: &super::Box3) -> (F3, f32) {
-        let c: F3 = std::array::from_fn(|i| (w.min[i] + w.max[i]) * 0.5);
-        let d: F3 = std::array::from_fn(|i| w.max[i] - c[i]);
-        (c, (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt())
-    }
-
-    /// `m_matF_x_point3F`.
-    pub fn mul_p(m: &Matrix, p: F3) -> F3 {
-        [
-            m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3],
-            m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7],
-            m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11],
-        ]
-    }
-
-    /// `m_matF_x_vectorF`.
-    pub fn mul_v(m: &Matrix, v: F3) -> F3 {
-        [
-            m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
-            m[4] * v[0] + m[5] * v[1] + m[6] * v[2],
-            m[8] * v[0] + m[9] * v[1] + m[10] * v[2],
-        ]
-    }
-
-    /// `m_matF_determinant_C`.
-    pub fn determinant(m: &Matrix) -> f32 {
-        m[0] * (m[5] * m[10] - m[6] * m[9])
-            + m[4] * (m[2] * m[9] - m[1] * m[10])
-            + m[8] * (m[1] * m[6] - m[2] * m[5])
-    }
-
-    /// `m_matF_inverse_C`.
-    pub fn inverse(m: &Matrix) -> Matrix {
-        let det = determinant(m);
-        let inv_det = 1.0 / det;
-        let mut o = *m;
-        o[0] = (m[5] * m[10] - m[6] * m[9]) * inv_det;
-        o[1] = (m[9] * m[2] - m[10] * m[1]) * inv_det;
-        o[2] = (m[1] * m[6] - m[2] * m[5]) * inv_det;
-        o[4] = (m[6] * m[8] - m[4] * m[10]) * inv_det;
-        o[5] = (m[10] * m[0] - m[8] * m[2]) * inv_det;
-        o[6] = (m[2] * m[4] - m[0] * m[6]) * inv_det;
-        o[8] = (m[4] * m[9] - m[5] * m[8]) * inv_det;
-        o[9] = (m[8] * m[1] - m[9] * m[0]) * inv_det;
-        o[10] = (m[0] * m[5] - m[1] * m[4]) * inv_det;
-        let t = mul_v(&o, [-m[3], -m[7], -m[11]]);
-        o[3] = t[0];
-        o[7] = t[1];
-        o[11] = t[2];
-        o
-    }
-
-    /// `m_matF_affineInverse_C`.
-    pub fn affine_inverse(m: &Matrix) -> Matrix {
-        let t = *m;
-        let mut o = *m;
-        o[1] = t[4];
-        o[4] = t[1];
-        o[2] = t[8];
-        o[8] = t[2];
-        o[6] = t[9];
-        o[9] = t[6];
-        o[3] = -(t[0] * t[3] + t[4] * t[7] + t[8] * t[11]);
-        o[7] = -(t[1] * t[3] + t[5] * t[7] + t[9] * t[11]);
-        o[11] = -(t[2] * t[3] + t[6] * t[7] + t[10] * t[11]);
-        o
-    }
-
-    /// `m_point3F_normalize_C`.
-    pub fn normalize(p: F3) -> F3 {
-        let squared = p[0] * p[0] + p[1] * p[1] + p[2] * p[2];
-        if squared != 0.0 {
-            let factor = 1.0 / squared.sqrt();
-            [p[0] * factor, p[1] * factor, p[2] * factor]
-        } else {
-            [0.0, 0.0, 1.0]
-        }
-    }
-
-    /// `mDot`.
-    pub fn dot(a: F3, b: F3) -> f32 {
-        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-    }
-
-    /// `mCross`.
-    pub fn cross(a: F3, b: F3) -> F3 {
-        [
-            a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0],
-        ]
-    }
-
-    /// `Point3F::isZero`: `x*x <= POINT_EPSILON` for each component, `POINT_EPSILON` being the double `1e-4`.
-    pub fn is_zero(v: F3) -> bool {
-        v.iter().all(|&x| f64::from(x * x) <= 1e-4)
-    }
-
-    /// `m_point3F_interpolate_C`.
-    pub fn interpolate(from: F3, to: F3, factor: f32) -> F3 {
-        let inverse = 1.0 - factor;
-        [
-            from[0] * inverse + to[0] * factor,
-            from[1] * inverse + to[1] * factor,
-            from[2] * inverse + to[2] * factor,
-        ]
-    }
-
-    /// `mSinCos`: `mSin` and `mCos`, the double functions of the float angle, each a float.
-    fn sin_cos(angle: f32) -> (f32, f32) {
-        let a = f64::from(angle);
-        (transcendental::sin(a) as f32, transcendental::cos(a) as f32)
-    }
-
-    /// `m_matF_set_euler_C`.
-    pub fn set_euler(e: F3) -> Matrix {
-        let mut m = IDENTITY;
-        let axes = (e[0] != 0.0) as u32 | ((e[1] != 0.0) as u32) << 1 | ((e[2] != 0.0) as u32) << 2;
-        match axes {
-            0 => {}
-            1 => {
-                let (sx, cx) = sin_cos(e[0]);
-                m[5] = cx;
-                m[6] = sx;
-                m[9] = -sx;
-                m[10] = cx;
-            }
-            2 => {
-                let (sy, cy) = sin_cos(e[1]);
-                m[0] = cy;
-                m[2] = -sy;
-                m[8] = sy;
-                m[10] = cy;
-            }
-            4 => {
-                let (sz, cz) = sin_cos(e[2]);
-                m[0] = cz;
-                m[1] = sz;
-                m[4] = -sz;
-                m[5] = cz;
-            }
-            _ => {
-                let (sx, cx) = sin_cos(e[0]);
-                let (sy, cy) = sin_cos(e[1]);
-                let (sz, cz) = sin_cos(e[2]);
-                let r1 = cy * cz;
-                let r2 = cy * sz;
-                let r3 = sy * cz;
-                let r4 = sy * sz;
-                m[0] = r1 - (r4 * sx);
-                m[1] = r2 + (r3 * sx);
-                m[2] = -cx * sy;
-                m[4] = -cx * sz;
-                m[5] = cx * cz;
-                m[6] = sx;
-                m[8] = r3 + (r2 * sx);
-                m[9] = r4 - (r1 * sx);
-                m[10] = cx * cy;
-            }
-        }
-        m
-    }
-
-    /// `QuatF::setMatrix` over `m_quatF_set_matF_C`.
-    pub fn quat_matrix(q: [f32; 4]) -> Matrix {
-        let [x, y, z, w] = q;
-        if x * x + y * y + z * z < 10e-20 {
-            return IDENTITY;
-        }
-        let xs = x * 2.0;
-        let ys = y * 2.0;
-        let zs = z * 2.0;
-        let wx = w * xs;
-        let wy = w * ys;
-        let wz = w * zs;
-        let xx = x * xs;
-        let xy = x * ys;
-        let xz = x * zs;
-        let yy = y * ys;
-        let yz = y * zs;
-        let zz = z * zs;
-        let mut m = [0.0f32; 16];
-        m[0] = 1.0 - (yy + zz);
-        m[4] = xy - wz;
-        m[8] = xz + wy;
-        m[1] = xy + wz;
-        m[5] = 1.0 - (xx + zz);
-        m[9] = yz - wx;
-        m[2] = xz - wy;
-        m[6] = yz + wx;
-        m[10] = 1.0 - (xx + yy);
-        m[15] = 1.0;
-        m
+        torque_scene::transform::plain::world_sphere(w.min, w.max)
     }
 
     /// `PlaneF::distToPlane`: `(x*p.x + y*p.y + z*p.z) + d`.
@@ -537,48 +277,6 @@ pub mod plain {
         let bz = l[2] - j[2];
         let [x, y, z] = normalize([ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx]);
         Plane::new(x, y, z, -(j[0] * x + j[1] * y + j[2] * z))
-    }
-}
-
-/// Transcendentals, as Torque's `mSin`, `mCos`, `mAcos`, `mAtan` and `mPow` call the C library's double functions, and the
-/// float ones its float code calls.
-///
-/// They are `libm`'s, never the platform's: glibc, the Windows C runtime and wasm32's C library round some results to different
-/// last bits, and the simulation a client predicts must give the same bits on every target (the trace hash checks it).
-pub mod transcendental {
-    pub fn sin(x: f64) -> f64 {
-        libm::sin(x)
-    }
-    pub fn cos(x: f64) -> f64 {
-        libm::cos(x)
-    }
-    pub fn acos(x: f64) -> f64 {
-        libm::acos(x)
-    }
-    pub fn atan2(y: f64, x: f64) -> f64 {
-        libm::atan2(y, x)
-    }
-    pub fn pow(x: f64, y: f64) -> f64 {
-        libm::pow(x, y)
-    }
-    /// The float sine and cosine of `x` (`f32::sin_cos`).
-    pub fn sin_cos_f32(x: f32) -> (f32, f32) {
-        (libm::sinf(x), libm::cosf(x))
-    }
-    pub fn sin_f32(x: f32) -> f32 {
-        libm::sinf(x)
-    }
-    pub fn cos_f32(x: f32) -> f32 {
-        libm::cosf(x)
-    }
-    pub fn atan2_f32(y: f32, x: f32) -> f32 {
-        libm::atan2f(y, x)
-    }
-    pub fn acos_f32(x: f32) -> f32 {
-        libm::acosf(x)
-    }
-    pub fn exp_f32(x: f32) -> f32 {
-        libm::expf(x)
     }
 }
 

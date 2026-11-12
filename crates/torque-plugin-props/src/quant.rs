@@ -172,29 +172,14 @@ impl Quantized {
 
 /// The conjugate of a quaternion `x, y, z, w`: the other turn. Torque's `QuatF` turns the other way from the physics world's
 /// (its `setMatrix` writes the transpose), so a pose's quaternion is conjugated on its way to and from Torque's maths.
-pub fn conjugate([x, y, z, w]: [f32; 4]) -> [f32; 4] {
-    [-x, -y, -z, w]
-}
+pub use torque_collide::math::quat::conjugate;
 
-/// The product `a b` of two quaternions `x, y, z, w` of the physics world (`b`'s turn, then `a`'s).
-pub fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
-    let [ax, ay, az, aw] = a;
-    let [bx, by, bz, bw] = b;
-    [
-        aw * bx + ax * bw + ay * bz - az * by,
-        aw * by - ax * bz + ay * bw + az * bx,
-        aw * bz + ax * by - ay * bx + az * bw,
-        aw * bw - ax * bx - ay * by - az * bz,
-    ]
-}
+/// The product `a b` of two quaternions `x, y, z, w` of the physics world (`b`'s turn, then `a`'s), each component's terms
+/// summed in the order of `a`'s `w, x, y, z` ([`torque_collide::math::quat::mul_wxyz`], not `QuatF::mul`'s rounding).
+pub use torque_collide::math::quat::mul_wxyz as quat_mul;
 
 /// `a` at `t` 0 and `b` at `t` 1, blended straight the short way and made unit again (a zero result is no turn).
-pub fn quat_nlerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    let d: f32 = (0..4).map(|k| a[k] * b[k]).sum();
-    let s = if d < 0.0 { -1.0 } else { 1.0 };
-    let q: [f32; 4] = std::array::from_fn(|k| a[k] + (b[k] * s - a[k]) * t);
-    torque_collide::math::plain_quat_normalize(&q)
-}
+pub use torque_collide::math::quat::nlerp as quat_nlerp;
 
 /// A row-major 4x4 transform (translation in elements 3, 7 and 11, as the collision library's) of a position and a unit
 /// quaternion `x, y, z, w` of the physics world: a point `p` of the prop is at `M p`. Torque's own matrix maths

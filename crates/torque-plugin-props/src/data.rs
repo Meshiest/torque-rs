@@ -194,11 +194,7 @@ pub struct PropParams {
 
 /// `v` held to `lo..=hi`; `default` when it is not a number.
 pub fn held(v: f32, lo: f32, hi: f32, default: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(lo, hi)
-    } else {
-        default
-    }
+    torque_collide::math::finite_clamp(v, lo, hi).unwrap_or(default)
 }
 
 /// A datablock's numbers as they were written (or sent), before they are made safe ([`PropNumbers::held`]).

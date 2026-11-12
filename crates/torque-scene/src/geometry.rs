@@ -7,9 +7,18 @@
 /// The caller's payment for work: `false` when the run's budget cannot pay any more.
 pub type Charge<'a> = &'a mut dyn FnMut(u64) -> bool;
 
-/// The walk could not be paid for: the run's step budget is used up.
+/// The walk or query could not be paid for, or hit a cap: the run's step budget is used up, and the work stopped where it was,
+/// deterministically. The collision crate's queries return the same type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Exhausted;
+
+impl std::fmt::Display for Exhausted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the step budget is used up")
+    }
+}
+
+impl std::error::Error for Exhausted {}
 
 /// What a walk reads of a scene object, live, each time it needs it (the object's fields).
 pub trait Geometry {
@@ -73,8 +82,6 @@ pub fn ray_point(start: [f32; 3], end: [f32; 3], t: f32) -> [f32; 3] {
     (crate::library::get().ray_point)(start, end, t)
 }
 
-/// [`ray_point`] in plain `f32`, as TGE's `m_point3F_interpolate` writes it: `start * (1 - t) + end * t` per axis.
-pub fn plain_ray_point(start: [f32; 3], end: [f32; 3], t: f32) -> [f32; 3] {
-    let inverse = 1.0 - t;
-    [0, 1, 2].map(|i| start[i] * inverse + end[i] * t)
-}
+/// [`ray_point`] in plain `f32`, as TGE's `m_point3F_interpolate` writes it: `start * (1 - t) + end * t` per axis
+/// ([`crate::math::vec3::interpolate`]).
+pub use crate::math::vec3::interpolate as plain_ray_point;

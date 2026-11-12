@@ -15,22 +15,9 @@ pub fn affine_inverse(m: &Matrix) -> Matrix {
     (crate::library::get().affine_inverse)(m)
 }
 
-/// `MatrixF::affineInverse` in plain arithmetic: [`PLAIN`](crate::library::PLAIN)'s entry.
-pub fn plain_affine_inverse(m: &Matrix) -> Matrix {
-    let t = *m;
-    let mut o = *m;
-    o[1] = t[4];
-    o[4] = t[1];
-    o[2] = t[8];
-    o[8] = t[2];
-    o[6] = t[9];
-    o[9] = t[6];
-    let p = [t[3], t[7], t[11]];
-    o[3] = -(o[0] * p[0] + o[1] * p[1] + o[2] * p[2]);
-    o[7] = -(o[4] * p[0] + o[5] * p[1] + o[6] * p[2]);
-    o[11] = -(o[8] * p[0] + o[9] * p[1] + o[10] * p[2]);
-    o
-}
+/// `MatrixF::affineInverse` in plain arithmetic ([`torque_collide::math::matrix::affine_inverse`]):
+/// [`PLAIN`](crate::library::PLAIN)'s entry.
+pub use torque_collide::math::matrix::affine_inverse as plain_affine_inverse;
 
 impl PlayerState {
     /// `Player::onScaleChanged`: the scaled box is the object box times the scale per axis. A subclass that sizes its

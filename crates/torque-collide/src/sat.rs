@@ -10,6 +10,7 @@
 
 use crate::convex::ConvexKind;
 use crate::map::MapShape;
+use crate::math::vec3::{add, cross, dot, sub};
 use crate::math::{F3, Matrix, mul_p, mul_v};
 use crate::mesh::HullAccel;
 
@@ -307,26 +308,6 @@ fn clip_edges(p: &Polytope, q: &Polytope, out: &mut Vec<F3>) {
             }
         }
     }
-}
-
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-fn cross(a: F3, b: F3) -> F3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn sub(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-fn add(a: F3, b: F3) -> F3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
 /// `v` made unit, or None when its length squared is not above 1e-6 or it is not finite.

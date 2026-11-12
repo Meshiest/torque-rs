@@ -12,8 +12,8 @@ use super::contact::{box_planes, step_up};
 use super::data::PlayerData;
 use super::ext::{PlayerClass, TorquePlayer};
 use super::host::PlayerHost;
-use super::update_move::len3;
 use super::{MAX_POS_ITERATIONS, Player, container, net_mask, shape_base, transform};
+use torque_collide::math::vec3::length;
 
 /// The sweep's margin around the swept box.
 const SWEEP_PAD: f32 = 0.1;
@@ -67,7 +67,7 @@ impl Player {
             let v = self.s.velocity;
             let o = self.s.pending_offset;
             let has_offset = o[0] != 0.0 || o[1] != 0.0;
-            if len3(v) == 0.0 && !has_offset {
+            if length(v) == 0.0 && !has_offset {
                 break;
             }
             let mut end = [
@@ -180,7 +180,7 @@ impl Player {
             }
             // To the hit, then back off.
             let v = self.s.velocity;
-            let vel_len = len3(v);
+            let vel_len = length(v);
             let hit_dt = time * gl.t.min(1.0);
             start = std::array::from_fn(|k| start[k] + v[k] * hit_dt);
             time -= hit_dt;
@@ -235,12 +235,12 @@ impl Player {
                         n[2] * fnl[0] - n[0] * fnl[2],
                         n[0] * fnl[1] - n[1] * fnl[0],
                     ];
-                    let mut nvl = len3(nv);
+                    let mut nvl = length(nv);
                     if nvl != 0.0 {
                         if dot(nv, s.velocity) < 0.0 {
                             nvl = -nvl;
                         }
-                        let k = len3(s.velocity) / nvl;
+                        let k = length(s.velocity) / nvl;
                         s.velocity = [nv[0] * k, nv[1] * k, nv[2] * k];
                     }
                 }

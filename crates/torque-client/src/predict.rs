@@ -2540,22 +2540,11 @@ pub fn solid_hit(
     None
 }
 
-pub fn sub3(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-pub fn add3(a: F3, b: F3) -> F3 {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-pub fn len3(a: F3) -> f32 {
-    (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()
-}
-
-pub fn normalize3(a: F3) -> F3 {
-    let l = len3(a);
-    if l > 0.0 { a.map(|x| x / l) } else { a }
-}
+/// `a - b`, `a + b`, the `f32` length, and `a` over its length (as it is when that is not above 0): the plain bodies of
+/// [`torque_scene::math::vec3`].
+pub use torque_scene::math::vec3::{
+    add as add3, length as len3, sub as sub3, unit_or_same as normalize3,
+};
 
 /// `a` over its length, or as it is when that is 0.
 fn unit_or_same(a: Vec3) -> Vec3 {

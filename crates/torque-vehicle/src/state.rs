@@ -21,7 +21,7 @@ use torque_collide::{
 use crate::Move;
 use crate::data::{ShapeBaseData, VehicleData};
 use crate::host::VehicleHost;
-use crate::math::{Quat, len_sq};
+use crate::math::{Quat, dot, len_sq, sub};
 use crate::rigid::Rigid;
 
 /// The limits in `resolveCollision`: at most 200 entries are looked at (the list holds 64, so the cap
@@ -329,7 +329,7 @@ impl VehicleState {
 
     /// `Vehicle::applyImpulse(pos, J)`: `r = pos - wcom` and `Rigid::applyImpulse` (which wakes the body).
     pub fn apply_impulse(&mut self, pos: F3, j: F3) {
-        let r = sub3(pos, self.rigid.world_com);
+        let r = sub(pos, self.rigid.world_com);
         self.rigid.apply_impulse(r, j);
     }
 
@@ -736,8 +736,8 @@ impl Body {
             for _ in 0..HOLD_PASSES {
                 let mut changed = false;
                 for (k, &p) in self.overlap.points.iter().enumerate() {
-                    let r = sub3(p, rb.world_com);
-                    let vn = dot3(rb.velocity_at(r), n);
+                    let r = sub(p, rb.world_com);
+                    let vn = dot(rb.velocity_at(r), n);
                     let j = (sum[k] - vn * rb.zero_impulse(r, n)).max(0.0);
                     let dj = j - sum[k];
                     if dj.abs() > 1e-6 {
@@ -748,7 +748,7 @@ impl Body {
                     // Friction: the sliding along the surface stopped, the sum at the corner held to `friction` times
                     // its push.
                     let v = rb.velocity_at(r);
-                    let vn = dot3(v, n);
+                    let vn = dot(v, n);
                     let vt: F3 = std::array::from_fn(|i| v[i] - n[i] * vn);
                     let ul = len_sq(vt).sqrt();
                     if !(ul > 1e-6) {
@@ -793,23 +793,15 @@ fn below_terrain(piece: &Polytope, overlap: &mut Penetration) -> bool {
         return false;
     };
     let up = if up[2] < 0.0 { up.map(|x| -x) } else { up };
-    let top = dot3(up, corner);
+    let top = dot(up, corner);
     let depth = overlap
         .points
         .iter()
-        .map(|&q| top - dot3(up, q))
+        .map(|&q| top - dot(up, q))
         .fold(0.0f32, f32::max);
     overlap.normal = up;
     overlap.depth = depth;
     depth > 0.0
-}
-
-fn sub3(a: F3, b: F3) -> F3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn dot3(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// `Vehicle::resolveCollision(rigid, list)` (through the [`library`](crate::library) table).
@@ -842,9 +834,9 @@ pub fn plain_resolve_collision(
             if !(e.distance < db.collision_tol) {
                 continue;
             }
-            let r = sub3(e.point, s.rigid.world_com);
+            let r = sub(e.point, s.rigid.world_com);
             let v = s.rigid.velocity_at(r);
-            if !(dot3(v, e.normal) < -db.contact_tol) {
+            if !(dot(v, e.normal) < -db.contact_tol) {
                 continue;
             }
             s.rigid.resolve_collision(e.point, e.normal);
@@ -857,7 +849,7 @@ pub fn plain_resolve_collision(
                     .is_some_and(|o| o.type_mask & types::SHAPE_BASE != 0)
             {
                 let ov = host.object_velocity(obj);
-                queue_collision(s, now, obj, sub3(v, ov));
+                queue_collision(s, now, obj, sub(v, ov));
             }
         }
         pass += 1;
@@ -893,10 +885,10 @@ pub fn plain_resolve_contacts(
         if !(e.distance < db.collision_tol) {
             continue;
         }
-        let r = sub3(e.point, rb.world_com);
+        let r = sub(e.point, rb.world_com);
         let v = rb.velocity_at(r);
         let n = e.normal;
-        let vn = dot3(v, n);
+        let vn = dot(v, n);
         if !(vn.abs() < db.contact_tol) {
             continue;
         }
@@ -972,11 +964,11 @@ pub fn end_of_step(
     let now = host.sim_time();
     for hit in scratch.iter() {
         let v = s.rigid.lin_vel;
-        let vec = sub3(v, hit.velocity);
+        let vec = sub(v, hit.velocity);
         queue_collision(s, now, hit.object, vec);
     }
     if collided {
-        let dv = sub3(s.rigid.lin_vel, v0);
+        let dv = sub(s.rigid.lin_vel, v0);
         let speed = len_sq(dv).sqrt();
         if speed > db.min_impact_speed {
             host.on_impact(s, dv);

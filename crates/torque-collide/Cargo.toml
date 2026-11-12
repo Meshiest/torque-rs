@@ -10,16 +10,18 @@ publish.workspace = true
 keywords = ["torque", "collision", "gjk", "physics", "gamedev"]
 categories = ["game-development", "simulation", "mathematics"]
 
-# The collision library: Torque's convexes, GJK and polygon lists, with explicit f32 rounding points in its math. Std only;
-# queries reach the world through a trait the host implements, so the simulation and vehicle crates share it.
+# The collision library: Torque's convexes, GJK and polygon lists, with explicit f32 rounding points in its math. Std,
+# torque-scene's plain math and a fast hash only; queries reach the world through a trait the host implements, so the
+# simulation and vehicle crates share it.
 
 [dependencies]
 # The format-neutral map layer the map collision reads.
 torque-mapcore = { path = "../torque-mapcore" }
 # The hash of the engine's own ids in the movers' hot maps (`hash`).
 rustc-hash = { workspace = true }
-# The transcendentals (`math::transcendental`): the same bits on every target.
-libm = "0.2.16"
+# The engine's plain vector, quaternion and matrix arithmetic, the transcendentals and the finite-value guards (`math`), and
+# the budget error (`Exhausted`).
+torque-scene = { path = "../torque-scene" }
 
 [dev-dependencies]
 # The Torque map importer and synthetic files for the map collision's tests.

@@ -17,6 +17,7 @@
 //! GarageGames, LLC) and `T3D/player.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the
 //! code here is this crate's own.
 
+use torque_collide::math::vec3::{add, length_squared, scale, sub};
 use torque_collide::math::{F3, Matrix, matrix_product, set_euler};
 
 use super::ImageData;
@@ -118,28 +119,11 @@ pub fn shape_muzzle_point(ctx: &mut MuzzleCtx, img: Option<&ImageData>, slot: us
     ctx.rays.muzzle_point(ctx.s, mount, muzzle, false)
 }
 
-/// The squared length (`Point3F::lenSquared`).
-fn squared_len(v: F3) -> f32 {
-    v[0] * v[0] + v[1] * v[1] + v[2] * v[2]
-}
-
 /// How far ahead of the eye the corrected aim looks, and the distance a nearer aim point is pushed out to.
 pub const AIM_REACH: f32 = 500.0;
 pub const AIM_PULL_IN: f32 = 6.0;
 /// Points closer together than the root of this (0.2) count as one for the aim.
 const AIM_MIN_SQUARED: f32 = 0.04;
-
-fn sub3(a: F3, b: F3) -> F3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn add3(a: F3, b: F3) -> F3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn scale3(a: F3, k: f32) -> F3 {
-    std::array::from_fn(|i| a[i] * k)
-}
 
 /// The corrected aim: the unit vector from `muzzle` toward what lies straight ahead of the eye, or `None` when the muzzle is
 /// within 0.2 of that point.
@@ -151,7 +135,7 @@ fn scale3(a: F3, k: f32) -> F3 {
 pub fn corrected_aim<R: RayCaster + ?Sized>(rays: &mut R, eye: &Matrix, muzzle: F3) -> Option<F3> {
     let start = translation(eye);
     let forward = [eye[1], eye[5], eye[9]];
-    let end = add3(start, scale3(forward, AIM_REACH));
+    let end = add(start, scale(forward, AIM_REACH));
     let mask = rays.type_masks().muzzle_aim;
     let met = rays
         .cast_ray(start, end, mask, false)
@@ -162,16 +146,16 @@ pub fn corrected_aim<R: RayCaster + ?Sized>(rays: &mut R, eye: &Matrix, muzzle: 
 /// The corrected aim after its ray, from the ray's `start`, the point it `met` and the `muzzle`: the aim point pulled out to
 /// [`AIM_PULL_IN`] when nearer, then the unit vector from the muzzle to it. [`PLAIN`](crate::library::PLAIN)'s `aim_vector`.
 pub fn plain_aim_vector(start: F3, met: F3, muzzle: F3) -> Option<F3> {
-    let reach = sub3(met, start);
-    let reach_sq = squared_len(reach);
+    let reach = sub(met, start);
+    let reach_sq = length_squared(reach);
     let aim_at = if reach_sq < AIM_PULL_IN * AIM_PULL_IN && reach_sq > AIM_MIN_SQUARED {
-        add3(start, scale3(reach, AIM_PULL_IN / reach_sq.sqrt()))
+        add(start, scale(reach, AIM_PULL_IN / reach_sq.sqrt()))
     } else {
         met
     };
-    let to = sub3(aim_at, muzzle);
-    let to_sq = squared_len(to);
-    (to_sq > AIM_MIN_SQUARED).then(|| scale3(to, 1.0 / to_sq.sqrt()))
+    let to = sub(aim_at, muzzle);
+    let to_sq = length_squared(to);
+    (to_sq > AIM_MIN_SQUARED).then(|| scale(to, 1.0 / to_sq.sqrt()))
 }
 
 /// `getMuzzleVector(slot)`: the muzzle transform, then the muzzle point (in that order), then the corrected aim when the
@@ -214,7 +198,7 @@ pub fn muzzle_vector(
 pub fn fast_len(v: F3) -> f32 {
     let over = |x: f32| !(x * x <= 0.0001);
     if over(v[0]) || over(v[1]) || over(v[2]) {
-        squared_len(v).sqrt()
+        length_squared(v).sqrt()
     } else {
         0.0
     }

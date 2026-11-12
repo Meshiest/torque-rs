@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use collide::math::transcendental;
+use collide::math::quat::slerp_f32;
 use ghosts::Xf;
 
 use crate::images::TICK_MS;
@@ -31,34 +31,6 @@ fn parts(xf: &Xf) -> Parts {
         w = -w;
     }
     (xf.position.map(|v| v.get()), [x, y, z, w])
-}
-
-/// The rotation between `a` and `b` a fraction `t` of the way (the short way round).
-fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
-    let mut dot: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
-    let sign = if dot < 0.0 {
-        dot = -dot;
-        -1.0
-    } else {
-        1.0
-    };
-    let (s1, s2) = if 1.0 - dot <= 1.0e-4 {
-        (1.0 - t, sign * t)
-    } else {
-        let omega = transcendental::acos_f32(dot.clamp(-1.0, 1.0));
-        let sin = transcendental::sin_f32(omega);
-        (
-            transcendental::sin_f32(omega * (1.0 - t)) / sin,
-            sign * transcendental::sin_f32(omega * t) / sin,
-        )
-    };
-    let q: [f32; 4] = std::array::from_fn(|i| a[i] * s1 + b[i] * s2);
-    let len = q.iter().map(|c| c * c).sum::<f32>().sqrt();
-    if len > 0.0 && len.is_finite() {
-        q.map(|c| c / len)
-    } else {
-        b
-    }
 }
 
 /// One ghost's warp.
@@ -84,7 +56,7 @@ impl Warp {
         }
         let f = (t / self.warp_ms).clamp(0.0, 1.0);
         let p = std::array::from_fn(|k| self.from.0[k] + (self.to.0[k] - self.from.0[k]) * f);
-        (p, slerp(self.from.1, self.to.1, f))
+        (p, slerp_f32(self.from.1, self.to.1, f))
     }
 }
 

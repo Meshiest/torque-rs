@@ -16,6 +16,7 @@ use crate::convex::{
 use crate::gjk::GjkState;
 use crate::hash::{IdMap, IdSet};
 use crate::library;
+use crate::math::vec3::sub;
 use crate::math::{
     F3, IDENTITY, Matrix, Plane, affine_inverse, cross, determinant, dot, inverse, matrix_product,
 };
@@ -40,11 +41,6 @@ pub struct ConvexFeature {
 /// `mat.mulP(p)` as the features move their vertices (through the table).
 fn feature_mul_p(m: &Matrix, p: F3) -> F3 {
     (library::get().feature_vertex)(m, p)
-}
-
-/// `a - b` per component.
-fn sub(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// `BoxConvex::getVertex`: `center + (+-size)` with corner `k`'s bits (bit 0 for x).

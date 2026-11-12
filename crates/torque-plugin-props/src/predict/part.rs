@@ -7,6 +7,7 @@ use std::rc::Rc;
 use torque_client::predict::slot::{
     BodyBox, BodyMotion, HeadStep, MoveStep, PredictionPart, Shot, StaticView, TickStep, ViewStep,
 };
+use torque_collide::math::vec3::sub;
 use torque_collide::math::{
     Box3, QUAT_IDENTITY, affine_inverse, interpolate, mul_p, plain_quat_normalize,
 };
@@ -1463,10 +1464,6 @@ fn place_q(q: &Quantized) -> Place {
 /// `a` at `t` 0 and `b` at `t` 1.
 fn blend(a: Place, b: Place, t: f32) -> Place {
     (interpolate(a.0, b.0, t), quat_nlerp(a.1, b.1, t))
-}
-
-fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    std::array::from_fn(|k| a[k] - b[k])
 }
 
 #[cfg(test)]

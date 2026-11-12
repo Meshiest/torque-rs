@@ -426,11 +426,7 @@ pub fn parse_tangent(text: &str) -> Tangent {
         .filter_map(|w| w.parse().ok())
         .collect();
     match words[..] {
-        [x, y, z]
-            if [x, y, z].iter().all(|v| v.is_finite()) && (x != 0.0 || y != 0.0 || z != 0.0) =>
-        {
-            Tangent::Fixed([x, y, z])
-        }
+        [x, y, z] => Tangent::fixed([x, y, z]).unwrap_or(Tangent::Auto),
         _ => Tangent::Auto,
     }
 }

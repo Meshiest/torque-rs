@@ -1149,37 +1149,14 @@ fn d(x: f32) -> f64 {
     f64::from(x)
 }
 
-/// `Point3F::len`: `mSqrt(f32((x*x + y*y) + z*z))`.
-fn len3(v: F3) -> f32 {
+/// `Point3F::len` as TGE computes it: `mSqrt(f32((x*x + y*y) + z*z))`, the squares summed in double precision and rounded
+/// once, so not the bits of the `f32` [`torque_scene::math::vec3::length`].
+fn tge_len3(v: F3) -> f32 {
     collide::math::sqrt_f32(((d(v[0]) * d(v[0]) + d(v[1]) * d(v[1])) + d(v[2]) * d(v[2])) as f32)
 }
 
-/// The threshold (1e-5, a double): below it `1 - cos` takes the linear blend.
-const SLERP_LINEAR: f64 = 1.0e-5;
-
 /// `QuatF::interpolate(q1, q2, t)`: the slerp in double precision, each component stored as a float.
-pub fn quat_slerp(q1: [f32; 4], q2: [f32; 4], t: f32) -> [f32; 4] {
-    let mut cos =
-        ((d(q1[1]) * d(q2[1]) + d(q1[0]) * d(q2[0])) + d(q1[2]) * d(q2[2])) + d(q1[3]) * d(q2[3]);
-    let sign = if 0.0 > cos {
-        cos = -cos;
-        -1.0f64
-    } else {
-        1.0
-    };
-    let td = d(t);
-    let (s1, s2) = if 1.0 - cos <= SLERP_LINEAR {
-        (1.0 - td, sign * td)
-    } else {
-        let omega = collide::math::transcendental::acos(cos);
-        let sin_omega = collide::math::transcendental::sin(omega);
-        (
-            collide::math::transcendental::sin(omega * (1.0 - td)) / sin_omega,
-            collide::math::transcendental::sin(omega * td) * sign / sin_omega,
-        )
-    };
-    std::array::from_fn(|i| (d(q1[i]) * s1 + d(q2[i]) * s2) as f32)
-}
+pub use torque_scene::math::quat::interpolate as quat_slerp;
 
 /// Whether every value the server sent is finite.
 pub fn finite_state(values: &[&[f32]]) -> bool {
@@ -1300,8 +1277,8 @@ impl GhostVehicle {
                 let dt = w.dt;
                 let cp: F3 = std::array::from_fn(|i| s.delta_pos[i] + s.delta_pos_vec[i] * dt);
                 let v = s.rigid.lin_vel;
-                let speed = len3(v);
-                let turning = len3(s.rigid.ang_vel);
+                let speed = tge_len3(v);
+                let turning = tge_len3(s.rigid.ang_vel);
                 let measured = (speed.is_finite() && turning.is_finite() && speed > AGE_MIN_SPEED)
                     .then(|| (0..3).map(|i| (cp[i] - pos[i]) * v[i]).sum::<f32>() / speed)
                     .map(|ahead| ahead / speed)
@@ -1438,7 +1415,7 @@ impl GhostVehicle {
                 // `GHOST_SNAP`, none.
                 w.offset = std::array::from_fn(|i| from_pos[i] + vel[i] * TICK_S - led[i]);
                 w.turn = quat_mul(&quat_inverse(&before), &from_rot);
-                let far = len3(w.offset);
+                let far = tge_len3(w.offset);
                 if far.is_nan() || far > GHOST_SNAP {
                     w.offset = [0.0; 3];
                     w.turn = NO_TURN;
@@ -1473,7 +1450,7 @@ impl GhostVehicle {
         // The prediction's last tick: the state stays where it is from here on, so a vehicle drawn within `GHOST_REST_SNAP`
         // of it (one at rest, led by its creep) is drawn there, with no offset left.
         let off: F3 = std::array::from_fn(|i| s.delta_pos[i] - p[i]);
-        if w.prediction < 1 && len3(off) < GHOST_REST_SNAP {
+        if w.prediction < 1 && tge_len3(off) < GHOST_REST_SNAP {
             w.offset = [0.0; 3];
             w.turn = NO_TURN;
             s.delta_pos = p;

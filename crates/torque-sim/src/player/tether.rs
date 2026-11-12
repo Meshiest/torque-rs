@@ -8,6 +8,7 @@
 //! default) runs Torque's step unchanged.
 
 use torque_collide::math::F3;
+use torque_collide::math::vec3::dot;
 
 use super::PlayerState;
 
@@ -53,10 +54,6 @@ impl Tether {
     pub fn is_soft(&self) -> bool {
         self.stiffness > 0.0
     }
-}
-
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 /// Applies `tether` to the Player's velocity for a step of `dt` seconds; the change of velocity it made (the host gives the

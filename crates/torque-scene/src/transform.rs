@@ -4,13 +4,7 @@
 //! versions, in the order TGE's `math/mMath_C.cc` and `math/mMatrix.h` write them (Torque3D's `math/mMath_C.cpp` and
 //! `math/mMatrix.h`, `Copyright (c) 2012 GarageGames, LLC`).
 
-/// A transform as `MatrixF` keeps it: `m[4 * row + column]`, translation in the last column.
-pub type Matrix = [f32; 16];
-
-/// The identity.
-pub const IDENTITY: Matrix = [
-    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-];
+pub use crate::math::matrix::{IDENTITY, Matrix};
 
 /// TGE's `m_matF_x_box3F_C`: the axis-aligned box of the box `min`, `max` moved by `m` (its rotation part and its translation).
 pub fn mul_box(m: &Matrix, min: [f32; 3], max: [f32; 3]) -> ([f32; 3], [f32; 3]) {
@@ -71,26 +65,7 @@ pub fn clamp_scale(scale: [f32; 3]) -> [f32; 3] {
 pub mod plain {
     use super::Matrix;
 
-    /// `m_matF_x_box3F_C`: for each axis, the products of a row's elements with the box's min and max, the smaller added to the
-    /// result's min and the larger to its max (a NaN product counts as not smaller), starting from the translation.
-    pub fn mul_box(m: &Matrix, min: [f32; 3], max: [f32; 3]) -> ([f32; 3], [f32; 3]) {
-        let mut low = [m[3], m[7], m[11]];
-        let mut high = low;
-        for axis in 0..3 {
-            for input in 0..3 {
-                let a = m[4 * axis + input] * min[input];
-                let b = m[4 * axis + input] * max[input];
-                if a < b {
-                    low[axis] += a;
-                    high[axis] += b;
-                } else {
-                    low[axis] += b;
-                    high[axis] += a;
-                }
-            }
-        }
-        (low, high)
-    }
+    pub use crate::math::matrix::mul_box;
 
     /// `Box3F::getCenter`: `(min + max) * 0.5` per axis.
     pub fn box_center(min: [f32; 3], max: [f32; 3]) -> [f32; 3] {
@@ -104,21 +79,7 @@ pub mod plain {
         (center, (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt())
     }
 
-    /// `m_matF_affineInverse_C`.
-    pub fn affine_inverse(m: &Matrix) -> Matrix {
-        let t = *m;
-        let mut out = *m;
-        out[1] = t[4];
-        out[4] = t[1];
-        out[2] = t[8];
-        out[8] = t[2];
-        out[6] = t[9];
-        out[9] = t[6];
-        out[3] = -(t[0] * t[3] + t[4] * t[7] + t[8] * t[11]);
-        out[7] = -(t[1] * t[3] + t[5] * t[7] + t[9] * t[11]);
-        out[11] = -(t[2] * t[3] + t[6] * t[7] + t[10] * t[11]);
-        out
-    }
+    pub use crate::math::matrix::affine_inverse;
 
     /// `MatrixF::mulP` then `Point3F::convolveInverse`: `(m[4i] x + m[4i+1] y + m[4i+2] z + m[4i+3]) / scale[i]`.
     pub fn to_object_space(w2o: &Matrix, scale: [f32; 3], p: [f32; 3]) -> [f32; 3] {
@@ -129,9 +90,7 @@ pub mod plain {
     }
 
     /// `MatrixF::mulV`.
-    pub fn rotate(m: &Matrix, v: [f32; 3]) -> [f32; 3] {
-        [0, 1, 2].map(|r| m[4 * r] * v[0] + m[4 * r + 1] * v[1] + m[4 * r + 2] * v[2])
-    }
+    pub use crate::math::matrix::mul_v as rotate;
 
     /// The scale as given (TGE's `setScale` keeps it).
     pub fn keep_scale(scale: [f32; 3]) -> [f32; 3] {

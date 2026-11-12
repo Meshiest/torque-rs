@@ -22,11 +22,7 @@ pub const MASK_FLAGS: u32 = 1 << 3;
 
 /// A value from the wire held to `-max..=max`, a non-finite one to 0.
 fn held(v: f32, max: f32) -> f32 {
-    if v.is_finite() {
-        v.clamp(-max, max)
-    } else {
-        0.0
-    }
+    torque_collide::math::finite_clamp(v, -max, max).unwrap_or(0.0)
 }
 
 /// One end as a client is sent it.

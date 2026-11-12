@@ -1,17 +1,15 @@
 //! The checks every value passes before Rapier sees it: finite, held to a magnitude, a rotation normalized.
 //!
 //! Each returns `None` for a value that is not finite (or a rotation too near zero to normalize); callers refuse those with
-//! [`crate::Error::NonFinite`] rather than guessing a value.
+//! [`crate::Error::NonFinite`] rather than guessing a value. The plain guards are [`torque_collide::math`]'s (the scene crate's).
 
 /// Whether every component is finite.
 pub fn finite<const N: usize>(v: &[f32; N]) -> bool {
-    v.iter().all(|x| x.is_finite())
+    torque_collide::math::all_finite(v)
 }
 
 /// `v` with each component held to `-max..=max`; `None` when one is not finite.
-pub fn coords(v: [f32; 3], max: f32) -> Option<[f32; 3]> {
-    finite(&v).then(|| v.map(|x| x.clamp(-max, max)))
-}
+pub use torque_collide::math::finite_coords as coords;
 
 /// `v` scaled down to a length of at most `max`; `None` when a component is not finite. The length is taken in `f64`, so a
 /// vector of huge finite components does not overflow on the way.
@@ -50,9 +48,7 @@ pub fn rotation(q: [f32; 4]) -> Option<[f32; 4]> {
 }
 
 /// A scalar held to `lo..=hi`; `None` when it is not finite.
-pub fn scalar(v: f32, lo: f32, hi: f32) -> Option<f32> {
-    v.is_finite().then(|| v.clamp(lo, hi))
-}
+pub use torque_collide::math::finite_clamp as scalar;
 
 #[cfg(test)]
 mod tests {

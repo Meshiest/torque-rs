@@ -21,7 +21,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use glam::Vec3;
-use torque_collide::math::transcendental;
+use torque_collide::math::{all_finite, finite_clamp, transcendental};
 use torque_ts_vm::sim::ObjId;
 
 use crate::data::{MAX_LENGTH, RopeLook, RopeParams, RopeStyle};
@@ -162,11 +162,7 @@ impl std::error::Error for RopeError {}
 
 /// `c` as a coordinate the simulation can hold: a number that is not finite becomes 0, the rest is kept within [`MAX_COORD`].
 pub(crate) fn coord(c: f32) -> f32 {
-    if c.is_finite() {
-        c.clamp(-MAX_COORD, MAX_COORD)
-    } else {
-        0.0
-    }
+    finite_clamp(c, -MAX_COORD, MAX_COORD).unwrap_or(0.0)
 }
 
 /// The transform that moves the origin to `at` and turns nothing (a row-major 4 by 4 matrix).
@@ -223,22 +219,22 @@ pub const MAX_SCROLL: f32 = 1000.0;
 /// A texture's speed as a rope keeps it: held to [`MAX_SCROLL`] either way, 0 for a number that is not one. Every way a speed gets
 /// to a rope (a script's call, a server's ghost) goes through it.
 pub fn clean_scroll(speed: f32) -> f32 {
-    if speed.is_finite() {
-        speed.clamp(-MAX_SCROLL, MAX_SCROLL)
-    } else {
-        0.0
-    }
+    finite_clamp(speed, -MAX_SCROLL, MAX_SCROLL).unwrap_or(0.0)
 }
 
 impl Tangent {
-    /// The tangent as a rope keeps it: a fixed direction must be three finite numbers, not all 0 (held to [`MAX_COORD`]), else the
+    /// A fixed direction along `d`, as given, when it is three finite numbers not all 0; `None` for any other.
+    pub fn fixed(d: [f32; 3]) -> Option<Tangent> {
+        (all_finite(&d) && d.iter().any(|c| *c != 0.0)).then_some(Tangent::Fixed(d))
+    }
+
+    /// The tangent as a rope keeps it: a fixed direction must be [`Tangent::fixed`]'s (and is held to [`MAX_COORD`]), else the
     /// end leaves toward the other end.
     pub fn sanitized(self) -> Tangent {
         match self {
-            Tangent::Fixed(d) if d.iter().all(|c| c.is_finite()) && d.iter().any(|c| *c != 0.0) => {
-                Tangent::Fixed(d.map(|c| c.clamp(-MAX_COORD, MAX_COORD)))
+            Tangent::Fixed(d) => {
+                Tangent::fixed(d).map_or(Tangent::Auto, |_| Tangent::Fixed(d.map(coord)))
             }
-            Tangent::Fixed(_) => Tangent::Auto,
             other => other,
         }
     }

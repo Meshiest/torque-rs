@@ -233,11 +233,7 @@ fn choice(value: i32, by_default: bool) -> bool {
 
 /// `value` inside `low..=high`; `fallback` if it is not a finite number.
 fn clean(value: f32, low: f32, high: f32, fallback: f32) -> f32 {
-    if value.is_finite() {
-        value.clamp(low, high)
-    } else {
-        fallback
-    }
+    torque_collide::math::finite_clamp(value, low, high).unwrap_or(fallback)
 }
 
 impl RopeParams {

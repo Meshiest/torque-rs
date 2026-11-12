@@ -9,6 +9,7 @@
 
 use crate::convex::{Convex, World};
 use crate::library;
+use crate::math::vec3::sub;
 use crate::math::{F3, Matrix, dot, inverse, mul_p, mul_v};
 use crate::work;
 
@@ -44,11 +45,6 @@ pub struct GjkState {
 /// `VectorF::len` as `distance` and `reset` take it: `mSqrt` of the vector's dot with itself.
 fn length(v: F3) -> f32 {
     dot(v, v).sqrt()
-}
-
-/// `a - b` per component.
-fn sub(a: F3, b: F3) -> F3 {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 /// `compute_det` as `gjk.cpp` writes it: the new point's dot products with the simplex, then the sub-determinants.

@@ -16,6 +16,7 @@
 //! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
 
 use torque_collide::Exhausted;
+use torque_collide::math::vec3::{add, cross, dot, length, scale, sub};
 use torque_collide::math::{F3, matrix_product, set_euler};
 
 use super::data::PlayerData;
@@ -38,11 +39,6 @@ const REST_CLEAR: f32 = 0.0001;
 const UNDERWATER: f64 = 0.9;
 /// The contacts a Player may miss and still jump (`JumpSkipContactsMax`).
 pub const JUMP_SKIP_CONTACTS_MAX: u32 = 8;
-
-/// A vector's length (`Point3F::len`).
-pub(super) fn len3(v: F3) -> f32 {
-    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
-}
 
 /// `v` held to `[lo, hi]` (`mClampF`: the high bound first, then the low one, which also takes a NaN).
 fn held(v: f32, lo: f32, hi: f32) -> f32 {
@@ -86,33 +82,6 @@ fn into_one_turn(mut yaw: f32) -> f32 {
         yaw -= TURN;
     }
     yaw
-}
-
-/// Vector sum, difference and scaling.
-fn add(a: F3, b: F3) -> F3 {
-    std::array::from_fn(|i| a[i] + b[i])
-}
-
-fn sub(a: F3, b: F3) -> F3 {
-    std::array::from_fn(|i| a[i] - b[i])
-}
-
-fn scale(a: F3, k: f32) -> F3 {
-    std::array::from_fn(|i| a[i] * k)
-}
-
-/// The dot product (`mDot`).
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-/// The cross product `a x b` (`mCross`).
-fn cross(a: F3, b: F3) -> F3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
 }
 
 /// `v` shortened to `max` when it is longer (`len` its length).
@@ -282,7 +251,7 @@ pub(super) fn move_speed(s: &PlayerState, db: &PlayerData, mv: &Move) -> f32 {
 /// The wish turned parallel to a surface with normal `n`: the normal's part along the horizontal across the wish is taken
 /// out, and the wish loses its part along what is left. A zero wish stays zero.
 fn along_surface(wish: F3, n: F3) -> F3 {
-    let len = len3(wish);
+    let len = length(wish);
     if len == 0.0 {
         return wish;
     }
@@ -307,7 +276,7 @@ pub(super) fn run_surface(
     let into = -dot(*acc, n);
     if into > 0.0 {
         *acc = add(*acc, scale(n, into + REST_PUSH));
-        if len3(*acc) < REST_CLEAR {
+        if length(*acc) < REST_CLEAR {
             *acc = [0.0; 3];
         }
     }
@@ -318,7 +287,7 @@ pub(super) fn run_surface(
         }
         target = along_surface(*wish, n);
     }
-    let len = len3(target);
+    let len = length(target);
     if len != 0.0 {
         target = scale(target, cap / len);
     }
@@ -327,7 +296,7 @@ pub(super) fn run_surface(
     if s.action_state == 2 {
         most *= db.recover_run_force_scale;
     }
-    *acc = add(*acc, at_most(push, len3(push), most));
+    *acc = add(*acc, at_most(push, length(push), most));
     if s.action_anim == db.actions.jump || s.action_anim == db.actions.stand_jump {
         s.action_anim = db.actions.none;
     }
@@ -374,7 +343,7 @@ pub fn swim(s: &mut PlayerState, db: &PlayerData, mv: &Move, acc: &mut F3) {
     } else {
         wish = [0.0; 3];
     }
-    let len = len3(wish);
+    let len = length(wish);
     let target = if len != 0.0 {
         scale(wish, cap / len)
     } else {
@@ -384,7 +353,7 @@ pub fn swim(s: &mut PlayerState, db: &PlayerData, mv: &Move, acc: &mut F3) {
     let mut push = sub(target, s.velocity);
     push[2] *= if len != 0.0 { wish[2].abs() / len } else { 0.0 };
     let most = (db.poses.swim_force / s.mass) * DT;
-    *acc = add(*acc, at_most(push, len3(push), most));
+    *acc = add(*acc, at_most(push, length(push), most));
 }
 
 /// The speed resistance: above `resist` a speed (no more than `max`) loses `factor * dt` of what it has over `resist`.
@@ -480,7 +449,7 @@ fn jump_step(
             1.0 - (vz - db.min_jump_speed) / (db.max_jump_speed - db.min_jump_speed)
         };
         let mut pv = *w;
-        let len = len3(pv);
+        let len = length(pv);
         if len > 0.0 {
             pv = scale(pv, 1.0 / len);
         }
@@ -496,7 +465,7 @@ fn jump_step(
         acc[2] += n[2] * scale_z * impulse * z_speed_scale;
         s.jump_delay = db.jump_delay;
         s.energy -= db.jump_energy_drain;
-        let anim = if len3(s.velocity) < 0.5 {
+        let anim = if length(s.velocity) < 0.5 {
             db.actions.stand_jump
         } else {
             db.actions.jump

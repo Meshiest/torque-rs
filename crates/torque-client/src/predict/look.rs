@@ -25,7 +25,7 @@
 
 use std::collections::BTreeMap;
 
-use collide::math::{mul_p, quat_matrix};
+use collide::math::{all_finite, mul_p, quat_matrix};
 use ghost_world::world::{LOOK_WHEELS, Pose, VehicleLook, WheelLook};
 use ghosts::Value;
 use glam::Vec3;
@@ -396,10 +396,6 @@ pub struct FlyingWarps {
     pub seq: u64,
 }
 
-fn finite(v: &[f32]) -> bool {
-    v.iter().all(|x| x.is_finite())
-}
-
 impl FlyingWarps {
     /// The updates since the last call taken at `now_ms` (each warps from the pose drawn then), the ghosts gone forgotten.
     pub fn update<W: PredictWorld>(&mut self, world: &W, now_ms: u32) {
@@ -418,7 +414,7 @@ impl FlyingWarps {
                 continue;
             };
             let rotation = pose.rotation;
-            if !finite(&position) || !finite(&rotation) {
+            if !all_finite(&position) || !all_finite(&rotation) {
                 continue;
             }
             let mass = world
@@ -431,7 +427,7 @@ impl FlyingWarps {
                 })
                 .unwrap_or(1.0);
             let velocity = pose.linear.map(|x| x / mass);
-            let velocity = if finite(&velocity) {
+            let velocity = if all_finite(&velocity) {
                 velocity
             } else {
                 [0.0; 3]

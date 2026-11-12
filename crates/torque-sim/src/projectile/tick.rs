@@ -4,6 +4,7 @@
 //! Credit: where Torque3D has the same rules, this module follows its MIT-licensed `T3D/projectile.cpp` (Copyright (c) 2012
 //! GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.); the code here is this crate's own.
 
+use torque_collide::math::vec3::{add_scaled, dot};
 use torque_collide::math::{F3, IDENTITY, Matrix};
 
 use super::{
@@ -24,16 +25,6 @@ fn identity_at(p: F3) -> Matrix {
     m[7] = p[1];
     m[11] = p[2];
     m
-}
-
-/// `a + b * k`.
-fn add_scaled(a: F3, b: F3, k: f32) -> F3 {
-    std::array::from_fn(|i| a[i] + b[i] * k)
-}
-
-/// `mDot(a, b)`.
-fn dot(a: F3, b: F3) -> f32 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
 impl Projectile {

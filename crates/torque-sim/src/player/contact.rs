@@ -10,8 +10,8 @@ use torque_collide::{Exhausted, ObjectId, types, work};
 use super::data::PlayerData;
 use super::ext::{PlayerClass, TorquePlayer};
 use super::host::PlayerHost;
-use super::update_move::len3;
 use super::{DT, MAX_CONTACT_TOUCHES, Player, shape_base};
+use torque_collide::math::vec3::length;
 
 /// How far below the feet a surface still counts as a contact (`sTractionDistance`).
 pub const TRACTION_DISTANCE: f32 = 0.03;
@@ -158,7 +158,7 @@ pub fn update_working_collision_set(
     let class: &dyn PlayerClass = class.as_deref().unwrap_or(&TorquePlayer);
     let s = &mut *p.s;
     let v = s.velocity;
-    let len = len3([v[0] * DT, v[1] * DT, v[2] * DT]);
+    let len = length([v[0] * DT, v[1] * DT, v[2] * DT]);
     let new_len = len + 10.0 * DT;
     let mut convex_box = mul_box(&s.obj_to_world, &class.working_box(s));
     let l = new_len * 1.1 + 0.1;
