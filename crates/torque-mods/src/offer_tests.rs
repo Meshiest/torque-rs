@@ -1,4 +1,5 @@
 use super::*;
+use torque_testkit::Rng;
 
 fn caps() -> OfferCaps {
     OfferCaps {
@@ -317,22 +318,9 @@ fn data_reads_back_as_the_request_it_answers() {
     assert!(is_offer(&encode_offer(&[])));
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
 #[test]
 fn hostile_offers_and_data_never_panic() {
-    let mut rng = Rng(0x51de_b10c_5eed_0001);
+    let mut rng = Rng::new(0x51de_b10c_5eed_0001);
     let good = encode_offer(&[
         offer(true),
         ModOffer {
@@ -355,22 +343,25 @@ fn hostile_offers_and_data_never_panic() {
         } else {
             good.clone()
         };
-        match rng.next() % 4 {
+        match rng.next_u64() % 4 {
             0 => {
-                for _ in 0..1 + rng.next() % 5 {
-                    let at = (rng.next() as usize) % bytes.len();
-                    bytes[at] = rng.next() as u8;
+                for _ in 0..1 + rng.next_u64() % 5 {
+                    let at = (rng.next_u64() as usize) % bytes.len();
+                    bytes[at] = rng.next_u64() as u8;
                 }
             }
-            1 => bytes.truncate((rng.next() as usize) % (bytes.len() + 1)),
+            1 => bytes.truncate((rng.next_u64() as usize) % (bytes.len() + 1)),
             2 => {
-                bytes = (0..(rng.next() % 500) as usize)
-                    .map(|_| rng.next() as u8)
+                bytes = (0..(rng.next_u64() % 500) as usize)
+                    .map(|_| rng.next_u64() as u8)
                     .collect()
             }
             _ => {
-                let at = (rng.next() as usize) % bytes.len();
-                bytes.splice(at..at, (0..rng.next() % 40).map(|_| rng.next() as u8));
+                let at = (rng.next_u64() as usize) % bytes.len();
+                bytes.splice(
+                    at..at,
+                    (0..rng.next_u64() % 40).map(|_| rng.next_u64() as u8),
+                );
             }
         }
         let _ = decode_offer(&bytes, &caps());

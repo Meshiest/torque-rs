@@ -6,6 +6,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::rc::Rc;
+use torque_testkit::Rng;
 
 use torque::app::client::{ClientBuilder, ClientNet, GameClient};
 use torque::app::config::{EngineConfig, GameConfig};
@@ -38,26 +39,6 @@ fn pattern(len: usize, seed: u8) -> Vec<u8> {
 
 fn big() -> Vec<u8> {
     pattern(BIG_BYTES, 7)
-}
-
-/// `xorshift64*`: the seeded choices of a run.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
-    }
-
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    fn percent(&mut self) -> u64 {
-        self.next() % 100
-    }
 }
 
 /// The game's files: the example with the server counting `onConnect` and the client keeping what it hears.
@@ -182,7 +163,7 @@ impl Link {
             server,
             server_files: mem,
             peers: Vec::new(),
-            rng: Rng::new(loss + 1),
+            rng: Rng::star(loss + 1),
             loss,
             ticks: 0,
             protocol,
@@ -216,7 +197,7 @@ impl Link {
     }
 
     fn dropped(&mut self) -> bool {
-        self.loss > 0 && self.rng.percent() < self.loss
+        self.loss > 0 && self.rng.below(100) < self.loss
     }
 
     /// Carries the datagrams each way, dropping the share the loss says.

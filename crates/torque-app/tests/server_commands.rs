@@ -3,6 +3,7 @@
 //! are counted for script, and commands no plugin declared run as TGE's do. No clock is read.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use torque_testkit::{Rng, fuzz};
 
 use torque_app::GameFiles;
 use torque_app::client::{ClientBuilder, ClientNet, GameClient};
@@ -402,12 +403,8 @@ impl Rig {
 /// connection it drops for a bad packet is joined again. `TORQUE_FUZZ_SERVER` sets the ticks (default 600).
 #[test]
 fn hostile_packets_of_an_established_connection_never_panic_the_server() {
-    use torque_net::testrng::TestRng;
-    let ticks: usize = std::env::var("TORQUE_FUZZ_SERVER")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(600);
-    let mut rng = TestRng::new(0x5eed_0f5e_7e47);
+    let ticks = fuzz::rounds("TORQUE_FUZZ_SERVER", 600) as usize;
+    let mut rng = Rng::new(0x5eed_0f5e_7e47);
     let names = [
         "Legacy",
         "Say",

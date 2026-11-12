@@ -1,39 +1,26 @@
 use super::*;
 use crate::events::free_charge;
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-}
+use torque_testkit::Rng;
 
 fn mv(seed: u64) -> Move {
-    let mut rng = Rng(seed | 1);
+    let mut rng = Rng::star(seed | 1);
     let mut angles = [0u32; 3];
     for a in &mut angles {
-        *a = if rng.below(2) == 0 {
+        *a = if rng.index(2) == 0 {
             0
         } else {
-            rng.below(0x1_0000) as u32
+            rng.index(0x1_0000) as u32
         };
     }
     Move::from_raw(
         [
-            rng.below(33) as u32,
-            rng.below(33) as u32,
-            rng.below(33) as u32,
+            rng.index(33) as u32,
+            rng.index(33) as u32,
+            rng.index(33) as u32,
         ],
         angles,
-        rng.below(2) == 1,
-        std::array::from_fn(|_| rng.below(2) == 1),
+        rng.index(2) == 1,
+        std::array::from_fn(|_| rng.index(2) == 1),
     )
 }
 
@@ -104,10 +91,10 @@ fn axes_are_clamped_to_32_on_unpack_and_convert_to_sixteenths() {
 
 #[test]
 fn a_move_round_trips_in_28_to_76_bits() {
-    let mut rng = Rng(7);
+    let mut rng = Rng::star(7);
     let mut sizes = std::collections::BTreeSet::new();
     for i in 0..2000 {
-        let m = mv(rng.next() ^ i);
+        let m = mv(rng.next_u64() ^ i);
         let mut w = BitWriter::new();
         m.pack(&mut w);
         assert!((MOVE_MIN_BITS..=MOVE_MAX_BITS).contains(&w.bits()));
@@ -333,7 +320,7 @@ fn the_client_queue_writes_at_most_30_and_holds_at_most_the_bound() {
 /// on all four of its sends is skipped for good (the next block starts ahead of the ack and the server's `lastMoveAck` jumps).
 #[test]
 fn a_lossy_link_never_repeats_or_reorders_a_move() {
-    let mut rng = Rng(99);
+    let mut rng = Rng::star(99);
     let mut q = MoveQueue::new();
     let mut l = MoveList::new();
     let mut processed: Vec<u32> = Vec::new();
@@ -343,7 +330,7 @@ fn a_lossy_link_never_repeats_or_reorders_a_move() {
         m.id = tick as u32;
         q.push(m);
         let b = q.block();
-        if rng.below(3) != 0 {
+        if rng.index(3) != 0 {
             let (bytes, bits) = block_bytes(&b);
             let mut r = BitReader::with_bit_len(&bytes, bits);
             l.read_block(&mut r, &mut free_charge()).unwrap();
@@ -353,7 +340,7 @@ fn a_lossy_link_never_repeats_or_reorders_a_move() {
             processed.extend(taken.iter().map(|m| m.id));
             l.clear_moves(n);
             // The ack comes back (and may itself be lost).
-            if rng.below(3) != 0 {
+            if rng.index(3) != 0 {
                 q.on_server_ack(l.ack());
             }
         }
@@ -365,16 +352,16 @@ fn a_lossy_link_never_repeats_or_reorders_a_move() {
 
 #[test]
 fn hostile_blocks_never_panic() {
-    let mut rng = Rng(0xfeed_beef);
+    let mut rng = Rng::star(0xfeed_beef);
     let mut l = MoveList::new();
     for _ in 0..5000 {
-        let len = rng.below(300);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        let len = rng.index(300);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
         let mut r = BitReader::new(&bytes);
         let _ = l.read_block(&mut r, &mut free_charge());
-        let mut credit = rng.below(40) as u32;
+        let mut credit = rng.index(40) as u32;
         let _ = l.take_for_tick(&mut credit);
-        l.clear_moves(rng.below(40));
+        l.clear_moves(rng.index(40));
         assert!(l.len() <= NET_MOVE_LIST);
     }
 }

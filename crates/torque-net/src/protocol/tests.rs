@@ -1,19 +1,5 @@
 use super::*;
-
-/// A tiny deterministic generator for the loss patterns.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: u32) -> u32 {
-        ((self.next() >> 32) as u32) % n.max(1)
-    }
-}
+use torque_testkit::Rng;
 
 /// A host's own fast rates, past the preferences' clamps (a host sets the fields as it likes): the server 32 packets a second
 /// both ways, the client 128, both at the 10-bit field's 1,023 bytes.
@@ -401,7 +387,7 @@ fn a_hostile_ack_never_pops_an_empty_notify_queue() {
 #[test]
 fn the_sequence_wraps_over_thousands_of_lossy_packets_with_every_fate_reported_once_in_order() {
     let (mut a, mut b) = pair();
-    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut rng = Rng::star(0x1234_5678_9abc_def1);
     // Seqs of a's data packets b took, and the notifies a heard.
     let mut b_got: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut a_notified: Vec<Notify> = Vec::new();

@@ -28,6 +28,8 @@ torque-server = { path = "../torque-server" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 
 [dev-dependencies]
+# The seeded random source of the network fuzz test.
+torque-testkit = { path = "../torque-testkit" }
 # The tests' server, stepped by hand.
 torque-app-server = { path = "../torque-app-server" }
 # The floor, the figure and the cube of the tests' world.

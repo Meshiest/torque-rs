@@ -1,30 +1,21 @@
 use super::*;
 use crate::events::free_charge;
 use crate::moves::Move;
+use torque_testkit::Rng;
 
 const GB: u8 = 18;
 
-struct Rng(u64);
+/// A float of the wire's grid, from the generator's top bits.
+fn float(rng: &mut Rng) -> f32 {
+    ((rng.next_u64() >> 40) as f32 - 8_388_608.0) / 64.0
+}
 
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn f(&mut self) -> f32 {
-        ((self.next() >> 40) as f32 - 8_388_608.0) / 64.0
-    }
-    fn p3(&mut self) -> [f32; 3] {
-        [self.f(), self.f(), self.f()]
-    }
-    fn ghost(&mut self) -> u32 {
-        (self.next() >> 20) as u32 & ((1 << GB) - 1)
-    }
+fn p3(rng: &mut Rng) -> [f32; 3] {
+    [float(rng), float(rng), float(rng)]
+}
+
+fn ghost(rng: &mut Rng) -> u32 {
+    (rng.next_u64() >> 20) as u32 & ((1 << GB) - 1)
 }
 
 /// CRC-32 by the bit-at-a-time definition: the reflected polynomial 0xEDB88320, init 0xFFFFFFFF, no final xor. Independent of the
@@ -106,7 +97,7 @@ fn the_checksum_follows_every_field_and_covers_the_whole_packet_data() {
     tweak(&|d| d.yaw = 0.5);
     tweak(&|d| d.mode = CameraMode::Stationary);
     // And the checksum is a function of the bytes only.
-    let mut rng = Rng(u64::from(base) + 1);
+    let mut rng = Rng::star(u64::from(base) + 1);
     for _ in 0..200 {
         let d = random_data(&mut rng);
         let (bytes, bits) = bytes_of(&d);
@@ -115,36 +106,36 @@ fn the_checksum_follows_every_field_and_covers_the_whole_packet_data() {
 }
 
 fn random_mode(rng: &mut Rng) -> CameraMode {
-    match rng.below(5) {
+    match rng.index(5) {
         0 => CameraMode::Stationary,
         1 => CameraMode::FreeRotate,
         2 => CameraMode::Fly,
         3 => CameraMode::Orbit {
-            distances: rng.p3(),
-            flag: rng.below(2) == 1,
-            target: rng.ghost(),
+            distances: p3(rng),
+            flag: rng.index(2) == 1,
+            target: ghost(rng),
         },
         _ => CameraMode::OrbitPoint {
-            distances: rng.p3(),
-            point: rng.p3(),
+            distances: p3(rng),
+            point: p3(rng),
         },
     }
 }
 
 fn random_data(rng: &mut Rng) -> CameraPacketData {
     CameraPacketData {
-        energy: rng.f(),
-        recharge: rng.f(),
-        position: rng.p3(),
-        pitch: rng.f(),
-        yaw: rng.f(),
+        energy: float(rng),
+        recharge: float(rng),
+        position: p3(rng),
+        pitch: float(rng),
+        yaw: float(rng),
         mode: random_mode(rng),
     }
 }
 
 #[test]
 fn camera_packet_data_round_trips_in_every_mode() {
-    let mut rng = Rng(0xabcdef);
+    let mut rng = Rng::star(0xabcdef);
     for _ in 0..3000 {
         let d = random_data(&mut rng);
         let (bytes, bits) = bytes_of(&d);
@@ -360,43 +351,45 @@ fn a_format_without_the_camera_data_and_the_first_person_pair_round_trips() {
 
 #[test]
 fn a_server_head_round_trips_and_sets_the_readers_compression_point() {
-    let mut rng = Rng(77);
+    let mut rng = Rng::star(77);
     for _ in 0..2000 {
-        let control = match rng.below(3) {
+        let control = match rng.index(3) {
             0 => ControlSection::None,
-            1 => ControlSection::Matching { position: rng.p3() },
+            1 => ControlSection::Matching {
+                position: p3(&mut rng),
+            },
             _ => ControlSection::Resend {
-                index: rng.ghost(),
+                index: ghost(&mut rng),
                 data: CameraPacketData {
-                    mode: if rng.below(2) == 0 {
+                    mode: if rng.index(2) == 0 {
                         CameraMode::Fly
                     } else {
                         CameraMode::Orbit {
-                            distances: rng.p3(),
+                            distances: p3(&mut rng),
                             flag: true,
-                            target: rng.ghost(),
+                            target: ghost(&mut rng),
                         }
                     },
                     ..random_data(&mut rng)
                 },
             },
         };
-        let camera_object = (rng.below(4) == 0).then(|| rng.ghost());
+        let camera_object = (rng.index(4) == 0).then(|| ghost(&mut rng));
         let camera_data = camera_object.map(|_| CameraPacketData {
             mode: CameraMode::Stationary,
             ..random_data(&mut rng)
         });
         let h = ServerHead {
-            move_ack: rng.next() as u32,
+            move_ack: rng.next_u64() as u32,
             damage: Damage {
-                flash: (rng.below(2) == 1).then(|| rng.below(128) as u8),
-                white_out: (rng.below(2) == 1).then(|| rng.below(128) as u8),
+                flash: (rng.index(2) == 1).then(|| rng.index(128) as u8),
+                white_out: (rng.index(2) == 1).then(|| rng.index(128) as u8),
             },
             control,
             camera_object,
             camera_data,
-            first_person: (rng.below(2) == 1).then(|| rng.below(2) == 1),
-            fov: (rng.below(2) == 1).then(|| rng.below(256) as u8),
+            first_person: (rng.index(2) == 1).then(|| rng.index(2) == 1),
+            fov: (rng.index(2) == 1).then(|| rng.index(256) as u8),
         };
         let mut w = BitWriter::new();
         h.write(&mut w, GB);
@@ -878,31 +871,31 @@ fn the_box_centre_is_the_sum_halved_and_stored_once() {
 
 #[test]
 fn a_client_block_round_trips_and_hostile_bytes_never_panic() {
-    let mut rng = Rng(31337);
+    let mut rng = Rng::star(31337);
     for _ in 0..500 {
-        let n = rng.below(32);
+        let n = rng.index(32);
         let b = ClientBlock {
-            camera_flag: rng.below(2) == 1,
-            checksum: rng.next() as u32,
+            camera_flag: rng.index(2) == 1,
+            checksum: rng.next_u64() as u32,
             moves: MoveBlock {
-                start: rng.next() as u32,
+                start: rng.next_u64() as u32,
                 moves: (0..n)
                     .map(|_| {
                         Move::from_raw(
                             [
-                                rng.below(33) as u32,
-                                rng.below(33) as u32,
-                                rng.below(33) as u32,
+                                rng.index(33) as u32,
+                                rng.index(33) as u32,
+                                rng.index(33) as u32,
                             ],
-                            [rng.below(65536) as u32, 0, rng.below(65536) as u32],
-                            rng.below(2) == 1,
-                            [rng.below(2) == 1; crate::moves::MAX_TRIGGER_KEYS],
+                            [rng.index(65536) as u32, 0, rng.index(65536) as u32],
+                            rng.index(2) == 1,
+                            [rng.index(2) == 1; crate::moves::MAX_TRIGGER_KEYS],
                         )
                     })
                     .collect(),
             },
-            first_person: (rng.below(2) == 1).then(|| rng.below(2) == 1),
-            fov: (rng.below(2) == 1).then(|| rng.below(256) as u8),
+            first_person: (rng.index(2) == 1).then(|| rng.index(2) == 1),
+            fov: (rng.index(2) == 1).then(|| rng.index(256) as u8),
         };
         let mut w = BitWriter::new();
         b.write(&mut w);
@@ -918,8 +911,8 @@ fn a_client_block_round_trips_and_hostile_bytes_never_panic() {
     // Hostile bytes into every reader.
     let mut c = ControlState::new();
     for _ in 0..8000 {
-        let len = rng.below(400);
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        let len = rng.index(400);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
         let _ = ClientBlock::read(&mut BitReader::new(&bytes), &mut free_charge());
         let _ = c.read_client(&mut BitReader::new(&bytes), &mut free_charge());
         let _ = ServerHead::read(&mut BitReader::new(&bytes), GB, &mut free_charge());
@@ -937,9 +930,9 @@ fn a_client_block_round_trips_and_hostile_bytes_never_panic() {
     let base = w.into_bytes();
     for _ in 0..5000 {
         let mut bytes = base.clone();
-        for _ in 0..1 + rng.below(4) {
-            let i = rng.below(bytes.len());
-            bytes[i] ^= 1 << rng.below(8);
+        for _ in 0..1 + rng.index(4) {
+            let i = rng.index(bytes.len());
+            bytes[i] ^= 1 << rng.index(8);
         }
         let mut r = BitReader::with_bit_len(&bytes, bits);
         let _ = ServerHead::read(&mut r, GB, &mut free_charge());

@@ -22,5 +22,9 @@ ghosts = { path = "../torque-ghosts", package = "torque-ghosts" }
 hierarchy = { path = "../torque-hierarchy", package = "torque-hierarchy" }
 collide = { path = "../torque-collide", package = "torque-collide" }
 
+[dev-dependencies]
+# The seeded random source of the hostile-input tests.
+torque-testkit = { path = "../torque-testkit" }
+
 [lints]
 workspace = true

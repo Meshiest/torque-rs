@@ -1,5 +1,6 @@
 use super::*;
 use crate::testids::{table, with_ctx};
+use torque_testkit::Rng;
 
 fn tag(n: u32) -> Vec<u8> {
     format!("Tag{n}").into_bytes()
@@ -104,12 +105,9 @@ fn churn_matches_an_independent_least_recently_used_model() {
     // The model keeps a last-use stamp per slot; the LRU head is the smallest stamp (never-used slots stamp 0 in index order).
     let mut s = SendStrings::new();
     let mut slots: [(Option<u32>, u64); 32] = [(None, 0); 32];
-    let mut x = 0x1234_5678_9abc_def1u64;
+    let mut rng = Rng::new(0x1234_5678_9abc_def1);
     for clock in 1u64..=20_000 {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        let t = (x % 90) as u32 + 1;
+        let t = (rng.next_u64() % 90) as u32 + 1;
         let want = match slots.iter().position(|e| e.0 == Some(t)) {
             Some(i) => i,
             None => (0..32).min_by_key(|&i| (slots[i].1, i)).expect("a slot"),

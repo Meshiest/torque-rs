@@ -3,16 +3,57 @@
 #![allow(dead_code, reason = "each test file uses a different part")]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::time::Duration;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
+use quinn_proto::TimeSource;
 use torque_net_quic::{
-    Dial, FakeClock, Pipe, PipeIo, QuicClient, QuicLimits, QuicServer, ServerKey, SessionKind,
-    Trust, WebTransportSetup,
+    Clock, Dial, Pipe, PipeIo, QuicClient, QuicLimits, QuicServer, ServerKey, SessionKind, Trust,
+    WebTransportSetup,
 };
 use torque_server::net::transport::{Recv, Transport};
 
 pub const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(10, 0, 0, 1), 28_000);
 pub const TICK: Duration = Duration::from_millis(32);
+
+/// The testkit's clock as the endpoints' [`Clock`] and the time source of quinn's tokens. Clones share the time.
+#[derive(Debug, Clone, Default)]
+pub struct FakeClock(torque_testkit::FakeClock);
+
+impl FakeClock {
+    pub fn new() -> FakeClock {
+        FakeClock::default()
+    }
+}
+
+impl Deref for FakeClock {
+    type Target = torque_testkit::FakeClock;
+
+    fn deref(&self) -> &torque_testkit::FakeClock {
+        &self.0
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> Instant {
+        self.0.now()
+    }
+
+    fn wall(&self) -> SystemTime {
+        self.0.wall()
+    }
+
+    fn time_source(&self) -> Arc<dyn TimeSource> {
+        Arc::new(self.clone())
+    }
+}
+
+impl TimeSource for FakeClock {
+    fn now(&self) -> SystemTime {
+        self.0.wall()
+    }
+}
 
 /// xorshift64*: the tests' only randomness.
 #[derive(Clone)]

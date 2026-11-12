@@ -15,18 +15,6 @@ use torque_net::huffman::Table;
 use torque_net::manifest::Manifest;
 use torque_net::profile::HandshakeProfile;
 
-fn table() -> Table {
-    let mut f = [0u32; 256];
-    for (i, slot) in f.iter_mut().enumerate().take(127) {
-        *slot = match i as u8 {
-            b'a'..=b'z' => 300 + (i as u32 * 37) % 900,
-            b' ' => 2800,
-            _ => (i as u32 * 3) % 5,
-        };
-    }
-    Table::from_frequencies(&f).expect("a table")
-}
-
 fn from() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 7], 4000))
 }
@@ -81,7 +69,7 @@ fn fields(manifest: Option<Manifest>) -> ConnectFields {
 
 /// The connect request datagram of a client with `fields`, after the challenge.
 fn connect_request(server: &mut Server, fields: ConnectFields, seq: u32) -> (Client, Vec<u8>) {
-    let t = table();
+    let t = Table::torque();
     let mut client = Client::new(seq, fields);
     let challenge = client.challenge_request();
     let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
@@ -95,7 +83,7 @@ fn connect_request(server: &mut Server, fields: ConnectFields, seq: u32) -> (Cli
 
 /// The accept the server sends for the request, and what the client makes of it.
 fn accept(server: &mut Server, fields: ConnectFields) -> (Vec<u8>, bool) {
-    let t = table();
+    let t = Table::torque();
     let (mut client, connect) = connect_request(server, fields, 5);
     let Handled::Request(request) = server.handle_datagram(&t, from(), &connect, 0) else {
         panic!("not a request")
@@ -128,7 +116,7 @@ fn a_gated_server_answers_a_peer_without_channels_with_exactly_torques_accept() 
 
 #[test]
 fn only_a_manifest_with_channels_gets_the_word_and_a_repeated_request_gets_the_same_accept() {
-    let t = table();
+    let t = Table::torque();
     let mut s = server(with_channels(), true, false);
     let (mut client, connect) = connect_request(&mut s, fields(Some(with_channels())), 5);
     let Handled::Request(request) = s.handle_datagram(&t, from(), &connect, 0) else {

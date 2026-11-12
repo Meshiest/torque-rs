@@ -42,6 +42,8 @@ default = ["client"]
 client = ["dep:torque-client"]
 
 [dev-dependencies]
+# The fake clock of the deterministic tests.
+torque-testkit = { path = "../torque-testkit" }
 # The deterministic pair test's engine sessions over the QUIC link against the memory link.
 torque-net = { path = "../torque-net" }
 # The web transport beside the QUIC link on one transport (`MultiTransport`), as a server with a page runs them.

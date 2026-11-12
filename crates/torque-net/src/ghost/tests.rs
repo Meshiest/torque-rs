@@ -2,6 +2,7 @@
 //! sparse table against the dense array, and random operation sequences with loss, duplicate notifies and resets.
 
 use std::collections::HashSet;
+use torque_testkit::Rng;
 
 use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
@@ -1572,27 +1573,10 @@ impl Dense {
     }
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-    fn below(&mut self, n: u64) -> u64 {
-        if n == 0 { 0 } else { self.next() % n }
-    }
-    fn chance(&mut self, percent: u64) -> bool {
-        self.below(100) < percent
-    }
-}
-
 #[test]
 fn the_sparse_table_matches_the_dense_array_swap_for_swap() {
     for seed in 1..=40u64 {
-        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let mut rng = Rng::new(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let max = 40usize;
         let always = rng.below(6) as usize;
         let mut dense = Dense::new(max, always);
@@ -1669,7 +1653,7 @@ impl Fuzz {
             inflight: Vec::new(),
             notified: Vec::new(),
             next_obj: 1,
-            rng: Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1),
+            rng: Rng::new(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1),
             stats: [0; 5],
         }
     }
@@ -1969,7 +1953,7 @@ fn mutated_packets_never_panic_the_reference_client() {
         rig.world.objs.get_mut(&o).unwrap().bulk = (o % 7) as usize;
     }
     let s = rig.send();
-    let mut rng = Rng(0xdead_beef_1234_5671);
+    let mut rng = Rng::new(0xdead_beef_1234_5671);
     let mut errors = 0;
     for _ in 0..3000 {
         let mut b = s.bytes.clone();
@@ -2860,13 +2844,8 @@ fn packets_of_worst_case_events_and_ghosts_never_pass_the_datagram_bound() {
     };
     let n = 80u32;
     rig.scope_many(1, n);
-    let mut seed = 0x2545_f491_4f6c_dd1du64;
-    let mut next = move |below: u64| {
-        seed ^= seed << 13;
-        seed ^= seed >> 7;
-        seed ^= seed << 17;
-        seed % below
-    };
+    let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
+    let mut next = move |below: u64| rng.next_u64() % below;
     let mut q: EventQueue<Pad> = EventQueue::new();
     let mut rx: EventReceiver<Pad> = EventReceiver::new();
     let (mut near, mut records, mut events) = (0, 0, 0);
@@ -3023,10 +3002,9 @@ impl Twin {
 #[test]
 fn a_query_that_only_counts_the_objects_it_found_before_gives_the_packets_of_one_that_scopes_them_again()
  {
-    use crate::testrng::TestRng;
     let mut quiet_walks = 0;
     for seed in 1..=8u64 {
-        let mut rng = TestRng::new(seed * 0x9e37_79b9);
+        let mut rng = Rng::new(seed * 0x9e37_79b9);
         // A table that can run out of ghosts, and one that cannot.
         let max = if seed % 2 == 0 { 40 } else { 4_096 };
         let mut plain = Twin::new(false, max);

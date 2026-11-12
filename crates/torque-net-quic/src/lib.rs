@@ -5,7 +5,7 @@
 //! - [`QuicServer`] is a server [`Transport`](torque_server::net::transport::Transport): one UDP socket, a
 //!   `quinn_proto::Endpoint`, one stand-in address per connection toward the host, Retry under load, per-address checks
 //!   run again when a connection migrates. [`QuicServerTransport`] is the real one; the tests run the same code over an
-//!   in-process [`Pipe`] with a [`FakeClock`].
+//!   in-process [`Pipe`] with a [`Clock`] they step by hand.
 //! - [`QuicClient`] (the `client` feature, on by default) is a client [`Datagrams`](torque_client::net::Datagrams): one
 //!   connection to one server, the server's key pinned by its identity ([`Trust`]) or trusted on first use and remembered
 //!   ([`KnownServers`]). A server depends on the crate without it, so its tree holds none of the client's crates.
@@ -117,7 +117,7 @@ pub use client::{
     CLIENT_INBOX, CLIENT_INBOX_BYTES, LinkState, QuicClient, QuicDatagrams, QuicWatch, SessionKind,
     Trust, client_socket,
 };
-pub use clock::{Clock, FakeClock, SystemClock};
+pub use clock::{Clock, SystemClock};
 pub use h3::{ALPN_H3, Dial, Origins, Setup as WebTransportSession};
 pub use identity::{IDENTITY_FILE, IdentityError, ServerKey, identity_of_certificate};
 pub use io::{Flight, Io, Pipe, PipeIo, UdpIo};

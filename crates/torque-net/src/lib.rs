@@ -14,7 +14,6 @@
 //!   frequency table that is passed in (Torque's standard one is [`huffman::TORQUE_CHAR_FREQS`]), and [`strcoder`],
 //!   `writeString`/`readString` over it with the shared-prefix buffer.
 //! - [`cap`]: the ONE helper every decoder allocates through (a wire count against the bits left AND a named cap).
-//! - [`testrng`]: the seeded random source of tests and fixed-seed fuzz loops.
 //! - [`fair`]: the ONE place a stranger's budget is shared out: the source network ([`fair::NetworkKey`]), per-second budgets
 //!   charged per address, per network and in all ([`fair::FairLimiter`]), and the connections one source may hold
 //!   ([`fair::SourceCaps`]).
@@ -88,7 +87,7 @@
 //! `a_display_name_loses_control_characters_and_is_cut_on_a_character`). Nothing on the wire carries an identity: a ticket
 //! travels only when a provider is set, and the identity is what the server made of it.
 //!
-//! **Seeded tests and fuzz loops draw from [`testrng::TestRng`]**, never from a source of their own.
+//! **Seeded tests and fuzz loops draw from `torque_testkit::Rng`** (a dev-dependency), never from a source of their own.
 //!
 //! **A ghost pass costs what changed, not what exists** (benches `ghost_section`, and `ghost_tick` in torque-server). A full
 //! query over a source that answers [`ghost::ObjectSource::scope_stamp`], under a policy with [`ghost::GhostPolicy::plain_query`],
@@ -150,7 +149,6 @@ pub mod remote;
 pub mod serverquery;
 pub mod stand_in;
 pub mod strcoder;
-pub mod testrng;
 
 #[cfg(test)]
 mod testids;

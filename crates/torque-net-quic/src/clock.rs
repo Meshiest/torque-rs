@@ -1,7 +1,8 @@
-//! The clock the endpoints read: the system's for real sockets, a hand-stepped one for the deterministic tests and the fuzz.
+//! The clock the endpoints read: the system's for real sockets, and whatever a test implements [`Clock`] with to step time by hand
+//! (the tests here wrap `torque_testkit::FakeClock`).
 
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::Arc;
+use std::time::{Instant, SystemTime};
 
 use quinn_proto::{StdSystemTime, TimeSource};
 
@@ -30,62 +31,5 @@ impl Clock for SystemClock {
 
     fn time_source(&self) -> Arc<dyn TimeSource> {
         Arc::new(StdSystemTime)
-    }
-}
-
-/// A clock that moves only when a test steps it ([`FakeClock::advance`]). Clones share the time.
-#[derive(Debug, Clone)]
-pub struct FakeClock {
-    base: Instant,
-    wall: SystemTime,
-    elapsed: Arc<Mutex<Duration>>,
-}
-
-impl Default for FakeClock {
-    fn default() -> FakeClock {
-        FakeClock {
-            base: Instant::now(),
-            wall: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
-            elapsed: Arc::new(Mutex::new(Duration::ZERO)),
-        }
-    }
-}
-
-impl FakeClock {
-    #[must_use]
-    pub fn new() -> FakeClock {
-        FakeClock::default()
-    }
-
-    /// Moves the clock forward by `by`.
-    pub fn advance(&self, by: Duration) {
-        let mut elapsed = self.elapsed.lock().expect("the fake clock is not poisoned");
-        *elapsed += by;
-    }
-
-    /// How far the clock has been moved.
-    #[must_use]
-    pub fn elapsed(&self) -> Duration {
-        *self.elapsed.lock().expect("the fake clock is not poisoned")
-    }
-}
-
-impl Clock for FakeClock {
-    fn now(&self) -> Instant {
-        self.base + self.elapsed()
-    }
-
-    fn wall(&self) -> SystemTime {
-        self.wall + self.elapsed()
-    }
-
-    fn time_source(&self) -> Arc<dyn TimeSource> {
-        Arc::new(self.clone())
-    }
-}
-
-impl TimeSource for FakeClock {
-    fn now(&self) -> SystemTime {
-        self.wall + self.elapsed()
     }
 }

@@ -15,5 +15,9 @@ categories = ["game-development", "authentication"]
 
 [dependencies]
 
+[dev-dependencies]
+# The seeded random source and the rounds of the parser fuzz.
+torque-testkit = { path = "../torque-testkit" }
+
 [lints]
 workspace = true

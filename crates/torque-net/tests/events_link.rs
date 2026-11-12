@@ -4,6 +4,7 @@
 //! churn). The counts are bounded for `cargo test`; longer runs belong in a dedicated fuzz job.
 
 use std::collections::VecDeque;
+use torque_testkit::Rng;
 
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
@@ -19,67 +20,37 @@ use torque_net::remote::{
     RemoteArg, RemoteCommandEvent, TagLookup, atoi, expand, resolve, send_command,
 };
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-}
-
 /// Torque's event classes (the registry's default).
 fn ids() -> EventIds {
     EventRegistry::torque().ids().expect("ids")
 }
 
-fn table() -> Table {
-    let mut f = [0u32; 256];
-    for (i, slot) in f.iter_mut().enumerate().take(127) {
-        *slot = match i as u8 {
-            b'a'..=b'z' => 300 + (i as u32 * 37) % 900,
-            b' ' => 2000,
-            b'0'..=b'9' => 90,
-            _ => 1 + (i as u32 * 3) % 7,
-        };
-    }
-    Table::from_frequencies(&f).expect("a table")
-}
-
 fn random_event(rng: &mut Rng) -> NetEvent {
-    match rng.below(4) {
+    match rng.index(4) {
         0 => NetEvent::NetString(NetStringEvent {
-            slot: rng.below(32) as u8,
-            text: (0..rng.below(40))
-                .map(|_| b'a' + rng.below(26) as u8)
+            slot: rng.index(32) as u8,
+            text: (0..rng.index(40))
+                .map(|_| b'a' + rng.index(26) as u8)
                 .collect(),
             tag: 0,
         }),
         1 => NetEvent::ConnectionMessage(torque_net::events::ConnectionMessage {
-            seq: rng.next() as u32,
-            message: rng.below(8) as u8,
-            count: rng.below(1 << 19) as u32,
+            seq: rng.next_u64() as u32,
+            message: rng.index(8) as u8,
+            count: rng.index(1 << 19) as u32,
         }),
         _ => NetEvent::Remote(RemoteCommandEvent {
             variant: 0,
-            args: (0..rng.below(8))
-                .map(|_| match rng.below(4) {
+            args: (0..rng.index(8))
+                .map(|_| match rng.index(4) {
                     0 => RemoteArg::Empty,
                     1 => RemoteArg::Text(
-                        (0..rng.below(30))
-                            .map(|_| b'a' + rng.below(26) as u8)
+                        (0..rng.index(30))
+                            .map(|_| b'a' + rng.index(26) as u8)
                             .collect(),
                     ),
-                    2 => RemoteArg::Tag(rng.below(32) as u8),
-                    _ => RemoteArg::Int(rng.next() as i32 >> rng.below(31)),
+                    2 => RemoteArg::Tag(rng.index(32) as u8),
+                    _ => RemoteArg::Int(rng.next_u64() as i32 >> rng.index(31)),
                 })
                 .collect(),
         }),
@@ -87,15 +58,15 @@ fn random_event(rng: &mut Rng) -> NetEvent {
 }
 
 /// A sender and a receiver over a link: packets are lost with `loss` percent, acks come `delay` rounds late and always in order.
-fn run_link(seed: u64, loss: usize, delay: usize, events: usize) {
-    let (table, ids) = (table(), ids());
+fn run_link(seed: u64, loss: u64, delay: usize, events: usize) {
+    let (table, ids) = (Table::torque(), ids());
     let ctx = EventCtx {
         table: &table,
         ids: &ids,
         ghost_bits: 18,
         datablock_bits: DEFAULT_DATABLOCK_BITS,
     };
-    let mut rng = Rng(seed);
+    let mut rng = Rng::star(seed);
     let mut queue: EventQueue<NetEvent> = EventQueue::new();
     let mut rx: EventReceiver<NetEvent> = EventReceiver::new();
     let mut posted: Vec<NetEvent> = Vec::new();
@@ -106,7 +77,7 @@ fn run_link(seed: u64, loss: usize, delay: usize, events: usize) {
     let mut max_waiting = 0;
     while (posted.len() < events || !queue.is_idle()) && round < 200_000 {
         round += 1;
-        for _ in 0..rng.below(6) {
+        for _ in 0..rng.index(6) {
             if posted.len() < events {
                 let e = random_event(&mut rng);
                 if queue.post(e.clone()).is_ok() {
@@ -115,7 +86,7 @@ fn run_link(seed: u64, loss: usize, delay: usize, events: usize) {
             }
         }
         if queue.packets_in_flight() < 20 {
-            let limit = (100 + rng.below(900)) * 8;
+            let limit = (100 + rng.index(900)) * 8;
             let mut w = BitWriter::with_limit(limit);
             w.enable_string_buffer();
             let written = queue
@@ -182,7 +153,7 @@ fn run_link(seed: u64, loss: usize, delay: usize, events: usize) {
 #[test]
 fn ordered_events_cross_a_lossy_link_exactly_once_and_in_order() {
     for (seed, loss, delay) in [
-        (1u64, 0usize, 0usize),
+        (1u64, 0u64, 0usize),
         (2, 10, 1),
         (3, 30, 2),
         (4, 50, 3),
@@ -195,7 +166,7 @@ fn ordered_events_cross_a_lossy_link_exactly_once_and_in_order() {
 
 fn section_bytes(rng: &mut Rng, ctx: &EventCtx<'_>) -> Vec<u8> {
     let mut queue: EventQueue<NetEvent> = EventQueue::new();
-    for _ in 0..rng.below(12) {
+    for _ in 0..rng.index(12) {
         let _ = queue.post(random_event(rng));
     }
     let mut w = BitWriter::with_limit(1023 * 8);
@@ -218,31 +189,31 @@ fn section_bytes(rng: &mut Rng, ctx: &EventCtx<'_>) -> Vec<u8> {
 
 #[test]
 fn mutated_sections_and_random_bytes_never_panic_and_never_overgrow() {
-    let (table, ids) = (table(), ids());
+    let (table, ids) = (Table::torque(), ids());
     let ctx = EventCtx {
         table: &table,
         ids: &ids,
         ghost_bits: 18,
         datablock_bits: DEFAULT_DATABLOCK_BITS,
     };
-    let mut rng = Rng(0x5eed_5eed_1234_5678);
+    let mut rng = Rng::star(0x5eed_5eed_1234_5678);
     let (mut ok, mut err) = (0usize, 0usize);
     for round in 0..30_000 {
         let mut bytes = section_bytes(&mut rng, &ctx);
         match round % 5 {
             0 => {
-                for _ in 0..1 + rng.below(4) {
-                    let at = rng.below(bytes.len().max(1));
+                for _ in 0..1 + rng.index(4) {
+                    let at = rng.index(bytes.len().max(1));
                     if let Some(b) = bytes.get_mut(at) {
-                        *b ^= 1 << rng.below(8);
+                        *b ^= 1 << rng.index(8);
                     }
                 }
             }
-            1 => bytes.truncate(rng.below(bytes.len() + 1)),
-            2 => bytes = (0..rng.below(200)).map(|_| rng.next() as u8).collect(),
+            1 => bytes.truncate(rng.index(bytes.len() + 1)),
+            2 => bytes = (0..rng.index(200)).map(|_| rng.next_u64() as u8).collect(),
             3 => {
-                let cut = rng.below(bytes.len() + 1);
-                bytes.splice(cut..cut, (0..rng.below(20)).map(|_| rng.next() as u8));
+                let cut = rng.index(bytes.len() + 1);
+                bytes.splice(cut..cut, (0..rng.index(20)).map(|_| rng.next_u64() as u8));
             }
             _ => {}
         }
@@ -282,27 +253,27 @@ impl TagLookup for Tags {
 
 #[test]
 fn a_hostile_command_expands_within_its_buffer_and_never_panics() {
-    let mut rng = Rng(0xfeed_f00d_dead_beef);
+    let mut rng = Rng::star(0xfeed_f00d_dead_beef);
     let alphabet = b"%123456789 ab\x01-0\xff";
     for _ in 0..30_000 {
         let mut strings = RemoteStrings::new();
         for slot in 0..32u8 {
             if rng.chance(70) {
-                let text: Vec<u8> = (0..rng.below(255))
-                    .map(|_| alphabet[rng.below(alphabet.len())])
+                let text: Vec<u8> = (0..rng.index(255))
+                    .map(|_| alphabet[rng.index(alphabet.len())])
                     .collect();
                 strings.set(slot, 1 + u32::from(slot), &text);
             }
         }
-        let argc = rng.below(23);
+        let argc = rng.index(23);
         let args: Vec<Vec<u8>> = (0..argc)
             .map(|_| {
                 let mut a = Vec::new();
                 if rng.chance(60) {
                     a.push(1);
                 }
-                for _ in 0..rng.below(12) {
-                    a.push(alphabet[rng.below(alphabet.len())]);
+                for _ in 0..rng.index(12) {
+                    a.push(alphabet[rng.index(alphabet.len())]);
                 }
                 a
             })
@@ -311,7 +282,7 @@ fn a_hostile_command_expands_within_its_buffer_and_never_panics() {
             assert!(resolved.name.len() <= 1023);
             assert!(resolved.args.iter().all(|a| a.len() <= 1023));
         }
-        let handle = strings.get(rng.below(40) as i64);
+        let handle = strings.get(rng.index(40) as i64);
         assert!(expand(handle, &args).len() <= 1023);
         let _ = atoi(&args.concat());
     }
@@ -319,11 +290,11 @@ fn a_hostile_command_expands_within_its_buffer_and_never_panics() {
 
 #[test]
 fn net_string_churn_keeps_every_slot_in_range_and_the_table_consistent() {
-    let mut rng = Rng(0x1357_9bdf_2468_ace0);
+    let mut rng = Rng::star(0x1357_9bdf_2468_ace0);
     let mut strings = SendStrings::new();
     let mut held = std::collections::HashMap::<u8, u32>::new();
     for _ in 0..200_000 {
-        let tag = 1 + rng.below(100) as u32;
+        let tag = 1 + rng.index(100) as u32;
         let c = strings.check_string(tag, b"t");
         assert!(c.slot < 32);
         assert_eq!(strings.find(tag), Some(c.slot));
@@ -347,12 +318,12 @@ fn a_sender_flooding_commands_hits_backpressure_not_memory_growth() {
     let tags = Tags(texts);
     let mut queue: EventQueue<NetEvent> = EventQueue::new();
     let mut strings = SendStrings::new();
-    let mut rng = Rng(77);
+    let mut rng = Rng::star(77);
     let mut refused = 0usize;
     for _ in 0..20_000 {
         let mut args = vec![b"\x011".to_vec()];
-        for _ in 0..rng.below(19) {
-            args.push(format!("\x01{}", 2 + rng.below(60)).into_bytes());
+        for _ in 0..rng.index(19) {
+            args.push(format!("\x01{}", 2 + rng.index(60)).into_bytes());
         }
         if send_command(&mut queue, &mut strings, &tags, &args).is_err() {
             refused += 1;

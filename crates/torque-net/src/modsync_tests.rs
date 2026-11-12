@@ -1,4 +1,5 @@
 use super::*;
+use torque_testkit::Rng;
 
 fn need(id: &str, byte: u8) -> RequiredMod {
     RequiredMod {
@@ -141,13 +142,8 @@ fn a_display_name_limits_its_combining_marks() {
 
 #[test]
 fn hostile_sections_never_panic() {
-    let mut state = 0x9e37_79b9_7f4a_7c15u64;
-    let mut next = || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
+    let mut next = || rng.next_u64();
     let good = ModsSection {
         max_bytes: 99,
         max_files: 5,

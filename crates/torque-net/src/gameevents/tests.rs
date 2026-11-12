@@ -2,20 +2,7 @@ use super::*;
 use crate::events::{EventRegistry, Guarantee, free_charge};
 use crate::profile::DEFAULT_DATABLOCK_BITS;
 use crate::testids::{ids, with_ctx};
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-}
+use torque_testkit::Rng;
 
 fn reader(w: BitWriter) -> (Vec<u8>, usize) {
     let bits = w.bits();
@@ -277,14 +264,14 @@ fn hostile_event_bodies_never_panic() {
         i.path_manager,
         i.lightning_strike,
     ];
-    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut rng = Rng::star(0x1234_5678_9abc_def1);
     with_ctx(|ctx| {
         for round in 0..6000 {
-            let len = rng.below(400);
-            let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            let len = rng.index(400);
+            let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
             let class = classes[round % classes.len()];
             let mut r = BitReader::new(&bytes);
-            let skip = rng.below(8);
+            let skip = rng.index(8);
             let _ = r.read_bits(skip as u8);
             let _ = GameEvent::unpack(class, &mut r, ctx, &mut free_charge());
         }

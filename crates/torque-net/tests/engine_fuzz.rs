@@ -25,13 +25,7 @@ use torque_net::engine::{
     Header, Lane, LaneLimits, LinkFacts, NoStreams, Prefix, Session, SessionConfig, State,
     StreamLane, Unreliable, parse,
 };
-
-fn rounds() -> usize {
-    std::env::var("TORQUE_FUZZ_ENGINE_HANDSHAKE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000)
-}
+use torque_testkit::fuzz;
 
 /// What honest sessions send, both ways, on both kinds of link, as seeds for the mutants.
 fn corpus() -> Vec<Vec<u8>> {
@@ -90,8 +84,8 @@ fn write_fragment(s: &mut Vec<u8>, id: u16, total: u32, offset: u32, bytes: &[u8
 
 /// One reliable section: fragments with crafted fields, or a whole connect or accept.
 fn reliable_section(rng: &mut Rng, s: &mut Vec<u8>, control: bool) {
-    if control && rng.percent(30) {
-        let message = if rng.percent(50) {
+    if control && rng.chance(30) {
+        let message = if rng.chance(50) {
             Control::Connect(Box::new(connect())).encode()
         } else {
             Control::Accept(accept(1_200)).encode()
@@ -134,7 +128,7 @@ fn crafted(rng: &mut Rng, t: Tokens) -> Vec<u8> {
     match rng.below(3) {
         0 => Prefix::Opening {
             nonce: t.nonce,
-            cookie: t.cookie.filter(|_| rng.percent(80)),
+            cookie: t.cookie.filter(|_| rng.chance(80)),
         },
         1 => Prefix::Data,
         _ => Prefix::TokenData { token },
@@ -142,14 +136,14 @@ fn crafted(rng: &mut Rng, t: Tokens) -> Vec<u8> {
     .write(&mut d);
     let mut sections: [Vec<u8>; 6] = Default::default();
     for lane in Lane::ALL {
-        if !rng.percent(40) {
+        if !rng.chance(40) {
             continue;
         }
         let s = &mut sections[lane as usize - 1];
         match lane {
             Lane::Control | Lane::Rpc => reliable_section(rng, s, lane == Lane::Control),
             Lane::Unreliable => {
-                let bytes = if rng.percent(5) {
+                let bytes = if rng.chance(5) {
                     rng.bytes(2_000)
                 } else {
                     rng.some_bytes(60)
@@ -161,7 +155,7 @@ fn crafted(rng: &mut Rng, t: Tokens) -> Vec<u8> {
                 .write(s);
             }
             _ => {
-                let len = if rng.percent(3) {
+                let len = if rng.chance(3) {
                     60_000
                 } else {
                     1 + rng.below(50) as usize
@@ -169,7 +163,7 @@ fn crafted(rng: &mut Rng, t: Tokens) -> Vec<u8> {
                 s.extend(rng.bytes(len));
             }
         }
-        if rng.percent(10) {
+        if rng.chance(10) {
             s.truncate(rng.below(s.len() as u64 + 1) as usize);
         }
     }
@@ -178,13 +172,13 @@ fn crafted(rng: &mut Rng, t: Tokens) -> Vec<u8> {
         ack: rng.next_u64() as u16,
         mask: rng.next_u64() as u32,
     };
-    let pad = if rng.percent(20) { 1_200 } else { 0 };
+    let pad = if rng.chance(20) { 1_200 } else { 0 };
     let _ = Body {
         header,
         sections: sections.each_ref().map(Vec::as_slice),
     }
     .write(&mut d, pad);
-    if rng.percent(5) {
+    if rng.chance(5) {
         d.push(rng.next_u64() as u8);
     }
     d
@@ -226,11 +220,7 @@ fn mutant(rng: &mut Rng, corpus: &[Vec<u8>]) -> Vec<u8> {
             3 => d.insert(at, rng.next_u64() as u8),
             _ => {
                 // A length field set to an extreme.
-                let v = if rng.percent(50) {
-                    [0xff, 0xff]
-                } else {
-                    [0, 0]
-                };
+                let v = if rng.chance(50) { [0xff, 0xff] } else { [0, 0] };
                 d.splice(at..(at + 2).min(d.len()), v);
             }
         }
@@ -258,7 +248,7 @@ fn drain(s: &mut Session, rng: &mut Rng) -> usize {
         "{} event bytes",
         s.held_event_bytes()
     );
-    if rng.percent(10) {
+    if rng.chance(10) {
         return 0;
     }
     let mut n = 0;
@@ -349,7 +339,7 @@ impl Fuzz {
         let mut honest = Pair::new(LinkFacts::PLAIN, 99).lossy(2);
         assert!(honest.connect(400));
         Fuzz {
-            rng: Rng::new(0xf022),
+            rng: Rng::star(0xf022),
             corpus: corpus(),
             now,
             gate: Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY),
@@ -390,7 +380,7 @@ impl Fuzz {
 
     /// The gate from one of several addresses: hellos to get cookies, then hostile datagrams carrying them.
     fn gate(&mut self, d: &[u8], at: SocketAddr) {
-        if self.rng.percent(5) {
+        if self.rng.chance(5) {
             let mut c = client(LinkFacts::PLAIN, self.now);
             let mut out = Pipe::new(LinkFacts::PLAIN, 1);
             c.poll(&mut out, &mut NoStreams, self.now);
@@ -482,7 +472,7 @@ impl Fuzz {
     fn pairs(&mut self, d: &[u8], round: usize) {
         for p in [&mut self.memory, &mut self.plain] {
             let at = p.now;
-            if self.rng.percent(50) {
+            if self.rng.chance(50) {
                 p.client.receive(d, at);
             } else {
                 p.server().receive(d, at);
@@ -593,7 +583,7 @@ impl SeqHint for Pair {
 #[test]
 fn hostile_datagrams_never_panic_and_never_amplify() {
     let mut fuzz = Fuzz::new();
-    let rounds = rounds();
+    let rounds = fuzz::rounds("TORQUE_FUZZ_ENGINE_HANDSHAKE", 20_000) as usize;
     for round in 0..rounds {
         fuzz.round(round);
     }

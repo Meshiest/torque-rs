@@ -95,6 +95,8 @@ quic = ["torque-app-server/quic", "dep:torque-net-quic"]
 audio-device = ["torque-audio/device"]
 
 [dev-dependencies]
+# The seeded random source and the rounds of the server fuzz.
+torque-testkit = { path = "../torque-testkit" }
 # The script test helpers (`torque_ts_vm::testing`).
 torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 criterion = { workspace = true }

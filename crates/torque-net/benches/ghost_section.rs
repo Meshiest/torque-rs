@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
+use torque_testkit::Rng;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use torque_net::bits::BitWriter;
@@ -110,7 +111,7 @@ struct World {
     managers: Vec<GhostManager>,
     seq: u32,
     now: u32,
-    rng: u64,
+    rng: Rng,
     phases: Phases,
     records: usize,
 }
@@ -150,7 +151,7 @@ impl World {
             managers,
             seq: 1,
             now: 0,
-            rng: 12_345,
+            rng: Rng::new(12_345),
             phases: Phases::default(),
             records: 0,
         };
@@ -193,13 +194,6 @@ impl World {
         records
     }
 
-    fn next(&mut self) -> u64 {
-        self.rng ^= self.rng << 13;
-        self.rng ^= self.rng >> 7;
-        self.rng ^= self.rng << 17;
-        self.rng
-    }
-
     /// One tick: `dirty` objects marked on every client (all of them when `dirty` covers the world), then the packets.
     fn tick(&mut self, dirty: u32) {
         let t = Instant::now();
@@ -207,7 +201,7 @@ impl World {
             let obj = if dirty >= OBJECTS {
                 k + 1
             } else {
-                1 + (self.next() % u64::from(OBJECTS)) as u32
+                1 + (self.rng.next_u64() % u64::from(OBJECTS)) as u32
             };
             for m in &mut self.managers {
                 m.set_mask(obj, 0x0F);

@@ -1,5 +1,6 @@
 use super::*;
 use crate::package::ModLimits;
+use torque_testkit::Rng;
 
 fn files() -> Vec<(String, Vec<u8>)> {
     vec![
@@ -196,42 +197,32 @@ fn bad_paths_and_text_are_refused() {
     assert!(decode_content(&message, &caps()).is_err());
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
 #[test]
 fn hostile_messages_never_panic() {
-    let mut rng = Rng(0x2f6e_2b1c_9d3a_5e47);
+    let mut rng = Rng::new(0x2f6e_2b1c_9d3a_5e47);
     let hash = summarize_files(&files()).hash;
     let good = encode_content("props", "1.2", &hash, &files());
     for case in 0..20_000 {
         let mut bytes = good.clone();
         match case % 5 {
             0 | 1 => {
-                for _ in 0..1 + rng.next() % 5 {
-                    let at = (rng.next() as usize) % bytes.len();
-                    bytes[at] = rng.next() as u8;
+                for _ in 0..1 + rng.next_u64() % 5 {
+                    let at = (rng.next_u64() as usize) % bytes.len();
+                    bytes[at] = rng.next_u64() as u8;
                 }
             }
-            2 => bytes.truncate((rng.next() as usize) % (bytes.len() + 1)),
+            2 => bytes.truncate((rng.next_u64() as usize) % (bytes.len() + 1)),
             3 => {
-                bytes = (0..(rng.next() % 600) as usize)
-                    .map(|_| rng.next() as u8)
+                bytes = (0..(rng.next_u64() % 600) as usize)
+                    .map(|_| rng.next_u64() as u8)
                     .collect()
             }
             _ => {
-                let at = (rng.next() as usize) % bytes.len();
-                bytes.splice(at..at, (0..rng.next() % 40).map(|_| rng.next() as u8));
+                let at = (rng.next_u64() as usize) % bytes.len();
+                bytes.splice(
+                    at..at,
+                    (0..rng.next_u64() % 40).map(|_| rng.next_u64() as u8),
+                );
             }
         }
         let _ = decode_content(&bytes, &caps());

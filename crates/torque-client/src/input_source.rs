@@ -62,12 +62,11 @@
 //! `platformWin32/winDInputDevice.cpp` and `sim/actionMap.cpp` (each Copyright (c) 2012 GarageGames, LLC). The code is this
 //! crate's own.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
 
 use gui::input::InputEvent;
 use gui::keys::{JOYSTICK_DEVICE, SI_BREAK, SI_BUTTON, SI_MAKE, SI_MOVE, SI_POV};
@@ -459,7 +458,7 @@ impl InputSources {
         self.sources.len()
     }
 
-    /// Makes polls read the time from `clock` (a test's [`FakeClock`]).
+    /// Makes polls read the time from `clock` (a test's `torque_testkit::FakeClock::reader`).
     pub fn set_clock(&mut self, clock: impl Fn() -> Instant + 'static) {
         self.clock = Some(Rc::new(clock));
     }
@@ -788,6 +787,29 @@ pub fn install<G: ConnGame>(state: &mut ClientState<G>, entries: &[InputSourceEn
 /// // Nothing new to say: no events.
 /// assert!(sources.poll(&vm, 0).is_empty());
 /// ```
+///
+/// Events stamped with the times of a `torque_testkit::FakeClock` (a dev-dependency) never wait on the real time: the registry
+/// reads its time from the clock ([`InputSources::set_clock`]).
+///
+/// ```
+/// use std::time::Duration;
+/// use torque_client::input_source::{FakeInput, InputSources, JoyAxis};
+/// use torque_testkit::FakeClock;
+///
+/// let (clock, fake) = (FakeClock::default(), FakeInput::default());
+/// let mut sources = InputSources::default();
+/// sources.add(Box::new(fake.clone()));
+/// sources.set_clock(clock.reader());
+/// let vm = ts_vm::vm::Vm::new();
+///
+/// // A stick at 0 for the first 5 ms of a 10 ms frame, and at 1 for the rest.
+/// fake.axis_at(clock.at(0), 0, JoyAxis::X, 0.0);
+/// sources.poll(&vm, 0);
+/// fake.axis_at(clock.at(5), 0, JoyAxis::X, 1.0);
+/// clock.advance(Duration::from_millis(10));
+/// let events = sources.poll(&vm, 0);
+/// assert_eq!(events[0].value, 0.5);
+/// ```
 #[derive(Clone, Default)]
 pub struct FakeInput {
     queue: Rc<RefCell<Vec<Said>>>,
@@ -799,7 +821,7 @@ impl FakeInput {
         self.queue.borrow_mut().push(Said { event, at: None });
     }
 
-    /// Says an event that happened at `at` (see [`FakeClock`]) at the next poll.
+    /// Says an event that happened at `at` (a time of a `torque_testkit::FakeClock`) at the next poll.
     pub fn push_at(&self, at: Instant, event: JoyEvent) {
         self.queue.borrow_mut().push(Said {
             event,
@@ -865,70 +887,6 @@ impl InputSource for FakeInput {
         for said in self.queue.borrow_mut().drain(..) {
             cx.put(said.event, said.at);
         }
-    }
-}
-
-/// A clock a test moves by hand: the registry reads its time from it ([`InputSources::set_clock`]) and the test stamps events
-/// with times of it ([`FakeClock::at`]), so a test never waits.
-///
-/// ```
-/// use std::time::Duration;
-/// use torque_client::input_source::{FakeClock, FakeInput, InputSources, JoyAxis};
-///
-/// let (clock, fake) = (FakeClock::default(), FakeInput::default());
-/// let mut sources = InputSources::default();
-/// sources.add(Box::new(fake.clone()));
-/// sources.set_clock(clock.reader());
-/// let vm = ts_vm::vm::Vm::new();
-///
-/// // A stick at 0 for the first 5 ms of a 10 ms frame, and at 1 for the rest.
-/// fake.axis_at(clock.at(0), 0, JoyAxis::X, 0.0);
-/// sources.poll(&vm, 0);
-/// fake.axis_at(clock.at(5), 0, JoyAxis::X, 1.0);
-/// clock.advance(Duration::from_millis(10));
-/// let events = sources.poll(&vm, 0);
-/// assert_eq!(events[0].value, 0.5);
-/// ```
-#[derive(Clone)]
-pub struct FakeClock {
-    origin: Instant,
-    now: Rc<Cell<Duration>>,
-}
-
-impl Default for FakeClock {
-    fn default() -> FakeClock {
-        FakeClock {
-            origin: Instant::now(),
-            now: Rc::default(),
-        }
-    }
-}
-
-impl FakeClock {
-    /// The time now.
-    pub fn now(&self) -> Instant {
-        self.at_duration(self.now.get())
-    }
-
-    /// The time `ms` milliseconds after the clock began.
-    pub fn at(&self, ms: u64) -> Instant {
-        self.at_duration(Duration::from_millis(ms))
-    }
-
-    /// The time `since` after the clock began.
-    pub fn at_duration(&self, since: Duration) -> Instant {
-        self.origin + since
-    }
-
-    /// Moves the clock on.
-    pub fn advance(&self, by: Duration) {
-        self.now.set(self.now.get() + by);
-    }
-
-    /// A reader of this clock, for [`InputSources::set_clock`].
-    pub fn reader(&self) -> impl Fn() -> Instant + 'static {
-        let clock = self.clone();
-        move || clock.now()
     }
 }
 

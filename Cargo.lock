@@ -4135,6 +4135,7 @@ dependencies = [
  "torque-server",
  "torque-shapes",
  "torque-sim",
+ "torque-testkit",
  "torque-ts-compiler",
  "torque-ts-text",
  "torque-ts-vm",
@@ -4233,6 +4234,7 @@ dependencies = [
  "torque-shape-builder",
  "torque-shapes",
  "torque-sim",
+ "torque-testkit",
  "torque-ts-text",
  "torque-ts-vm",
  "torque-vehicle",
@@ -4554,6 +4556,7 @@ dependencies = [
  "torque-ghosts",
  "torque-hierarchy",
  "torque-net",
+ "torque-testkit",
 ]
 
 [[package]]
@@ -4562,6 +4565,7 @@ version = "0.1.0"
 dependencies = [
  "torque-bytes",
  "torque-net",
+ "torque-testkit",
 ]
 
 [[package]]
@@ -4697,12 +4701,12 @@ dependencies = [
  "torque-net",
  "torque-resource",
  "torque-server",
+ "torque-testkit",
  "torque-transfer",
  "torque-ts-vm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "zip",
 ]
 
 [[package]]
@@ -4713,6 +4717,7 @@ dependencies = [
  "sha2",
  "stats_alloc",
  "torque-bytes",
+ "torque-testkit",
 ]
 
 [[package]]
@@ -4728,11 +4733,15 @@ dependencies = [
  "torque-client",
  "torque-net",
  "torque-server",
+ "torque-testkit",
 ]
 
 [[package]]
 name = "torque-permissions"
 version = "0.1.0"
+dependencies = [
+ "torque-testkit",
+]
 
 [[package]]
 name = "torque-physics-rapier"
@@ -4807,6 +4816,7 @@ dependencies = [
  "torque-plugin-props",
  "torque-server",
  "torque-shapes",
+ "torque-testkit",
  "torque-trace-hash",
  "torque-ts-vm",
 ]
@@ -5090,6 +5100,7 @@ dependencies = [
  "torque-render-scene",
  "torque-server",
  "torque-shapes",
+ "torque-testkit",
  "torque-ts-vm",
 ]
 
@@ -5114,6 +5125,13 @@ dependencies = [
  "torque-plugin-loader",
  "torque-ts-vm",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "torque-testkit"
+version = "0.1.0"
+dependencies = [
+ "zip",
 ]
 
 [[package]]

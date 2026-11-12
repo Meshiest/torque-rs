@@ -1,4 +1,5 @@
 use super::*;
+use torque_testkit::Rng;
 
 #[test]
 fn bits_run_low_first_and_a_word_is_its_little_endian_bytes() {
@@ -276,13 +277,8 @@ fn form_three_is_the_absolute_position_whatever_the_compression_point() {
 
 #[test]
 fn compressed_points_round_trip_within_one_unit_of_the_scale() {
-    let mut state = 0x1234_5678_9abc_def0u64;
-    let mut rnd = || {
-        state ^= state << 13;
-        state ^= state >> 7;
-        state ^= state << 17;
-        state
-    };
+    let mut rng = Rng::new(0x1234_5678_9abc_def0);
+    let mut rnd = || rng.next_u64();
     for _ in 0..3000 {
         let cp = [
             (rnd() % 2000) as f32 - 1000.0,

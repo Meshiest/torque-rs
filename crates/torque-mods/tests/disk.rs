@@ -6,9 +6,10 @@ mod common;
 use std::fs;
 use std::path::PathBuf;
 
-use common::{files, server, zip_of};
+use common::{files, server};
 use torque_engine::EngineBuilder;
 use torque_mods::ModsPlugin;
+use torque_testkit::zip_of;
 use torque_ts_vm::testing::eval;
 
 /// A fresh folder below the test build folder (never the system's temp folder).

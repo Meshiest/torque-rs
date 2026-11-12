@@ -7,7 +7,7 @@ use torque_mods::content::{ContentCaps, Hash, encode_content, from_hex, hex, sum
 use torque_mods::{CacheStore, ContentCache, DiskStore, MemoryStore, index_of};
 
 mod common;
-use common::Rng;
+use torque_testkit::Rng;
 
 fn folder(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("mod-cache-{name}"));
@@ -106,28 +106,28 @@ fn a_disk_store_refuses_names_that_leave_its_folder() {
 
 #[test]
 fn hostile_listings_and_entries_never_panic_and_never_load() {
-    let mut rng = Rng(0x0ddb_a11c_ace5_0001);
+    let mut rng = Rng::new(0x0ddb_a11c_ace5_0001);
     let (hash, good) = entry("props", 200, 6);
     for case in 0..20_000 {
         // A listing of invented names, some almost right.
-        let listing: Vec<_> = (0..1 + rng.below(8))
+        let listing: Vec<_> = (0..1 + rng.index(8))
             .map(|_| {
-                let mut name = match rng.below(4) {
-                    0 => format!("{}.mod", hex(&[rng.next() as u8; 32])),
-                    1 => hex(&[rng.next() as u8; 32]),
-                    2 => (0..rng.below(90))
-                        .map(|_| (rng.next() % 94 + 33) as u8 as char)
+                let mut name = match rng.index(4) {
+                    0 => format!("{}.mod", hex(&[rng.next_u64() as u8; 32])),
+                    1 => hex(&[rng.next_u64() as u8; 32]),
+                    2 => (0..rng.index(90))
+                        .map(|_| (rng.next_u64() % 94 + 33) as u8 as char)
                         .collect(),
                     _ => format!("{}.mod", hex(&hash)),
                 };
-                if rng.below(3) == 0 && !name.is_empty() {
-                    let at = rng.below(name.len());
+                if rng.index(3) == 0 && !name.is_empty() {
+                    let at = rng.index(name.len());
                     name.replace_range(at..=at, "Z");
                 }
                 torque_mods::Listed {
                     name,
-                    size: rng.next(),
-                    stamp: rng.next(),
+                    size: rng.next_u64(),
+                    stamp: rng.next_u64(),
                 }
             })
             .collect();
@@ -136,14 +136,14 @@ fn hostile_listings_and_entries_never_panic_and_never_load() {
         }
         // An entry under a good name with hostile bytes: never loads, and is gone afterwards.
         let mut bytes = good.clone();
-        match rng.below(4) {
+        match rng.index(4) {
             0 => {
-                let at = rng.below(bytes.len());
-                bytes[at] ^= 1 << rng.below(8);
+                let at = rng.index(bytes.len());
+                bytes[at] ^= 1 << rng.index(8);
             }
-            1 => bytes.truncate(rng.below(bytes.len() + 1)),
-            2 => bytes = (0..rng.below(400)).map(|_| rng.next() as u8).collect(),
-            _ => bytes.extend((0..rng.below(20)).map(|_| rng.next() as u8)),
+            1 => bytes.truncate(rng.index(bytes.len() + 1)),
+            2 => bytes = (0..rng.index(400)).map(|_| rng.next_u64() as u8).collect(),
+            _ => bytes.extend((0..rng.index(20)).map(|_| rng.next_u64() as u8)),
         }
         let mut store = MemoryStore::default();
         store.write(&format!("{}.mod", hex(&hash)), &bytes);

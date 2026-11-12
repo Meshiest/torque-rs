@@ -12,47 +12,15 @@ use torque_net::engine::{
     Session, SessionConfig, State, StreamLane, StreamSource, TableDigests, Widths,
 };
 
+/// The seeded generator the engine tests draw from: `Rng::star`, whose bits `engine_golden_v2` is pinned to.
+pub use torque_testkit::Rng;
+
 pub const GAME: &str = "fixture";
 pub const KEY: [u8; 16] = [7; 16];
 pub const TICK_MS: u32 = 32;
 
 pub fn client_addr() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 7], 4000))
-}
-
-/// xorshift64*: the tests' only randomness.
-#[derive(Clone)]
-pub struct Rng(pub u64);
-
-impl Rng {
-    pub fn new(seed: u64) -> Rng {
-        Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1)
-    }
-
-    pub fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-
-    pub fn below(&mut self, n: u64) -> u64 {
-        self.next_u64() % n.max(1)
-    }
-
-    pub fn percent(&mut self, p: u64) -> bool {
-        self.below(100) < p
-    }
-
-    /// Fewer than `max` random bytes.
-    pub fn some_bytes(&mut self, max: u64) -> Vec<u8> {
-        let n = self.below(max) as usize;
-        self.bytes(n)
-    }
-
-    pub fn bytes(&mut self, n: usize) -> Vec<u8> {
-        (0..n).map(|_| self.next_u64() as u8).collect()
-    }
 }
 
 /// One direction of a link.
@@ -74,7 +42,7 @@ impl Pipe {
             max: 1_200,
             full: false,
             loss_percent: 0,
-            rng: Rng::new(seed),
+            rng: Rng::star(seed),
             queue: VecDeque::new(),
             log: Vec::new(),
         }
@@ -83,7 +51,7 @@ impl Pipe {
     /// Sends what a host sends by itself (a gate's answer), through the same loss.
     pub fn raw(&mut self, datagram: Vec<u8>) {
         self.log.push((datagram.clone(), self.max));
-        if !self.rng.percent(self.loss_percent) {
+        if !self.rng.chance(self.loss_percent) {
             self.queue.push_back(datagram);
         }
     }

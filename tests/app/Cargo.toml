@@ -25,6 +25,8 @@ render = ["dep:torque-plugin-loader"]
 torque-plugin-loader = { path = "../../crates/torque-plugin-loader", optional = true, features = ["render"] }
 
 [dev-dependencies]
+# The fake clock of the gamepad tests and the seeded random source of the hierarchy rig.
+torque-testkit = { path = "../../crates/torque-testkit" }
 # The client and server of every test, and the offscreen pictures.
 torque-app = { path = "../../crates/torque-app" }
 torque-client = { path = "../../crates/torque-client" }

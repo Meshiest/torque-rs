@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use torque_testkit::{Rng, mutate};
 
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::client::{Client, ClientEvent};
@@ -19,19 +20,6 @@ use torque_net::huffman::Table;
 use torque_net::manifest::{MAX_MANIFEST_BYTES, Manifest};
 
 const KEY: [u8; 16] = [7; 16];
-
-fn table() -> Table {
-    let mut f = [0u32; 256];
-    for (i, slot) in f.iter_mut().enumerate().take(127) {
-        *slot = match i as u8 {
-            b'a'..=b'z' => 300 + (i as u32 * 37) % 900,
-            b' ' => 2800,
-            b'A'..=b'Z' => 20 + (i as u32 * 13) % 90,
-            _ => (i as u32 * 3) % 5,
-        };
-    }
-    Table::from_frequencies(&f).expect("a table")
-}
 
 fn from() -> SocketAddr {
     SocketAddr::from(([10, 0, 0, 7], 4000))
@@ -87,7 +75,7 @@ fn join(server: &mut Server, client_fields: ConnectFields, seq: u32) -> Outcome 
 
 /// [`join`] for a client that is already made (one that makes its ticket from the challenge, say).
 fn join_client(server: &mut Server, mut client: Client) -> Outcome {
-    let t = table();
+    let t = Table::torque();
     let challenge = client.challenge_request();
     let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
         panic!("no challenge response")
@@ -99,7 +87,7 @@ fn join_client(server: &mut Server, mut client: Client) -> Outcome {
 }
 
 fn answer(server: &mut Server, mut client: Client, connect: &[u8]) -> Outcome {
-    let t = table();
+    let t = Table::torque();
     match server.handle_datagram(&t, from(), connect, 0) {
         Handled::Request(request) => {
             let Finished::Accepted { reply, .. } =
@@ -209,7 +197,7 @@ fn a_server_without_a_gate_never_reads_the_block() {
 
 #[test]
 fn a_request_without_a_block_is_the_request_it_always_was() {
-    let t = table();
+    let t = Table::torque();
     let digest = challenge_digest(&KEY, from(), 5);
     let plain = torque_net::handshake::connect_request(
         &Default::default(),
@@ -242,7 +230,7 @@ fn a_request_without_a_block_is_the_request_it_always_was() {
 /// A connect request of a plain client whose arguments are followed by whatever `tail` writes (the block's place), with the
 /// right digest for `seq`.
 fn request_with_tail(tail: impl FnOnce(&mut BitWriter), seq: u32) -> Vec<u8> {
-    let t = table();
+    let t = Table::torque();
     let types = torque_net::handshake::HandshakeTypes::TORQUE;
     let mut w = BitWriter::new();
     w.write_u8(types.connect_request);
@@ -269,7 +257,7 @@ fn request_with_tail(tail: impl FnOnce(&mut BitWriter), seq: u32) -> Vec<u8> {
 
 #[test]
 fn a_garbled_or_oversize_block_is_refused_with_a_reason_not_dropped() {
-    let t = table();
+    let t = Table::torque();
     let mut server = gated();
     let cases: Vec<(&str, Vec<u8>, &str)> = vec![
         (
@@ -383,7 +371,7 @@ fn secret_server(key: [u8; 16], address: SocketAddr, server_key: [u8; 16]) -> Se
 
 /// The connect request `client` sends `server` once it has the challenge response.
 fn connect_datagram(server: &mut Server, client: &mut Client) -> Vec<u8> {
-    let t = table();
+    let t = Table::torque();
     let challenge = client.challenge_request();
     let Handled::Reply(response) = server.handle_datagram(&t, from(), &challenge, 0) else {
         panic!("challenge")
@@ -399,7 +387,7 @@ fn the_ticket_is_verified_before_the_host_sees_the_request() {
     let secret = [9; 16];
     let mut server = secret_server(secret, server_addr(), KEY);
     // A good ticket reaches the host, with the identity attached.
-    let t = table();
+    let t = Table::torque();
     let mut client = signing_client(5, secret, "ada", server_addr());
     let connect = connect_datagram(&mut server, &mut client);
     let Handled::Request(request) = server.handle_datagram(&t, from(), &connect, 0) else {
@@ -431,7 +419,7 @@ fn a_ticket_for_another_server_is_refused_even_when_a_server_relays_it() {
         SocketAddr::from(([198, 51, 100, 1], 28_000)),
         SocketAddr::from(([198, 51, 100, 2], 28_000)),
     );
-    let t = table();
+    let t = Table::torque();
     // The client dials A. A is hostile: it asks B for the challenge and hands B's answer to the client, then passes the client's
     // request on to B, which shares the secret. The challenge is B's own, so only the address tells the ticket is not for B.
     let mut server_b = secret_server(secret, b, KEY);
@@ -459,7 +447,7 @@ fn a_ticket_for_another_server_is_refused_even_when_a_server_relays_it() {
 #[test]
 fn a_ticket_replayed_on_another_connection_is_refused() {
     let secret = [9; 16];
-    let t = table();
+    let t = Table::torque();
     let mut server = secret_server(secret, server_addr(), KEY);
     // The first connection's request, as a sniffer sees it.
     let mut client = signing_client(5, secret, "ada", server_addr());
@@ -504,7 +492,7 @@ fn a_ticket_replayed_on_another_connection_is_refused() {
 
 #[test]
 fn a_provider_that_cannot_make_a_ticket_ends_the_connect_with_its_reason() {
-    let t = table();
+    let t = Table::torque();
     let mut server = secret_server([9; 16], server_addr(), KEY);
     let mut client = signing_client(5, [9; 16], "", server_addr());
     let challenge = client.challenge_request();
@@ -581,7 +569,7 @@ fn a_request_the_server_would_drop_anyway_costs_no_verification() {
     config.caps.pending_per_ip = 1;
     config.gate = Some(Arc::new(gate));
     let mut server = Server::new(config, KEY);
-    let t = table();
+    let t = Table::torque();
     let handshake = |server: &mut Server, port: u16, seq: u32| {
         let addr = SocketAddr::from(([10, 0, 0, 7], port));
         let mut client = Client::new(seq, fields(None));
@@ -642,77 +630,28 @@ fn a_long_refusal_is_cut_to_what_a_reject_carries() {
 
 // ---- fuzz --------------------------------------------------------------------------------------------------------------------
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn byte(&mut self) -> u8 {
-        (self.next() >> 40) as u8
-    }
-}
-
 fn random_manifest(rng: &mut Rng) -> Manifest {
-    let mut m = Manifest::new(rng.below(20) as u32, rng.below(20) as u32);
-    for i in 0..rng.below(6) {
-        m = m.with_plugin(format!("plugin.{}.{i}", rng.below(50)), rng.below(5) as u32);
+    let mut m = Manifest::new(rng.index(20) as u32, rng.index(20) as u32);
+    for i in 0..rng.index(6) {
+        m = m.with_plugin(format!("plugin.{}.{i}", rng.index(50)), rng.index(5) as u32);
     }
     let names = |rng: &mut Rng| -> Vec<String> {
-        (0..rng.below(30))
-            .map(|_| format!("Name{}", rng.below(60)))
+        (0..rng.index(30))
+            .map(|_| format!("Name{}", rng.index(60)))
             .collect()
     };
     m = m.with_ghosts(names(rng));
     m = m.with_datablocks(names(rng));
     m = m.with_channels(names(rng));
-    for i in 0..rng.below(3) {
+    for i in 0..rng.index(3) {
         m = m.with_mod(format!("mod{i}"), [rng.byte(); 32]);
     }
     m
 }
 
-fn mutate(rng: &mut Rng, original: &[u8]) -> Vec<u8> {
-    let mut bytes = original.to_vec();
-    match rng.below(6) {
-        0 => {
-            for _ in 0..1 + rng.below(4) {
-                if !bytes.is_empty() {
-                    let at = rng.below(bytes.len());
-                    bytes[at] ^= 1 << rng.below(8);
-                }
-            }
-        }
-        1 => {
-            for _ in 0..1 + rng.below(4) {
-                if !bytes.is_empty() {
-                    let at = rng.below(bytes.len());
-                    bytes[at] = rng.byte();
-                }
-            }
-        }
-        2 => bytes.truncate(rng.below(bytes.len() + 1)),
-        3 => bytes.extend((0..rng.below(40)).map(|_| rng.byte())),
-        4 => bytes = (0..rng.below(200)).map(|_| rng.byte()).collect(),
-        _ => {
-            if !bytes.is_empty() {
-                let at = rng.below(bytes.len());
-                bytes[at] = 0xff;
-            }
-        }
-    }
-    bytes
-}
-
 #[test]
 fn the_manifest_decoder_survives_a_hostile_stream() {
-    let mut rng = Rng(0x6d61_6e69_6665_7374);
+    let mut rng = Rng::star(0x6d61_6e69_6665_7374);
     let mut decoded = 0usize;
     for _ in 0..30_000 {
         let m = random_manifest(&mut rng);
@@ -724,7 +663,7 @@ fn the_manifest_decoder_survives_a_hostile_stream() {
         assert_eq!(back.mods, m.mods);
         // Every mutant is a value or an error, never a panic; a value is canonical (it encodes and reads back the same).
         for _ in 0..4 {
-            let bad = mutate(&mut rng, &bytes);
+            let bad = mutate::mutant(&mut rng, &bytes);
             if let Ok(read) = Manifest::decode(&bad) {
                 decoded += 1;
                 let again = read.encode().expect("a decoded manifest encodes");
@@ -737,11 +676,11 @@ fn the_manifest_decoder_survives_a_hostile_stream() {
 
 #[test]
 fn the_block_decoder_survives_a_hostile_stream() {
-    let mut rng = Rng(0x626c_6f63_6b21_2121);
+    let mut rng = Rng::star(0x626c_6f63_6b21_2121);
     for _ in 0..30_000 {
         let block = ConnectBlock {
             manifest: Some(random_manifest(&mut rng)),
-            ticket: (rng.below(2) == 0).then(|| (0..rng.below(40)).map(|_| rng.byte()).collect()),
+            ticket: (rng.index(2) == 0).then(|| (0..rng.index(40)).map(|_| rng.byte()).collect()),
             ..Default::default()
         };
         let mut w = BitWriter::new();
@@ -754,7 +693,7 @@ fn the_block_decoder_survives_a_hostile_stream() {
             Some(block)
         );
         for _ in 0..4 {
-            let bad = mutate(&mut rng, &bytes);
+            let bad = mutate::mutant(&mut rng, &bytes);
             let mut r = BitReader::new(&bad);
             let _ = ConnectBlock::read(&mut r);
         }
@@ -763,8 +702,8 @@ fn the_block_decoder_survives_a_hostile_stream() {
 
 #[test]
 fn hostile_requests_against_a_gated_server_never_panic_and_never_slip_through() {
-    let mut rng = Rng(0x6761_7465_6761_7465);
-    let t = table();
+    let mut rng = Rng::star(0x6761_7465_6761_7465);
+    let t = Table::torque();
     let mut server = gated();
     let good = {
         let digest = challenge_digest(&KEY, from(), 5);
@@ -778,7 +717,7 @@ fn hostile_requests_against_a_gated_server_never_panic_and_never_slip_through() 
         )
     };
     for _ in 0..20_000 {
-        let bad = mutate(&mut rng, &good);
+        let bad = mutate::mutant(&mut rng, &good);
         // Whatever the bytes, the answer is a reply, silence or a request for the host: and a request that reaches the host has
         // passed the gate, so its manifest is the server's.
         if let Handled::Request(request) = server.handle_datagram(&t, from(), &bad, 0) {

@@ -19,6 +19,8 @@ categories = ["network-programming", "game-development"]
 torque-bytes = { path = "../torque-bytes" }
 
 [dev-dependencies]
+# The seeded random source, the byte mutators and the fuzz rounds of the tests.
+torque-testkit = { path = "../torque-testkit" }
 # The digests of the wire goldens.
 sha2 = "0.10"
 # The benches.

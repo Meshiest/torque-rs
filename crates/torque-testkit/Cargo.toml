@@ -1,0 +1,25 @@
+[package]
+name = "torque-testkit"
+description = "Test support shared by the torque-rs crates: a seeded random source, fuzz loops, byte mutators, temporary folders, a fake clock and a zip builder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "testing", "fuzz", "gamedev"]
+categories = ["development-tools::testing", "game-development"]
+
+# Dev only: a crate lists this under `[dev-dependencies]` and nowhere else (`no_crate_ships_the_testkit` checks every
+# manifest). It names no workspace crate, so any crate, the leaves included, may dev-depend on it.
+
+[dependencies]
+# The zip builder (feature `zip`).
+zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
+
+[features]
+# `zip_of` and `zip_stored_of`.
+zip = ["dep:zip"]
+
+[lints]
+workspace = true

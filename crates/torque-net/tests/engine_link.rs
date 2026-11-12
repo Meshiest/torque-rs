@@ -269,7 +269,7 @@ fn a_packet_never_exceeds_the_datagram_size_of_its_tick() {
                 .send(m.clone(), Delivery::Reliable)
                 .expect("queued");
         }
-        let mut rng = Rng::new(seed);
+        let mut rng = Rng::star(seed);
         for t in 0..900 {
             let max = match t {
                 0..=2 => 1_200,
@@ -340,7 +340,7 @@ fn no_room_on_the_link_sends_nothing_and_loses_nothing() {
 /// datagram kind an unproven source can send, and it answers each datagram at most once.
 #[test]
 fn no_answer_is_larger_than_its_request() {
-    let mut rng = Rng::new(77);
+    let mut rng = Rng::star(77);
     let mut gate = Gate::new(GateConfig::new(SessionConfig::new(GAME)), KEY);
     let from = client_addr();
     let now = 5_000;

@@ -4,6 +4,7 @@
 //! patch reader. The counts are bounded for `cargo test`.
 
 use std::collections::VecDeque;
+use torque_testkit::Rng;
 
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
@@ -12,30 +13,6 @@ use torque_net::chunk::upstream::{UpstreamCaps, UpstreamReader, UpstreamServer};
 use torque_net::chunk::{
     ChannelLimits, ChunkReceiver, ChunkSender, Delivered, Kind, MAX_RANGES, WINDOW,
 };
-
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn chance(&mut self, percent: usize) -> bool {
-        self.below(100) < percent
-    }
-    fn some_bytes(&mut self, max: usize) -> Vec<u8> {
-        let n = self.below(max);
-        self.bytes(n)
-    }
-    fn bytes(&mut self, n: usize) -> Vec<u8> {
-        (0..n).map(|_| self.next() as u8).collect()
-    }
-}
 
 fn limits() -> Vec<ChannelLimits> {
     vec![
@@ -58,9 +35,9 @@ struct Fate {
 /// delivered packets reported lost anyway. Returns the packets sent.
 fn run(
     seed: u64,
-    loss: usize,
+    loss: u64,
     delay: usize,
-    false_loss: usize,
+    false_loss: u64,
     messages: &[(usize, Kind, Vec<u8>)],
 ) -> usize {
     run_with(limits(), seed, loss, delay, false_loss, messages).0
@@ -96,9 +73,9 @@ impl Reader for UpstreamReader {
 fn run_with(
     l: Vec<ChannelLimits>,
     seed: u64,
-    loss: usize,
+    loss: u64,
     delay: usize,
-    false_loss: usize,
+    false_loss: u64,
     messages: &[(usize, Kind, Vec<u8>)],
 ) -> (usize, usize) {
     let rx = ChunkReceiver::new(&l);
@@ -121,12 +98,12 @@ fn run_over(
     mut tx: ChunkSender,
     mut rx: impl Reader,
     seed: u64,
-    loss: usize,
+    loss: u64,
     delay: usize,
-    false_loss: usize,
+    false_loss: u64,
     messages: &[(usize, Kind, Vec<u8>)],
 ) -> (usize, usize) {
-    let mut rng = Rng(seed);
+    let mut rng = Rng::star(seed);
     let mut queued: Vec<VecDeque<(Kind, Vec<u8>)>> = vec![VecDeque::new(); l.len()];
     let mut todo: VecDeque<&(usize, Kind, Vec<u8>)> = messages.iter().collect();
     let mut got: Vec<Delivered> = Vec::new();
@@ -148,15 +125,15 @@ fn run_over(
         }
         if fates.len() < 25 && tx.has_work() {
             seq += 1;
-            let room = (100 + rng.below(900)) * 8;
+            let room = (100 + rng.index(900)) * 8;
             let mut w = BitWriter::new();
             tx.write(&mut w, seq, room);
             assert!(w.bits() <= room, "the section stays in its room");
             let lost = rng.chance(loss);
-            let d = rng.below(delay + 1);
+            let d = rng.index(delay + 1);
             fates.push(Fate {
                 arrives_at: round + d,
-                notify_at: round + d + 1 + rng.below(3),
+                notify_at: round + d + 1 + rng.index(3),
                 seq,
                 lost,
                 reported_lost: lost || rng.chance(false_loss),
@@ -201,7 +178,7 @@ fn blob(rng: &mut Rng, n: usize) -> Vec<u8> {
 
 #[test]
 fn messages_arrive_once_whole_and_in_order_over_a_link_that_loses_delays_and_lies() {
-    let mut rng = Rng(7);
+    let mut rng = Rng::star(7);
     for (seed, loss, delay, false_loss) in [
         (1, 0, 0, 0),
         (2, 10, 5, 0),
@@ -214,7 +191,7 @@ fn messages_arrive_once_whole_and_in_order_over_a_link_that_loses_delays_and_lie
                 let channel = i % 3;
                 let cap = [200_000, 50_000, 2_000][channel];
                 let kind = if i < 3 { Kind::Snapshot } else { Kind::Delta };
-                let n = 1 + rng.below(cap);
+                let n = 1 + rng.index(cap);
                 (channel, kind, blob(&mut rng, n))
             })
             .collect();
@@ -224,7 +201,7 @@ fn messages_arrive_once_whole_and_in_order_over_a_link_that_loses_delays_and_lie
 
 #[test]
 fn a_two_megabyte_blob_recovers_from_loss_and_reorder() {
-    let mut rng = Rng(11);
+    let mut rng = Rng::star(11);
     let data = blob(&mut rng, 2 << 20);
     let packets = run(21, 20, 10, 5, &[(0, Kind::Snapshot, data)]);
     // 2 MiB at 300 bytes a packet is about 7,000 packets, and a fifth of them go twice.
@@ -235,15 +212,15 @@ fn valid_sections(rng: &mut Rng) -> Vec<Vec<u8>> {
     let l = limits();
     let mut tx = ChunkSender::new(&l);
     for (c, cap) in [(0, 5_000), (1, 5_000), (2, 1_900)] {
-        let n = 1 + rng.below(cap);
+        let n = 1 + rng.index(cap);
         tx.enqueue(c, Kind::Snapshot, rng.bytes(n)).unwrap();
-        let n = 1 + rng.below(cap);
+        let n = 1 + rng.index(cap);
         tx.enqueue(c, Kind::Delta, rng.bytes(n)).unwrap();
     }
     let mut out = Vec::new();
     for seq in 1..=60 {
         let mut w = BitWriter::new();
-        tx.write(&mut w, seq, (50 + rng.below(1000)) * 8);
+        tx.write(&mut w, seq, (50 + rng.index(1000)) * 8);
         out.push(w.into_bytes());
         tx.on_notify(seq, rng.chance(70));
     }
@@ -254,21 +231,21 @@ fn valid_sections(rng: &mut Rng) -> Vec<Vec<u8>> {
 fn the_section_reader_never_panics_and_holds_a_bounded_amount() {
     let l = limits();
     let bound: usize = l.iter().map(|c| c.max_message * WINDOW).sum();
-    let mut rng = Rng(99);
+    let mut rng = Rng::star(99);
     for round in 0..300 {
         let mut rx = ChunkReceiver::new(&l);
         let valid = valid_sections(&mut rng);
         for s in &valid {
             let mut mutant = s.clone();
-            match rng.below(4) {
+            match rng.index(4) {
                 0 => {}
                 1 => {
-                    for _ in 0..1 + rng.below(4) {
-                        let i = rng.below(mutant.len());
-                        mutant[i] ^= 1 << rng.below(8);
+                    for _ in 0..1 + rng.index(4) {
+                        let i = rng.index(mutant.len());
+                        mutant[i] ^= 1 << rng.index(8);
                     }
                 }
-                2 => mutant.truncate(rng.below(mutant.len() + 1)),
+                2 => mutant.truncate(rng.index(mutant.len() + 1)),
                 _ => mutant = rng.some_bytes(400),
             }
             let _ = rx.read(&mut BitReader::new(&mutant), &mut Vec::new());
@@ -312,22 +289,22 @@ fn a_hostile_peer_cannot_make_a_message_fragment_without_bound() {
 
 #[test]
 fn the_patch_reader_never_panics() {
-    let mut rng = Rng(5);
+    let mut rng = Rng::star(5);
     let mut base = rng.bytes(3_000);
     for _ in 0..2_000 {
         let before = base.clone();
-        let patch_bytes = match rng.below(3) {
+        let patch_bytes = match rng.index(3) {
             0 => rng.some_bytes(80),
             1 => {
                 let mut new = base.clone();
-                for _ in 0..rng.below(10) {
-                    let i = rng.below(new.len());
+                for _ in 0..rng.index(10) {
+                    let i = rng.index(new.len());
                     new[i] = new[i].wrapping_add(1);
                 }
                 let mut p = patch::diff(&base, &new).unwrap_or_default();
                 if !p.is_empty() && rng.chance(50) {
-                    let i = rng.below(p.len());
-                    p[i] ^= 1 << rng.below(8);
+                    let i = rng.index(p.len());
+                    p[i] ^= 1 << rng.index(8);
                 }
                 p
             }
@@ -352,7 +329,7 @@ fn large_messages_under_loss_with_more_queued_complete_within_the_default_caps()
     let l = vec![ChannelLimits::new(1_000).with_max_message(2 << 20)];
     let default = torque_net::chunk::default_hold_cap(&l);
     assert_eq!(default, 8 << 20);
-    let mut rng = Rng(31);
+    let mut rng = Rng::star(31);
     let messages: Vec<(usize, Kind, Vec<u8>)> = (0..3)
         .map(|i| {
             let kind = if i == 0 { Kind::Snapshot } else { Kind::Delta };
@@ -412,7 +389,7 @@ fn a_client_to_server_message_of_four_megabytes_arrives_intact_over_a_link_losin
     // The roles swapped: the client's sender, the server's capped reader of that client.
     let l = vec![ChannelLimits::new(1_000).with_max_message(4 << 20)];
     let server = UpstreamServer::new(upstream_caps(8 << 20));
-    let mut rng = Rng(55);
+    let mut rng = Rng::star(55);
     let data = blob(&mut rng, 4 << 20);
     let tx = ChunkSender::new(&l).with_total_backlog(8 << 20);
     let (packets, peak) = run_over(
@@ -434,13 +411,13 @@ fn a_client_to_server_message_of_four_megabytes_arrives_intact_over_a_link_losin
 fn upstream_messages_on_several_channels_arrive_once_whole_and_in_order() {
     let l = limits();
     let server = UpstreamServer::new(upstream_caps(8 << 20));
-    let mut rng = Rng(77);
+    let mut rng = Rng::star(77);
     for (seed, loss, delay, false_loss) in [(1, 5, 4, 0), (2, 20, 12, 5), (3, 40, 20, 10)] {
         let messages: Vec<(usize, Kind, Vec<u8>)> = (0..12)
             .map(|i| {
                 let channel = i % 3;
                 let cap = [200_000, 50_000, 2_000][channel];
-                let n = 1 + rng.below(cap);
+                let n = 1 + rng.index(cap);
                 (channel, Kind::Delta, blob(&mut rng, n))
             })
             .collect();
@@ -496,7 +473,7 @@ fn hostile_connections_filling_the_shared_budget_do_not_get_an_honest_one_droppe
     }
     assert_eq!(server.held_total(), 750_000);
     // An honest connection sends 100,000 bytes over a lossy link: its first chunk finds the budget full.
-    let mut rng = Rng(3);
+    let mut rng = Rng::star(3);
     let data = blob(&mut rng, 100_000);
     let mut tx = ChunkSender::new(&l);
     tx.enqueue(0, Kind::Snapshot, data.clone()).unwrap();

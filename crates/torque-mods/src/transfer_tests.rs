@@ -2,6 +2,7 @@ use super::*;
 use crate::cache::CacheOwner;
 use crate::content::encode_content;
 use crate::offer::{FileOffer, encode_data, encode_offer};
+use torque_testkit::Rng;
 
 type Files = Vec<(String, Vec<u8>)>;
 
@@ -400,22 +401,9 @@ fn the_connect_section_says_nothing_of_what_the_client_has() {
     assert_eq!(r.d.begin_connect(caps(true)).encode().len(), 13);
 }
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-}
-
 #[test]
 fn the_receiver_survives_hostile_input() {
-    let mut rng = Rng(0x7a11_c0de_0bad_f00d);
+    let mut rng = Rng::new(0x7a11_c0de_0bad_f00d);
     let (offer, content) = offered("props", "1.0", &files(1), true);
     let good_offer = encode_offer(&[offer]);
     let good_data = encode_data(
@@ -431,21 +419,21 @@ fn the_receiver_survives_hostile_input() {
     for case in 0..20_000 {
         let r = rig(caps(true));
         // A run of messages, some mutated, some cut, in any order; the receiver also hands out commands as it goes.
-        for _ in 0..1 + rng.next() % 5 {
-            let mut bytes = match rng.next() % 4 {
+        for _ in 0..1 + rng.next_u64() % 5 {
+            let mut bytes = match rng.next_u64() % 4 {
                 0 => good_offer.clone(),
                 1 => good_data.clone(),
                 2 => cached.clone(),
-                _ => (0..(rng.next() % 300) as usize)
-                    .map(|_| rng.next() as u8)
+                _ => (0..(rng.next_u64() % 300) as usize)
+                    .map(|_| rng.next_u64() as u8)
                     .collect(),
             };
-            match rng.next() % 4 {
+            match rng.next_u64() % 4 {
                 0 if !bytes.is_empty() => {
-                    let at = (rng.next() as usize) % bytes.len();
-                    bytes[at] = rng.next() as u8;
+                    let at = (rng.next_u64() as usize) % bytes.len();
+                    bytes[at] = rng.next_u64() as u8;
                 }
-                1 => bytes.truncate((rng.next() as usize) % (bytes.len() + 1)),
+                1 => bytes.truncate((rng.next_u64() as usize) % (bytes.len() + 1)),
                 _ => {}
             }
             r.d.receive(&bytes);

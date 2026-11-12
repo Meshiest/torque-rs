@@ -197,7 +197,7 @@ The other four registries have a chapter each. In short:
 - **[Input sources](input-sources.md).** A device the engine does not read (a gamepad, a wheel, a motion sensor) is an
   `InputSource` the client polls once for each drawn frame (once per client pass with no window), and what it says reaches the
   action maps as TGE's `joystick<N>` buttons, axes and hats. A source that reads its device on a thread stamps its events with
-  the time, and the client gives each axis as its mean over the span since the last poll. `FakeInput` and `FakeClock` drive
+  the time, and the client gives each axis as its mean over the span since the last poll. `FakeInput` and `torque_testkit::FakeClock` drive
   sources in tests. `torque-plugin-gamepad` is one: gilrs natively, the browser's Gamepad API on the web.
 - **[Camera modes](camera-modes.md).** A `CameraMode` says where the eye is for a name (`first-person`, `third-person`, `orbit`
   are the engine's). The client has one in use; `setCameraMode(name)` or `CameraModes::set` switches, and the eye eases from the

@@ -1381,7 +1381,7 @@ fn challenge_replies_are_limited_per_address_and_in_all() {
 fn a_spoofed_flood_of_challenges_still_lets_an_honest_client_through_at_once() {
     // 20,000 spoofed challenge requests a second from random sources: an honest client's first or second try is answered.
     let (mut sv, t) = (server(), table());
-    let mut rng = crate::testrng::TestRng::new(0x2545_f491_4f6c_dd1d);
+    let mut rng = torque_testkit::Rng::new(0x2545_f491_4f6c_dd1d);
     let honest = addr(1, 5000);
     for second in 0..3u32 {
         let mut tries = 0;

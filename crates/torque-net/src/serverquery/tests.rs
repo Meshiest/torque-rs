@@ -1,6 +1,7 @@
 use super::*;
 use crate::huffman::tests::sample_frequencies;
 use std::net::Ipv4Addr;
+use torque_testkit::Rng;
 
 fn table() -> Table {
     Table::from_frequencies(&sample_frequencies()).expect("a table")
@@ -20,24 +21,6 @@ fn prof() -> QueryProfile {
 
 fn req(kind: Kind, flags: u8, key: u32) -> Request {
     Request { kind, flags, key }
-}
-
-/// A seeded xorshift, so a failure repeats.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn bytes(&mut self, n: usize) -> Vec<u8> {
-        (0..n).map(|_| (self.next() >> 40) as u8).collect()
-    }
 }
 
 #[test]
@@ -398,24 +381,24 @@ fn a_padded_request_reads_as_the_request_it_pads() {
 #[test]
 fn fuzz_the_decoders_never_panic_and_the_writers_round_trip() {
     let t = table();
-    let mut rng = Rng(0x05ee_d1a7);
+    let mut rng = Rng::star(0x05ee_d1a7);
     for _ in 0..20_000 {
-        let len = rng.below(64);
+        let len = rng.index(64);
         let mut bytes = rng.bytes(len);
         if let Some(first) = bytes.first_mut() {
-            *first = [14u8, 16, 18, 20, 22, 24][rng.below(6)];
+            *first = [14u8, 16, 18, 20, 22, 24][rng.index(6)];
         }
         let _ = parse_request(&bytes);
         let _ = parse_ping_response(&t, &bytes);
         let _ = parse_info_response(&t, &bytes);
     }
     for _ in 0..2_000 {
-        let flags = (rng.next() >> 50) as u8 & FLAG_NO_STRING_COMPRESS;
-        let r = req(Kind::Info, flags, rng.next() as u32);
+        let flags = (rng.next_u64() >> 50) as u8 & FLAG_NO_STRING_COMPRESS;
+        let r = req(Kind::Info, flags, rng.next_u64() as u32);
         // Strings without NULs (a C string ends at one), at most 255 bytes (Huffman's `writeString(s, 255)` cuts there; a C string's
         // length is its low byte, so a longer one would not read back the same).
         let mut s = |n: usize| -> Vec<u8> {
-            let len = rng.below(n);
+            let len = rng.index(n);
             rng.bytes(len).into_iter().map(|b| b.max(1)).collect()
         };
         let f = InfoFields {

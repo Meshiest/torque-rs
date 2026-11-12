@@ -3,6 +3,7 @@
 //! fuzz job); the seed is fixed so a failure repeats.
 
 use std::net::SocketAddr;
+use torque_testkit::{Rng, fuzz, mutate};
 
 use torque_net::bits::BitReader;
 use torque_net::cap::{NET_MAX_PENDING_CONNECTS, NET_PENDING_PER_ADDR};
@@ -15,88 +16,10 @@ use torque_net::huffman::Table;
 use torque_net::profile::HandshakeProfile;
 use torque_net::protocol::{Protocol, RateConfig, Role};
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        ((self.next() >> 32) as usize) % n.max(1)
-    }
-    fn byte(&mut self) -> u8 {
-        (self.next() >> 40) as u8
-    }
-}
-
 const KEY: [u8; 16] = [7; 16];
-
-fn table() -> Table {
-    let mut f = [0u32; 256];
-    for (i, slot) in f.iter_mut().enumerate().take(127) {
-        *slot = match i as u8 {
-            b'a'..=b'z' => 300 + (i as u32 * 37) % 900,
-            b' ' => 2800,
-            b'A'..=b'Z' => 20 + (i as u32 * 13) % 90,
-            _ => (i as u32 * 3) % 5,
-        };
-    }
-    Table::from_frequencies(&f).expect("a table")
-}
 
 fn addr(n: u32) -> SocketAddr {
     SocketAddr::from(([10, (n >> 8) as u8, n as u8, 1], 4000 + (n % 7) as u16))
-}
-
-/// A mutant of `original`: bits flipped, bytes replaced, truncated, extended or spliced, or pure noise.
-fn mutate(rng: &mut Rng, original: &[u8]) -> Vec<u8> {
-    let mut bytes = original.to_vec();
-    match rng.below(7) {
-        0 => {
-            for _ in 0..1 + rng.below(4) {
-                if !bytes.is_empty() {
-                    let at = rng.below(bytes.len());
-                    bytes[at] ^= 1 << rng.below(8);
-                }
-            }
-        }
-        1 => {
-            for _ in 0..1 + rng.below(4) {
-                if !bytes.is_empty() {
-                    let at = rng.below(bytes.len());
-                    bytes[at] = rng.byte();
-                }
-            }
-        }
-        2 => bytes.truncate(rng.below(bytes.len() + 1)),
-        3 => {
-            for _ in 0..rng.below(40) {
-                bytes.push(rng.byte());
-            }
-        }
-        4 => {
-            bytes = (0..rng.below(120)).map(|_| rng.byte()).collect();
-        }
-        5 => {
-            if bytes.len() > 4 {
-                let at = rng.below(bytes.len() - 1);
-                bytes.remove(at);
-            }
-        }
-        _ => {
-            if !bytes.is_empty() {
-                let at = rng.below(bytes.len());
-                bytes[at] = 0xff;
-                if at + 1 < bytes.len() {
-                    bytes[at + 1] = 0xff;
-                }
-            }
-        }
-    }
-    bytes
 }
 
 fn fields() -> ConnectFields {
@@ -138,7 +61,7 @@ fn check_protocol(p: &Protocol) {
 
 #[test]
 fn hostile_packets_never_panic_the_packet_layer_or_break_its_invariants() {
-    let mut rng = Rng(0xfeed_face_cafe_beef);
+    let mut rng = Rng::star(0xfeed_face_cafe_beef);
     let mut seeds: Vec<Vec<u8>> = Vec::new();
     // A live exchange gives the valid packets to mutate.
     let mut a = Protocol::new(Role::Server, 5, RateConfig::standard(), 0);
@@ -164,20 +87,20 @@ fn hostile_packets_never_panic_the_packet_layer_or_break_its_invariants() {
     for round in 0..30_000u32 {
         let mut p = Protocol::new(Role::Server, 5, RateConfig::standard(), 0);
         // Put the state somewhere interesting first: some packets sent, some received.
-        let warm = rng.below(25);
+        let warm = rng.index(25);
         for i in 0..warm {
             let mut w = p.begin_data_packet(i as u32);
             w.write_u8(1);
-            if rng.below(2) == 0 {
-                let seed = &seeds[rng.below(seeds.len())];
+            if rng.index(2) == 0 {
+                let seed = &seeds[rng.index(seeds.len())];
                 let mut r = BitReader::new(seed);
                 let _ = p.receive(&mut r, i as u32);
             }
         }
-        let seed = &seeds[rng.below(seeds.len())];
-        let bytes = mutate(&mut rng, seed);
-        let bits = if rng.below(4) == 0 {
-            rng.below(bytes.len() * 8 + 1)
+        let seed = &seeds[rng.index(seeds.len())];
+        let bytes = mutate::mutant(&mut rng, seed);
+        let bits = if rng.index(4) == 0 {
+            rng.index(bytes.len() * 8 + 1)
         } else {
             bytes.len() * 8
         };
@@ -237,7 +160,7 @@ fn every_truncation_of_a_valid_game_packet_is_safe_at_every_bit_length() {
         let _ = copy.receive(&mut r, 10);
         check_protocol(&copy);
         let _ = decode_datagram(
-            &table(),
+            &Table::torque(),
             &HandshakeProfile::default(),
             &packet[..bits.div_ceil(8)],
         );
@@ -246,8 +169,8 @@ fn every_truncation_of_a_valid_game_packet_is_safe_at_every_bit_length() {
 
 #[test]
 fn hostile_datagrams_never_panic_the_handshake_and_never_create_state_without_the_digest() {
-    let t = table();
-    let mut rng = Rng(0x0123_4567_89ab_cdef);
+    let t = Table::torque();
+    let mut rng = Rng::star(0x0123_4567_89ab_cdef);
     let mut config = ServerConfig::new(8);
     config.connect_requests_per_src_per_s = 10_000;
     let mut server = Server::new(config, KEY);
@@ -274,16 +197,16 @@ fn hostile_datagrams_never_panic_the_handshake_and_never_create_state_without_th
     let mut game = 0u32;
     for round in 0..30_000u32 {
         // Spoofed sources too: the digest is for `real` only.
-        let from = if rng.below(2) == 0 {
+        let from = if rng.index(2) == 0 {
             real
         } else {
-            addr(rng.below(400) as u32)
+            addr(rng.index(400) as u32)
         };
-        let seed = &seeds[rng.below(seeds.len())];
-        let bytes = if rng.below(8) == 0 {
-            (0..rng.below(1600)).map(|_| rng.byte()).collect()
+        let seed = &seeds[rng.index(seeds.len())];
+        let bytes = if rng.index(8) == 0 {
+            (0..rng.index(1600)).map(|_| rng.byte()).collect()
         } else {
-            mutate(&mut rng, seed)
+            mutate::mutant(&mut rng, seed)
         };
         let now = round / 3;
         match server.handle_datagram(&t, from, &bytes, now) {
@@ -302,7 +225,7 @@ fn hostile_datagrams_never_panic_the_handshake_and_never_create_state_without_th
                     );
                 }
                 // The host accepts about half of them.
-                if rng.below(2) == 0 {
+                if rng.index(2) == 0 {
                     let _ = server.finish_request(&t, *req, Decision::Accept, now);
                 }
             }
@@ -327,7 +250,7 @@ fn hostile_datagrams_never_panic_the_handshake_and_never_create_state_without_th
 /// never locks a new client out.
 #[test]
 fn the_pending_caps_hold_under_a_flood_of_valid_requests_from_many_sources() {
-    let t = table();
+    let t = Table::torque();
     let mut server = Server::new(ServerConfig::new(500), KEY);
     let mut accepted = 0;
     for i in 0..2000u32 {
@@ -370,7 +293,7 @@ fn the_pending_caps_hold_under_a_flood_of_valid_requests_from_many_sources() {
 
 #[test]
 fn an_in_memory_session_runs_for_a_minute_of_virtual_time_without_a_drop() {
-    let t = table();
+    let t = Table::torque();
     let mut server = Server::new(ServerConfig::new(8), KEY);
     let from = addr(3);
     let mut client = joined(&mut server, &t, from, 0x1234);
@@ -426,14 +349,6 @@ fn an_in_memory_session_runs_for_a_minute_of_virtual_time_without_a_drop() {
     ));
 }
 
-/// How many hostile client packets the upstream fuzz reads: 20,000 for `just test`, or the number in `TORQUE_FUZZ_UPSTREAM`.
-fn upstream_rounds() -> usize {
-    std::env::var("TORQUE_FUZZ_UPSTREAM")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000)
-}
-
 /// Hostile bytes where a client's upstream section goes, read by several connections of one server under small caps: random
 /// bytes, mutants of sections an honest client wrote, and chunks with crafted fields (far offsets, huge totals, lengths past the
 /// message). Nothing panics, no connection holds more than its cap, all of them together never hold more than the server's, the
@@ -463,7 +378,7 @@ fn upstream_section_fuzz_never_panics_and_the_caps_hold() {
         message_burst: 50,
     };
     let server = UpstreamServer::new(caps);
-    let mut rng = Rng(0x5eed_u64);
+    let mut rng = Rng::star(0x5eed_u64);
     let mut readers: Vec<UpstreamReader> = (0..CONNS).map(|_| server.connection(&limits)).collect();
     // An honest client of each connection, which sends a packet now and then among the hostile ones.
     let mut senders: Vec<ChunkSender> = (0..CONNS).map(|_| ChunkSender::new(&limits)).collect();
@@ -475,71 +390,71 @@ fn upstream_section_fuzz_never_panics_and_the_caps_hold() {
     let mut tx = ChunkSender::new(&limits);
     for c in 0..3 {
         for _ in 0..3 {
-            let n = 1 + rng.below([5_000, 5_000, 1_900][c]);
+            let n = 1 + rng.index([5_000, 5_000, 1_900][c]);
             let data: Vec<u8> = (0..n).map(|_| rng.byte()).collect();
             tx.enqueue(c, Kind::Delta, data).unwrap();
         }
     }
     for seq in 1..=120u32 {
         let mut w = BitWriter::new();
-        tx.write(&mut w, seq, (50 + rng.below(1_000)) * 8);
+        tx.write(&mut w, seq, (50 + rng.index(1_000)) * 8);
         honest.push(w.into_bytes());
-        tx.on_notify(seq, rng.below(100) < 70);
+        tx.on_notify(seq, rng.index(100) < 70);
     }
 
-    let rounds = upstream_rounds();
+    let rounds = fuzz::rounds("TORQUE_FUZZ_UPSTREAM", 20_000) as usize;
     for round in 0..rounds {
-        now = now.wrapping_add(rng.below(40) as u32);
-        let at = rng.below(CONNS);
-        let bytes = match rng.below(5) {
-            0 => (0..rng.below(300)).map(|_| rng.byte()).collect(),
+        now = now.wrapping_add(rng.index(40) as u32);
+        let at = rng.index(CONNS);
+        let bytes = match rng.index(5) {
+            0 => (0..rng.index(300)).map(|_| rng.byte()).collect(),
             1 | 2 => {
-                let pick = rng.below(honest.len());
-                mutate(&mut rng, &honest[pick])
+                let pick = rng.index(honest.len());
+                mutate::mutant(&mut rng, &honest[pick])
             }
             3 => {
                 let tx = &mut senders[at];
                 if tx.is_idle() {
-                    let channel = 1 + rng.below(2);
-                    let n = 1 + rng.below(if channel == 1 { 30_000 } else { 1_500 });
+                    let channel = 1 + rng.index(2);
+                    let n = 1 + rng.index(if channel == 1 { 30_000 } else { 1_500 });
                     let data: Vec<u8> = (0..n).map(|_| rng.byte()).collect();
                     tx.enqueue(channel, Kind::Delta, data).unwrap();
                 }
                 let mut w = BitWriter::new();
-                tx.write(&mut w, round as u32 + 1, (100 + rng.below(900)) * 8);
+                tx.write(&mut w, round as u32 + 1, (100 + rng.index(900)) * 8);
                 tx.on_notify(round as u32 + 1, true);
                 w.into_bytes()
             }
             _ => {
                 // Chunks with crafted fields: every one is well formed to the reader and then judged by its caps.
-                let channel = rng.below(3);
+                let channel = rng.index(3);
                 let l = limits[channel];
                 let size_bits = bit_length(l.max_message as u32);
                 let mut w = BitWriter::new();
                 w.write_flag(true);
-                for k in 0..1 + rng.below(6) {
-                    let total = match rng.below(4) {
-                        0 => 1 + rng.below(l.max_message),
+                for k in 0..1 + rng.index(6) {
+                    let total = match rng.index(4) {
+                        0 => 1 + rng.index(l.max_message),
                         1 => l.max_message,
-                        2 => 1 + rng.below(2_000),
-                        _ => rng.next() as usize & ((1 << size_bits) - 1),
+                        2 => 1 + rng.index(2_000),
+                        _ => rng.next_u64() as usize & ((1 << size_bits) - 1),
                     };
-                    let offset = if rng.below(2) == 0 {
-                        rng.below(total.max(1))
+                    let offset = if rng.index(2) == 0 {
+                        rng.index(total.max(1))
                     } else {
-                        rng.next() as usize & ((1 << size_bits) - 1)
+                        rng.next_u64() as usize & ((1 << size_bits) - 1)
                     };
-                    let len = 1 + rng.below(40);
+                    let len = 1 + rng.index(40);
                     w.write_bits(channel as u32, id_bits(3));
-                    w.write_flag(rng.below(2) == 0);
-                    w.write_bits(rng.below(7) as u32, 16);
+                    w.write_flag(rng.index(2) == 0);
+                    w.write_bits(rng.index(7) as u32, 16);
                     w.write_bits(total as u32, size_bits);
                     w.write_bits(offset as u32, size_bits);
                     w.write_bits(len as u32, CHUNK_LEN_BITS);
                     for _ in 0..len {
                         w.write_u8(rng.byte());
                     }
-                    w.write_flag(k % 7 != 6 && rng.below(3) != 0);
+                    w.write_flag(k % 7 != 6 && rng.index(3) != 0);
                 }
                 w.into_bytes()
             }
@@ -558,16 +473,16 @@ fn upstream_section_fuzz_never_panics_and_the_caps_hold() {
                 senders[at] = ChunkSender::new(&limits);
             }
         }
-        if rng.below(7) == 0 {
+        if rng.index(7) == 0 {
             // The host's tick: a connection that was evicted or sat on a stale message is dropped.
-            let at = rng.below(CONNS);
+            let at = rng.index(CONNS);
             if readers[at].sweep(now).is_err() {
                 readers[at] = server.connection(&limits);
                 senders[at] = ChunkSender::new(&limits);
             }
         }
-        if rng.below(500) == 0 {
-            let at = rng.below(CONNS);
+        if rng.index(500) == 0 {
+            let at = rng.index(CONNS);
             readers[at] = server.connection(&limits);
             senders[at] = ChunkSender::new(&limits);
         }

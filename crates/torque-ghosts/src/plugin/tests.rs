@@ -3,6 +3,7 @@
 //! write them (the derives' own tests are torque-engine's).
 
 use std::collections::HashMap;
+use torque_testkit::Rng;
 
 use torque_net::NetError;
 use torque_net::bits::{BitReader, BitWriter};
@@ -450,18 +451,6 @@ fn a_string_past_its_cap_and_a_count_past_its_cap_are_refused() {
     ));
 }
 
-/// A small xorshift, so the fuzz runs the same everywhere.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-}
-
 /// A record whose every field asks for an allocation: strings, a long list of strings and a list of lists.
 #[derive(Debug, Clone, PartialEq, Default)]
 struct Greedy {
@@ -514,12 +503,12 @@ fn hostile_bytes_never_panic_and_never_allocate_past_the_caps() {
         )),
     ];
     let table = Table::torque();
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
     let mut read_ok = 0;
     for round in 0..20_000 {
-        let len = (rng.next() % 64) as usize;
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
-        let bits = bytes.len() * 8 - (rng.next() % 8) as usize * usize::from(len > 0);
+        let len = (rng.next_u64() % 64) as usize;
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
+        let bits = bytes.len() * 8 - (rng.next_u64() % 8) as usize * usize::from(len > 0);
         let class = classes[round % classes.len()];
         let mut r = BitReader::with_bit_len(&bytes, bits);
         r.enable_string_buffer();

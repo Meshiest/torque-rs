@@ -2,6 +2,7 @@
 //! class-directed read through `torque_net::control`, the nested Player data, the compression point they set and the caps.
 
 use torque_net::control::{CameraPacketData, ControlData, ControlReader, checksum};
+use torque_testkit::Rng;
 
 use super::tge_shapes::{canonical, ghost_bits, later_ctx, with_link};
 use super::*;
@@ -224,28 +225,14 @@ fn nested_control_objects_are_capped() {
 fn hostile_tails_never_panic() {
     let gb = widths().ghost_bits;
     let classes = class_of;
-    let mut rng = Rng(0x1234_5678_9abc_def0);
+    let mut rng = Rng::new(0x1234_5678_9abc_def0);
     for _ in 0..2000 {
-        let len = (rng.next() % 200) as usize;
-        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        let len = (rng.next_u64() % 200) as usize;
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
         for index in [1, 5, 7, 9] {
             let mut tails = TgeTails::new(&classes);
             let _ = tails.read_control(index, &mut BitReader::new(&bytes), gb, &mut free_charge());
         }
-    }
-}
-
-/// A small deterministic generator (xorshift64).
-pub(super) struct Rng(pub u64);
-
-impl Rng {
-    pub(super) fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
     }
 }
 

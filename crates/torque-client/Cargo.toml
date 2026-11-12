@@ -59,6 +59,8 @@ web-sys = { version = "0.3", features = ["BinaryType", "MessageEvent", "WebSocke
 wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
+# The fake clock of the input source tests.
+torque-testkit = { path = "../torque-testkit" }
 # A `Vm` with the game classes installed (`torque_game::testing::vm`).
 torque-game = { path = "../torque-game", features = ["testing"] }
 criterion = { workspace = true }

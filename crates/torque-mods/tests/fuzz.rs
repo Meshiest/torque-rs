@@ -11,18 +11,11 @@ mod common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use common::{Rng, zip_of};
 use torque_engine::Engine;
 use torque_mods::{
     Candidate, CandidateKind, ModLayout, ModLimits, ModPackage, ModStages, ModTomlLayout, NameInfo,
 };
-
-fn count() -> u64 {
-    std::env::var("TORQUE_FUZZ_MODS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(2_000)
-}
+use torque_testkit::{Rng, fuzz, mutate, zip_of};
 
 fn limits() -> ModLimits {
     ModLimits {
@@ -61,40 +54,18 @@ fn alphabet(rng: &mut Rng) -> &'static str {
         "a", "A", "b", "..", ".", "con", "nul", "COM1", "x.cs", "x.dso", "mod.toml", "art", "é",
         "\u{0}", "\\", ":", " ", "*", "?", "~", "$", "a.",
     ];
-    PARTS[rng.below(PARTS.len())]
+    PARTS[rng.index(PARTS.len())]
 }
 
 fn random_name(rng: &mut Rng) -> String {
     let mut name = String::new();
-    for _ in 0..1 + rng.below(6) {
+    for _ in 0..1 + rng.index(6) {
         name.push_str(alphabet(rng));
-        if rng.below(3) > 0 {
+        if rng.index(3) > 0 {
             name.push('/');
         }
     }
     name
-}
-
-fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
-    let mut bytes = seed.to_vec();
-    match rng.below(6) {
-        0 => bytes.truncate(rng.below(bytes.len() + 1)),
-        1 => bytes.extend((0..rng.below(64)).map(|_| rng.next() as u8)),
-        2 => {
-            let at = rng.below(bytes.len() + 1);
-            bytes.splice(at..at, (0..rng.below(32)).map(|_| rng.next() as u8));
-        }
-        _ => {
-            for _ in 0..1 + rng.below(8) {
-                if bytes.is_empty() {
-                    break;
-                }
-                let at = rng.below(bytes.len());
-                bytes[at] = rng.next() as u8;
-            }
-        }
-    }
-    bytes
 }
 
 /// What an accepted package must satisfy.
@@ -120,15 +91,15 @@ fn check(package: &ModPackage, limits: &ModLimits) {
 /// Runs one case; true when a package was accepted (so the checks ran on something).
 fn one_case(case: u64, seeds: &[Vec<u8>], limits: &ModLimits, engine: &Engine) -> bool {
     let mut accepted = false;
-    let mut rng = Rng(0x9e37_79b9_7f4a_7c15 ^ case.wrapping_mul(0x2545_f491_4f6c_dd1d));
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15 ^ case.wrapping_mul(0x2545_f491_4f6c_dd1d));
     for _ in 0..4 {
-        rng.next();
+        rng.next_u64();
     }
-    match rng.below(20) {
+    match rng.index(20) {
         0..=5 => {
             // Random bytes, sometimes behind a zip header.
-            let mut bytes: Vec<u8> = (0..rng.below(2048)).map(|_| rng.next() as u8).collect();
-            if rng.below(2) == 0 {
+            let mut bytes: Vec<u8> = (0..rng.index(2048)).map(|_| rng.next_u64() as u8).collect();
+            if rng.index(2) == 0 {
                 bytes.splice(0..0, *b"PK\x03\x04");
             }
             if let Ok(package) = ModPackage::from_zip(bytes, limits) {
@@ -137,18 +108,18 @@ fn one_case(case: u64, seeds: &[Vec<u8>], limits: &ModLimits, engine: &Engine) -
             }
         }
         6..=14 => {
-            let seed = &seeds[rng.below(seeds.len())];
-            if let Ok(package) = ModPackage::from_zip(mutate(&mut rng, seed), limits) {
+            let seed = &seeds[rng.index(seeds.len())];
+            if let Ok(package) = ModPackage::from_zip(mutate::mutant(&mut rng, seed), limits) {
                 check(&package, limits);
                 accepted = true;
             }
         }
         15..=17 => {
-            let files: Vec<(String, Vec<u8>)> = (0..rng.below(12))
+            let files: Vec<(String, Vec<u8>)> = (0..rng.index(12))
                 .map(|_| {
-                    let top = if rng.below(10) == 0 { 100_000 } else { 400 };
-                    let size = rng.below(top);
-                    (random_name(&mut rng), vec![rng.next() as u8; size])
+                    let top = if rng.index(10) == 0 { 100_000 } else { 400 };
+                    let size = rng.index(top);
+                    (random_name(&mut rng), vec![rng.next_u64() as u8; size])
                 })
                 .collect();
             if let Ok(package) = ModPackage::from_files(files, limits) {
@@ -158,11 +129,11 @@ fn one_case(case: u64, seeds: &[Vec<u8>], limits: &ModLimits, engine: &Engine) -
         }
         _ => {
             // A random manifest through the default layout.
-            let text: Vec<u8> = if rng.below(2) == 0 {
-                (0..rng.below(300)).map(|_| rng.next() as u8).collect()
+            let text: Vec<u8> = if rng.index(2) == 0 {
+                (0..rng.index(300)).map(|_| rng.next_u64() as u8).collect()
             } else {
                 let mut t = b"id = \"x\"\nversion = \"1\"\n".to_vec();
-                t.extend(mutate(&mut rng, b"requires = [\"a >= 1\"]\nload_after = [\"b\"]\n[scripts]\nserver = [\"s.cs\"]\n[extra]\np = 1\n"));
+                t.extend(mutate::mutant(&mut rng, b"requires = [\"a >= 1\"]\nload_after = [\"b\"]\n[scripts]\nserver = [\"s.cs\"]\n[extra]\np = 1\n"));
                 t
             };
             let files = vec![
@@ -201,7 +172,8 @@ fn hostile_mods_never_panic() {
         .expect("an empty engine");
     let mut panics = Vec::new();
     let mut accepted = 0u64;
-    for case in 0..count() {
+    let cases = fuzz::rounds("TORQUE_FUZZ_MODS", 2_000);
+    for case in 0..cases {
         match catch_unwind(AssertUnwindSafe(|| {
             one_case(case, &seeds, &limits, &engine)
         })) {
@@ -218,9 +190,9 @@ fn hostile_mods_never_panic() {
     assert!(panics.is_empty(), "panics in cases {panics:?}");
     // The cases reach the checks: a good share of them are accepted.
     assert!(
-        accepted * 10 >= count(),
+        accepted * 10 >= cases,
         "only {accepted} of {} cases were accepted",
-        count()
+        cases
     );
-    println!("{} cases, {accepted} accepted, 0 panics", count());
+    println!("{cases} cases, {accepted} accepted, 0 panics");
 }

@@ -6,41 +6,31 @@ use torque_net::NetError;
 use torque_net::bits::{Affine, BitReader, BitWriter, ColorI, bit_length};
 use torque_net::huffman::Table;
 use torque_net::strcoder::{read_string, write_string};
+use torque_testkit::Rng;
 
 const ROUNDS: usize = 100_000;
 
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        // xorshift64*
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
-    }
-    fn u32(&mut self) -> u32 {
-        (self.next() >> 32) as u32
-    }
-    fn below(&mut self, n: u32) -> u32 {
-        self.u32() % n.max(1)
-    }
-    fn bool(&mut self) -> bool {
-        self.next() & 1 != 0
-    }
+/// The test floats: any kind, and only finite ones.
+trait FloatRng {
     /// A float of any kind: finite of any scale, a small one, zero, NaN or infinite.
+    fn float(&mut self) -> f32;
+    fn finite(&mut self) -> f32;
+}
+
+impl FloatRng for Rng {
     fn float(&mut self) -> f32 {
         match self.below(8) {
-            0 => f32::from_bits(self.u32()),
+            0 => f32::from_bits(self.next_u32()),
             1 => 0.0,
             2 => f32::NAN,
             3 => f32::INFINITY,
-            4 => (self.u32() as f32 / u32::MAX as f32) * 2.0 - 1.0,
+            4 => (self.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0,
             5 => (self.below(2000) as f32 - 1000.0) / 8.0,
             6 => (self.below(200_000) as f32 - 100_000.0) * 0.37,
-            _ => (self.u32() as f32 / u32::MAX as f32) * 100.0,
+            _ => (self.next_u32() as f32 / u32::MAX as f32) * 100.0,
         }
     }
+
     fn finite(&mut self) -> f32 {
         loop {
             let f = self.float();
@@ -54,7 +44,7 @@ impl Rng {
 /// Some junk bits to write before a field so it starts at any bit offset.
 fn pad(w: &mut BitWriter, rng: &mut Rng) -> u8 {
     let n = rng.below(8) as u8;
-    w.write_bits(rng.u32(), n);
+    w.write_bits(rng.next_u32(), n);
     n
 }
 
@@ -79,18 +69,18 @@ fn frequencies() -> [u32; 256] {
 
 #[test]
 fn int_n_flags_and_raw_words_round_trip() {
-    let mut rng = Rng(0x1234_5678_9abc_def1);
+    let mut rng = Rng::star(0x1234_5678_9abc_def1);
     for _ in 0..ROUNDS {
         let mut w = BitWriter::new();
         let before = pad(&mut w, &mut rng);
         let n = rng.below(33) as u8;
-        let v = rng.u32();
+        let v = rng.next_u32();
         w.write_bits(v, n);
-        let flag = rng.bool();
+        let flag = rng.flip();
         w.write_flag(flag);
-        let byte = rng.u32() as u8;
+        let byte = rng.next_u32() as u8;
         w.write_u8(byte);
-        let word = rng.u32();
+        let word = rng.next_u32();
         w.write_u32(word);
         let f = rng.float();
         w.write_f32(f);
@@ -110,12 +100,12 @@ fn int_n_flags_and_raw_words_round_trip() {
 
 #[test]
 fn ranged_integers_round_trip_in_range_and_wrap_out_of_it() {
-    let mut rng = Rng(0x0bad_cafe_dead_beef);
+    let mut rng = Rng::star(0x0bad_cafe_dead_beef);
     for _ in 0..ROUNDS {
-        let lo = rng.u32() >> rng.below(32);
-        let span = rng.u32() >> rng.below(32);
+        let lo = rng.next_u32() >> rng.below(32);
+        let span = rng.next_u32() >> rng.below(32);
         let hi = lo.saturating_add(span);
-        let v = lo + rng.below(hi - lo + 1).min(hi - lo);
+        let v = lo + rng.below(u64::from(hi - lo) + 1) as u32;
         let mut w = BitWriter::new();
         let before = pad(&mut w, &mut rng);
         w.write_ranged_u32(v, lo, hi);
@@ -124,7 +114,7 @@ fn ranged_integers_round_trip_in_range_and_wrap_out_of_it() {
             usize::from(before) + usize::from(bit_length(hi - lo))
         );
         // Out of range: the low bits survive, nothing panics.
-        let wild = rng.u32();
+        let wild = rng.next_u32();
         w.write_ranged_u32(wild, lo, hi);
         let bytes = w.into_bytes();
         let mut r = BitReader::new(&bytes);
@@ -145,7 +135,7 @@ fn ranged_integers_round_trip_in_range_and_wrap_out_of_it() {
 
 #[test]
 fn ranged_floats_come_back_within_one_step_and_re_encode_to_the_same_bits() {
-    let mut rng = Rng(0x7777_1111_2222_3333);
+    let mut rng = Rng::star(0x7777_1111_2222_3333);
     for _ in 0..ROUNDS {
         let min = rng.finite().clamp(-1.0e6, 1.0e6);
         let max = min + rng.finite().abs().clamp(0.001, 1.0e6);
@@ -191,7 +181,7 @@ fn pad_same(w: &mut BitWriter, n: u8) {
 
 #[test]
 fn signed_ints_and_unit_floats_round_trip() {
-    let mut rng = Rng(0x5555_aaaa_5555_aaaa);
+    let mut rng = Rng::star(0x5555_aaaa_5555_aaaa);
     for _ in 0..ROUNDS {
         let bits = 2 + rng.below(31) as u8;
         let limit = if bits == 32 {
@@ -199,7 +189,7 @@ fn signed_ints_and_unit_floats_round_trip() {
         } else {
             (1i32 << (bits - 1)) - 1
         };
-        let v = (rng.u32() as i64 % (2 * i64::from(limit) + 1) - i64::from(limit)) as i32;
+        let v = (rng.next_u32() as i64 % (2 * i64::from(limit) + 1) - i64::from(limit)) as i32;
         let mut w = BitWriter::new();
         let before = pad(&mut w, &mut rng);
         w.write_signed_int(v, bits);
@@ -234,15 +224,15 @@ fn signed_ints_and_unit_floats_round_trip() {
 
 #[test]
 fn colors_normals_and_transforms_round_trip() {
-    let mut rng = Rng(0x0123_4567_89ab_cdef);
+    let mut rng = Rng::star(0x0123_4567_89ab_cdef);
     for _ in 0..ROUNDS {
         let mut w = BitWriter::new();
         let before = pad(&mut w, &mut rng);
         let c = ColorI {
-            r: rng.u32() as u8,
-            g: rng.u32() as u8,
-            b: rng.u32() as u8,
-            a: rng.u32() as u8,
+            r: rng.next_u32() as u8,
+            g: rng.next_u32() as u8,
+            b: rng.next_u32() as u8,
+            a: rng.next_u32() as u8,
         };
         w.write_color_i(c);
         let v = [rng.finite(), rng.finite(), rng.finite()];
@@ -255,7 +245,7 @@ fn colors_normals_and_transforms_round_trip() {
         w.write_normal_vector(unit, 8);
         let q = [rng.finite() % 1.0, rng.finite() % 1.0, rng.finite() % 1.0];
         let sum: f32 = q.iter().map(|x| x * x).sum();
-        let wsign = if rng.bool() { 1.0f32 } else { -1.0 };
+        let wsign = if rng.flip() { 1.0f32 } else { -1.0 };
         let t = Affine {
             position: [rng.float(), rng.float(), rng.float()],
             quaternion: [q[0], q[1], q[2], wsign * (1.0 - sum.min(1.0)).sqrt()],
@@ -280,7 +270,7 @@ fn colors_normals_and_transforms_round_trip() {
 
 #[test]
 fn compressed_points_round_trip_near_and_far() {
-    let mut rng = Rng(0xfeed_face_cafe_beef);
+    let mut rng = Rng::star(0xfeed_face_cafe_beef);
     for _ in 0..ROUNDS {
         let scale = 0.5f32;
         let point = [
@@ -322,7 +312,7 @@ fn compressed_points_round_trip_near_and_far() {
 #[test]
 fn strings_round_trip_with_and_without_the_packet_buffer() {
     let table = Table::from_frequencies(&frequencies()).unwrap();
-    let mut rng = Rng(0x1357_9bdf_2468_ace0);
+    let mut rng = Rng::star(0x1357_9bdf_2468_ace0);
     let alphabet: Vec<u8> = (b'a'..=b'z').chain(b'0'..=b'9').chain(*b"/._ A").collect();
     for round in 0..ROUNDS {
         let buffered = round % 2 == 0;
@@ -337,18 +327,18 @@ fn strings_round_trip_with_and_without_the_packet_buffer() {
             let s: Vec<u8> = match (strings.last(), rng.below(4)) {
                 // Share a prefix with the last one, as paths in a packet do.
                 (Some(last), 0 | 1) if !last.is_empty() => {
-                    let keep = rng.below(last.len() as u32 + 1) as usize;
+                    let keep = rng.below(last.len() as u64 + 1) as usize;
                     let mut s = last[..keep].to_vec();
                     for _ in 0..rng.below(12) {
-                        s.push(alphabet[rng.below(alphabet.len() as u32) as usize]);
+                        s.push(alphabet[rng.below(alphabet.len() as u64) as usize]);
                     }
                     s
                 }
                 (_, 2) => (0..rng.below(300))
-                    .map(|_| (rng.u32() as u8).max(1))
+                    .map(|_| (rng.next_u32() as u8).max(1))
                     .collect(),
                 _ => (0..rng.below(40))
-                    .map(|_| alphabet[rng.below(alphabet.len() as u32) as usize])
+                    .map(|_| alphabet[rng.below(alphabet.len() as u64) as usize])
                     .collect(),
             };
             write_string(&mut w, &table, &s, 255);
@@ -372,15 +362,15 @@ fn strings_round_trip_with_and_without_the_packet_buffer() {
 #[test]
 fn readers_survive_hostile_bytes_at_every_bit_offset() {
     let table = Table::from_frequencies(&frequencies()).unwrap();
-    let mut rng = Rng(0xdead_0000_beef_1111);
+    let mut rng = Rng::star(0xdead_0000_beef_1111);
     for round in 0..ROUNDS {
         let len = rng.below(48) as usize;
-        let bytes: Vec<u8> = (0..len).map(|_| rng.u32() as u8).collect();
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next_u32() as u8).collect();
         let offset = (round % 8) as u8;
-        let bit_len = if rng.bool() {
+        let bit_len = if rng.flip() {
             bytes.len() * 8
         } else {
-            rng.below(bytes.len() as u32 * 8 + 9) as usize
+            rng.below(bytes.len() as u64 * 8 + 9) as usize
         };
         let mut r = BitReader::with_bit_len(&bytes, bit_len);
         if round % 3 == 0 {
@@ -396,7 +386,7 @@ fn readers_survive_hostile_bytes_at_every_bit_offset() {
                 3 => drop(r.read_u32()),
                 4 => drop(r.read_f32()),
                 5 => drop(r.read_bytes(rng.below(100) as usize)),
-                6 => drop(r.read_ranged_u32(rng.u32(), rng.u32())),
+                6 => drop(r.read_ranged_u32(rng.next_u32(), rng.next_u32())),
                 7 => drop(r.read_ranged_f32(rng.float(), rng.float(), rng.below(40) as u8)),
                 8 => drop(r.read_signed_int(rng.below(40) as u8)),
                 9 => drop(r.read_float(rng.below(40) as u8)),
@@ -420,14 +410,14 @@ fn readers_survive_hostile_bytes_at_every_bit_offset() {
 #[test]
 fn a_writer_at_its_limit_drops_writes_and_never_panics() {
     let table = Table::from_frequencies(&frequencies()).unwrap();
-    let mut rng = Rng(0x2222_3333_4444_5555);
+    let mut rng = Rng::star(0x2222_3333_4444_5555);
     for _ in 0..10_000 {
         let limit = rng.below(400) as usize;
         let mut w = BitWriter::with_limit(limit);
         w.enable_string_buffer();
         for _ in 0..30 {
             match rng.below(8) {
-                0 => w.write_bits(rng.u32(), rng.below(40) as u8),
+                0 => w.write_bits(rng.next_u32(), rng.below(40) as u8),
                 1 => w.write_f32(rng.float()),
                 2 => w.write_ranged_f32(rng.float(), rng.float(), rng.float(), rng.below(40) as u8),
                 3 => w.write_normal_vector(
@@ -435,7 +425,7 @@ fn a_writer_at_its_limit_drops_writes_and_never_panics() {
                     rng.below(20) as u8,
                 ),
                 4 => w.write_compressed_point([rng.float(), rng.float(), rng.float()], rng.float()),
-                5 => w.write_signed_int(rng.u32() as i32, rng.below(40) as u8),
+                5 => w.write_signed_int(rng.next_u32() as i32, rng.below(40) as u8),
                 6 => w.write_signed_float(rng.float(), rng.below(40) as u8),
                 _ => write_string(&mut w, &table, &[b'a'; 40], 255),
             }

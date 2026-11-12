@@ -2,6 +2,7 @@ use super::*;
 use crate::netstring::NetStringEvent;
 use crate::remote::RemoteArg;
 use crate::testids::{ANY, TO_CLIENT, TO_SERVER, ids, with_ctx};
+use torque_testkit::Rng;
 
 /// A test event: a 16-bit length, then that many bits of a repeated 32-bit pattern, of one of the test classes: `ANY` is direction
 /// `Any`, `TO_CLIENT` server to client, `TO_SERVER` client to server.
@@ -691,13 +692,8 @@ fn an_event_more_than_126_ahead_is_dropped_silently() {
 #[test]
 fn a_wait_list_flood_stays_bounded_and_is_never_an_error() {
     let mut rx = EventReceiver::new();
-    let mut x = 0x9e37_79b9_7f4a_7c15u64;
-    let mut next = || {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        x
-    };
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
+    let mut next = || rng.next_u64();
     let mut total = 0usize;
     for _ in 0..3000 {
         let n = (next() % 120) as usize + 1;
@@ -959,13 +955,8 @@ fn a_delivered_net_string_sets_the_senders_flag() {
 #[test]
 fn hostile_sections_never_panic() {
     with_ctx(|ctx| {
-        let mut x = 0x2545_f491_4f6c_dd1du64;
-        let mut next = || {
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            x
-        };
+        let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
+        let mut next = || rng.next_u64();
         for round in 0..20_000 {
             let len = (next() % 160) as usize;
             let mut bytes: Vec<u8> = (0..len).map(|_| next() as u8).collect();

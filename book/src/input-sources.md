@@ -126,13 +126,15 @@ pad.axis(0, JoyAxis::X, 0.5);
 // ... the next poll (a frame's, or a client pass's where nothing is drawn): the bound function gets 0.5.
 ```
 
-For stamped events use `FakeClock`: the registry reads its time from it (`input_sources.set_clock(clock.reader())`), and the
-test stamps with times of it (`clock.at(5)` is 5 ms after the clock began; `clock.advance(...)` moves it on), so a test never
-waits and the means are exact.
+For stamped events use `torque_testkit::FakeClock` (the workspace's test crate, `crates/torque-testkit`, added as a path
+dev-dependency): the registry reads its time from it (`input_sources.set_clock(clock.reader())`), and the test stamps
+with times of it (`clock.at(5)` is 5 ms after the clock began; `clock.advance(...)` moves it on), so a test never waits and
+the means are exact.
 
 ```rust
 use std::time::Duration;
-use torque::client::input_source::{FakeClock, FakeInput, JoyAxis};
+use torque::client::input_source::{FakeInput, JoyAxis};
+use torque_testkit::FakeClock;
 
 let (clock, pad) = (FakeClock::default(), FakeInput::default());
 // registry.set_clock(clock.reader()); engine.add_input_source(pad.clone()) ...

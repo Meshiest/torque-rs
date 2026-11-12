@@ -6,7 +6,6 @@ use torque_net::classes::{Kind, NetClasses};
 use torque_net::events::EventRegistry;
 
 use super::tge_shapes::{ALL, Wheels, shape_view};
-use super::tge_tails::Rng;
 use super::*;
 use crate::codec::{ClientFacts, ObjCtx};
 use crate::light::ENGINE_OBJECT_CLASSES;
@@ -14,6 +13,7 @@ use crate::set::GhostCodecSet;
 use crate::tge::{
     TGE_DATABLOCK_CLASSES, TGE_OBJECT_CLASSES, TgeClass, TgeGhosts, TgeRecord, tge_reps,
 };
+use torque_testkit::Rng;
 
 #[test]
 fn the_codec_classes_are_tges_and_the_ids_derive_from_the_list() {
@@ -175,18 +175,18 @@ fn bit_list(bytes: &[u8], n: usize) -> Vec<bool> {
 fn hostile_records_never_panic_and_read_back_unchanged() {
     let t = table();
     let facts = Wheels(4);
-    let mut rng = Rng(0x0dd_ba11_cafe_f00d);
+    let mut rng = Rng::new(0x0dd_ba11_cafe_f00d);
     let mut decoded = 0usize;
     for class in TgeClass::ALL {
         for round in 0..400 {
-            let len = (rng.next() % 160) as usize;
-            let mut bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+            let len = (rng.next_u64() % 160) as usize;
+            let mut bytes: Vec<u8> = (0..len).map(|_| rng.next_u64() as u8).collect();
             // Every other stream opens with its first flags set, so the deep blocks are reached.
             if round % 2 == 0 && !bytes.is_empty() {
                 bytes[0] |= 0xf8;
             }
-            let initial = rng.next() & 1 == 0;
-            let controlled = rng.next() & 3 == 0;
+            let initial = rng.next_u64() & 1 == 0;
+            let controlled = rng.next_u64() & 3 == 0;
             let ctx = ctx_with(&facts, initial, controlled);
             let mut r = reader(&bytes, bytes.len() * 8);
             let Ok(rec) = TgeGhosts::decode(class, &mut r, &t, &mut free_charge(), &ctx) else {

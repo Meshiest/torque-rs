@@ -18,5 +18,9 @@ categories = ["network-programming", "game-development"]
 torque-bytes = { path = "../torque-bytes" }
 torque-net = { path = "../torque-net" }
 
+[dev-dependencies]
+# The seeded random source of the hostile-input tests.
+torque-testkit = { path = "../torque-testkit" }
+
 [lints]
 workspace = true

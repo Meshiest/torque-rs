@@ -17,8 +17,8 @@ use torque_client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque_collide::math::Matrix;
 use torque_engine::{Engine, EngineBuilder, PluginGroup};
 use torque_game::scene::access::matrix_of;
-use torque_net::testrng::TestRng;
 use torque_shapes::instance::ShapeInstance;
+use torque_testkit::Rng;
 use torque_ts_vm::sim::ObjId;
 
 pub const SERVER: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), 28_000);
@@ -77,7 +77,7 @@ pub struct Rig {
     incoming: DatagramQueue,
     /// The share of datagrams dropped each way, and the source of the drops.
     loss: f64,
-    rng: TestRng,
+    rng: Rng,
     pub ticks: u64,
 }
 
@@ -132,12 +132,12 @@ impl Rig {
             sent,
             incoming,
             loss,
-            rng: TestRng::new(0x41e7_a2c4),
+            rng: Rng::new(0x41e7_a2c4),
             ticks: 0,
         }
     }
 
-    fn dropped(loss: f64, rng: &mut TestRng) -> bool {
+    fn dropped(loss: f64, rng: &mut Rng) -> bool {
         loss > 0.0 && (rng.below(1_000_000) as f64) < loss * 1_000_000.0
     }
 

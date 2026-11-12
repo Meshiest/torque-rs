@@ -2,6 +2,7 @@
 //! host's object views, torque-net's `GhostClient` reads them with the TGE codec, and the client's world follows the table.
 
 use std::collections::{BTreeMap, HashMap};
+use torque_testkit::{Rng, fuzz};
 
 use ghosts::{
     GhostCodecSet, Link, NetStr, NetWidths, ObjectView, PackCtx, TgeClass, TgeGhosts, Value,
@@ -563,12 +564,8 @@ fn a_projectile_that_exploded_brings_its_explosion_once() {
 /// panics, and the world follows only what was read. `TORQUE_FUZZ_GHOSTS` sets the number of packets fed (default 3,000).
 #[test]
 fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
-    use net::testrng::TestRng;
-    let cases: u64 = std::env::var("TORQUE_FUZZ_GHOSTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(3_000);
-    let mut rng = TestRng::new(0x9e37_79b9_7f4a_7c15);
+    let cases = fuzz::rounds("TORQUE_FUZZ_GHOSTS", 3_000);
+    let mut rng = Rng::new(0x9e37_79b9_7f4a_7c15);
     // The classes a server of TGE's table ghosts (the engine's own and plugins' are not in it).
     let classes: Vec<TgeClass> = TgeClass::ALL
         .into_iter()
@@ -694,8 +691,8 @@ fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
 
 /// An object's fields at random: datablocks (the image's among them), an image with a fire count, a position that may be
 /// huge or NaN, a scale, a thread, and a mount link to a random object of the `past` made so far (itself and gone ones too).
-fn random_view(rng: &mut net::testrng::TestRng, past: ObjId) -> MapView {
-    let f = |rng: &mut net::testrng::TestRng| match rng.below(6) {
+fn random_view(rng: &mut Rng, past: ObjId) -> MapView {
+    let f = |rng: &mut Rng| match rng.below(6) {
         0 => f32::NAN,
         1 => 1.0e30,
         _ => (rng.below(2_000) as f32) - 1_000.0,

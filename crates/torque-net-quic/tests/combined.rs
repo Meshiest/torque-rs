@@ -8,9 +8,9 @@ mod common;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
-use common::{Rng, TICK};
+use common::{FakeClock, Rng, TICK};
 use torque_client::net::Datagrams;
-use torque_net_quic::{FakeClock, Pipe, QuicClient, QuicLimits, QuicServer, ServerKey, Trust};
+use torque_net_quic::{Pipe, QuicClient, QuicLimits, QuicServer, ServerKey, Trust};
 use torque_server::net::transport::{BindPolicy, LanRules, Recv, Transport};
 use torque_server::net::web::{MultiTransport, WebSetup, WebTransport};
 

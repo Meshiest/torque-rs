@@ -11,8 +11,8 @@ use crate::datablocks::misc::{
 use crate::datablocks::{
     DatablockCodecSet, MAX_SHAPE_SEQUENCES, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks,
 };
-use crate::tests::tge_tails::Rng;
 use crate::tge::TGE_DATABLOCK_CLASSES;
+use torque_testkit::Rng;
 
 #[test]
 fn the_classes_are_tges_datablock_list_in_its_order() {
@@ -167,18 +167,18 @@ fn hostile_one(class: TgeDatablockClass, bytes: &[u8], bits: usize) -> bool {
 #[test]
 fn hostile_records_never_panic_and_read_back_unchanged() {
     let t = table();
-    let mut rng = Rng(0x5eed_da7a_b10c_0001);
+    let mut rng = Rng::new(0x5eed_da7a_b10c_0001);
     for &class in TgeDatablocks::classes() {
         let mut decoded = 0usize;
         // Random bytes, half of them zero (so counts and flags are often small or clear).
         for _ in 0..300 {
-            let len = (rng.next() % 300) as usize;
+            let len = (rng.next_u64() % 300) as usize;
             let bytes: Vec<u8> = (0..len)
                 .map(|_| {
-                    if rng.next() & 1 == 0 {
+                    if rng.next_u64() & 1 == 0 {
                         0
                     } else {
-                        rng.next() as u8
+                        rng.next_u64() as u8
                     }
                 })
                 .collect();
@@ -194,12 +194,12 @@ fn hostile_records_never_panic_and_read_back_unchanged() {
             let mut bits = clean.clone();
             if n > 0 {
                 for _ in 0..1 + round % 2 {
-                    let at = (rng.next() % n as u64) as usize;
+                    let at = (rng.next_u64() % n as u64) as usize;
                     bits[at] = !bits[at];
                 }
             }
             let keep = if round % 5 == 0 {
-                (rng.next() % (n as u64 + 1)) as usize
+                (rng.next_u64() % (n as u64 + 1)) as usize
             } else {
                 n
             };

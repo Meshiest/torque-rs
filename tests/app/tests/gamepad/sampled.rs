@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 
 use torque_app::plugins::DefaultPlugins;
 use torque_app::{ClientBuilder, ClientNet, GameClient, GameServer};
-use torque_client::input_source::{FakeClock, InputBuilderExt};
+use torque_client::input_source::InputBuilderExt;
 use torque_engine::{EngineBuilder, Plugin, PluginId, PluginType};
 use torque_plugin_gamepad::{
     FakePads, GamepadPlugin, GamepadPrefs, GamepadSource, PadBackend, PadButton, PadSamples,
     PadState,
 };
+use torque_testkit::FakeClock;
 
 /// A plugin that gives each client a source over `samples`, which the test fills by hand.
 #[derive(Clone, PluginId)]

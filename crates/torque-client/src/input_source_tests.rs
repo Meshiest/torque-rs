@@ -1,5 +1,6 @@
 use super::*;
 use std::time::Duration;
+use torque_testkit::FakeClock;
 
 fn kinds(events: &[InputEvent]) -> Vec<(u32, u16, u16, u8, f32)> {
     events

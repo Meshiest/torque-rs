@@ -16,7 +16,7 @@ use torque_ghosts::{F32, NetWidths, TgeClass, TgeRecord, Xf};
 use torque_net::bits::BitReader;
 use torque_net::ghost::{ClassForm, GhostChange, GhostCodec};
 use torque_net::huffman::Table as StringTable;
-use torque_net::testrng::TestRng;
+use torque_testkit::Rng;
 
 fn count() -> u64 {
     std::env::var("TORQUE_FUZZ_HIERARCHY_NET")
@@ -38,7 +38,7 @@ impl SentTable<TgeClientSet> for Table {
     }
 }
 
-fn wild(rng: &mut TestRng) -> f32 {
+fn wild(rng: &mut Rng) -> f32 {
     match rng.below(10) {
         0 => f32::NAN,
         1 => f32::INFINITY,
@@ -49,7 +49,7 @@ fn wild(rng: &mut TestRng) -> f32 {
 }
 
 /// A record and whether its pose is sane (finite, a unit rotation, a scale near 1); one in ten is wild.
-fn record(rng: &mut TestRng) -> (TgeRecord, bool) {
+fn record(rng: &mut Rng) -> (TgeRecord, bool) {
     let sane = rng.below(10) != 0;
     let mut f = |range: f32| {
         F32::new(if sane {
@@ -71,7 +71,7 @@ fn record(rng: &mut TestRng) -> (TgeRecord, bool) {
     (record, sane)
 }
 
-fn index(rng: &mut TestRng) -> u32 {
+fn index(rng: &mut Rng) -> u32 {
     match rng.below(20) {
         0 => rng.next_u64() as u32,
         1 => INDICES + rng.below(8) as u32,
@@ -79,7 +79,7 @@ fn index(rng: &mut TestRng) -> u32 {
     }
 }
 
-fn block(rng: &mut TestRng) -> GhostBlock {
+fn block(rng: &mut Rng) -> GhostBlock {
     let link = match rng.below(5) {
         0 => None,
         1 => Some(LinkField::Root),
@@ -107,7 +107,7 @@ fn block(rng: &mut TestRng) -> GhostBlock {
 
 #[test]
 fn hostile_blocks_never_panic_the_client_and_its_caps_hold() {
-    let mut rng = TestRng::new(0x6e7f_1a2b_3c4d);
+    let mut rng = Rng::new(0x6e7f_1a2b_3c4d);
     let mut world: ClientWorld<TgeClientSet> = ClientWorld::default();
     let mut table = Table(BTreeMap::new());
     let mut clock = 0u32;

@@ -1,5 +1,5 @@
 use super::*;
-use crate::testrng::TestRng;
+use torque_testkit::Rng;
 
 struct Tags(Vec<Vec<u8>>);
 
@@ -169,7 +169,7 @@ fn a_body_that_is_not_one_is_an_error_and_never_a_panic() {
     assert!(CommandBody::decode(&[0, 0, 1, 9]).is_err());
     assert!(CommandBody::decode(&vec![0; super::MAX_BODY_BYTES + 1]).is_err());
     // Random bytes and flipped bits of a good body.
-    let mut rng = TestRng::new(0xb0d1);
+    let mut rng = Rng::new(0xb0d1);
     for _ in 0..20_000 {
         let len = rng.index(80);
         let bytes: Vec<u8> = (0..len).map(|_| rng.byte()).collect();

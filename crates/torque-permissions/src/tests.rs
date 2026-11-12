@@ -1,4 +1,5 @@
 use super::*;
+use torque_testkit::{Rng, fuzz};
 
 fn p(text: &str) -> Permission {
     Permission::parse(text).expect("a permission")
@@ -221,36 +222,21 @@ fn the_registry_lists_what_plugins_declared() {
     assert_eq!(r.len(), 2);
 }
 
-/// A small deterministic generator.
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 ^= self.0 << 13;
-        self.0 ^= self.0 >> 7;
-        self.0 ^= self.0 << 17;
-        self.0
-    }
-}
-
 /// Random text into every parser: nothing panics, whatever parses re-parses as itself, and a grant that parses matches only
 /// what its text says. `TORQUE_FUZZ_PERMISSIONS=1000000` runs a million rounds.
 #[test]
 fn the_parsers_never_panic_and_agree_with_themselves() {
-    let rounds: u64 = std::env::var("TORQUE_FUZZ_PERMISSIONS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20_000);
+    let rounds = fuzz::rounds("TORQUE_FUZZ_PERMISSIONS", 20_000);
     let alphabet: Vec<char> = "ab.*_-09AZ é\n\0.*.*".chars().collect();
-    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    let mut rng = Rng::new(0x2545_F491_4F6C_DD1D);
     let mut roles = Roles::default();
     roles.define("r", &["a.*"]).unwrap();
     let mut subject = Subject::default();
     let mut registry = Registry::default();
     for _ in 0..rounds {
-        let len = (rng.next() % 40) as usize;
+        let len = (rng.next_u64() % 40) as usize;
         let text: String = (0..len)
-            .map(|_| alphabet[(rng.next() % alphabet.len() as u64) as usize])
+            .map(|_| alphabet[(rng.next_u64() % alphabet.len() as u64) as usize])
             .collect();
         if let Ok(permission) = Permission::parse(&text) {
             assert_eq!(

@@ -1,5 +1,5 @@
 use torque_net::bits::{BitReader, BitWriter};
-use torque_net::testrng::TestRng;
+use torque_testkit::Rng;
 
 use super::*;
 
@@ -81,7 +81,7 @@ fn the_widest_block_fits_its_bound() {
 
 #[test]
 fn hostile_bytes_never_panic_and_stay_within_the_bound() {
-    let mut rng = TestRng::new(0x5eed_b10c);
+    let mut rng = Rng::new(0x5eed_b10c);
     for _ in 0..20_000 {
         let len = rng.index(40);
         let bytes: Vec<u8> = (0..len).map(|_| rng.byte()).collect();
