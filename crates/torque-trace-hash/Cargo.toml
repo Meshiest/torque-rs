@@ -46,6 +46,8 @@ torque-example-assets = { path = "../../examples/assets" }
 # The dev-dependencies are for tests only, so the wasm32 build of the binary never sees them.
 [dev-dependencies]
 sha2 = "0.10"
+# The precompile of a script: the world's script run compiled must hash as it does from source (`tests/precompiled.rs`).
+torque-bundle = { path = "../torque-bundle" }
 # The hex of the golden digests.
 torque-bytes = { path = "../torque-bytes" }
 # `TestNet`, a net game of Torque's parts.

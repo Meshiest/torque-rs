@@ -47,6 +47,11 @@ fn options(dir: &Path, crate_dir: PathBuf, out: &str) -> Options {
         server: false,
         archive: false,
         max_inflated_bytes: torque_bundle::scan::MAX_INFLATED_BYTES,
+        mode: torque_bundle::validate::Mode {
+            validate: true,
+            ..torque_bundle::validate::Mode::default()
+        },
+        limits: torque_bundle::validate::Limits::default(),
     }
 }
 

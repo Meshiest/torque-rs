@@ -25,11 +25,11 @@ mod call;
 mod console;
 mod file_natives;
 mod files;
-pub use files::MAX_DSO_BYTES;
 pub use files::{
     EVAL_ERROR_TEXT_BYTES, EvalReport, ExecCheck, MAX_TRACED_OBJECTS, MAX_TRACKED_SCRIPT_FILES,
     ScriptFile,
 };
+pub use files::{MAX_DSO_BYTES, MAX_DSO_PATH};
 mod interface;
 mod lifecycle;
 pub use lifecycle::{DELETE_DATABLOCKS_USAGE, HostBudgetSaved, QUIT_USAGE};

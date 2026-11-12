@@ -1,7 +1,12 @@
-//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]`:
+//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]
+//! [--no-validate] [--precompile] [--classic-scripts]`:
 //! packages the game for this computer (the library's docs say what goes in). `--server` packages its dedicated-server variant;
 //! `--archive` also writes the bundle as a zip (Windows) or a gzipped tar, the same bytes from the same inputs; `--twice` builds
 //! it two times from clean build folders (`<out>/one`, `<out>/two`) and fails unless the two archives have the same SHA-256.
+//! Every file of the game folder is opened by the engine's loader for it first, and a file that is refused fails the bundle
+//! (`--no-validate` skips that); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source.
+//! `--classic-scripts` says the game's executor reads TGE 1.4's script format, not Torque3D's.
+//! `torque-bundle --validate <game crate folder> [--precompile]` only opens the game folder's files (nothing is built), and
 //! `torque-bundle --verify <bundle folder>` checks a bundle against its manifest.
 //!
 //! The build folder is `--target-dir`, else `CARGO_TARGET_DIR`, else the workspace's `target`; the bundle goes in `--out`,
@@ -11,10 +16,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use torque_bundle::{
-    ArchiveReport, Options, Report, bundle, manifest, own_folder, remove_owned_folder, scan,
+    ArchiveReport, Options, Report, bundle, manifest, own_folder, precompile::ScriptFormat,
+    remove_owned_folder, scan, validate, validate_game,
 };
 
-const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]\n       torque-bundle --verify <bundle folder>";
+const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>] [--no-validate] [--precompile] [--classic-scripts]\n       torque-bundle --validate <game crate folder> [--precompile] [--classic-scripts]\n       torque-bundle --verify <bundle folder>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -28,6 +34,11 @@ fn run() -> Result<(), String> {
     let mut archive = false;
     let mut twice = false;
     let mut max_inflated = scan::MAX_INFLATED_BYTES;
+    let mut mode = validate::Mode {
+        validate: true,
+        ..validate::Mode::default()
+    };
+    let mut only_validate = false;
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| {
             args.next()
@@ -44,6 +55,10 @@ fn run() -> Result<(), String> {
                 }
                 return Err(problems.join("\n"));
             }
+            "--validate" => only_validate = true,
+            "--no-validate" => mode.validate = false,
+            "--precompile" => mode.precompile = true,
+            "--classic-scripts" => mode.format = ScriptFormat::Classic,
             "--out" => out = Some(value("--out")?),
             "--target-dir" => target_dir = Some(value("--target-dir")?),
             "--no-check" => check = false,
@@ -67,6 +82,10 @@ fn run() -> Result<(), String> {
         }
     }
     let crate_dir = crate_dir.ok_or(USAGE)?;
+    let limits = validate::Limits::default();
+    if only_validate {
+        return validate_only(&crate_dir, &limits, mode);
+    }
     let target_dir = target_dir.unwrap_or_else(|| PathBuf::from("target"));
     let options = Options {
         out: out.unwrap_or_else(|| target_dir.join("bundles")),
@@ -76,12 +95,38 @@ fn run() -> Result<(), String> {
         server,
         archive: archive || twice,
         max_inflated_bytes: max_inflated,
+        mode,
+        limits,
     };
     if twice {
         return build_twice(&options);
     }
     print_report(&bundle(&options)?);
     Ok(())
+}
+
+/// `--validate`: the game folder's files opened by their loaders, nothing built. Fails when one is refused.
+fn validate_only(
+    crate_dir: &Path,
+    limits: &validate::Limits,
+    mode: validate::Mode,
+) -> Result<(), String> {
+    let report = validate_game(crate_dir, limits, mode)?;
+    for line in report.summary() {
+        println!("{line}");
+    }
+    for skipped in &report.not_precompiled {
+        println!("  left as source: {skipped}");
+    }
+    if report.refused.is_empty() {
+        return Ok(());
+    }
+    let lines: Vec<String> = report.refused.iter().map(ToString::to_string).collect();
+    Err(format!(
+        "{} files refused:\n  {}",
+        lines.len(),
+        lines.join("\n  ")
+    ))
 }
 
 /// Two bundles of the same inputs, each from a build folder of its own that is removed after it (so nothing carries over, and a
@@ -151,6 +196,14 @@ fn print_report(report: &Report) {
         report.bytes,
         report.features.join(", ")
     );
+    if report.content.opened_total() > 0 || report.content.precompiled > 0 {
+        for line in report.content.summary() {
+            println!("  game folder: {line}");
+        }
+    }
+    for skipped in &report.content.not_precompiled {
+        println!("  left as source: {skipped}");
+    }
     println!("  left out of the game folder: {}", report.skipped.len());
     for warning in &report.warnings {
         println!("  warning: {warning}");

@@ -7,7 +7,7 @@
 //! | Path | What |
 //! |---|---|
 //! | `<bin>` (`.exe` on Windows) | the game's binaries, built in release with the plugins its `game.toml` keeps ([`features`]) |
-//! | `game/` | the game folder, less the dev files ([`select`]) |
+//! | `game/` | the game folder, less the dev files ([`select`]), every file opened by its loader ([`validate`]); with `--precompile` its scripts compiled ([`precompile`]) |
 //! | `plugins/` | each extension's library and the manifest the engine loads it with; the libraries are built first, and their hashes are given to the game's build ([`PLUGINS_ENV`]) |
 //! | `licenses/` | the license texts of every crate linked, and an index ([`licenses`]) |
 //! | `manifest.toml` | every file's size and SHA-256 ([`manifest`]) |
@@ -16,11 +16,99 @@
 //! scanned for those folders ([`scan`]) and one hit fails the bundle. Last, the `[check]` binary runs headless from the bundle
 //! folder with the build's environment removed, and the bundle must still match its manifest after it.
 //!
+//! Before anything is built, every file of the game folder that an engine loader owns is opened by that loader under its caps
+//! ([`validate`]), and one that is refused fails the bundle with its path and the reason (`--no-validate` skips this);
+//! `--validate <game crate>` does only this. `--precompile` ships the `.cs` and `.gui` scripts as `<name>.dso` in place of
+//! their source, which the engine loads without compiling ([`precompile`]).
+//!
 //! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]).
 //! `--twice` is for a game maker to verify that a game builds reproducibly: it bundles two times from clean build folders and
 //! fails unless the two archives have the same SHA-256, naming the files that differ.
 //!
 //! # Maintaining
+//!
+//! **Module map.** `spec` (bundle.toml), `select` (which game files ship), `validate` (the game folder read within
+//! [`validate::Limits`] and opened by the engine's loaders; `Kind` is the extension table), `precompile` (a script to its `.dso`),
+//! `cargo` and `features` (the builds), `licenses`, `scan` (the leak scan), `manifest`, `archive`, `server`; `bundle` in this file
+//! runs them.
+//!
+//! **Flow of the game folder.** `bundle` reads and opens the game folder first (`read_game`), before any build, so a refused
+//! file costs seconds: `select` lists the files, `validate::process` reads each one with the no-follow, capped reader
+//! (`torque_resource::plain::read_plain`), opens it with the loader of its kind, compiles it when `--precompile`, and hands back
+//! the bytes to ship. Those bytes are what the manifest hashes, the leak scan reads and the folder and archive hold: a file is
+//! read once, so what was opened is what ships. Every other file of the bundle is read through the same reader, capped by
+//! `Limits::total_bytes`, and moved (not copied) into the list that is hashed and written. With neither validation nor
+//! precompile the game files are read at that point instead.
+//!
+//! **The game folder is untrusted input.** The walk (`select`) stops past `Limits::depth` folders and `Limits::files` entries, as
+//! it goes. A file over `Limits::file_bytes` is refused before it is read; the folder as a whole is held to `total_bytes`; each
+//! loader keeps its own byte caps (`Kind::max_bytes`; a `mod.toml` is read at the mods plugin's 64 KiB) and, where it charges
+//! work, `Limits::work`; a zip is mounted with `ZipMount` (its entry names are the engine's: an entry that would leave the
+//! folder, or that the engine does not serve, is never opened) and its entries inflate at most `Limits::inflated_bytes` in all.
+//! A name the engine does not serve (`torque_resource::zips::entry_name_ok`) is refused, as are two paths that differ only in
+//! case, so no path in the bundle holds `..`, a drive or a device name, and a compiled script's path is its source's plus
+//! `.dso`. Every refusal and note is printable text (`precompile::printable`): a file's own bytes cannot reach the terminal as
+//! escapes. The loaders are the engine's own and are fuzzed, so a hostile file is an error value, not a panic. The errors of
+//! this crate stay `String`s, as the rest of it, rather than an enum: nothing matches on them.
+//!
+//! **What is not opened.** `.lua` and anything a plugin owns are unowned. So are `.obj`, `.bbmodel` and `.map`: the engine reads
+//! them only when a game turns their format plugin on (off by default, trusted files only), and their loaders live in
+//! `torque-content`, which links the engine. A `.dif` is parsed as the engine loads it; its stricter cross-reference check is
+//! not run, since the engine loads files that fail it.
+//!
+//! **Precompile.** The scripts are compiled in the format the engine's executor reads (`ScriptFormat`: Torque3D's, or TGE 1.4's
+//! with `--classic-scripts`) as `exec` compiles a source with no syntax error, then parsed and loaded again by the engine's
+//! loader before they ship; one that does not compile stays source and is reported (`Report::not_precompiled`). A compiled file
+//! is shipped in place of its source, never beside it, since the engine prefers a `.dso` only when it is at least as new as the
+//! source. Mission files (`.mis`) have no compiled form, a script of only comments has no code, a `.dso` already in the game
+//! folder is never overwritten, a script whose `.dso` path would pass the 511 bytes the engine builds it in stays source, and a
+//! mod's scripts stay source: below `game.toml`'s `[mods] folder` (default `mods`) or a folder with a `mod.toml` (any case),
+//! since the engine never runs a compiled script that came with a mod. A game with a `ModLayout` of its own that finds mods
+//! otherwise is not seen. Scripts inside zips are not rewritten, and the Lua extension's scripts are not touched.
+//!
+//! **A compiled file is trusted.** The engine runs a `.dso`'s top level as trusted and a source's as not, and the flag reaches
+//! `DeclarePolicy::may_declare`. The engine's own policy ignores it, so nothing differs for a game that installs none; a game
+//! whose policy refuses names to its source scripts would see them allowed once compiled, so it must not use `--precompile`.
+//!
+//! **Invariants and their tests.**
+//! - The mods demo's game folder opens with nothing refused, and its three entry scripts compile while the two mod scripts stay
+//!   source (`tests/content.rs::the_mods_demo_game_folder_opens_with_nothing_refused`; `just bundle-content-check`).
+//! - A planted bad asset (loose, inside a zip, a broken zip, a script with a syntax error) is named with its path and reason,
+//!   on the command line too (`a_planted_bad_asset_is_reported_with_its_path_and_the_reason`), and a bundle fails before it
+//!   builds anything; `--no-validate` ships it as it is
+//!   (`a_bundle_with_a_refused_asset_fails_before_anything_is_built_unless_validation_is_off`).
+//! - Every kind has a good file its loader takes, and a cut, empty or garbled one is refused
+//!   (`validate::tests::a_good_file_of_each_kind_opens`, `a_cut_empty_or_garbled_file_of_each_kind_is_refused`); a loader's work
+//!   is bounded (`a_loader_that_charges_work_stops_when_the_budget_is_spent`); the kinds are the engine's
+//!   (`kinds_follow_the_extensions_the_engine_reads`,
+//!   `an_interior_the_engine_loads_is_not_refused_for_failing_the_cross_reference_check`).
+//! - The limits hold (`the_limits_hold_a_hostile_game_folder`,
+//!   `the_walk_of_a_deep_or_wide_folder_stops_where_it_passes_its_caps`),
+//!   names that would escape are never opened (`a_zip_entry_named_to_escape_the_folder_is_never_opened`), and two names of one
+//!   file are refused (`paths_that_differ_only_in_case_are_refused_and_so_is_a_dso_name_that_collides`).
+//! - No control character reaches a message
+//!   (`validate::tests::control_characters_in_a_path_or_a_reason_never_reach_the_message`,
+//!   `tests/content.rs::a_refusal_made_of_a_files_text_holds_no_control_character`).
+//! - A compiled script runs as its source does: in a script engine, in both formats
+//!   (`precompile::tests::a_compiled_script_runs_in_place_of_its_source_and_does_the_same`,
+//!   `a_game_on_the_classic_executor_gets_its_own_format`) and as the trace world's server script put through the bundle's own
+//!   game-folder pass, whose hash is the committed one (`torque-trace-hash/tests/precompiled.rs`); a compile gives the same
+//!   bytes every time (`a_compile_gives_the_same_bytes_every_time`, which the reproducible archive relies on).
+//! - A mod's scripts stay source (`tests/content.rs::a_mods_scripts_stay_source`,
+//!   `a_mods_folder_game_toml_names_keeps_its_scripts_as_source`, `a_manifest_in_any_case_makes_a_folder_a_mod`), which the mods demo's bundle check (a round with the soccer mod downloaded)
+//!   depends on; a script with a path too long for its `.dso` stays source
+//!   (`a_script_whose_compiled_path_is_too_long_stays_source_with_a_note`).
+//! - The constants copied from the mods plugin are equal to its own (`validate::tests::the_mod_constants_are_the_mods_plugins`;
+//!   the tool does not link it, only its tests do).
+//! - A bundle with `--precompile` holds `boot.cs.dso` and not `boot.cs`, and still matches its manifest
+//!   (`a_precompiled_bundle_ships_the_compiled_script_in_place_of_its_source`); an existing `.dso` is left alone
+//!   (`a_compiled_file_already_beside_its_source_is_not_overwritten`).
+//!
+//! **Extending.** A new asset format: add its extension to `Kind::of`, its label and cap, and its loader call in
+//! `validate::check`, with a good file and a bad one in `validate_tests.rs`. A format a plugin owns (the Lua scripts) is not
+//! checked here. A new script format: a variant of `ScriptFormat` with its compile, its bytes and its loader. **Check commands:**
+//! `just bundle --validate <game crate>` (no build), `just bundle-content-check` (the exit checks) and
+//! `cargo test -p torque-bundle`.
 //!
 //! **The leak scan** (`scan`, one `Scanner` over every needle: an Aho-Corasick automaton) looks for each folder of the build
 //! computer in every file of the bundle, with backslashes and case folded, in every spelling a path takes (doubled slashes,
@@ -67,10 +155,12 @@ pub mod cargo;
 pub mod features;
 pub mod licenses;
 pub mod manifest;
+pub mod precompile;
 pub mod scan;
 pub mod select;
 pub mod server;
 pub mod spec;
+pub mod validate;
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -84,6 +174,7 @@ use licenses::Text;
 use manifest::{Entry, Header};
 use scan::{Needle, Scanner};
 use spec::Spec;
+use torque_resource::plain::read_plain;
 
 /// What to package and where.
 #[derive(Clone, Debug)]
@@ -103,6 +194,11 @@ pub struct Options {
     /// The most bytes the leak scan inflates for one file of the bundle, over everything compressed inside it
     /// ([`scan::MAX_INFLATED_BYTES`] by default on the command line); a file that needs more fails the bundle as unscannable.
     pub max_inflated_bytes: usize,
+    /// What is done with the game folder's files besides shipping them: opened by their loaders and refused when they fail
+    /// ([`validate`]; off, they ship unread) and its `.cs` and `.gui` scripts compiled in place of their source ([`precompile`]).
+    pub mode: validate::Mode,
+    /// The caps on the game folder and on the work of opening it.
+    pub limits: validate::Limits,
 }
 
 /// What the server variant's checks counted. A bundle is refused when a count that must be 0 is not, so a report holds zeros.
@@ -142,6 +238,8 @@ pub struct Report {
     /// What the server variant's check found, when it was packaged.
     pub server: Option<ServerReport>,
     pub archive: Option<ArchiveReport>,
+    /// What opening the game folder's files came to ([`validate`]); empty when neither validation nor precompile ran.
+    pub content: validate::Report,
     /// What the leak scan noticed that does not fail a bundle: the user or host name of the build computer as a path component.
     pub warnings: Vec<String>,
 }
@@ -184,6 +282,9 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Toggles::default(),
         Err(e) => return Err(format!("game.toml: {e}")),
     };
+
+    // The game folder, read and opened before anything is built: a file its loader refuses fails the bundle in seconds.
+    let game = read_game(&game_dir, &spec.bundle.exclude, options)?;
 
     let manifest_path = crate_dir.join("Cargo.toml");
     let members = Metadata::read(&manifest_path, &target, false)?;
@@ -337,14 +438,8 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         )?;
     }
 
-    // The game folder.
-    let (selected, skipped) = select::select(&game_dir, &spec.bundle.exclude)?;
-    for file in selected {
-        add(
-            &mut files,
-            format!("game/{}", file.path),
-            Text::File(file.source),
-        )?;
+    for (path, text) in game.files {
+        add(&mut files, format!("game/{path}"), text)?;
     }
 
     // The licenses of what the builds link.
@@ -368,12 +463,14 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     // Everything in memory, scanned before anything is written: a bundle that holds a folder of this computer never reaches
     // the disk.
     let mut written: Vec<(String, Vec<u8>)> = Vec::new();
-    for (path, text) in &files {
+    for (path, text) in files {
         let bytes = match text {
-            Text::File(source) => std::fs::read(source).map_err(|e| format!("{path}: {e}"))?,
-            Text::Made(text) => text.clone().into_bytes(),
+            Text::File(source) => read_plain(&source, options.limits.total_bytes, None)
+                .map_err(|e| format!("{path}: {e}"))?,
+            Text::Made(text) => text.into_bytes(),
+            Text::Bytes(bytes) => bytes,
         };
-        written.push((path.clone(), bytes));
+        written.push((path, bytes));
     }
     written.push((
         format!("{}/index.txt", licenses::DIR),
@@ -479,7 +576,7 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         files: written.len(),
         bytes: written.iter().map(|(_, b)| b.len() as u64).sum(),
         features,
-        skipped,
+        skipped: game.skipped,
         crates: gathered.crates,
         missing_licenses: gathered.missing,
         generic_licenses: gathered.generic,
@@ -490,7 +587,70 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
             system_libraries: 0,
         }),
         archive,
+        content: game.content,
         warnings,
+    })
+}
+
+/// Opens every file of the game crate `crate_dir`'s game folder with its loader under `limits` ([`validate`]), and compiles its
+/// scripts too when `mode` says (to see which would not), without building or writing anything. The report holds the refusals.
+pub fn validate_game(
+    crate_dir: &Path,
+    limits: &validate::Limits,
+    mode: validate::Mode,
+) -> Result<validate::Report, String> {
+    let crate_dir = absolute(crate_dir)?;
+    let spec = Spec::load(&crate_dir)?;
+    let game_dir = crate_dir.join(&spec.bundle.game);
+    let (selected, _) = select::select(&game_dir, &spec.bundle.exclude, limits.walk())?;
+    let game = validate::GameInfo::read(&game_dir);
+    let mode = validate::Mode {
+        validate: true,
+        ..mode
+    };
+    Ok(validate::process(&selected, limits, mode, &game).1)
+}
+
+/// The game folder, read: the files to ship (their path in it and contents), what opening them came to, and the paths left out.
+struct GameFolder {
+    files: Vec<(String, Text)>,
+    content: validate::Report,
+    skipped: Vec<String>,
+}
+
+/// Reads the game folder ([`GameFolder`]) as `options` say.
+fn read_game(game_dir: &Path, exclude: &[String], options: &Options) -> Result<GameFolder, String> {
+    let (selected, skipped) = select::select(game_dir, exclude, options.limits.walk())?;
+    let mode = options.mode;
+    if !mode.validate && !mode.precompile {
+        let files = selected
+            .into_iter()
+            .map(|file| (file.path, Text::File(file.source)))
+            .collect();
+        return Ok(GameFolder {
+            files,
+            content: validate::Report::default(),
+            skipped,
+        });
+    }
+    let game = validate::GameInfo::read(game_dir);
+    let (read, content) = validate::process(&selected, &options.limits, mode, &game);
+    if !content.refused.is_empty() {
+        let lines: Vec<String> = content.refused.iter().map(ToString::to_string).collect();
+        return Err(format!(
+            "{} files of the game folder were refused by their loaders (nothing was built or written; --no-validate skips the check):\n  {}",
+            lines.len(),
+            lines.join("\n  ")
+        ));
+    }
+    let files = read
+        .into_iter()
+        .map(|file| (file.path, Text::Bytes(file.bytes)))
+        .collect();
+    Ok(GameFolder {
+        files,
+        content,
+        skipped,
     })
 }
 

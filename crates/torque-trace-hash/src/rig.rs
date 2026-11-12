@@ -99,10 +99,21 @@ impl Control {
     }
 }
 
+/// The trace world's server script, as source.
+pub const SERVER_SCRIPT: &[u8] = include_bytes!("game/server.cs");
+
 /// The scripts and shapes of the trace world, as the server's files.
 pub fn files() -> MemFiles {
+    files_with(&[("server.cs", SERVER_SCRIPT)])
+}
+
+/// The trace world's files with `scripts` (path and bytes) as the server's scripts: the source, or the same script compiled
+/// (`server.cs.dso`), which the server runs in its place.
+pub fn files_with(scripts: &[(&str, &[u8])]) -> MemFiles {
     let files = MemFiles::new();
-    files.insert("server.cs", include_bytes!("game/server.cs"));
+    for (path, bytes) in scripts {
+        files.insert(path, bytes);
+    }
     let shape = |path: &str, model: &torque_shapes::Model| {
         files.insert(path, &torque_shapes::write::write_dts(model));
     };
@@ -290,12 +301,22 @@ impl<G: NetGame> Rig<G> {
         control: Control,
         setup: impl FnOnce(&mut Vm) -> Result<(), String>,
     ) -> Result<Rig<G>, String> {
+        Rig::with_files(mode, plugins, control, files(), setup)
+    }
+
+    /// [`Rig::with_net_game`] over `files` in place of the trace world's own ([`files_with`]).
+    pub fn with_files<M>(
+        mode: Mode,
+        plugins: impl Plugins<M>,
+        control: Control,
+        files: MemFiles,
+        setup: impl FnOnce(&mut Vm) -> Result<(), String>,
+    ) -> Result<Rig<G>, String> {
         // The run's protocol whatever `TORQUE_NET_PROTOCOL` says: each line is pinned for its own mode.
         let mut builder = EngineBuilder::new();
         builder.add_plugins(MinimalPlugins).add_plugins(plugins);
         set_protocol(&mut builder, mode.protocol());
         let engine = builder.build().map_err(|e| e.to_string())?;
-        let files = files();
         let server = GameServer::<G>::start_with_net(
             &engine,
             files.clone(),

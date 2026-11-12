@@ -515,6 +515,9 @@ different.
   modes, so the same inputs give the same SHA-256; a game maker can run `--twice` to verify that for their game (it builds two
   times from clean folders and fails unless the archives are equal). `--server` packages a game's dedicated server and
   refuses it if it links a renderer, window, audio or similar crate or imports a GPU, window or audio system library.
+  Every file of the game folder that a loader of the engine owns (shapes, interiors, terrains, images, sounds, fonts, scripts, zips,
+  settings) is opened by that loader under its caps before anything is built, and a refused file fails the bundle with its path
+  and the reason (`--no-validate` skips this, `--validate` does only this); `--precompile` ships the `.cs` and `.gui` scripts compiled.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

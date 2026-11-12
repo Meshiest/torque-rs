@@ -29,11 +29,13 @@ const STEMS: &[&str] = &[
     "unlicense",
 ];
 
-/// A license text: a file copied as it is, or one this tool wrote (a standard text with its holders filled in).
+/// The contents of a file of the bundle: a file copied as it is, text this tool wrote (a standard license text with its holders
+/// filled in), or bytes already read (a game file, opened by its loader on the way).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Text {
     File(PathBuf),
     Made(String),
+    Bytes(Vec<u8>),
 }
 
 /// What [`gather`] found.

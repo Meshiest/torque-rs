@@ -300,9 +300,17 @@ deny:
 # audio system library (the `server-deps` recipe is the crate check for torque-app-server); `--archive` also writes a zip (Windows)
 # or a gzipped tar; `--twice` builds two archives from clean folders and compares their SHA-256, to check that a game builds
 # reproducibly;
-# `just bundle --verify <bundle folder>` checks a bundle against its manifest)
+# `just bundle --verify <bundle folder>` checks a bundle against its manifest; every file of the game folder is opened by its
+# loader first and a refused one fails the bundle (`--no-validate` skips that; `just bundle --validate <game crate>` does only
+# that, with nothing built); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source, in TGE 1.4's format with `--classic-scripts`)
 bundle *args:
     cargo run -p torque-bundle --release -- {{args}}
+
+# The checks on a game's assets and compiled scripts: the mods demo's game folder opens with nothing refused, a planted bad
+# asset is reported, and the trace world run from a compiled script hashes as it does from its source
+bundle-content-check:
+    cargo test -p torque-bundle --test content
+    cargo test -p torque-trace-hash --test precompiled
 
 # Builds everything with the oldest supported Rust (install that toolchain with rustup first)
 msrv:

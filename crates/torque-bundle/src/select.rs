@@ -34,8 +34,31 @@ pub struct Selected {
     pub source: PathBuf,
 }
 
-/// The files of `dir` to ship, sorted by path, and the paths left out.
-pub fn select(dir: &Path, exclude: &[String]) -> Result<(Vec<Selected>, Vec<String>), String> {
+/// How far and how wide the walk of a game folder goes: a hostile folder (a deep tree, a million files) is an error where it
+/// passes these, not a walk without end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Caps {
+    /// The deepest folder walked (the game folder is 0).
+    pub depth: usize,
+    /// The most entries met, files and left-out files and folders together.
+    pub entries: usize,
+}
+
+impl Default for Caps {
+    fn default() -> Caps {
+        Caps {
+            depth: 64,
+            entries: torque_resource::zips::MAX_ENTRIES,
+        }
+    }
+}
+
+/// The files of `dir` to ship, sorted by path, and the paths left out. The walk stops with an error past `caps`.
+pub fn select(
+    dir: &Path,
+    exclude: &[String],
+    caps: Caps,
+) -> Result<(Vec<Selected>, Vec<String>), String> {
     let patterns: Vec<&str> = DEFAULT_EXCLUDES
         .iter()
         .copied()
@@ -43,47 +66,72 @@ pub fn select(dir: &Path, exclude: &[String]) -> Result<(Vec<Selected>, Vec<Stri
         .collect();
     let mut files = Vec::new();
     let mut skipped = Vec::new();
-    walk(dir, "", &patterns, &mut files, &mut skipped)?;
+    let mut walk = Walk {
+        caps,
+        met: 0,
+        patterns: &patterns,
+        files: &mut files,
+        skipped: &mut skipped,
+    };
+    walk.dir(dir, "", 0)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     skipped.sort();
     Ok((files, skipped))
 }
 
-fn walk(
-    dir: &Path,
-    prefix: &str,
-    patterns: &[&str],
-    files: &mut Vec<Selected>,
-    skipped: &mut Vec<String>,
-) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
-        let name = entry.file_name();
-        let name = name
-            .to_str()
-            .ok_or_else(|| format!("{}: a file name is not UTF-8", dir.display()))?;
-        let path = format!("{prefix}{name}");
-        let kind = entry.file_type().map_err(|e| format!("{path}: {e}"))?;
-        if is_excluded(&path, patterns) {
-            skipped.push(path);
-            continue;
+/// The state of one walk.
+struct Walk<'a> {
+    caps: Caps,
+    met: usize,
+    patterns: &'a [&'a str],
+    files: &'a mut Vec<Selected>,
+    skipped: &'a mut Vec<String>,
+}
+
+impl Walk<'_> {
+    fn dir(&mut self, dir: &Path, prefix: &str, depth: usize) -> Result<(), String> {
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            self.met += 1;
+            if self.met > self.caps.entries {
+                return Err(format!(
+                    "the game folder holds more than {} files and folders",
+                    self.caps.entries
+                ));
+            }
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .ok_or_else(|| format!("{}: a file name is not UTF-8", dir.display()))?;
+            let path = format!("{prefix}{name}");
+            let kind = entry.file_type().map_err(|e| format!("{path}: {e}"))?;
+            if is_excluded(&path, self.patterns) {
+                self.skipped.push(path);
+                continue;
+            }
+            if kind.is_symlink() {
+                return Err(format!(
+                    "{path}: a link; a game folder ships only plain files"
+                ));
+            }
+            if kind.is_dir() {
+                if depth >= self.caps.depth {
+                    return Err(format!(
+                        "{path}: folders nested more than {} deep",
+                        self.caps.depth
+                    ));
+                }
+                self.dir(&entry.path(), &format!("{path}/"), depth + 1)?;
+            } else if kind.is_file() {
+                self.files.push(Selected {
+                    path,
+                    source: entry.path(),
+                });
+            }
         }
-        if kind.is_symlink() {
-            return Err(format!(
-                "{path}: a link; a game folder ships only plain files"
-            ));
-        }
-        if kind.is_dir() {
-            walk(&entry.path(), &format!("{path}/"), patterns, files, skipped)?;
-        } else if kind.is_file() {
-            files.push(Selected {
-                path,
-                source: entry.path(),
-            });
-        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Whether `path` (from the game folder, `/` between folders) is left out by one of `patterns`.

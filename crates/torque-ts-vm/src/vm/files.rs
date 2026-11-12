@@ -185,7 +185,7 @@ pub const MAX_DSO_BYTES: usize = 16 << 20;
 
 /// The room for the path of a compiled file (`exec`'s and `compile`'s 512-byte name buffer, as in Torque3D's MIT-licensed
 /// `console/torquescript/runtime.cpp`): 511 bytes and the terminator.
-const MAX_DSO_PATH: usize = 511;
+pub const MAX_DSO_PATH: usize = 511;
 
 /// `<path>.dso` in that room: cut at 511 bytes, so a name longer than 507 bytes looks up a path with a
 /// partial or no extension.

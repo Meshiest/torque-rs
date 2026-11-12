@@ -392,6 +392,8 @@ struct Extras {
     frames: u32,
     /// The client's game in place of the rig's.
     client_game: Option<std::rc::Rc<dyn torque_client::game::ClientGame>>,
+    /// The server's and the client's files in place of the trace world's own ([`crate::rig::files_with`]).
+    files: Option<torque_ts_vm::host::MemFiles>,
 }
 
 /// Moves the server's control object by `by` (a forced correction: the client predicted it elsewhere).
@@ -478,7 +480,10 @@ fn run_with<M>(
     keys: fn(&mut Rng) -> Keys,
     extras: &mut Extras,
 ) -> Result<Outcome, String> {
-    let mut rig = Rig::in_mode(mode, plugins, control)?;
+    let mut rig = match extras.files.take() {
+        Some(files) => Rig::with_files(mode, plugins, control, files, |_| Ok(()))?,
+        None => Rig::in_mode(mode, plugins, control)?,
+    };
     if let Some(game) = extras.client_game.take() {
         torque_client::game::set_client_game(&mut rig.client_vm, game);
     }
@@ -544,6 +549,22 @@ fn run_with<M>(
 /// The figure on foot: a server `Player` and the client's prediction of it, run with `plugins` added to the engine.
 pub fn figure<M>(plugins: impl Plugins<M>) -> Result<Outcome, String> {
     figure_in(Mode::Tge, plugins)
+}
+
+/// [`figure`] over `files` in place of the trace world's own ([`crate::rig::files_with`]): the same run with the world's script
+/// given as source or compiled, whose hashes must be equal.
+pub fn figure_with_files(files: torque_ts_vm::host::MemFiles) -> Result<Outcome, String> {
+    run_with(
+        Mode::Tge,
+        Baseline,
+        Control::Figure,
+        0x9e37_79b9_7f4a_7c15,
+        Keys::figure,
+        &mut Extras {
+            files: Some(files),
+            ..Extras::default()
+        },
+    )
 }
 
 /// [`figure`] over the protocol `mode`.
@@ -636,6 +657,7 @@ pub fn figure_smooth() -> Result<Outcome, String> {
         kick: Some((75, 40, [0.8, 0.3, 0.0])),
         frames: 4,
         client_game: None,
+        files: None,
     };
     run_with(
         Mode::Tge,
