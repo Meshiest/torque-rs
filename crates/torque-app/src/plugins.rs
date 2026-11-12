@@ -19,7 +19,7 @@
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
-//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`TgeProtocolPlugin`] sets Torque's own protocol, [`EngineProtocolPlugin`] the engine's; one of them is on ([`protocol_from_env`]) |
+//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`EngineProtocolPlugin`] sets the engine's own protocol (on by default), [`TgeProtocolPlugin`] Torque's (added off); one of them is on ([`protocol_from_env`]) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, by id (UDP, memory, web, rooms, relay per build) | [`transports`](crate::transports) |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
@@ -94,7 +94,9 @@ pub use crate::run::{
 pub use crate::transports::ClientTransportPlugins;
 
 /// The plugins that wire a server's and a client's script engine, in the order their installs always ran in. A dedicated
-/// server replays only the server recipes, a client only the client ones.
+/// server replays only the server recipes, a client only the client ones. They speak the engine's own protocol
+/// ([`ProtocolPlugins`]; natively with the `quic` feature, UDP is the QUIC link on both ends); a game that must speak
+/// Torque's turns it on with [`set_protocol`]`(.., ProtocolKind::Tge)` or `[net] protocol = "tge"`.
 ///
 /// ```
 /// use torque_app::plugins::{DefaultPlugins, WaterPlugin};

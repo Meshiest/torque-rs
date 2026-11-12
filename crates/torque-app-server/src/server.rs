@@ -15,10 +15,19 @@
 //! `web`, or the id of a bound or custom one), and the engine's transport plugins register them ([`crate::transports`]).
 //! An id no plugin registered is refused.
 //!
+//! **UDP in the engine's protocol is the QUIC link** (the `quic` feature, natively): a server of an engine that speaks the
+//! engine's protocol and has the `quic` transport opens [`Listen::Udp`] as `Listen::Quic` on the same address and port,
+//! and UDP beside the web (`WebListen::udp`) as the QUIC link beside it ([`engine_link`]). Plain engine UDP is what an
+//! engine without the QUIC transport opens (its plugin turned off, or a build without the feature), on private addresses
+//! only. The QUIC endpoint answers the LAN list's requests from private addresses on its port (`QuicListen::lan_list`). Its
+//! identity key is `identity.key` in the server's data folder, or a key made for the server's life when it binds the
+//! loopback address (nobody outside this computer can reach it, and its port may be any free one).
+//!
 //! **A tick** ([`GameServer::tick`]) is one 32 ms pass of the main loop: the datagrams waiting, the scripts' events, the
 //! objects' ticks and a packet to every client.
 
 use std::any::Any;
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::fmt;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
@@ -96,6 +105,9 @@ pub struct QuicListen {
     /// WebTransport sessions on the endpoint (none: the raw protocol alone): which pages may open one, the path, and the
     /// certificates browsers pin (rotating short ones by default).
     pub web_transport: Option<torque_net_quic::WebTransportSetup>,
+    /// Answer the LAN list's requests (its pings and info requests, which are not QUIC) from private addresses on the
+    /// endpoint's port, as a plain UDP socket does; off, they are dropped. On where [`Listen::Udp`] became the QUIC link.
+    pub lan_list: bool,
 }
 
 #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
@@ -105,6 +117,7 @@ impl Default for QuicListen {
             identity: IdentitySource::Default,
             limits: torque_net_quic::QuicLimits::default(),
             web_transport: None,
+            lan_list: false,
         }
     }
 }
@@ -119,6 +132,8 @@ pub enum IdentitySource {
     File(std::path::PathBuf),
     /// A key already loaded (a test's, or a host that keeps it elsewhere).
     Key(Rc<torque_net_quic::ServerKey>),
+    /// A key made when the server starts and kept nowhere: its identity lasts as long as the server.
+    Session,
 }
 
 /// Where the default identity key lives: `identity.key` in the server's folder under the user's data folder (the folder the
@@ -170,6 +185,69 @@ pub enum Listen {
     /// No transport and no network host yet: the server starts without the host's natives, behaviors and passes, and
     /// [`GameServer::attach_net`] gives it both later. Its start must add no datablock (their keys start with the host).
     Late,
+}
+
+/// What a server of `engine` opens for `listen`: in the engine's protocol, with the `quic` transport registered, plain UDP
+/// is the QUIC link on the same address and port, beside the web too, answering the LAN list from private addresses (module
+/// docs); anything else is `listen` itself.
+pub fn engine_link<'a>(engine: &Engine, listen: &'a Listen) -> Cow<'a, Listen> {
+    if engine.protocol() != ProtocolKind::Engine {
+        return Cow::Borrowed(listen);
+    }
+    #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+    if crate::transports::server_transport_ids(engine).contains(&"quic") {
+        match listen {
+            &Listen::Udp {
+                address,
+                port,
+                public,
+            } => {
+                return Cow::Owned(Listen::Quic {
+                    address,
+                    port,
+                    public,
+                    quic: Rc::new(QuicListen::for_udp(address)),
+                });
+            }
+            #[cfg(feature = "web")]
+            Listen::Web {
+                address,
+                port,
+                public,
+                web,
+            } if web.udp && web.quic.is_none() => {
+                return Cow::Owned(Listen::Web {
+                    address: *address,
+                    port: *port,
+                    public: *public,
+                    web: Rc::new(WebListen {
+                        udp: false,
+                        quic: Some(Rc::new(QuicListen::for_udp(*address))),
+                        setup: web.setup.clone(),
+                    }),
+                });
+            }
+            _ => {}
+        }
+    }
+    Cow::Borrowed(listen)
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl QuicListen {
+    /// The QUIC link a plain UDP listen at `address` becomes in the engine's protocol: the LAN list answered, the identity
+    /// key the server's own file, or one made for this server's life on the loopback address.
+    fn for_udp(address: Ipv4Addr) -> QuicListen {
+        QuicListen {
+            identity: if address.is_loopback() {
+                IdentitySource::Session
+            } else {
+                IdentitySource::Default
+            },
+            lan_list: true,
+            ..QuicListen::default()
+        }
+    }
 }
 
 /// Why a server in engine mode may not listen as `listen` asks: plain UDP on an address outside the private set (the engine's
@@ -410,12 +488,13 @@ impl<G: NetGame> GameServer<G> {
         prepare: &mut dyn FnMut(&mut Vm),
     ) -> Result<GameServer<G>, String> {
         let factory = factory_for::<G>(engine)?;
+        let listen = engine_link(engine, &start.listen);
         if engine.protocol() == ProtocolKind::Engine
-            && let Some(refusal) = plain_engine_refusal(&start.listen)
+            && let Some(refusal) = plain_engine_refusal(&listen)
         {
             return Err(refusal.to_string());
         }
-        let link = match &start.listen {
+        let link = match &*listen {
             Listen::Late => None,
             listen => Some(open_listen(engine, listen)?),
         };

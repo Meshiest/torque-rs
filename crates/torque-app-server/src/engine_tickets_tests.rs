@@ -62,6 +62,10 @@ fn engine(bound: bool) -> Engine {
     let mut builder = EngineBuilder::new();
     builder.add_plugins((MinimalPlugins, TicketAuth(bound)));
     set_protocol(&mut builder, ProtocolKind::Engine);
+    // UDP is plain here: these tests drive the plain link's cookie and tickets (the QUIC link's are torque-app's
+    // `quic_link` tests).
+    #[cfg(feature = "quic")]
+    builder.disable_id("torque.transport-quic-server");
     builder.build().expect("the engine builds")
 }
 

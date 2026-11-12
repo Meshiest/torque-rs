@@ -34,10 +34,11 @@ fn side(vm: &mut Vm) -> String {
 
 #[test]
 fn a_client_over_its_server_keeps_the_servers_side() {
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, WebLuaPlugin::new(Side)))
-        .build()
-        .expect("the engine builds");
+    // Torque's protocol: a client over its server carries no RPCs in the engine's (`ClientError::SharedRpcLanes`).
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((DefaultPlugins, WebLuaPlugin::new(Side)));
+    torque_app::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Tge);
+    let engine = builder.build().expect("the engine builds");
     let files = MemFiles::new();
     files.insert("server.cs", b"function startNothing() {}");
     files.insert("probe.lua", b"-- side");

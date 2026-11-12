@@ -84,7 +84,8 @@ use super::plugins::{
 use super::server::GameServer;
 use super::slots::{FileSetter, file_setter};
 use super::transports::{
-    Connect, LinkInfo, MemoryLink, MemoryTarget, UdpTarget, client_transport_warnings, open_connect,
+    Connect, LinkInfo, MemoryLink, MemoryTarget, UdpTarget, client_transport_warnings,
+    open_connect, udp_transport_id,
 };
 
 /// The most console lines a client keeps of its own and of its server's (it drops the older half past this).
@@ -99,7 +100,9 @@ pub const HOSTS_SERVER_GLOBAL: &str = "$Client::HostsServer";
 pub enum ClientNet {
     /// No socket and no connection natives: a client that only draws its canvas.
     None,
-    /// A UDP socket on `127.0.0.1` that reads only loopback datagrams (tests, a game for one).
+    /// A UDP socket on `127.0.0.1` that reads only loopback datagrams (tests, a game for one). In the engine's protocol,
+    /// where the build has QUIC, this and [`ClientNet::Lan`] carry the connection over the QUIC link and only the LAN list
+    /// on the plain socket ([`QuicUdpDatagrams`](crate::transports::QuicUdpDatagrams)), as the server's UDP is its QUIC link.
     Loopback,
     /// A UDP socket bound as TGE binds one (every address, with a loopback twin so a server on `127.0.0.1` hears its LAN
     /// query), under the engine's internet policy.
@@ -690,7 +693,8 @@ fn replaced_natives(vm: &Vm, before: &[(String, String, NativeFn)]) -> Vec<Strin
 }
 
 /// Opens the client's socket as `net` says, over the engine's transports (`udp` for [`ClientNet::Loopback`] and
-/// [`ClientNet::Lan`], `memory` for [`ClientNet::Memory`]); an in-memory one comes with its link.
+/// [`ClientNet::Lan`], or `quic-udp` in the engine's protocol where the build has QUIC, [`udp_transport_id`]; `memory` for
+/// [`ClientNet::Memory`]); an in-memory one comes with its link.
 fn open_socket<C: ConnGame>(
     engine: &Engine,
     state: &Rc<RefCell<ClientState<C>>>,
@@ -698,8 +702,8 @@ fn open_socket<C: ConnGame>(
 ) -> Result<Option<MemoryLink>, ClientError> {
     let (id, target): (&str, &dyn Any) = match &net {
         ClientNet::None | ClientNet::External => return Ok(None),
-        ClientNet::Loopback => ("udp", &UdpTarget::Loopback),
-        ClientNet::Lan => ("udp", &UdpTarget::Lan),
+        ClientNet::Loopback => (udp_transport_id(engine), &UdpTarget::Loopback),
+        ClientNet::Lan => (udp_transport_id(engine), &UdpTarget::Lan),
         ClientNet::Memory { client, server } => (
             "memory",
             &MemoryTarget {

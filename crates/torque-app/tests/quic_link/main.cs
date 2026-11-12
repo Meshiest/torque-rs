@@ -15,3 +15,9 @@ function GameConnection::onConnectRequestRejected(%this, %why)
 {
    $Rejected = %why;
 }
+
+function leave()
+{
+   if (isObject(ServerConnection))
+      ServerConnection.delete();
+}

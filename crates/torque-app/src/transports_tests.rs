@@ -26,6 +26,15 @@ fn engine(group: impl PluginGroup) -> Engine {
         .expect("the engine builds")
 }
 
+/// [`engine`] in Torque's protocol, whose UDP is the `udp` transports' on both sides (the engine's is the QUIC link's where
+/// the build has it).
+fn tge_engine(group: impl PluginGroup) -> Engine {
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(group);
+    crate::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Tge);
+    builder.build().expect("the engine builds")
+}
+
 fn start(engine: &Engine, listen: Listen) -> Result<GameServer, String> {
     let files = MemFiles::new();
     files.insert("server.cs", b"function startNothing() {}");
@@ -68,7 +77,7 @@ fn the_default_plugins_register_the_transports_of_the_build_on_both_sides() {
     }
     if cfg!(feature = "quic") {
         server.push("quic");
-        client.push("quic");
+        client.extend(["quic", "quic-udp"]);
     }
     assert_eq!(server_transport_ids(&engine), server);
     assert_eq!(client_transport_ids(&engine), client);
@@ -102,7 +111,7 @@ fn the_default_transports_connect_a_client_to_a_server_in_memory_and_over_udp() 
 
 #[test]
 fn turning_a_transport_plugin_off_refuses_that_id_on_its_side_only() {
-    let no_udp_server = engine(DefaultPlugins.disable::<UdpServerTransportPlugin>());
+    let no_udp_server = tge_engine(DefaultPlugins.disable::<UdpServerTransportPlugin>());
     let listen = Listen::Udp {
         address: Ipv4Addr::LOCALHOST,
         port: 0,
@@ -114,7 +123,7 @@ fn turning_a_transport_plugin_off_refuses_that_id_on_its_side_only() {
     // Its client half is still there.
     builder(&no_udp_server, ClientNet::Loopback).expect("the udp client");
 
-    let no_udp_client = engine(DefaultPlugins.disable::<UdpClientTransportPlugin>());
+    let no_udp_client = tge_engine(DefaultPlugins.disable::<UdpClientTransportPlugin>());
     let error = socket_error(builder(&no_udp_client, ClientNet::Loopback));
     assert!(
         error.contains("connect over the transport \"udp\""),
@@ -249,4 +258,35 @@ fn hosting_brings_the_rooms_transport_with_it() {
         .build()
         .expect("the engine builds");
     assert_eq!(server_transport_ids(&engine), ["rooms"]);
+}
+
+#[cfg(feature = "quic")]
+#[test]
+fn a_server_is_dialed_again_after_a_doubling_wait_and_at_once_once_connected() {
+    use crate::transports::Redial;
+    use std::time::{Duration, Instant};
+    let a = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_000);
+    let b = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 28_001);
+    let t0 = Instant::now();
+    let mut redial = Redial::default();
+    assert!(redial.may_dial(a, t0));
+    // Every tick before the wait is refused.
+    assert!(!redial.may_dial(a, t0 + Duration::from_millis(32)));
+    assert!(!redial.may_dial(a, t0 + Redial::FIRST - Duration::from_millis(1)));
+    // Another server is dialed at once.
+    assert!(redial.may_dial(b, t0 + Duration::from_millis(1)));
+    let mut now = t0 + Duration::from_millis(1);
+    let mut wait = Redial::FIRST;
+    for _ in 0..8 {
+        now += wait;
+        assert!(redial.may_dial(b, now));
+        wait = (wait * 2).min(Redial::MOST);
+        assert!(!redial.may_dial(b, now + wait - Duration::from_millis(1)));
+    }
+    assert_eq!(wait, Redial::MOST);
+    // Connected: the next dial goes at once, and the wait starts over.
+    redial.connected();
+    assert!(redial.may_dial(b, now));
+    assert!(!redial.may_dial(b, now + Redial::FIRST - Duration::from_millis(1)));
+    assert!(redial.may_dial(b, now + Redial::FIRST));
 }

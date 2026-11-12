@@ -1,6 +1,7 @@
 //! The minimal example again, built on [`Engine`] and [`DefaultPlugins`]: the same game as `examples/minimal` (its scripts and its
 //! mission), a dedicated server and a client that connect over the loopback address, with the engine's helpers doing the wiring that
-//! example does by hand.
+//! example does by hand. It speaks the engine's own protocol, the default plugins' (the QUIC link on the loopback address);
+//! `TORQUE_NET_PROTOCOL=tge` runs it in Torque's protocol over plain UDP, as `examples/minimal` speaks it.
 //!
 //! The game is one plugin, [`ExamplePlugin`]: its files, and the one global its client's GUI reads. The server, the console client and
 //! the window client are each an engine of `(DefaultPlugins, ExamplePlugin)` run or started in a few lines (see `src/bin`). Which plugins

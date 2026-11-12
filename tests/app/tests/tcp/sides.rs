@@ -94,10 +94,11 @@ fn a_server_and_a_client_each_service_their_own_sockets_on_their_ticks() {
 
 #[test]
 fn a_client_over_its_server_shares_the_servers_classes_and_sockets() {
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, TcpPlugin::default()))
-        .build()
-        .expect("the engine builds");
+    // Torque's protocol: a client over its server carries no RPCs in the engine's (`ClientError::SharedRpcLanes`).
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((DefaultPlugins, TcpPlugin::default()));
+    torque_app::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Tge);
+    let engine = builder.build().expect("the engine builds");
     let files = MemFiles::new();
     files.insert("server.cs", b"function startNothing() {}");
     let server = GameServer::start_engine(
@@ -141,10 +142,11 @@ fn a_client_over_its_server_polls_the_one_host_once_a_tick() {
         callbacks_per_tick: 1,
         ..Default::default()
     };
-    let engine = EngineBuilder::new()
-        .add_plugins((DefaultPlugins, TcpPlugin::default().with_limits(limits)))
-        .build()
-        .expect("the engine builds");
+    // Torque's protocol: a client over its server carries no RPCs in the engine's (`ClientError::SharedRpcLanes`).
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins((DefaultPlugins, TcpPlugin::default().with_limits(limits)));
+    torque_app::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Tge);
+    let engine = builder.build().expect("the engine builds");
     let files = MemFiles::new();
     files.insert("server.cs", b"function startNothing() {}");
     let server = GameServer::start_engine(

@@ -1,7 +1,9 @@
 //! The QUIC link end to end on real sockets (loopback, port 0): an engine-mode server on `Listen::Quic` and a client over
 //! `quic` connect and exchange ghosts; the server's identity pinned, wrong, and trusted on first use then changed; a ticket
 //! bound to one connection's channel binding refused on another; a client whose socket moves keeps its connection; a
-//! desktop asked to speak WebTransport (the path browsers take) joins a server that takes sessions.
+//! desktop asked to speak WebTransport (the path browsers take) joins a server that takes sessions. In the engine's protocol
+//! `Listen::Udp` and a client's `ClientNet::Loopback` socket are the QUIC link, the LAN list still answered on its port; with
+//! the QUIC transports turned off, and in Torque's protocol, they are plain UDP.
 
 #![cfg(feature = "quic")]
 
@@ -106,6 +108,7 @@ fn start_with(
                     identity: IdentitySource::Key(Rc::clone(key)),
                     limits: QuicLimits::default(),
                     web_transport: web_transport.then(torque_net_quic::WebTransportSetup::default),
+                    lan_list: false,
                 }),
             },
             globals: &[],
@@ -520,4 +523,231 @@ fn a_client_whose_socket_moves_keeps_its_connection() {
     let after = server.transport_status().join("\n");
     assert!(after.contains("1 migrations (0 refused)"), "{after}");
     assert!(after.contains("1 connections"), "{after}");
+}
+
+// ---- UDP in the engine's protocol
+// -----------------------------------------------------------------------------------
+
+/// A server of `engine` on `Listen::Udp` at the loopback address, any port.
+fn start_udp(engine: &Engine, files: &GameFiles) -> GameServer {
+    GameServer::start_engine(
+        engine,
+        files.mem_files(),
+        &ServerStart {
+            listen: Listen::Udp {
+                address: Ipv4Addr::LOCALHOST,
+                port: 0,
+                public: false,
+            },
+            globals: &[],
+            start: "startIt",
+            args: &[],
+        },
+    )
+    .expect("the server starts")
+}
+
+/// A client of `engine` on its UDP socket at the loopback address, told to connect to `at`.
+fn udp_client(engine: &Engine, files: &GameFiles, at: SocketAddrV4) -> GameClient {
+    let mut builder =
+        ClientBuilder::from_engine(engine, Some(files.mem_files()), ClientNet::Loopback)
+            .expect("the client builds");
+    builder.exec_entry().expect("the client's script");
+    let mut client: GameClient = builder.build();
+    client
+        .call("connectTo", &[&at.to_string()])
+        .expect("connect");
+    client
+}
+
+#[test]
+fn in_the_engines_protocol_udp_is_the_quic_link_on_both_ends_and_the_lan_list_is_answered_on_its_port()
+ {
+    let files = files();
+    let engine = engine(&files, Nothing);
+    let mut server = start_udp(&engine, &files);
+    let at = addr_of(&server);
+    let status = server.transport_status().join("\n");
+    assert!(status.contains("quic:"), "{status}");
+    let mut client = udp_client(&engine, &files, at);
+    assert!(
+        run_until(&mut server, &mut client, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.ghost_count() >= 1
+        }),
+        "server {:?}; client {:?}",
+        server.drain_log(),
+        client.client_log
+    );
+    assert_eq!(client.global("$Accepted"), "1");
+    let status = server.transport_status().join("\n");
+    assert!(status.contains("1 established now"), "{status}");
+
+    // The LAN list's ping, which is not QUIC, is answered on the same port.
+    use torque_net::serverquery::{GAME_PING_REQUEST, GAME_PING_RESPONSE, padded_request};
+    let ask = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("a socket");
+    ask.set_nonblocking(true).expect("non-blocking");
+    let request = padded_request(GAME_PING_REQUEST, 0, 7, 9, 64);
+    ask.send_to(&request, at).expect("sent");
+    let mut buf = [0u8; 2048];
+    let mut answer = None;
+    for _ in 0..200 {
+        server.tick();
+        if let Ok((len, _)) = ask.recv_from(&mut buf) {
+            answer = Some(buf[..len].to_vec());
+            break;
+        }
+        std::thread::sleep(TICK);
+    }
+    let answer = answer.expect("the ping was answered");
+    assert_eq!(answer.first(), Some(&GAME_PING_RESPONSE));
+}
+
+#[test]
+fn with_the_quic_transports_turned_off_udp_in_the_engines_protocol_is_plain_on_both_ends() {
+    let files = files();
+    let config = GameConfig::load(&files).expect("game.toml");
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(DefaultPlugins).config(&config);
+    set_protocol(&mut builder, ProtocolKind::Engine);
+    builder
+        .disable_id("torque.transport-quic-server")
+        .disable_id("torque.transport-quic-client");
+    let engine = builder.build().expect("the engine builds");
+    let mut server = start_udp(&engine, &files);
+    let at = addr_of(&server);
+    let status = server.transport_status().join("\n");
+    assert!(!status.contains("quic:"), "{status}");
+    let mut client = udp_client(&engine, &files, at);
+    assert!(
+        run_until(&mut server, &mut client, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.ghost_count() >= 1
+        }),
+        "server {:?}; client {:?}",
+        server.drain_log(),
+        client.client_log
+    );
+}
+
+#[test]
+fn in_torques_protocol_udp_stays_plain_udp() {
+    let files = files();
+    let config = GameConfig::load(&files).expect("game.toml");
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(DefaultPlugins).config(&config);
+    set_protocol(&mut builder, ProtocolKind::Tge);
+    let engine = builder.build().expect("the engine builds");
+    let mut server = start_udp(&engine, &files);
+    let status = server.transport_status().join("\n");
+    assert!(!status.contains("quic:"), "{status}");
+}
+
+#[test]
+fn a_client_joins_a_loopback_server_hosted_again_on_the_same_port_in_one_run() {
+    let files = files();
+    let engine = engine(&files, Nothing);
+    let mut server = start_udp(&engine, &files);
+    let at = addr_of(&server);
+    let mut client = udp_client(&engine, &files, at);
+    assert!(
+        run_until(&mut server, &mut client, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.global("$Accepted") == "1"
+        }),
+        "first: server {:?}; client {:?}",
+        server.drain_log(),
+        client.client_log
+    );
+    client.call("leave", &[]).expect("leave");
+    server.close();
+    drop(server);
+    // The same port, a new server with a new key (a loopback server's key lasts as long as the server).
+    let mut server = GameServer::start_engine(
+        &engine,
+        files.mem_files(),
+        &ServerStart {
+            listen: Listen::Udp {
+                address: Ipv4Addr::LOCALHOST,
+                port: at.port(),
+                public: false,
+            },
+            globals: &[],
+            start: "startIt",
+            args: &[],
+        },
+    )
+    .expect("the server starts again");
+    client
+        .call("connectTo", &[&at.to_string()])
+        .expect("connect again");
+    assert!(
+        run_until(&mut server, &mut client, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.global("$Accepted") == "2"
+        }),
+        "second: server {:?}; client {:?}",
+        server.drain_log(),
+        client.client_log
+    );
+}
+
+/// The count a status line gives before `what` (`"3 accepted"` -> 3).
+fn count_before(status: &str, what: &str) -> u64 {
+    let at = status.find(what).expect("the count is in the status");
+    status[..at]
+        .split_whitespace()
+        .last()
+        .and_then(|n| n.parse().ok())
+        .expect("a number")
+}
+
+#[test]
+fn a_loopback_server_whose_key_changes_within_a_session_is_refused_on_the_redial() {
+    let files = files();
+    let engine = engine(&files, Nothing);
+    let mut server = start_udp(&engine, &files);
+    let at = addr_of(&server);
+    let mut client = udp_client(&engine, &files, at);
+    assert!(
+        run_until(&mut server, &mut client, 600, |s, c| {
+            global(s, "$Connected") == "1" && c.global("$Accepted") == "1"
+        }),
+        "first: server {:?}; client {:?}",
+        server.drain_log(),
+        client.client_log
+    );
+    // Another server takes the same port number with another key while the client is still in its session: no new connect.
+    server.close();
+    drop(server);
+    let mut other = GameServer::start_engine(
+        &engine,
+        files.mem_files(),
+        &ServerStart {
+            listen: Listen::Udp {
+                address: Ipv4Addr::LOCALHOST,
+                port: at.port(),
+                public: false,
+            },
+            globals: &[],
+            start: "startIt",
+            args: &[],
+        },
+    )
+    .expect("another server starts");
+    // The client's session resends and redials on its own; past the dial, a while longer for a handshake to finish.
+    let mut dialed = None;
+    for tick in 0..400 {
+        other.tick();
+        client.step(32);
+        std::thread::sleep(TICK);
+        let status = other.transport_status().join("\n");
+        if dialed.is_none() && count_before(&status, " accepted") >= 1 {
+            dialed = Some(tick);
+        }
+        if dialed.is_some_and(|d| tick > d + 100) {
+            break;
+        }
+    }
+    let status = other.transport_status().join("\n");
+    assert!(dialed.is_some(), "the client never dialed again: {status}");
+    assert!(status.contains("0 established in all"), "{status}");
+    assert_eq!(global(&other, "$Connected"), "");
+    assert_eq!(client.global("$Accepted"), "1");
 }

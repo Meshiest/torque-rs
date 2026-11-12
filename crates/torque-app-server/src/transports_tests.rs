@@ -105,7 +105,11 @@ fn a_server_listens_on_udp_and_in_memory_by_default() {
 
 #[test]
 fn turning_a_transport_off_refuses_its_id_with_the_plugin_to_add() {
-    let off = engine(MinimalPlugins.disable::<UdpServerTransportPlugin>());
+    // In Torque's protocol: in the engine's, UDP is the QUIC link where the build has it.
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(MinimalPlugins.disable::<UdpServerTransportPlugin>());
+    crate::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Tge);
+    let off = builder.build().expect("the engine builds");
     let error = start(&off, udp_loopback()).err().expect("no udp");
     assert!(error.contains("\"udp\""), "{error}");
     assert!(error.contains("torque.transport-udp-server"), "{error}");
@@ -245,6 +249,9 @@ fn a_public_bind_of_plain_engine_udp_is_refused() {
     let mut builder = EngineBuilder::new();
     builder.add_plugins(MinimalPlugins);
     crate::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Engine);
+    // Without the QUIC link, UDP in the engine's protocol is plain.
+    #[cfg(feature = "quic")]
+    builder.disable_id("torque.transport-quic-server");
     let engine = builder.build().expect("the engine builds");
     for address in [Ipv4Addr::UNSPECIFIED, Ipv4Addr::new(203, 0, 113, 7)] {
         let listen = Listen::Udp {
@@ -262,4 +269,31 @@ fn a_public_bind_of_plain_engine_udp_is_refused() {
     }
     // The same engine listens on a private address.
     assert!(start(&engine, udp_loopback()).is_ok());
+}
+
+/// In the engine's protocol UDP is the QUIC link: the bind policy still refuses a public address other than every
+/// interface's, and the loopback server's link is QUIC (its status lines are the QUIC endpoint's).
+#[cfg(feature = "quic")]
+#[test]
+fn udp_in_the_engines_protocol_is_the_quic_link_under_the_same_bind_policy() {
+    let mut builder = EngineBuilder::new();
+    builder.add_plugins(MinimalPlugins);
+    crate::plugins::set_protocol(&mut builder, torque_engine::ProtocolKind::Engine);
+    let engine = builder.build().expect("the engine builds");
+    let listen = Listen::Udp {
+        address: Ipv4Addr::new(203, 0, 113, 7),
+        port: 0,
+        public: true,
+    };
+    let refused = start(&engine, listen)
+        .err()
+        .expect("a public address is refused");
+    assert!(refused.contains("only 0.0.0.0"), "{refused}");
+    assert_eq!(
+        crate::server::engine_link(&engine, &udp_loopback()).transport_id(),
+        "quic"
+    );
+    let mut server = start(&engine, udp_loopback()).expect("a loopback server");
+    let status = server.transport_status().join("\n");
+    assert!(status.contains("quic:"), "{status}");
 }

@@ -27,6 +27,14 @@
 //! from the new address, before the path challenge completes; a connection they refuse is closed. A peer that forges its
 //! source address can so move a connection to an address it does not hold, and have it closed by the checks there, but
 //! cannot read from it. The host counts the connection by its current address ([`Transport::peer_ip`]).
+//!
+//! **Plain datagrams beside QUIC.** Every QUIC packet has the fixed bit (0x40 of byte 0) set (`grease_quic_bit` is off), so
+//! a datagram with it clear is not QUIC. By default it is stray. With [`QuicServer::pass_plain`], one that comes from a
+//! private address (10/8, 172.16/12, 192.168/16, 169.254/16, 127/8) and that the host's filter takes reaches the host under
+//! the sender's own address, as on a plain UDP socket, at most [`PLAIN_WAITING`] at a time; the host may answer such an
+//! address, and only such an address, outside any connection. The host's LAN list shares the QUIC port this way. Its peers
+//! are plain links ([`LinkKind::PLAIN_UDP`]), never a connection's stand-in: an engine datagram has the fixed bit set and
+//! never takes this road.
 
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, SocketAddr};
@@ -42,7 +50,7 @@ use quinn_proto::{
 use rustls::pki_types::CertificateDer;
 use torque_net::engine::{ChannelBinding, LinkFacts, LinkKind, ServerIdentity};
 use torque_net::fair::NetworkKey;
-use torque_server::net::transport::{BindError, Recv, Transport};
+use torque_server::net::transport::{BindError, LanRules, Recv, Transport};
 
 use crate::certs::{CertHash, Certificates, Rotation};
 use crate::clock::{Clock, SystemClock};
@@ -50,7 +58,7 @@ use crate::h3::{self, ALPN_H3, Driver, Outcome};
 use crate::identity::ServerKey;
 use crate::io::{Io, UdpIo};
 use crate::retry::{Load, RetryGate};
-use crate::stand_in::{STAND_IN_NET, StandIns, is_reserved};
+use crate::stand_in::{STAND_IN_NET, StandIns, is_reserved, is_stand_in};
 use crate::tls::{ALPN, QUIC_MAX_DATAGRAM, QuicLimits, TlsError};
 
 /// The most datagrams one pass reads from the socket.
@@ -58,6 +66,12 @@ pub const READS_PER_PASS: usize = 256;
 
 /// The receive buffer: the largest UDP payload the endpoint takes.
 const RECV_BYTES: usize = 1 << 16;
+
+/// The fixed bit of byte 0, set in every QUIC packet this endpoint takes.
+const QUIC_FIXED_BIT: u8 = 0x40;
+
+/// The most plain datagrams ([`QuicServer::pass_plain`]) waiting for the host at once; one past it is stray.
+pub const PLAIN_WAITING: usize = 64;
 
 /// The application error code a connection the address check refused is closed with.
 const CLOSE_ADDRESS_REFUSED: u32 = 1;
@@ -130,6 +144,10 @@ pub struct Counters {
     pub session_dropped: u64,
     /// Short certificates re-issued.
     pub certificates_rotated: u64,
+    /// Plain datagrams handed to the host ([`QuicServer::pass_plain`]).
+    pub plain_in: u64,
+    /// Plain datagrams the host sent to a private address.
+    pub plain_out: u64,
 }
 
 struct Conn {
@@ -178,6 +196,8 @@ pub struct QuicServer<I: Io, C: Clock> {
     /// stand-in the host still has as a live peer).
     released: Vec<SocketAddr>,
     address_check: Option<Box<dyn Fn(IpAddr) -> bool>>,
+    /// The filter of the plain datagrams handed to the host, and how many of them wait in the inbox.
+    plain: Option<PlainPass>,
     web_transport: Option<WebTransport>,
     counters: Counters,
     buf: Vec<u8>,
@@ -228,6 +248,7 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             gone: Vec::new(),
             released: Vec::new(),
             address_check: None,
+            plain: None,
             web_transport: None,
             counters: Counters::default(),
             buf: Vec::with_capacity(RECV_BYTES),
@@ -326,6 +347,12 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
         self.address_check = Some(Box::new(check));
     }
 
+    /// Hands the host the plain datagrams (the fixed bit clear) from a private address that `filter` takes, and lets it
+    /// answer private addresses outside any connection (module docs): the LAN list's requests on the QUIC port.
+    pub fn pass_plain(&mut self, filter: fn(&[u8]) -> bool) {
+        self.plain = Some(PlainPass { filter, waiting: 0 });
+    }
+
     /// This server's identity.
     #[must_use]
     pub fn identity(&self) -> ServerIdentity {
@@ -378,6 +405,13 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             };
             if from.is_ipv6() || is_reserved(from) {
                 self.counters.stray += 1;
+                continue;
+            }
+            if self.recv_buf[..len]
+                .first()
+                .is_none_or(|&b| b & QUIC_FIXED_BIT == 0)
+            {
+                self.take_plain(from, len);
                 continue;
             }
             let data = BytesMut::from(&self.recv_buf[..len]);
@@ -908,7 +942,49 @@ impl<I: Io, C: Clock> QuicServer<I, C> {
             self.remove(ch);
         }
         self.inbox.clear();
+        if let Some(plain) = self.plain.as_mut() {
+            plain.waiting = 0;
+        }
     }
+}
+
+impl<I: Io, C: Clock> QuicServer<I, C> {
+    /// A datagram that is not QUIC, of `len` bytes in the receive buffer: to the host if [`QuicServer::pass_plain`] takes it,
+    /// else stray.
+    fn take_plain(&mut self, from: SocketAddr, len: usize) {
+        let data = &self.recv_buf[..len];
+        let Some(plain) = self.plain.as_mut().filter(|p| {
+            p.waiting < PLAIN_WAITING
+                && len <= QUIC_MAX_DATAGRAM
+                && LanRules::PLAIN.is_private(from.ip())
+                && (p.filter)(data)
+        }) else {
+            self.counters.stray += 1;
+            return;
+        };
+        plain.waiting += 1;
+        self.inbox.push_back((from, Bytes::copy_from_slice(data)));
+        self.counters.plain_in += 1;
+    }
+
+    /// The host's datagram to `to`, which is no connection's stand-in: sent as it is when [`QuicServer::pass_plain`] is on and
+    /// `to` is a private address, else not sent.
+    fn send_plain(&mut self, to: SocketAddr, data: &[u8]) -> bool {
+        if self.plain.is_none() || is_stand_in(to) || !LanRules::PLAIN.is_private(to.ip()) {
+            return false;
+        }
+        let sent = self.io.send(to, data);
+        if sent {
+            self.counters.plain_out += 1;
+        }
+        sent
+    }
+}
+
+/// What [`QuicServer::pass_plain`] set.
+struct PlainPass {
+    filter: fn(&[u8]) -> bool,
+    waiting: usize,
 }
 
 impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
@@ -931,6 +1007,10 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
         {
             c.queued = c.queued.saturating_sub(1);
             c.queued_bytes = c.queued_bytes.saturating_sub(data.len());
+        } else if !is_stand_in(from)
+            && let Some(plain) = self.plain.as_mut()
+        {
+            plain.waiting = plain.waiting.saturating_sub(1);
         }
         let len = data.len().min(buf.len());
         buf[..len].copy_from_slice(&data[..len]);
@@ -939,7 +1019,7 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
 
     fn send_to(&mut self, to: SocketAddr, data: &[u8]) -> bool {
         let Some(&ch) = self.by_stand_in.get(&to) else {
-            return false;
+            return self.send_plain(to, data);
         };
         let Some(c) = self.conns.get_mut(&ch) else {
             return false;
@@ -1034,9 +1114,13 @@ impl<I: Io, C: Clock> Transport for QuicServer<I, C> {
         ]
     }
 
-    /// Every peer is a QUIC connection: its address validated, TLS 1.3 on the wire, QUIC's congestion control, this server's
-    /// identity presented. Datagrams are the connection's current size, at most [`QUIC_MAX_DATAGRAM`].
+    /// A peer at a connection's stand-in is a QUIC connection: its address validated, TLS 1.3 on the wire, QUIC's
+    /// congestion control, this server's identity presented. Datagrams are the connection's current size, at most
+    /// [`QUIC_MAX_DATAGRAM`]. Any other peer is a plain datagram's sender ([`QuicServer::pass_plain`]).
     fn link_kind(&self, peer: SocketAddr) -> LinkKind {
+        if !is_stand_in(peer) {
+            return LinkKind::PLAIN_UDP;
+        }
         let conn = self
             .by_stand_in
             .get(&peer)

@@ -1,7 +1,7 @@
 //! A dedicated server and a client built on the `torque` umbrella crate, which connect over the loopback address.
 //!
 //! This example is wired by hand on purpose: it is the reference for using the engine's lower layer directly, without
-//! `Engine` or plugins.
+//! `Engine` or plugins. It speaks Torque's protocol over plain UDP (TGE's handshake and packets, built by hand).
 //!
 //! - [`game`]: the example game's scripts (`game/example/main.cs` and its mission), loaded into a script engine with TGE's game
 //!   classes declared.

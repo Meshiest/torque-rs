@@ -184,15 +184,16 @@ fn a_session_runs_over_a_transport_a_plugin_registered() {
 
 #[test]
 fn turning_a_transport_plugin_off_fails_listen_and_connect_on_its_id() {
-    let off = EngineBuilder::new()
-        .add_plugins((
-            DefaultPlugins
-                .disable::<UdpServerTransportPlugin>()
-                .disable::<UdpClientTransportPlugin>(),
-            ExamplePlugin(files().unwrap()),
-        ))
-        .build()
-        .unwrap();
+    // In Torque's protocol: in the engine's, UDP is the QUIC link's transports where the build has them.
+    let mut off = EngineBuilder::new();
+    off.add_plugins((
+        DefaultPlugins
+            .disable::<UdpServerTransportPlugin>()
+            .disable::<UdpClientTransportPlugin>(),
+        ExamplePlugin(files().unwrap()),
+    ));
+    torque::app::plugins::set_protocol(&mut off, torque::engine::ProtocolKind::Tge);
+    let off = off.build().unwrap();
     let listen = Listen::Udp {
         address: Ipv4Addr::LOCALHOST,
         port: 0,

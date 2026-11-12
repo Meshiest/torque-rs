@@ -1,5 +1,7 @@
 //! The smallest game: `cargo run` opens a window joined to a server it runs itself. `cargo run -- server [port]` is a dedicated
-//! server and `cargo run -- client [address]` a client with no window that joins one. The scripts are in `game/`.
+//! server and `cargo run -- client [address]` a client with no window that joins one. The scripts are in `game/`. It speaks
+//! the engine's own protocol over the QUIC link (`DefaultPlugins`); `[net] protocol = "tge"` in `game/game.toml` makes it speak
+//! Torque's over plain UDP.
 
 mod window;
 

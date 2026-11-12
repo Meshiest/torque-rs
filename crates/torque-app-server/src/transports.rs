@@ -517,6 +517,7 @@ fn quic_endpoint(
         IdentitySource::File(path) => {
             Rc::new(ServerKey::load_or_make(path).map_err(|e| e.to_string())?)
         }
+        IdentitySource::Session => Rc::new(ServerKey::generate().map_err(|e| e.to_string())?),
         IdentitySource::Default => {
             let path = crate::server::identity_path().ok_or(
                 "no data folder for the server's identity key: name the key file in QuicListen::identity",
@@ -535,7 +536,18 @@ fn quic_endpoint(
     if let Some(setup) = &quic.web_transport {
         server.enable_web_transport(&key, setup.clone())?;
     }
+    if quic.lan_list {
+        server.pass_plain(is_lan_list_request);
+    }
     Ok(server)
+}
+
+/// Whether `data` is one of the LAN list's requests (a ping or an info request), which a QUIC endpoint with
+/// `QuicListen::lan_list` hands the host.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+fn is_lan_list_request(data: &[u8]) -> bool {
+    data.first()
+        .is_some_and(|ty| LanRules::PLAIN.broadcast_requests.contains(ty))
 }
 
 /// UDP datagrams: one socket on the server's address, which the LAN list's pings and queries share. Registers `udp`.

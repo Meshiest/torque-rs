@@ -1,5 +1,8 @@
 //! A small arena shooter for one player or a few on a local network.
 //!
+//! It speaks the engine's own protocol, the default plugins' (desktops over the QUIC link, browsers over WebRTC or a
+//! WebSocket); `TORQUE_NET_PROTOCOL=tge` runs it in Torque's protocol over plain UDP.
+//!
 //! - [`files`]: the kit and the game folder (the scripts, the maps).
 //! - [`server`]: torque-server's main loop over TGE's game classes, with a network host on a UDP socket.
 //! - [`client`]: the client host on its own UDP socket, and the server it hosts.

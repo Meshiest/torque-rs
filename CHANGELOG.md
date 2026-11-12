@@ -323,12 +323,19 @@ different.
   Torque's own protocol is the only one so far and its bytes are unchanged. `Engine::protocol` reads the slot, and the server
   decides what each connection's peer is in one place (`PeerKind`) instead of in each feature. The trace-hash lines are labeled
   with the protocol.
-- The engine's own network protocol (`EngineProtocolPlugin`, `torque.net.engine`; `[net] protocol = "engine"`), opt-in beside
-  Torque's: its own framing over plain UDP on private addresses, WebRTC data channels, WebSockets and the memory link, the
-  manifest always sent with the connect, every peer the engine's own, one packet a tick at a byte-rate ceiling, plugin RPCs in
-  their own lanes, and per-address and per-network caps on a server's sessions. Plain engine UDP refuses a public bind. A
-  server with an auth provider challenges each connect and takes only a ticket made for that challenge, once; the mods
-  download asks for blocks with the `torque.mods.get` RPC.
+- The engine's own network protocol (`EngineProtocolPlugin`, `torque.net.engine`), the default of `DefaultPlugins` and
+  `MinimalPlugins`; Torque's protocol, byte for byte, is an opt-in (`TgeProtocolPlugin`, `[net] protocol = "tge"`,
+  `set_protocol(.., ProtocolKind::Tge)`), and an engine with neither plugin still speaks it. Its own framing over the QUIC
+  link, WebTransport, WebRTC data channels, WebSockets, plain UDP on private addresses and the memory link, the manifest always
+  sent with the connect, every peer the engine's own, one packet a tick at a byte-rate ceiling, plugin RPCs in their own
+  lanes, and per-address and per-network caps on a server's sessions. Plain engine UDP refuses a public bind. A server with an
+  auth provider challenges each connect and takes only a ticket made for that challenge, once (bound to the QUIC connection's
+  TLS exporter on that link); the mods download asks for blocks with the `torque.mods.get` RPC.
+- The QUIC link (`torque-net-quic`, the `quic` feature, on by default natively): TLS 1.3, QUIC's address validation with Retry
+  under load, congestion control and connection migration, the server known by the hash of its identity key (pinned, or
+  trusted on first use in `known_servers`), and WebTransport sessions for browsers on the same port. In the engine's protocol
+  it is what UDP means: `Listen::Udp` opens it, a client's UDP socket dials it for the connection and keeps plain UDP for the
+  LAN list, and the server answers the LAN list on the QUIC port. TGE has no encrypted transport.
 - In the engine's protocol a packet with ghost or move data is counted lost only by the peer's acks (a packet it read is never
   counted lost, however long its frame), a receiver reads none 3 or more behind its newest, and a sender with 32 unresolved
   sends nothing until acks come, closing the session as timed out when none does. TGE's rule and bytes are unchanged.

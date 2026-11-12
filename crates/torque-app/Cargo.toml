@@ -70,7 +70,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Element", "History", "Location", "Window"] }
 
 [features]
-default = ["renderer", "gizmos"]
+default = ["renderer", "gizmos", "quic"]
 # The engine's renderer on the renderer slot and its feature plugins (`RendererPlugin`, `RenderFeaturePlugins`), in
 # `DefaultPlugins`. Without it a game registers its own renderers on the slot.
 renderer = []
@@ -88,7 +88,9 @@ webrtc = ["web", "torque-app-server/webrtc", "torque-server/webrtc", "torque-cli
 # `net::web::p2p`) and a client's datagrams to it (torque-client's `net::room_join`).
 p2p = ["webrtc", "torque-app-server/p2p", "torque-server/p2p", "torque-client/p2p"]
 # Desktop players over QUIC: a server listening on the QUIC link (`Listen::Quic`) and a client's socket over it
-# (`QuicTarget`), the server known by the hash of its identity key.
+# (`QuicTarget`), the server known by the hash of its identity key. In the engine's protocol it is what UDP means on both
+# ends (`Listen::Udp`, `ClientNet::Loopback` and `Lan`), so a game's server and client builds take it together. Natively
+# only: a browser build compiles none of it.
 quic = ["torque-app-server/quic", "dep:torque-net-quic"]
 # The window opens the default sound card for the client's mixer (cpal; ALSA on Linux); without a device, or without this
 # feature, the mixer runs on the clock and nothing is heard.

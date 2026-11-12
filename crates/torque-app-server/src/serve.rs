@@ -12,7 +12,8 @@
 //! page this server serves, or from an `--allow-origin <origin>` (repeatable; `*` takes any page). TLS handshakes run on
 //! the server's thread: an ECDSA (P-256) key makes each far cheaper than an RSA one. The address rule looks at the bind
 //! address only: a private address that a router maps 1:1 to a public one serves plain `http` and `ws` to the internet,
-//! so use TLS there.
+//! so use TLS there. In the engine's protocol, with the `quic` feature, UDP here is the QUIC link (`server::engine_link`):
+//! `udp` and `both` listen on QUIC at that port, and the LAN list is answered there.
 //!
 //! **WebTransport** (`--webtransport`, with `--transport web` or `both`, the `quic` feature): the QUIC link listens on the
 //! UDP port of the same number as the web, with WebTransport sessions on, instead of plain UDP (desktops join over QUIC,
@@ -394,6 +395,8 @@ impl WebFlags {
                     },
                     certificates: torque_net_quic::CertificateChoice::Rotating,
                 }),
+                // The UDP port is the QUIC endpoint's: the LAN list asks there.
+                lan_list: true,
             })
         });
         let setup = WebSetup {

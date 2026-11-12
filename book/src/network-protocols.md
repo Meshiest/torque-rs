@@ -2,11 +2,11 @@
 
 A game speaks one of two network protocols, and every server and client of it speaks the same one:
 
-- **Torque's own** (`tge`, the default for now): TGE's handshake, packet header and event layer, byte for byte, so a server and a
-  client of the engine can meet a real TGE peer. It is an optional compatibility mode; nothing in the engine's own protocol is
-  chosen to fit it.
-- **The engine's own** (`engine`): its own framing over a link contract. It owes TGE nothing on the wire, and every peer is the
-  engine's own.
+- **The engine's own** (`engine`, the default): its own framing over a link contract. It owes TGE nothing on the wire, and every
+  peer is the engine's own. Natively its UDP is the QUIC link, encrypted (below).
+- **Torque's own** (`tge`): TGE's handshake, packet header and event layer, byte for byte, so a server and a client of the
+  engine can meet a real TGE peer. It is an optional compatibility mode that a game turns on; nothing in the engine's own
+  protocol is chosen to fit it.
 
 Above the framing both protocols carry the same things: the ghosts and their records, the net strings, the datablocks, the
 moves, the bulk channels, the events and the prediction. A game's scripts see the same callbacks in both (`onConnectRequest`,
@@ -16,19 +16,37 @@ the same arguments.
 ## Choosing one
 
 The protocol is an exclusive slot of the engine (`engine.net().protocol(..)`), set by one of two plugins:
-`TgeProtocolPlugin` (`torque.net.tge`) or `EngineProtocolPlugin` (`torque.net.engine`). `DefaultPlugins` and `MinimalPlugins`
-carry both through `ProtocolPlugins`, with one of them off:
+`EngineProtocolPlugin` (`torque.net.engine`) or `TgeProtocolPlugin` (`torque.net.tge`). `DefaultPlugins` and `MinimalPlugins`
+carry both through `ProtocolPlugins`, the engine's on and Torque's off. A game that must speak Torque's protocol says so:
 
 ```toml
 [net]
-protocol = "engine"   # or "tge"
+protocol = "tge"   # or "engine", the default
 ```
 
 In `game.toml`, `[net] protocol` turns the other plugin off, as `[runner]` does for runners. In code,
-`torque_app::plugins::set_protocol(&mut builder, ProtocolKind::Engine)` does the same. The variable `TORQUE_NET_PROTOCOL`
-(`tge` or `engine`) picks which plugin the groups turn on for a whole run, which is how the `net-matrix` recipe runs the same tests in
-both; a game's `[net] protocol` and a test that sets the protocol itself keep theirs. A browser build reads the variable when it
-is compiled.
+`torque_app::plugins::set_protocol(&mut builder, ProtocolKind::Tge)` does the same. An engine built without the groups and
+without either plugin speaks Torque's protocol: the slot's own fallback, so a host that wires its own plugins keeps what it
+had. The variable `TORQUE_NET_PROTOCOL` (`tge` or `engine`) picks which plugin the groups turn on for a whole run, which is how
+the `net-matrix` recipe runs the same tests in both; a game's `[net] protocol` and a test that sets the protocol itself keep
+theirs. A browser build reads the variable when it is compiled.
+
+**UDP is the QUIC link.** Natively, with the `quic` feature (on by default in `torque-app` and in the umbrella crate's
+`default` and `app`), a server in the engine's protocol opens `Listen::Udp` as the QUIC link on the same address and port, and
+`--transport both` puts the QUIC link beside the web instead of plain UDP; a client's `ClientNet::Loopback` and `ClientNet::Lan`
+sockets send the engine's datagrams over a QUIC connection to the server they connect to, dialed on the first one, and keep a
+plain socket for the LAN list's requests only (an engine datagram read on it is dropped). The LAN list still finds the server:
+its QUIC endpoint takes the list's pings and info requests (which are not QUIC) from private addresses on its port and answers
+them there. A server's identity key is `identity.key` in its data folder, or, on the loopback address, a key made for the
+server's life; a client checks a LAN or internet server's key against `known_servers` (trusted on first use), and a loopback
+server's against the key it met first, pinned for the socket's own redials (a changed key is refused) until the scripts
+connect to that server again (joining or hosting anew, when a new key is expected). A connection that ended is dialed again
+after a wait that doubles from a quarter second to four seconds, so a server that refuses or is gone costs
+one handshake per wait, not one per tick. There is no fallback to plain UDP: a client of a build with QUIC does not reach a server
+that listens on plain engine UDP, so a game's server and client builds take the feature together. Plain engine UDP is what an
+engine without the QUIC transports opens (`builder.disable_id("torque.transport-quic-server")` and
+`"torque.transport-quic-client"`, or a build without the feature), on private addresses only. Browsers keep their links:
+WebTransport where the server takes it, else WebRTC, else the WebSocket.
 
 ## What the engine's protocol does
 
@@ -59,7 +77,7 @@ is compiled.
 |---|---|---|---|---|
 | memory (tests, the trace hashes) | yes | in process | no | 64 KiB |
 | plain UDP | by the engine's cookie | no | the engine's backoff | 1,200 |
-| QUIC (desktop players, the `quic` feature) | QUIC's address validation, Retry under load | TLS 1.3 | QUIC's | the connection's, at most 1,200 |
+| QUIC (desktop players: `Listen::Udp` in this protocol, `Listen::Quic`) | QUIC's address validation, Retry under load | TLS 1.3 | QUIC's | the connection's, at most 1,200 |
 | WebTransport (browsers, on the QUIC endpoint) | QUIC's | TLS 1.3 | QUIC's | the connection's less the session's one-byte prefix, at most 1,199 |
 | WebRTC data channel (rooms, the relay) | ICE | DTLS | SCTP | 1,200 |
 | WebSocket (a game socket) | TCP | `wss` only | TCP | 1,200 |
@@ -250,7 +268,7 @@ over a file host of the game's own, as `start_engine_with_files` is `start_engin
 ## Not changed
 
 A local connection (the listen server's own client, `connectLocal`) stays in process and is the same in both protocols. The LAN
-list's answers stay TGE's for now. The plugins' class ids, the move layout and the ghost records are the same in both; they may
+list's answers stay TGE's for now, on the QUIC endpoint's port in the engine's protocol. The plugins' class ids, the move layout and the ghost records are the same in both; they may
 change in the engine's protocol later with a new framing version, never in Torque's.
 
 ## Determinism

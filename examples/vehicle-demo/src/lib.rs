@@ -1,5 +1,7 @@
 //! A drive for one player or a few on the same network: the asset kit's box figure beside a dune buggy on green checkerboard
 //! hills, a click on the buggy to take a seat (the driver's or the passenger's), the buggy driven over the hills, E to exit.
+//! It speaks the engine's own protocol, the default plugins' (desktops over the QUIC link, browsers over WebRTC or a
+//! WebSocket); `TORQUE_NET_PROTOCOL=tge` runs it in Torque's protocol over plain UDP.
 //!
 //! - [`files`]: the kit and the game folder (the scripts, the map), and the map's terrain.
 //! - [`seats`]: the demo's Player: a driver's jump trigger brakes the buggy, and no key of a move dismounts; [`seats::SeatsPlugin`] gives

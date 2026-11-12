@@ -65,6 +65,9 @@
 //!   well as datagrams, and a datagram over `QUIC_MAX_DATAGRAM` is dropped on receipt (`a_backlog_is_capped_in_bytes_too`).
 //! - The known-servers file is written through a temporary file of this process's own, synced, then moved over the old
 //!   one (`known::tests::a_save_leaves_no_temporary_file_and_two_savers_do_not_clobber_each_other`).
+//! - A datagram that is not QUIC (the fixed bit clear) reaches the host only with `QuicServer::pass_plain` on, from a private
+//!   address, when the host's filter takes it, at most `PLAIN_WAITING` at once; the host answers private addresses alone
+//!   outside a connection, and such a peer is a plain link, never a stand-in (`tests/plain.rs`).
 //! - A stand-in is given back only after the host has read that its connection is gone
 //!   (`a_stand_in_is_not_reused_until_the_host_has_read_that_it_is_gone`).
 //! - A known server is never forgotten without the user: at the cap a new one is refused with the file's name
@@ -123,7 +126,8 @@ pub use identity::{IDENTITY_FILE, IdentityError, ServerKey, identity_of_certific
 pub use io::{Flight, Io, Pipe, PipeIo, UdpIo};
 pub use known::{KNOWN_SERVERS_FILE, KnownError, KnownServers};
 pub use server::{
-    CertificateChoice, Counters, QuicServer, QuicServerTransport, READS_PER_PASS, WebTransportSetup,
+    CertificateChoice, Counters, PLAIN_WAITING, QuicServer, QuicServerTransport, READS_PER_PASS,
+    WebTransportSetup,
 };
 pub use tls::{
     ALPN, PinVerifier, QUIC_MAX_DATAGRAM, QuicLimits, endpoint_config, transport_config,

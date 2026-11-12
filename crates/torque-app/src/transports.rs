@@ -218,7 +218,7 @@ fn builtin_client_plugin(id: &str) -> Option<&'static str> {
         "rooms" => "torque.transport-rooms-client (the `p2p` feature, in a browser)",
         "relay" => "torque.transport-relay-client (the `p2p` feature, in a browser)",
         "instant-net" => "torque.transport-instant-net-client",
-        "quic" => "torque.transport-quic-client (the `quic` feature, not in a browser)",
+        "quic" | QUIC_UDP => "torque.transport-quic-client (the `quic` feature, not in a browser)",
         _ => return None,
     })
 }
@@ -246,6 +246,14 @@ pub enum UdpTarget {
     Lan,
 }
 
+/// Where a socket for `target` binds, the policy it runs under, and whether it has a loopback twin.
+fn udp_bind(target: UdpTarget) -> (Ipv4Addr, NetPolicy, bool) {
+    match target {
+        UdpTarget::Loopback => (Ipv4Addr::LOCALHOST, NetPolicy::Loopback, false),
+        UdpTarget::Lan => (Ipv4Addr::UNSPECIFIED, NetPolicy::Internet, true),
+    }
+}
+
 /// UDP datagrams: the socket the server query and the connection share. Registers `udp`, for [`UdpTarget`].
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.transport-udp-client")]
@@ -254,10 +262,7 @@ pub struct UdpClientTransportPlugin;
 impl Plugin for UdpClientTransportPlugin {
     fn build(&self, engine: &mut EngineBuilder) {
         engine.add_client_transport("udp", |target: &UdpTarget| {
-            let (ip, policy, twin) = match target {
-                UdpTarget::Loopback => (Ipv4Addr::LOCALHOST, NetPolicy::Loopback, false),
-                UdpTarget::Lan => (Ipv4Addr::UNSPECIFIED, NetPolicy::Internet, true),
-            };
+            let (ip, policy, twin) = udp_bind(*target);
             let socket =
                 UdpDatagrams::open(ip, 0, twin).map_err(|e| format!("the client's socket: {e}"))?;
             Ok(ClientLink::new(Box::new(socket), policy))
@@ -509,6 +514,248 @@ impl Plugin for QuicClientTransportPlugin {
             };
             Ok(ClientLink::new(Box::new(socket), policy).with_extra(watch))
         });
+        engine.add_client_transport(QUIC_UDP, |target: &UdpTarget| {
+            let (ip, policy, twin) = udp_bind(*target);
+            let plain =
+                UdpDatagrams::open(ip, 0, twin).map_err(|e| format!("the client's socket: {e}"))?;
+            Ok(ClientLink::new(
+                Box::new(QuicUdpDatagrams::new(plain)),
+                policy,
+            ))
+        });
+    }
+}
+
+/// The id of the client's UDP socket in the engine's protocol where the build has QUIC ([`QuicUdpDatagrams`], for a
+/// [`UdpTarget`]): what [`ClientNet::Loopback`](crate::client::ClientNet::Loopback) and `Lan` open then.
+pub const QUIC_UDP: &str = "quic-udp";
+
+/// The id of the transport a client's UDP socket ([`UdpTarget`]) opens on for `engine`: [`QUIC_UDP`] in the engine's
+/// protocol when the build registered it, else `udp`.
+pub fn udp_transport_id(engine: &Engine) -> &'static str {
+    #[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+    if engine.protocol() == torque_engine::ProtocolKind::Engine
+        && client_transport_ids(engine).contains(&QUIC_UDP)
+    {
+        return QUIC_UDP;
+    }
+    let _ = engine;
+    "udp"
+}
+
+/// A client's UDP socket in the engine's protocol: the engine's datagrams (byte 0 in [`ENGINE_FAMILY`]) ride a QUIC
+/// connection to the server they are sent to, dialed on the first one and again when the server changes or the connection
+/// ended; every other datagram (the LAN list's requests) goes on a plain UDP socket bound as [`UdpTarget`] says, and of
+/// what that socket reads only those that are not the engine's reach the client. No engine datagram is ever sent or read
+/// plain, so a server that listens on plain engine UDP is not reached (there is no fallback). The server's key is checked
+/// against the known-servers file ([`known_servers_path`], trusted on first use). A server on the loopback address, whose
+/// key lasts only as long as the server, is trusted on first use and pinned for the socket's own redials, a changed key
+/// refused; the pin goes when the scripts start a new connection to it ([`Datagrams::new_connection`]: joining or
+/// hosting again). A connection that ended is dialed again no sooner than [`Redial`] allows.
+///
+/// [`ENGINE_FAMILY`]: torque_net::engine::ENGINE_FAMILY
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+pub struct QuicUdpDatagrams {
+    plain: UdpDatagrams,
+    link: Option<torque_net_quic::QuicDatagrams>,
+    redial: Redial,
+    /// The keys of the loopback servers this socket met since the scripts last connected to each.
+    pins: Vec<(SocketAddrV4, torque_net_quic::ServerIdentity)>,
+    /// The engine's datagrams the plain socket read (never handed on), and the sends no connection could be dialed for.
+    dropped: u64,
+}
+
+/// When a client's UDP socket in the engine's protocol may dial a server again: at once for another server, else after a
+/// wait that starts at [`Redial::FIRST`] and doubles with each dial to [`Redial::MOST`], back to none once a connection
+/// to it is up. A server that refuses the key, or is gone, costs a socket and a handshake per wait, not per tick.
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+#[derive(Debug, Default)]
+pub struct Redial {
+    last: Option<(SocketAddrV4, std::time::Instant, std::time::Duration)>,
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl Redial {
+    /// The wait after the first dial to a server.
+    pub const FIRST: std::time::Duration = std::time::Duration::from_millis(250);
+    /// The longest wait.
+    pub const MOST: std::time::Duration = std::time::Duration::from_secs(4);
+
+    /// Whether `to` may be dialed at `now`; when it may, the dial is counted.
+    pub fn may_dial(&mut self, to: SocketAddrV4, now: std::time::Instant) -> bool {
+        let wait = match self.last {
+            Some((at, after, _)) if at == to && now < after => return false,
+            Some((at, _, wait)) if at == to => (wait * 2).min(Redial::MOST),
+            _ => Redial::FIRST,
+        };
+        self.last = Some((to, now + wait, wait));
+        true
+    }
+
+    /// A connection is up: the next dial, to any server, goes at once.
+    pub fn connected(&mut self) {
+        self.last = None;
+    }
+
+    /// The scripts connect to `to` anew: its next dial goes at once.
+    pub fn forget(&mut self, to: SocketAddrV4) {
+        if self.last.is_some_and(|(at, _, _)| at == to) {
+            self.last = None;
+        }
+    }
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl QuicUdpDatagrams {
+    /// The socket over `plain`, no connection dialed yet.
+    pub fn new(plain: UdpDatagrams) -> QuicUdpDatagrams {
+        QuicUdpDatagrams {
+            plain,
+            link: None,
+            redial: Redial::default(),
+            pins: Vec::new(),
+            dropped: 0,
+        }
+    }
+
+    /// The connection to `to`, dialed if there is none to it or it ended and [`Redial`] allows. None when it cannot be
+    /// dialed yet.
+    fn link_to(&mut self, to: SocketAddrV4) -> Option<&mut torque_net_quic::QuicDatagrams> {
+        use torque_net_quic::{QuicDatagrams, QuicLimits, SessionKind, SystemClock, Trust};
+        let live = self
+            .link
+            .as_ref()
+            .is_some_and(|link| link.error().is_none() && link.server() == to);
+        if live {
+            if self.link.as_ref().is_some_and(|link| link.is_connected()) {
+                self.redial.connected();
+                self.pin();
+            }
+        } else {
+            if !self.redial.may_dial(to, std::time::Instant::now()) {
+                return None;
+            }
+            if let Some(mut old) = self.link.take() {
+                old.close();
+            }
+            let loopback = to.ip().is_loopback();
+            let trust = if loopback {
+                self.pins
+                    .iter()
+                    .find(|(at, _)| *at == to)
+                    .map_or(Trust::FirstUse, |&(_, id)| Trust::Identity(id))
+            } else {
+                Trust::Known(known_servers_path()?)
+            };
+            let bind = if loopback {
+                Ipv4Addr::LOCALHOST
+            } else {
+                Ipv4Addr::UNSPECIFIED
+            };
+            let io = torque_net_quic::client_socket(std::net::IpAddr::V4(bind)).ok()?;
+            let link = QuicDatagrams::connect_with(
+                io,
+                SystemClock,
+                to,
+                trust,
+                &QuicLimits::default(),
+                None,
+                SessionKind::Raw,
+            )
+            .ok()?;
+            self.link = Some(link);
+        }
+        self.link.as_mut()
+    }
+
+    /// Pins the key of the loopback server the connection is up to, for this socket's redials.
+    fn pin(&mut self) {
+        let Some(link) = &self.link else {
+            return;
+        };
+        let to = link.server();
+        if let Some(id) = link.identity()
+            && to.ip().is_loopback()
+            && !self.pins.iter().any(|(at, _)| *at == to)
+        {
+            self.pins.push((to, id));
+        }
+    }
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+fn is_engine_datagram(bytes: &[u8]) -> bool {
+    use torque_net::engine::ENGINE_FAMILY;
+    bytes.first().is_some_and(|b| b & 0xf0 == ENGINE_FAMILY)
+}
+
+#[cfg(all(feature = "quic", not(target_arch = "wasm32")))]
+impl Datagrams for QuicUdpDatagrams {
+    fn send_to(&mut self, to: SocketAddrV4, bytes: &[u8]) -> bool {
+        if !is_engine_datagram(bytes) {
+            return self.plain.send_to(to, bytes);
+        }
+        match self.link_to(to) {
+            Some(link) => link.send_to(to, bytes),
+            None => {
+                self.dropped += 1;
+                false
+            }
+        }
+    }
+
+    fn recv(&mut self) -> Option<(SocketAddrV4, Vec<u8>)> {
+        if let Some(link) = self.link.as_mut()
+            && let Some(datagram) = link.recv()
+        {
+            self.pin();
+            return Some(datagram);
+        }
+        // Only the connection carries the engine's datagrams: one read on the plain socket is nobody's to trust.
+        loop {
+            let (from, bytes) = self.plain.recv()?;
+            if !is_engine_datagram(&bytes) {
+                return Some((from, bytes));
+            }
+            self.dropped += 1;
+        }
+    }
+
+    fn port(&self) -> u16 {
+        self.plain.port()
+    }
+
+    fn lost(&self) -> u64 {
+        self.plain.lost() + self.link.as_ref().map_or(0, Datagrams::lost) + self.dropped
+    }
+
+    /// The connection's link; before one is dialed, the QUIC link the first engine datagram dials (validated, so the
+    /// client's first message is its connect).
+    fn link_kind(&self) -> torque_net::engine::LinkKind {
+        use torque_net::engine::{LinkFacts, LinkKind};
+        self.link.as_ref().map_or(
+            LinkKind {
+                facts: LinkFacts {
+                    validated: true,
+                    secure: true,
+                    congestion_controlled: true,
+                    server_identity: None,
+                },
+                max_datagram: torque_net_quic::QUIC_MAX_DATAGRAM,
+            },
+            Datagrams::link_kind,
+        )
+    }
+
+    fn channel_binding(&self) -> Option<torque_net::engine::ChannelBinding> {
+        self.link.as_ref().and_then(Datagrams::channel_binding)
+    }
+
+    /// The scripts connect to `to` again: a loopback server's pin goes (it may be hosted again, with a new key), and the
+    /// first dial goes at once.
+    fn new_connection(&mut self, to: SocketAddrV4) {
+        self.pins.retain(|(at, _)| *at != to);
+        self.redial.forget(to);
     }
 }
 

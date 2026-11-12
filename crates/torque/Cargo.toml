@@ -46,7 +46,7 @@ torque-app = { path = "../torque-app", optional = true, default-features = false
 # Everything that needs no GPU, no window and no system library.
 default = [
     "script", "collide", "shapes", "sim", "vehicle", "maps", "net", "ghosts", "ghost-world", "resource", "scene", "game",
-    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content", "mods",
+    "server", "images", "fonts", "gui", "audio", "client", "engine", "app-server", "content", "mods", "quic",
 ]
 # TorqueScript: the text rules, compiled scripts, the compiler and the runtime (`torque::script`).
 script = ["dep:torque-ts-text", "dep:torque-ts-bytecode", "dep:torque-ts-compiler", "dep:torque-ts-vm"]
@@ -99,8 +99,9 @@ system-fonts = ["fonts", "torque-fonts/system-fonts"]
 # What a game made on the engine shares (`torque::app`): its files, a server, a client, a window, the world view and offscreen
 # pictures (`torque-app`), with the engine's renderer. Needs a GPU.
 app = ["app-core", "renderer", "gizmos"]
-# `app` without the engine's renderer: a game registers its own on the renderer slot.
-app-core = ["client-window", "system-fonts", "shapes", "engine", "app-server", "dep:torque-app", "torque-plugin-loader?/render"]
+# `app` without the engine's renderer: a game registers its own on the renderer slot. With `quic`, so a game's client
+# reaches its own servers: in the engine's protocol both ends' UDP is the QUIC link.
+app-core = ["client-window", "system-fonts", "shapes", "engine", "app-server", "dep:torque-app", "torque-plugin-loader?/render", "quic"]
 # The engine's renderer and its feature plugins on the renderer slot (`torque::app::renderers`).
 renderer = ["app-core", "torque-app/renderer"]
 # Debug gizmos (`torque::app::gizmos`): lines, boxes, spheres and labels drawn in world space by `GizmosPlugin`. In `app`; a shipped
@@ -114,6 +115,7 @@ webrtc = ["web", "torque-server/webrtc", "torque-client/webrtc", "torque-app?/we
 # Player-hosted games: a host found by room code through a room service (torque-rooms), joiners on data channels to it.
 p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p", "torque-app?/p2p", "torque-app-server?/p2p"]
 # Desktop players over QUIC: the server's QUIC endpoint and the client's connection to one, the server known by its key's hash.
+# In the engine's protocol it is what UDP means on both ends. Natively only: a browser build compiles none of it.
 quic = ["torque-app?/quic", "torque-app-server?/quic"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 

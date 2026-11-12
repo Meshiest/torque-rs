@@ -100,7 +100,11 @@
 //! [`server::QuicListen::identity`] names (by default `identity.key` in the server's folder under the user's data folder,
 //! [`server::identity_path`], made on first start). A public bind is allowed there, since the link is encrypted and validates
 //! addresses; `plain_engine_refusal` stays what it was for plain UDP. Nothing of it reaches a browser build (torque-app's
-//! `tests/quic_link.rs`; `cargo tree -p torque-trace-hash --target wasm32-unknown-unknown` has no `quinn-proto`).
+//! `tests/quic_link.rs`; `cargo tree -p torque-trace-hash --target wasm32-unknown-unknown` has no `quinn-proto`). In the
+//! engine's protocol it is what UDP means: `start_prepared` opens `server::engine_link(engine, listen)`, which turns
+//! `Listen::Udp` (and UDP beside the web) into the QUIC link with `QuicListen::lan_list` on, before the plain-bind refusal
+//! looks, so the refusal still holds wherever the QUIC transport is off (`transports_tests::udp_in_the_engines_protocol_is_the_quic_link_under_the_same_bind_policy`,
+//! `a_public_bind_of_plain_engine_udp_is_refused`; torque-app's `quic_link` tests for both ends).
 
 pub mod cli;
 pub mod config;

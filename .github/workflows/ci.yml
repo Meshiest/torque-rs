@@ -123,6 +123,43 @@ jobs:
             cargo run -p torque --example "$example"
           done
 
+  # The test job runs the engine's own protocol, the plugin groups' default. Torque's protocol is an opt-in a game keeps, so
+  # its half of the network matrix (the `net-matrix` recipe) runs here: the suites that follow the protocol, the rope's TGE client,
+  # the wire goldens and the natives lists, and the examples' headless runs.
+  tge-protocol:
+    name: test (Torque's protocol)
+    runs-on: ubuntu-latest
+    env:
+      TORQUE_NET_PROTOCOL: tge
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: System libraries
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev mesa-vulkan-drivers fonts-dejavu-core
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-nextest
+      - name: The network matrix's suites in Torque's protocol
+        run: >-
+          cargo nextest run --all-features --no-fail-fast
+          -p torque-example-minimal -p torque-example-minimal-engine -p torque-example-character
+          -p torque-example-level-demo -p torque-example-fps -p torque-example-vehicle-demo -p torque-example-mods-demo
+          -p torque-plugin-rope -p torque-mods -p torque-plugin-props -p torque-trace-hash -p torque-app-server
+      - name: The TGE goldens and the natives lists
+        run: |
+          cargo nextest run --all-features -p torque-net --test tge_golden
+          cargo nextest run --all-features -p torque-app --test natives
+      - name: The examples' headless runs
+        shell: bash
+        run: |
+          for example in script shape collide net; do
+            cargo run -p torque --example "$example"
+          done
+          cargo run -p torque-example-minimal --bin min-server -- --port 0 --ticks 64
+
   docs:
     name: rustdoc, the script reference and the guide
     runs-on: ubuntu-latest

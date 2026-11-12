@@ -150,3 +150,22 @@ fn a_server_needs_its_game_and_its_host() {
         assert!(error.contains(name), "{error}");
     }
 }
+
+#[test]
+fn the_groups_speak_the_engines_protocol_unless_the_variable_names_torques() {
+    use crate::plugins::group_protocol;
+    use torque_engine::ProtocolKind;
+    assert_eq!(group_protocol(None), ProtocolKind::Engine);
+    assert_eq!(group_protocol(Some("engine")), ProtocolKind::Engine);
+    assert_eq!(group_protocol(Some("tge")), ProtocolKind::Tge);
+    // A word that names no protocol keeps the default.
+    assert_eq!(group_protocol(Some("udp")), ProtocolKind::Engine);
+    // With no protocol plugin at all, an engine still speaks Torque's: the default is the groups' choice, not the slot's.
+    assert_eq!(
+        EngineBuilder::new()
+            .build()
+            .expect("an empty engine")
+            .protocol(),
+        ProtocolKind::Tge
+    );
+}

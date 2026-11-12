@@ -4,6 +4,8 @@ Small games made with the engine. Run each from the repository root with `just e
 
 The examples that use the app layer share one build of the engine (`examples/build-features`), so switching between them rebuilds only the example.
 
+The networked examples speak the engine's own protocol: desktops join over QUIC (encrypted, the server's key remembered on first use), browsers over WebRTC or a WebSocket. `TORQUE_NET_PROTOCOL=tge` runs the arena shooter, the vehicle demo and `minimal-engine` in Torque's protocol over plain UDP; the level demo and the mods demo need the engine's (their props), and `minimal` is wired by hand in Torque's.
+
 <table>
 <tr>
 <td align="center"><a href="#the-level-demo"><img src="screenshots/level-demo-plaza.webp" width="200" alt="The level demo"><br>The level demo</a></td>

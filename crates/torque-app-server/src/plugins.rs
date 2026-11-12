@@ -13,7 +13,7 @@
 //! | [`ServerGamePlugin`] | `torque.server-game` | server, `Game` | `torque_server::game::install` |
 //! | [`TerrainPlugin`] | `torque.terrain` | server, `World` | [`terrain::install`](crate::terrain::install) |
 //! | [`WaterPlugin`] | `torque.water` | server, `World` | [`water::install`](crate::water::install) |
-//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`TgeProtocolPlugin`] sets Torque's own protocol, [`EngineProtocolPlugin`] the engine's; one of them is on ([`protocol_from_env`]) |
+//! | [`ProtocolPlugins`] | `torque.net.tge`, `torque.net.engine` | both, the engine's protocol slot | [`EngineProtocolPlugin`] sets the engine's own protocol (on by default), [`TgeProtocolPlugin`] Torque's (added off); one of them is on ([`protocol_from_env`]) |
 //! | [`NetHostPlugin`] | `torque.net-host` | server, `Net` | `attach_host` of the engine's net game and the net passes |
 //! | [`ServerTransportPlugins`] | `torque.transport-udp-server`, ... | the transports a server listens on, a plugin each, by id ([`transports`](crate::transports)) | `UdpTransport`, `MemoryTransport`, the web, p2p and QUIC ones |
 //! | [`ContentFormatPlugins`] | `torque.format-gltf`, `torque.format-dif`, ... | the content formats' asset loaders, a plugin each (OBJ, Blockbench and `.map` added off) | [`torque_content`] |
@@ -50,7 +50,8 @@ pub use torque_plugin_hierarchy::HierarchyPlugin;
 /// What a dedicated server needs and nothing else: TGE's game classes, the server game, the terrain and water blocks, the
 /// network host and the content formats' asset loaders ([`ContentFormatPlugins`]), with the runner that runs a
 /// [`Dedicated`](crate::run::Dedicated) server. No client, GUI, drawing, audio or window crates are involved. A server made
-/// on `MinimalPlugins` runs the same scripts as one made on `DefaultPlugins`.
+/// on `MinimalPlugins` runs the same scripts as one made on `DefaultPlugins`, in the same protocol: the engine's own
+/// ([`ProtocolPlugins`]), Torque's with [`set_protocol`]`(.., ProtocolKind::Tge)` or `[net] protocol = "tge"`.
 /// It carries its own dedicated runner, so it does not go with a window or page runner (the runner slot is exclusive):
 /// torque-app's `DefaultPlugins` swaps its own for this one with `DefaultPlugins.disable::<WindowRunnerPlugin>()` and
 /// `DedicatedRunnerPlugin`.
@@ -301,9 +302,10 @@ impl Plugin for WaterPlugin {
     }
 }
 
-/// The network protocol slot, set to Torque's own protocol. A game speaks one protocol, so this is the only plugin of the groups that
-/// sets the slot: a game that speaks another turns this one off and adds the plugin of that protocol, or names the protocol in
-/// `game.toml` (`[net] protocol`). A second plugin that sets the slot fails the build, naming both.
+/// The network protocol slot, set to Torque's own protocol: TGE's handshake, packet header and event layer, byte for byte, for a
+/// game whose servers and clients must meet a peer that is not the engine's. Optional: the groups add it off
+/// ([`ProtocolPlugins`]), and a game turns it on with [`set_protocol`]`(.., ProtocolKind::Tge)` or `game.toml`
+/// (`[net] protocol = "tge"`). A second plugin that sets the slot fails the build, naming both.
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.net.tge")]
 pub struct TgeProtocolPlugin;
@@ -314,11 +316,11 @@ impl Plugin for TgeProtocolPlugin {
     }
 }
 
-/// The network protocol slot, set to the engine's own protocol: its own framing over a link contract (QUIC and the web's links
-/// later, plain UDP on private addresses, WebRTC, WebSockets, the memory link), every peer the engine's own, the manifest
-/// always sent, RPCs in their own lanes ([`torque_server::net::engine`]). A game turns [`TgeProtocolPlugin`] off and this on
-/// to speak it, or names it in `game.toml` (`[net] protocol = "engine"`). It also registers the two RPCs the script commands
-/// (`commandToServer`, `commandToClient`) are sent as ([`torque_server::net::command_rpc`]).
+/// The network protocol slot, set to the engine's own protocol, the one the groups turn on ([`ProtocolPlugins`]): its own
+/// framing over a link contract (the QUIC link for UDP where the build has it, WebTransport, WebRTC, WebSockets, plain UDP
+/// on private addresses, the memory link), every peer the engine's own, the manifest always sent, RPCs in their own lanes
+/// ([`torque_server::net::engine`]). It also registers the two RPCs the script commands (`commandToServer`,
+/// `commandToClient`) are sent as ([`torque_server::net::command_rpc`]).
 #[derive(Clone, Copy, Debug, Default, torque_engine::PluginId)]
 #[plugin(id = "torque.net.engine")]
 pub struct EngineProtocolPlugin;
@@ -335,13 +337,17 @@ impl Plugin for EngineProtocolPlugin {
 /// run the same tests in both modes. A game's `game.toml` (`[net] protocol`) still has the last word.
 pub const PROTOCOL_ENV: &str = "TORQUE_NET_PROTOCOL";
 
-/// The protocol [`ProtocolPlugins`] turns on: the one [`PROTOCOL_ENV`] names when it names one, else Torque's. In a browser,
-/// which has no environment, the build's (`TORQUE_NET_PROTOCOL` when it was compiled).
+/// The protocol [`ProtocolPlugins`] turns on: the one [`PROTOCOL_ENV`] names when it names one, else the engine's. In a
+/// browser, which has no environment, the build's (`TORQUE_NET_PROTOCOL` when it was compiled).
 pub fn protocol_from_env() -> ProtocolKind {
-    named_protocol()
-        .as_deref()
+    group_protocol(named_protocol().as_deref())
+}
+
+/// The protocol the groups turn on when the variable says `named`: the protocol of that label, else the engine's.
+pub(crate) fn group_protocol(named: Option<&str>) -> ProtocolKind {
+    named
         .and_then(ProtocolKind::from_label)
-        .unwrap_or(ProtocolKind::Tge)
+        .unwrap_or(ProtocolKind::Engine)
 }
 
 /// The build's choice: read at compile time, so only the browser build records the variable as an input of the compile.
@@ -355,8 +361,8 @@ fn named_protocol() -> Option<String> {
     std::env::var(PROTOCOL_ENV).ok()
 }
 
-/// Both protocol plugins, the one [`protocol_from_env`] picks on and the other added off, so `game.toml` or a game's own
-/// `enable`/`disable` can switch them.
+/// Both protocol plugins, the one [`protocol_from_env`] picks on (the engine's unless [`PROTOCOL_ENV`] says `tge`) and the
+/// other added off, so `game.toml`, [`set_protocol`] or a game's own `enable`/`disable` can switch them.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProtocolPlugins;
 
@@ -366,8 +372,8 @@ impl PluginGroup for ProtocolPlugins {
             .add(TgeProtocolPlugin)
             .add(EngineProtocolPlugin);
         match protocol_from_env() {
-            ProtocolKind::Engine => group.disable::<TgeProtocolPlugin>(),
-            _ => group.disable::<EngineProtocolPlugin>(),
+            ProtocolKind::Tge => group.disable::<EngineProtocolPlugin>(),
+            _ => group.disable::<TgeProtocolPlugin>(),
         }
     }
 }

@@ -1,3 +1,14 @@
+AIPlayer::clearAim 2..2 ()
+AIPlayer::getAimLocation 2..2 ()
+AIPlayer::getAimObject 2..2 ()
+AIPlayer::getMoveDestination 2..2 ()
+AIPlayer::getMoveSpeed 2..2 ()
+AIPlayer::setAimLocation 3..3 (Point3F target)
+AIPlayer::setAimObject 3..4 (GameBase obj, Point3F offset)
+AIPlayer::setMoveDestination 3..4 (Point3F goal, bool slowdown)
+AIPlayer::setMoveSpeed 3..3 (float speed)
+AIPlayer::setMoveTolerance 3..3 (float tolerance)
+AIPlayer::stop 2..2 ()
 ActionMap::bind 5..10 actionMap.bind( device, action, [modifier spec, mod...], command )
 ActionMap::bindCmd 6..6 actionMap.bindCmd( device, action, makeCmd, breakCmd )
 ActionMap::getBinding 3..3 actionMap.getBinding( command )
@@ -403,8 +414,10 @@ getRenderer 1..1 getRenderer();
 getRequiredModCount 1..1 getRequiredModCount() - how many mods the server requires of its clients (on a client, how many its server announced)
 getRequiredModField 3..3 getRequiredModField(id, field) - one fact about a required mod: name (the one to show; the id when it has no other), version, hash (64 hexadecimal digits), bytes, files or download (1 when the server sends it to a client that lacks it); empty for a mod or a fact there is not
 getRequiredModList 1..1 getRequiredModList() - the ids of the mods the server requires of its clients, separated by spaces (on a client, the ones its server announced)
+getRevealFocus 1..1 () - whether a control that takes the key focus scrolls its scroll control to show it ($Pref::Gui::RevealFocus)
 getServerCount 1..1 getServerCount();
 getSimTime 1..1 getSimTime() - the simulation time in milliseconds
+getSmoothScroll 1..1 () - whether the scroll controls glide to where the wheel puts them ($Pref::Gui::SmoothScroll)
 getSubStr 4..4 getSubStr(text, start, count) - count bytes of the text from start
 getTag 2..2 getTag(taggedText) - the tag's id
 getTaggedString 2..2 getTaggedString(tag) - the text of a tag
@@ -449,6 +462,8 @@ queryLanServers 12..12 queryLanServers(...);
 queryMasterServer 11..11 queryMasterServer(...);
 querySingleServer 3..3 querySingleServer(address, flags);
 quit 1..1 quit() - asks the main loop to stop
+refreshRequiredMods 1..1 refreshRequiredMods() - reads the mods' folders and zips again and serves each loaded mod's files as they are now: the connected clients are sent what changed (a late offer) and the datablocks sent to them wait until they have it; returns how many mods' content changed
+registerFont 3..3 (string face, string path) - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)
 removeField 3..3 removeField(text, index) - the text without that field
 removeRecord 3..3 removeRecord(text, index) - the text without that record
 removeTaggedString 2..2 removeTaggedString(tag) - releases a tag addTaggedString made
@@ -486,14 +501,16 @@ rpcToServer 2..* rpcToServer(name, fields..) - calls the client-to-server RPC `n
 rtrim 2..2 rtrim(text) - the text without trailing white space
 schedule 4..* schedule(delay, object, function, args...) - calls the function later; the object bounds the call's life
 serverCmdTorqueModsGet 6..6 serverCmdTorqueModsGet(client, modIndex, file, start, count) - a client asks the server for a run of blocks of a required mod (the client's own downloading sends it; nothing else should)
-serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on)
+serverCmdTorqueModsReady 2..2 serverCmdTorqueModsReady(client) - a client says it has every mod the server requires, mounted (the server then lets its join go on, or, mid-game, sends it the datablocks that waited)
 setCameraMode 2..2 (name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.
 setField 4..4 setField(text, index, value) - the text with that field replaced
 setRandomSeed 1..2 setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)
 setRecord 4..4 setRecord(text, index, value) - the text with that record replaced
 setRenderer 2..2 setRenderer(id);
+setRevealFocus 2..2 (bool on) - turns on or off scrolling the nearest scroll control to show the control that takes the key focus
 setScreenMode 5..5 ( int width, int height, int bpp, bool fullScreen )
 setServerInfo 2..2 setServerInfo(index);
+setSmoothScroll 2..2 (bool on) - turns smooth scrolling on or off: with it on, the scroll controls draw their content gliding to where the wheel puts it
 setWord 4..4 setWord(text, index, value) - the text with that word replaced
 stopServerQuery 1..1 stopServerQuery()
 strToPlayerName 2..2 strToPlayerName(text) - the text as a short display name

@@ -275,6 +275,9 @@ pub trait Datagrams {
     fn channel_binding(&self) -> Option<net::engine::ChannelBinding> {
         None
     }
+    /// The scripts start a new connection to `to` (a `connect`): a socket that keeps what it learned of a server for its
+    /// own redials (a pinned key) starts that server afresh. Nothing by default.
+    fn new_connection(&mut self, _to: SocketAddrV4) {}
 }
 
 /// The real sockets: the main one and, in [`NetPolicy::Lan`] on every address, the loopback twin.
@@ -446,6 +449,13 @@ impl ClientNet {
     /// The channel binding of the socket's link ([`Datagrams::channel_binding`]); none with no socket.
     pub fn channel_binding(&self) -> Option<net::engine::ChannelBinding> {
         self.socket.as_ref().and_then(|s| s.channel_binding())
+    }
+
+    /// Tells the socket the scripts start a new connection to `to` ([`Datagrams::new_connection`]).
+    pub fn new_connection(&mut self, to: SocketAddrV4) {
+        if let Some(s) = self.socket.as_mut() {
+            s.new_connection(to);
+        }
     }
 
     /// Sends `bytes` to `to` under the LAN rule and the internet's doors (see the module docs).

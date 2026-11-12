@@ -300,7 +300,7 @@ fn the_net_protocol_reads_engine_and_tge_and_refuses_anything_else() {
 
 #[test]
 fn the_net_protocol_picks_the_plugin_that_sets_the_slot() {
-    // The protocol is what the groups give: Torque's unless `TORQUE_NET_PROTOCOL` names the engine's.
+    // The protocol is what the groups give: the engine's unless `TORQUE_NET_PROTOCOL` names Torque's.
     let engine = EngineBuilder::new()
         .add_plugins(MinimalPlugins)
         .build()

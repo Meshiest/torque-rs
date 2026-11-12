@@ -44,6 +44,9 @@ pub enum Trust {
     /// The identity remembered for the address in this known-servers file, if any; else the one presented is trusted and
     /// remembered there.
     Known(PathBuf),
+    /// The identity presented is trusted for this connection and remembered nowhere: for a server on this computer's
+    /// loopback address, whose port may be any free one (a file of pins would only fill with ports that are gone).
+    FirstUse,
 }
 
 /// How a client speaks to the server once the handshake is done.
@@ -157,6 +160,7 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
                 }
                 (expected, Some(known))
             }
+            Trust::FirstUse => (None, None),
         };
         let verifier = Arc::new(PinVerifier::new(SocketAddr::V4(server), expected));
         let dial = match session {
@@ -224,6 +228,12 @@ impl<I: Io, C: Clock> QuicClient<I, C> {
     #[must_use]
     pub fn error(&self) -> Option<String> {
         self.watch.0.borrow().error.clone()
+    }
+
+    /// The server this connection goes to.
+    #[must_use]
+    pub fn server(&self) -> SocketAddrV4 {
+        self.server
     }
 
     /// The server's identity: the one expected, or the one seen and trusted.

@@ -1893,6 +1893,7 @@ pub fn connect<G: ConnGame>(
     connect_args.resize(5, Vec::new());
     let inbox = Rc::new(RefCell::new(VecDeque::new()));
     let net = Rc::clone(&client.borrow().net);
+    net.borrow_mut().new_connection(server);
     let link = InboxLink {
         net,
         server,
