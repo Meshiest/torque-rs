@@ -5,7 +5,7 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 45] = [
+pub const FILES: [(&str, &str); 46] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("area.wgsl", include_str!("../shaders/area.wgsl")),
@@ -87,6 +87,7 @@ pub const FILES: [(&str, &str); 45] = [
         "dissolve_shadow.wgsl",
         include_str!("../shaders/dissolve_shadow.wgsl"),
     ),
+    ("decals.wgsl", include_str!("../shaders/decals.wgsl")),
 ];
 
 /// An extension's WGSL, composed into the renderer's modules: its uniforms' blocks, its hooks and its own entry points (the
@@ -209,6 +210,9 @@ pub enum Permutation {
         front_layer: bool,
         parallax: bool,
     },
+    /// The opaque pass's forward module (clustered) with the projected decals' entries (`decals.wgsl`: `vs_decal`,
+    /// `fs_decal_multiply`, `fs_decal_alpha`).
+    Decals,
 }
 
 /// What [`Permutation::Dissolve`] turns into plain functions in the forward pass's text, and what it calls them.
@@ -219,7 +223,7 @@ pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 48] = [
+    pub const ALL: [Permutation; 49] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -324,6 +328,7 @@ impl Permutation {
             front_layer: true,
             parallax: true,
         },
+        Permutation::Decals,
     ];
 
     pub fn name(self) -> String {
@@ -379,6 +384,7 @@ impl Permutation {
             } => format!(
                 "forward.wgsl with pbr.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer}, PARALLAX = {parallax})"
             ),
+            Permutation::Decals => "forward.wgsl with decals.wgsl".to_string(),
         }
     }
 
@@ -481,6 +487,15 @@ impl Permutation {
                     file("dissolve.wgsl")
                 )
             }
+            Permutation::Decals => format!(
+                "{}\n{}",
+                Permutation::Forward {
+                    clustered: true,
+                    front_layer: false,
+                }
+                .source(),
+                file("decals.wgsl")
+            ),
             Permutation::ShadowDissolve { unclipped } => format!(
                 "{}\n{}\n{}",
                 Permutation::Shadow { unclipped }.source(),

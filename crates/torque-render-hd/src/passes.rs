@@ -17,8 +17,9 @@
 //! HDR frame is linear light in [`HDR_FORMAT`] (the tonemap's exposure comes after); the motion is [`MOTION_FORMAT`] (`xy`: this
 //! frame's screen position less the last frame's, in UV; `z`: the last frame's eye distance; `w`: 1 for what is static) and the
 //! normals [`NORMAL_FORMAT`] (`xy`: the world normal, octahedral as `common.wgsl`'s `oct_encode`; `z`: 0, no reflection; `w`:
-//! 1). Up to [`Stage::Translucent`] the camera is the jittered one the anti-aliasing's history
-//! is drawn with; from [`Stage::AfterTaa`] the plain one. A shadow cascade's map is a plain depth (`LessEqual`, cleared to 1);
+//! 1 where the projected decals land, 0.5 on an object that takes none, 0 where nothing was drawn). Up to
+//! [`Stage::Translucent`] the camera is the jittered one the anti-aliasing's history is drawn with; from [`Stage::AfterTaa`]
+//! the plain one. A shadow cascade's map is a plain depth (`LessEqual`, cleared to 1);
 //! clamp a caster's clip `z` to at least 0 so what lies between the sun and the cascade still casts.
 //!
 //! **Sampling the sun's shadows.** At [`Stage::Opaque`] and [`Stage::Translucent`] [`PassCx::sun_shadows`] holds what the renderer's

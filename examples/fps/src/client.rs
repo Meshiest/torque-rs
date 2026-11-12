@@ -517,6 +517,8 @@ impl ArenaGame {
             Some(p) => (0..3).map(|k| (p[k] - eyes[k]).powi(2)).sum::<f32>() >= CLOSE * CLOSE,
             None => behind,
         };
+        // The decals' prefs as the scripts left them (the projected holes' cap).
+        self.scene.read_prefs(self.client.vm());
         let mut st = self.client.host.client.borrow_mut();
         match st.conn.conn.as_mut() {
             Some(conn) => {

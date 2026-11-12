@@ -258,3 +258,117 @@ fn a_decal_is_drawn_nearer_the_eye_along_its_ray() {
         assert!(v.position[1] < 5.0 && v.position[1] > 4.98);
     }
 }
+
+/// The projected path keeps its own cap (held to the hard one) and lays boxes with no mesh, which the CPU path draws nothing
+/// of; going back to the CPU path drops them and holds the rest to its cap.
+#[test]
+fn the_projected_path_keeps_boxes_to_its_cap_and_the_cpu_path_drops_them() {
+    let mut m = DecalManager::new(4, 10.0, 2.0);
+    assert_eq!(m.projected(), None);
+    m.set_projected(Some(usize::MAX));
+    assert_eq!(m.projected(), Some(MAX_PROJECTED_DECALS));
+    m.set_projected(Some(10));
+    for i in 0..12 {
+        m.add_box(&hole(), [i as f32, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0);
+    }
+    assert_eq!(m.len(), 10, "the projected cap, not the CPU path's");
+    assert_eq!(m.decals().next().map(|d| d.position[0]), Some(2.0));
+    assert!(m.decals().all(|d| d.triangles.is_empty()));
+    let files = Files(std::collections::HashMap::new());
+    let mut set = TextureSet::new(&files);
+    assert!(m.draws([0.0; 3], &mut set).is_empty(), "no mesh to draw");
+    m.add(&hole(), [20.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0);
+    m.set_projected(None);
+    assert_eq!(m.len(), 1, "the boxes go; the square stays");
+    // A box of no size, or no normal, is not laid.
+    m.set_projected(Some(10));
+    m.clear();
+    m.add_box(
+        &DecalData {
+            size: [0.0, 1.0],
+            ..hole()
+        },
+        [0.0; 3],
+        [0.0, 0.0, 1.0],
+        0.0,
+    );
+    m.add_box(&hole(), [0.0; 3], [0.0; 3], 0.0);
+    assert!(m.is_empty());
+    m.set_projected(Some(0));
+    m.add_box(&hole(), [0.0; 3], [0.0, 0.0, 1.0], 0.0);
+    assert!(m.is_empty(), "a cap of none keeps none");
+}
+
+/// A decal's box is its square with the CPU path's clip depth through it, its texture the set's, its blend alpha or
+/// multiplied, its opacity the vertex alpha's 255ths; one with no texture, faded out or drawn as the bend alone is left out.
+#[test]
+fn a_decal_projects_as_its_square_with_the_clip_depth_and_the_cpu_paths_alpha() {
+    let mut files = std::collections::HashMap::new();
+    files.insert("kit/hole.png".to_string(), png(8, 8, 30));
+    let files = Files(files);
+    let mut set = TextureSet::new(&files);
+    let mut m = DecalManager::new(8, 10.0, 2.0);
+    m.set_projected(Some(8));
+    m.add_box(&hole(), [0.0, 5.0, 1.0], [0.0, -1.0, 0.0], 0.3);
+    m.add_box(
+        &DecalData {
+            blend: Blend::Modulate2x,
+            ..hole()
+        },
+        [1.0, 5.0, 1.0],
+        [0.0, -1.0, 0.0],
+        0.0,
+    );
+    m.add_box(
+        &DecalData {
+            texture: Some("kit/missing".to_string()),
+            ..hole()
+        },
+        [2.0, 5.0, 1.0],
+        [0.0, -1.0, 0.0],
+        0.0,
+    );
+    m.advance(9.0);
+    let boxes = m.boxes(&mut set);
+    assert_eq!(boxes.len(), 2, "the ones whose texture loads");
+    let first = m.decals().next().expect("a decal");
+    let b = &boxes[0];
+    assert_eq!(b.center, first.position);
+    assert_eq!((b.half_x, b.half_y), (first.half_x, first.half_y));
+    let z = Vec3::from(b.half_z);
+    assert!((z.length() - 0.1).abs() < 1e-6, "the longer half side");
+    assert!(z.normalize().dot(Vec3::from(first.normal)) > 0.9999);
+    assert_eq!(b.blend, Blend::Alpha);
+    assert_eq!(boxes[1].blend, Blend::Modulate2x);
+    assert_eq!(b.opacity, 128.0 / 255.0);
+    assert_eq!(
+        b.texture.0, boxes[1].texture.0,
+        "one texture, looked up once"
+    );
+    m.advance(0.999);
+    assert!(
+        m.boxes(&mut set).is_empty(),
+        "faded out (under half a 255th)"
+    );
+}
+
+/// On the projected path only the bending decals keep a mesh, at most `MAX_PROJECTED_MESHES` of them: past it the oldest
+/// mesh is dropped and its decal stays as a box.
+#[test]
+fn the_projected_path_keeps_at_most_its_cap_of_meshes() {
+    let mut m = DecalManager::new(8, 10.0, 2.0);
+    m.set_projected(Some(MAX_PROJECTED_MESHES * 4));
+    let floor = box_triangles([-500.0, -500.0, -1.0], [500.0, 500.0, 0.0]);
+    let extra = 10;
+    for i in 0..MAX_PROJECTED_MESHES + extra {
+        let at = [i as f32 * 0.5 - 200.0, 0.0, 0.0];
+        m.add_clipped(&hole(), at, [0.0, 0.0, 1.0], 0.0, &floor);
+    }
+    assert_eq!(m.len(), MAX_PROJECTED_MESHES + extra);
+    let meshes: Vec<bool> = m.decals().map(|d| !d.triangles.is_empty()).collect();
+    assert_eq!(meshes.iter().filter(|&&x| x).count(), MAX_PROJECTED_MESHES);
+    assert!(
+        meshes[..extra].iter().all(|&x| !x),
+        "the oldest lost theirs"
+    );
+}

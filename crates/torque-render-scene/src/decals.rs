@@ -23,7 +23,13 @@
 //!   color, light and shadow; it fades toward 0.5 gray.
 //!
 //! - **Bending** ([`DecalData::distortion`], the engine protocol's block): a decal whose datablock bends is also a distorter of its
-//!   triangles, fading with it ([`DecalManager::distorters`]); one drawn as the bend alone (`distortionOnly`) draws no texture.
+//!   triangles, fading with it ([`DecalManager::distorters`]: those in the view, the nearest first within the frame's
+//!   distortion budget); one drawn as the bend alone (`distortionOnly`) draws no texture.
+//! - **Projected** ([`DecalManager::set_projected`], the enhanced renderer at Medium and up): the decals are kept as boxes the
+//!   renderer projects onto the opaque frame ([`DecalManager::boxes`], [`crate::hd::decals`]), up to
+//!   [`DEFAULT_PROJECTED_DECALS`] by default and never more than [`MAX_PROJECTED_DECALS`]; a box is laid with no mesh
+//!   ([`DecalManager::add_box`]), and only one that bends is still clipped to its surface for its distorter (at most
+//!   [`MAX_PROJECTED_MESHES`] of those keep their mesh). Their fade and lifetime are the CPU path's.
 //!
 //! **Approximations**: no wrapping onto a neighboring face; the bias, the fade and the multiplied blend are this crate's.
 //!
@@ -32,7 +38,7 @@
 //! GarageGames, LLC) and `T3D/projectile.cpp` (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The
 //! code here is this crate's own.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use ghost_world::tge::TgeClientSet;
 use ghost_world::world::ClientWorld;
@@ -41,7 +47,8 @@ use ghosts::Value;
 use glam::Vec3;
 
 use crate::distorters::DistortionData;
-use crate::hd::distortion::HdDistorter;
+use crate::hd::decals::HdDecal;
+use crate::hd::distortion::{DistortionBudget, HdDistorter, nearest_first};
 use crate::hd::{HdDraw, HdVertex, oct_encode};
 use crate::math::unit_over;
 use crate::particles::Rng;
@@ -59,6 +66,22 @@ pub const DEFAULT_LIFETIME: f32 = 25.0;
 pub const DEFAULT_FADE: f32 = 3.0;
 /// The largest side a decal may have (units): a server's datablock names it.
 pub const MAX_DECAL_SIZE: f32 = 64.0;
+/// The decals the projected path keeps by default.
+pub const DEFAULT_PROJECTED_DECALS: usize = 4096;
+/// The most decals the projected path ever keeps, whatever a script, a host or a server asks for ([`DecalManager::set_projected`]
+/// holds its cap to it).
+pub const MAX_PROJECTED_DECALS: usize = 16384;
+/// The most decals the projected path keeps with a mesh (the bending ones, clipped for their distorters: TGE's decal cap);
+/// past it the oldest mesh is dropped and its decal kept as a box.
+pub const MAX_PROJECTED_MESHES: usize = DEFAULT_MAX_DECALS;
+/// How a decal's texture is sampled.
+const DECAL_SAMPLER: Sampler = Sampler {
+    repeat: false,
+    mag: Filter::Linear,
+    min: Filter::Linear,
+    mip: Filter::Linear,
+    mipmaps: true,
+};
 
 /// A `DecalData` as the client holds it.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,8 +189,10 @@ pub(crate) fn clip(poly: &[[f32; 3]], at: [f32; 3], axis: [f32; 3], limit: f32) 
 #[derive(Debug, Clone)]
 pub struct DecalManager {
     decals: VecDeque<Decal>,
-    /// The most kept at once.
+    /// The most kept at once on the CPU path.
     pub max: usize,
+    /// The projected path's most kept at once (held to [`MAX_PROJECTED_DECALS`]); None: the CPU path.
+    projected: Option<usize>,
     /// Seconds each is kept.
     pub lifetime: f32,
     /// Seconds of the lifetime's end over which each fades out.
@@ -179,6 +204,7 @@ impl Default for DecalManager {
         DecalManager {
             decals: VecDeque::new(),
             max: DEFAULT_MAX_DECALS,
+            projected: None,
             lifetime: DEFAULT_LIFETIME,
             fade: DEFAULT_FADE,
         }
@@ -219,6 +245,27 @@ impl DecalManager {
         self.decals.clear();
     }
 
+    /// Keeps the decals for the projected path, at most `max` (held to [`MAX_PROJECTED_DECALS`]), or with None for the CPU
+    /// path at [`DecalManager::max`]: going back to it drops the boxes laid with no mesh. Past the cap the oldest go.
+    pub fn set_projected(&mut self, max: Option<usize>) {
+        self.projected = max.map(|m| m.min(MAX_PROJECTED_DECALS));
+        if self.projected.is_none() {
+            self.decals.retain(|d| !d.triangles.is_empty());
+        }
+        let over = self.decals.len().saturating_sub(self.cap());
+        self.decals.drain(..over);
+    }
+
+    /// The projected path's cap, or None on the CPU path ([`DecalManager::set_projected`]).
+    pub fn projected(&self) -> Option<usize> {
+        self.projected
+    }
+
+    /// The most decals kept now.
+    fn cap(&self) -> usize {
+        self.projected.unwrap_or(self.max)
+    }
+
     /// Lays the whole square of a decal of `data` at `at` on a surface facing `normal`, turned `angle` radians about the
     /// normal (see [`DecalManager::add_clipped`]).
     pub fn add(&mut self, data: &DecalData, at: [f32; 3], normal: [f32; 3], angle: f32) {
@@ -239,6 +286,17 @@ impl DecalManager {
         ];
         d.triangles = vec![[v[0], v[1], v[2]], [v[0], v[2], v[3]]];
         self.push(d);
+    }
+
+    /// Lays the box of a decal of `data` at `at` on a surface facing `normal`, turned `angle` radians about the normal, with
+    /// no mesh: the projected path's ([`DecalManager::boxes`]); the CPU path draws nothing of it.
+    pub fn add_box(&mut self, data: &DecalData, at: [f32; 3], normal: [f32; 3], angle: f32) {
+        if data.size.iter().any(|s| s.is_nan() || *s <= 0.0) {
+            return;
+        }
+        if let Some(d) = self.lay(data, at, normal, angle) {
+            self.push(d);
+        }
     }
 
     /// Lays a decal of `data` at `at` on a surface facing `normal`, turned `angle` radians about the normal, on the parts of
@@ -295,16 +353,31 @@ impl DecalManager {
     }
 
     fn push(&mut self, d: Decal) {
-        while self.decals.len() >= self.max {
+        let cap = self.cap();
+        while self.decals.len() >= cap {
             self.decals.pop_front();
         }
+        let meshed = !d.triangles.is_empty();
         self.decals.push_back(d);
+        // On the projected path a mesh is only a bending decal's: their count is held apart, the oldest made a box.
+        if meshed && self.projected.is_some() {
+            let meshes = self
+                .decals
+                .iter()
+                .filter(|d| !d.triangles.is_empty())
+                .count();
+            if meshes > MAX_PROJECTED_MESHES
+                && let Some(oldest) = self.decals.iter_mut().find(|d| !d.triangles.is_empty())
+            {
+                oldest.triangles = Vec::new();
+            }
+        }
     }
 
     /// A decal's place and sides, with no mesh yet.
     fn lay(&self, data: &DecalData, at: [f32; 3], normal: [f32; 3], angle: f32) -> Option<Decal> {
         let n = unit(normal.into())?;
-        if self.max == 0 || at.iter().any(|c| !c.is_finite()) {
+        if self.cap() == 0 || at.iter().any(|c| !c.is_finite()) {
             return None;
         }
         // A side in the surface's plane: across the world's up, or across x for a floor or a ceiling.
@@ -354,6 +427,9 @@ impl DecalManager {
             .iter()
             .filter(|d| !d.distortion.as_ref().is_some_and(|x| x.only))
         {
+            if d.triangles.is_empty() {
+                continue;
+            }
             let Some(texture) = d.texture.as_deref().and_then(|t| textures.get_modulated(t)) else {
                 continue;
             };
@@ -383,16 +459,7 @@ impl DecalManager {
                     vertices,
                     lighting: false,
                     tex_env: TexEnv::Modulate,
-                    texture: Some((
-                        texture,
-                        Sampler {
-                            repeat: false,
-                            mag: Filter::Linear,
-                            min: Filter::Linear,
-                            mip: Filter::Linear,
-                            mipmaps: true,
-                        },
-                    )),
+                    texture: Some((texture, DECAL_SAMPLER)),
                     blend: if d.blend == Blend::Modulate2x {
                         Blend::Modulate2x
                     } else {
@@ -410,18 +477,82 @@ impl DecalManager {
         out
     }
 
-    /// The decals that bend as distorters: each its triangles at its opacity (the bend's share), both sides, drawn nearer `eye`
-    /// as the draws are ([`DEPTH_BIAS`]), its map's index into `textures`.
-    pub fn distorters(&self, eye: [f32; 3], textures: &mut TextureSet<'_>) -> Vec<HdDistorter> {
-        let mut out = Vec::new();
+    /// The decals as the projected path's boxes (see [`crate::hd::decals`]), oldest first: each whose texture loads into
+    /// `textures` (an index into it) and that is not drawn as the bend alone, at its opacity in 255ths as the CPU path's
+    /// vertex alpha has it; one faded out is left out.
+    pub fn boxes(&self, textures: &mut TextureSet<'_>) -> Vec<HdDecal> {
+        // The decals share a few textures: each name is looked up once.
+        let mut loaded: HashMap<&str, Option<usize>> = HashMap::new();
+        let mut out = Vec::with_capacity(self.decals.len());
         for d in &self.decals {
+            if d.distortion.as_ref().is_some_and(|x| x.only) {
+                continue;
+            }
+            let Some(name) = d.texture.as_deref() else {
+                continue;
+            };
+            let texture = *loaded
+                .entry(name)
+                .or_insert_with(|| textures.get_modulated(name));
+            let Some(texture) = texture else {
+                continue;
+            };
+            let alpha = (self.opacity(d) * 255.0).round();
+            if alpha <= 0.0 {
+                continue;
+            }
+            out.push(HdDecal {
+                center: d.position,
+                half_x: d.half_x,
+                half_y: d.half_y,
+                half_z: (Vec3::from(d.normal) * half_depth(d)).to_array(),
+                texture: (texture, DECAL_SAMPLER),
+                blend: if d.blend == Blend::Modulate2x {
+                    Blend::Modulate2x
+                } else {
+                    Blend::Alpha
+                },
+                opacity: alpha / 255.0,
+            });
+        }
+        out
+    }
+
+    /// The decals that bend as distorters: each its triangles at its opacity (the bend's share), both sides, drawn nearer `eye`
+    /// as the draws are ([`DEPTH_BIAS`]), its map's index into `textures`. Only those `sees` may show (a sphere's center and
+    /// radius), the nearest to `eye` first within a [`DistortionBudget`]: a server's datablocks decide how many bend.
+    pub fn distorters(
+        &self,
+        eye: [f32; 3],
+        sees: impl Fn([f32; 3], f32) -> bool,
+        textures: &mut TextureSet<'_>,
+    ) -> Vec<HdDistorter> {
+        let candidates: Vec<&Decal> = self
+            .decals
+            .iter()
+            .filter(|d| {
+                d.distortion.is_some()
+                    && !d.triangles.is_empty()
+                    && (self.opacity(d) * 255.0).round() > 0.0
+                    && sees(d.position, box_radius(d))
+            })
+            .collect();
+        let order = nearest_first(eye, candidates.iter().map(|d| (d.position, box_radius(d))));
+        let mut budget = DistortionBudget::default();
+        let mut out = Vec::new();
+        for k in order {
+            if budget.is_spent() {
+                break;
+            }
+            let d = candidates[k];
             let Some(data) = &d.distortion else {
                 continue;
             };
-            let alpha = (self.opacity(d) * 255.0).round() as u8;
-            if alpha == 0 || d.triangles.is_empty() {
+            let n = 3 * d.triangles.len();
+            if !budget.take(1, n, n) {
                 continue;
             }
+            let alpha = (self.opacity(d) * 255.0).round() as u8;
             let mut draw = HdDraw::empty();
             draw.label = "decal distortion".to_string();
             draw.depth_write = false;
@@ -440,6 +571,19 @@ impl DecalManager {
         }
         out
     }
+}
+
+/// A decal's box's half depth along its normal: its longer half side (the CPU path's clip).
+fn half_depth(d: &Decal) -> f32 {
+    Vec3::from(d.half_x)
+        .length()
+        .max(Vec3::from(d.half_y).length())
+}
+
+/// The radius of a sphere around a decal's center holding its box.
+fn box_radius(d: &Decal) -> f32 {
+    let z = half_depth(d);
+    (Vec3::from(d.half_x).length_squared() + Vec3::from(d.half_y).length_squared() + z * z).sqrt()
 }
 
 #[cfg(test)]

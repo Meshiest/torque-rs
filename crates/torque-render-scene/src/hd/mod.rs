@@ -18,6 +18,7 @@ pub mod camera;
 pub mod cells;
 pub mod clouds;
 pub mod clusters;
+pub mod decals;
 pub mod dissolve;
 pub mod distortion;
 pub mod environment;
@@ -773,6 +774,10 @@ pub struct DynamicObject {
     pub stamp: Option<u64>,
     /// The places its draws' [`material::NODE`] vertices name, in order (empty: every vertex is in the world).
     pub nodes: Vec<NodePlace>,
+    /// Whether the projected decals land on it ([`decals`]): a host's static shape it lists among the surfaces a decal lies
+    /// on. Off, a decal's box passing over it (a Player, a vehicle, an item) leaves it as it is; the static geometry always
+    /// takes them.
+    pub takes_decals: bool,
 }
 
 /// Where one mesh of a shape's object is, for its vertices that stay in the mesh's own space ([`material::NODE`]; the GPU places

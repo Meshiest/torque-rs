@@ -19,6 +19,7 @@ fn shape(ghost: u32, at: [f32; 3]) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 

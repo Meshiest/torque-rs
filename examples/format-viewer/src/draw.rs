@@ -393,6 +393,7 @@ pub fn object(id: u32, draws: Vec<HdDraw>) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 

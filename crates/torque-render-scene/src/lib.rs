@@ -19,6 +19,14 @@
 //!   `a_bending_decal_is_a_distorter_that_fades_with_it_and_one_that_only_bends_draws_no_texture`; torque-app's
 //!   `a_shape_whose_datablock_bends_is_a_distorter_of_the_frame`). A new look field goes in torque-ghosts' block first, then
 //!   [`hd::distortion::DistortionLook`], [`distorters::DistortionData::read`] and the shader's `Look`.
+//! - The decals have two paths kept apart by [`decals::DecalManager::set_projected`]: the CPU path's triangles clipped to the
+//!   surfaces (Low; TGE's cap and draws, unchanged), and the projected path's boxes ([`hd::decals::HdDecal`], up to
+//!   [`decals::MAX_PROJECTED_DECALS`]) laid with no mesh and handed over as the renderer's ([`decals::DecalManager::boxes`],
+//!   [`hd::HdScene::set_decals`]), each kept only when [`hd::decals::HdDecal::sanitized`] keeps it
+//!   (`the_projected_path_keeps_boxes_to_its_cap_and_the_cpu_path_drops_them`,
+//!   `a_decal_projects_as_its_square_with_the_clip_depth_and_the_cpu_paths_alpha`, `only_a_box_of_finite_capped_axes_is_drawn`).
+//!   A decal's distorter is copied only in the view, nearest first within the distortion budget
+//!   (`the_bending_decals_are_culled_to_the_view_and_capped_nearest_first`).
 //! - The engine protocol's particle fields ([`particles::ParticleExtras`], [`particles::EmitterExtras`]) are read from the client's
 //!   datablock as torque-ghosts' extension block made it and held to its ranges again (`hostile_engine_fields_are_held_to_their_ranges_as_they_are_read`);
 //!   a datablock that sent none reads the defaults that leave TGE's look and motion. A new field is added in torque-ghosts'

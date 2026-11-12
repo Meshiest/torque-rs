@@ -144,6 +144,7 @@ fn draw(
             previous: None,
             stamp: None,
             nodes: Vec::new(),
+            takes_decals: false,
         }];
     }
     let view = look_at(eye, at);

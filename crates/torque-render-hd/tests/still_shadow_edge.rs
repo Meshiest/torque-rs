@@ -147,6 +147,7 @@ fn object(ghost: u32, mut draw: Draw, at: [f32; 3], from: [f32; 3]) -> DynamicOb
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 

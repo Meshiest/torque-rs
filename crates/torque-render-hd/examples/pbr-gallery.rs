@@ -465,6 +465,7 @@ fn object(
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 

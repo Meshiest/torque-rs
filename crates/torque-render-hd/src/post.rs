@@ -274,13 +274,14 @@ impl PostPipes {
         (buffer, whole, one)
     }
 
-    /// Writes the motion slots (slot 0 the identity and object 0, then one a shape: its matrix and its object id, which the prepass
-    /// writes beside each pixel's motion for the TAA's object test), growing the buffer when needed.
+    /// Writes the motion slots (slot 0 the identity and object 0, then one a shape: its matrix, its object id, which the prepass
+    /// writes beside each pixel's motion for the TAA's object test, and 1 when it takes no projected decals, which the prepass
+    /// writes into the normal's `w`), growing the buffer when needed.
     pub fn write_motion(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        matrices: &[([f32; 16], f32)],
+        matrices: &[([f32; 16], [f32; 2])],
     ) {
         let slots = matrices.len() + 1;
         if slots > self.motion_slots {
@@ -291,12 +292,12 @@ impl PostPipes {
             self.motion_one = one;
         }
         let mut bytes = vec![0u8; slots * MOTION_STRIDE as usize];
-        for (i, (m, id)) in std::iter::once(&(COLUMN_IDENTITY, 0.0))
+        for (i, (m, id)) in std::iter::once(&(COLUMN_IDENTITY, [0.0; 2]))
             .chain(matrices)
             .enumerate()
         {
             let at = i * MOTION_STRIDE as usize;
-            for (k, v) in m.iter().chain(std::iter::once(id)).enumerate() {
+            for (k, v) in m.iter().chain(id).enumerate() {
                 bytes[at + 4 * k..at + 4 * k + 4].copy_from_slice(&v.to_le_bytes());
             }
         }

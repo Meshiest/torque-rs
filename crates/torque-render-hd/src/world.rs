@@ -5,10 +5,10 @@
 //! **The frame** ([`HdWorld::draw`]): the light clusters (a compute pass: 16 x 9 tiles x 24 exponential depth slices, each with a
 //! 1,024-bit mask of the point lights whose sphere meets it), then one forward pass into an `Rgba16Float` HDR target with a reversed
 //! 32-bit float depth (the sky first, unlit and without depth; the opaque static cells front to back, the ground, the opaque shapes;
-//! the multiplied decals over them in their own pass; then the water, the translucent shapes and coronas back to front, the
-//! translucent static cells back to front, the sun's flare), then the tonemap pass (exposure, our neutral hue-keeping curve, sRGB
-//! encoding) into the caller's `Rgba8Unorm` target. Textures are sampled through sRGB views (linear in the shader); vertex colours
-//! are decoded the same way.
+//! the multiplied decals over them in their own pass and the projected decals (the `decals` module); then the water, the
+//! translucent shapes and coronas back to front, the translucent static cells back to front, the sun's flare), then the tonemap
+//! pass (exposure, our neutral hue-keeping curve, sRGB encoding) into the caller's `Rgba8Unorm` target. Textures are sampled
+//! through sRGB views (linear in the shader); vertex colours are decoded the same way.
 //!
 //! **Uploads** ([`HdWorld::upload`]) are incremental: new textures of the scene's table, the static cells whose generation changed
 //! (removed cells dropped), and the eye-dependent draws (sky, planes, shapes, coronas, flare) when the scene was synced again.
@@ -124,6 +124,13 @@ pub use gpu_particles::{
 
 #[path = "dissolve.rs"]
 mod dissolve;
+
+#[path = "decals.rs"]
+mod decals;
+pub use decals::{
+    BOX_BYTES, DECAL_FILL_BUDGET, DecalCounts, DecalProjection, MAX_DECAL_RUNS, box_bytes,
+    decal_capacity, decal_material, screen_area,
+};
 
 /// The most bytes of the levels' block meshes a live window's upload puts in (at least one block).
 pub const LOD_BYTES_A_FRAME: u64 = 4 << 20;
@@ -509,6 +516,8 @@ struct GpuObject {
     /// Each draw's id in the motion target (from its ghost index and its place among the object's draws, modulo
     /// [`post::MOTION_IDS`]: the TAA's object test), in the order of `draws` (their motion slots follow one another).
     ids: Vec<f32>,
+    /// Whether the projected decals land on it ([`torque_render_scene::hd::DynamicObject::takes_decals`]: its motion slots say).
+    takes_decals: bool,
     /// Its first place in the frame's table of meshes' places (its vertices' [`torque_render_scene::hd::material::NODE`] places are
     /// written past it), when it has places.
     node_base: Option<usize>,
@@ -885,6 +894,10 @@ pub struct HdFeatures {
     /// The froxel volumetrics where the quality has them ([`crate::froxels`]: the point lights scatter in the fog too, beside
     /// the march's god rays); off: the march alone at every quality, as before (the checks' before pictures).
     pub froxel_fog: bool,
+    /// The decals are projected onto the opaque frame (`world.rs`'s `decals` module, where the device has room for the pass:
+    /// [`HdWorld::projected_decals_at`]): at Medium and up by default ([`DecalProjection::Auto`]); elsewhere the client draws
+    /// the CPU path's triangles.
+    pub projected_decals: DecalProjection,
 }
 
 impl Default for HdFeatures {
@@ -912,6 +925,7 @@ impl Default for HdFeatures {
             cloud_cube: true,
             gpu_particles: ParticlePool::Auto,
             froxel_fog: true,
+            projected_decals: DecalProjection::Auto,
         }
     }
 }
@@ -940,6 +954,7 @@ impl HdFeatures {
         cloud_cube: true,
         gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
+        projected_decals: DecalProjection::Auto,
     };
     /// No anti-aliasing and no AO.
     pub const NO_POST: HdFeatures = HdFeatures {
@@ -965,6 +980,7 @@ impl HdFeatures {
         cloud_cube: true,
         gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
+        projected_decals: DecalProjection::Auto,
     };
     /// No reflections.
     pub const NO_REFLECTIONS: HdFeatures = HdFeatures {
@@ -990,6 +1006,7 @@ impl HdFeatures {
         cloud_cube: true,
         gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
+        projected_decals: DecalProjection::Auto,
     };
 }
 
@@ -1226,6 +1243,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     dissolve: Option<dissolve::GpuDissolve>,
     dissolve_supported: bool,
     dissolving: bool,
+    /// The projected decals' pipelines and boxes ([`decals`]), made the first frame one is drawn; whether the device has room
+    /// for them.
+    decals: Option<decals::GpuDecals>,
+    decals_supported: bool,
     /// Per motion slot, whether its draw is clipped this frame (a loose draw's slot is its own; the particles' and the cells'
     /// are 0, never clipped).
     clipped: Vec<bool>,
@@ -2527,6 +2548,7 @@ impl<E: HdExtension> HdWorld<E> {
         let timestamps = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let sprites_supported = gpu_particles::sprites_supported(&device);
         let dissolve_supported = dissolve::dissolve_supported(&device);
+        let decals_supported = decals::decals_supported(&device);
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd frame"),
             entries: &frame_entries(),
@@ -3082,6 +3104,8 @@ impl<E: HdExtension> HdWorld<E> {
             dissolve: None,
             dissolve_supported,
             dissolving: false,
+            decals: None,
+            decals_supported,
             clipped: Vec::new(),
             sprite_cap: torque_render_scene::particles::MAX_PARTICLES as u32,
             pool_quality: Quality::High,
@@ -5120,6 +5144,7 @@ impl<E: HdExtension> HdWorld<E> {
                     o.motion()
                 },
                 ids,
+                takes_decals: o.takes_decals,
                 node_base,
                 content: stamp.unwrap_or_else(|| unstamped_content(scene.generation, &o.draws)),
                 eaten: 0.0,
@@ -6156,7 +6181,7 @@ impl<E: HdExtension> HdWorld<E> {
             .temporal
             .generation
             .is_some_and(|g| Some(g) != self.loose.generation);
-        let motions: Vec<([f32; 16], f32)> = self
+        let motions: Vec<([f32; 16], [f32; 2])> = self
             .loose
             .objects
             .iter()
@@ -6166,11 +6191,13 @@ impl<E: HdExtension> HdWorld<E> {
                 } else {
                     torque_render_scene::hd::post::COLUMN_IDENTITY
                 };
-                o.ids.iter().map(move |&id| (m, id))
+                let bare = if o.takes_decals { 0.0 } else { 1.0 };
+                o.ids.iter().map(move |&id| (m, [id, bare]))
             })
             .collect();
         self.post.write_motion(&self.device, &self.queue, &motions);
         self.prepare_dissolves(scene);
+        self.prepare_decals(scene, quality, camera);
         cpu_mark!("begin: motion");
         let mut post_bytes = Vec::with_capacity(256);
         push_f32(
@@ -7693,6 +7720,18 @@ impl<E: HdExtension> HdWorld<E> {
             draw_list(&mut pass, &keyed(decal_start..split), &mut draw_calls);
         }
         mark!("opaque");
+        // The projected decals over the opaque frame, with the CPU path's multiplied ones (none where they are projected).
+        let projected = self.encode_decals(
+            &mut encoder,
+            [&frame_group, sky_group, refl_group],
+            &targets.hdr_view,
+            &targets.depth_view,
+            &targets.normal_view,
+        );
+        if projected > 0 {
+            draw_calls += projected;
+            mark!("decals");
+        }
         // The volumetric light over the opaque frame, the water's depth, the opaque frame's copy.
         if vol_on {
             self.volumetric.encode_composite(

@@ -197,6 +197,7 @@ impl Shift for DynamicObject {
             previous,
             stamp: _,
             nodes,
+            takes_decals: _,
         } = self;
         transform.shift(by);
         prev_transform.shift(by);
@@ -371,6 +372,7 @@ impl<G: Shift> Shift for HdScene<G> {
             lightmap: _,
             lightmap_generation: _,
             distorters,
+            decals,
         } = self;
         eye.shift(by);
         sky.shift(by);
@@ -389,6 +391,7 @@ impl<G: Shift> Shift for HdScene<G> {
         spots.shift(by);
         area_lights.shift(by);
         distorters.shift(by);
+        decals.shift(by);
     }
 }
 

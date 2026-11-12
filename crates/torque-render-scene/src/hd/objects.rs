@@ -475,6 +475,7 @@ fn make_object(
         previous: None,
         stamp,
         nodes,
+        takes_decals: false,
     };
     o.previous = if !o.nodes.is_empty() {
         None

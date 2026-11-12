@@ -103,6 +103,7 @@ fn scene(ao_sun: f32) -> PlainScene {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }];
     s
 }

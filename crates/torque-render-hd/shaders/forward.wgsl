@@ -117,7 +117,8 @@ struct Irradiance {
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 // The prepass's motion slots: the matrix taking a shape's current world point to where it was (the identity for everything else, and
-// for a shape whose vertices bring their own previous positions), and its object id in id.x (0 for everything static). A shape's
+// for a shape whose vertices bring their own previous positions), its object id in id.x (0 for everything static) and in id.y 1
+// when the projected decals do not land on it. A shape's
 // draw is drawn as instance `slot` of one (its instance index is its slot); slot 0 is the identity, the static cells' and the
 // extension's own draws'.
 // Each slot is 256 bytes (the reference way binds one slot at its dynamic offset and draws instance 0).
@@ -281,7 +282,8 @@ struct PrepassOut {
     @location(3) world: vec3<f32>,
     @location(4) @interpolate(flat) material: u32,
     @location(5) lod: f32,
-    @location(6) @interpolate(flat) id: f32,
+    // x: the object's id (0 static); y: 1 when the projected decals do not land on it.
+    @location(6) @interpolate(flat) id: vec2<f32>,
 };
 
 // The vertex's previous position (location 6) is a second stream: a shape's own last-frame positions (its animation and pose: a
@@ -302,7 +304,7 @@ fn depth_out(position: vec3<f32>, normal: vec2<f32>, material: u32, extra: u32, 
     out.world = p.xyz;
     out.material = material;
     out.lod = 0.0;
-    out.id = motion.id.x;
+    out.id = motion.id.xy;
     return out;
 }
 
@@ -347,7 +349,8 @@ struct PrepassTargets {
     // xy: the motion in uv (now less before); z: the previous frame's eye distance; w: 1 plus the object's id (1 for everything
     // static; 0 where nothing was drawn: the sky).
     @location(0) motion: vec4<f32>,
-    // The world normal, octahedral.
+    // The world normal, octahedral; z the reflective class; w 1 where the projected decals land, 0.5 where they do not (a
+    // moving shape's), 0 where nothing was drawn.
     @location(1) normal: vec4<f32>,
 };
 
@@ -359,13 +362,13 @@ fn fs_depth(in: PrepassOut) -> PrepassTargets {
     var out: PrepassTargets;
     let a = in.now.xy / in.now.w;
     let b = in.before.xy / max(in.before.w, 1e-6);
-    out.motion = vec4<f32>((a - b) * vec2<f32>(0.5, -0.5), in.before.w, 1.0 + in.id);
+    out.motion = vec4<f32>((a - b) * vec2<f32>(0.5, -0.5), in.before.w, 1.0 + in.id.x);
     let v = normalize(frame.eye.xyz - in.world);
     var n = normalize(in.normal);
     if (in.material & MAT_ZERO_NORMAL) != 0u || dot(n, n) < 0.5 {
         n = v;
     }
-    out.normal = vec4<f32>(oct_encode(n), reflect_class(in.material), 1.0);
+    out.normal = vec4<f32>(oct_encode(n), reflect_class(in.material), select(1.0, 0.5, in.id.y > 0.5));
     return out;
 }
 

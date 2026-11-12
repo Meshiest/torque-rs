@@ -98,6 +98,15 @@
 //!   (`only_the_dissolve_permutations_take_its_chunks_and_their_entries_are_plain_functions_there`), and a frame with no
 //!   dissolve or one eating nothing is byte for byte the same (`tests/dissolve.rs`, which also holds the drawn share to the
 //!   share left, the prepass's coverage to the colour's and the shadow to the faces left).
+//! - The projected decals (`world.rs`'s `decals` module, [`HdFeatures::projected_decals`], on at Medium and up by default)
+//!   match the CPU path's clipped decals: on flat ground, over a corner and on a ball the pixels they cover are the CPU path's
+//!   within a few levels, a moving shape that takes no decals keeps its colors in a decal's box, a box around the eye still
+//!   draws, a frame draws one instanced draw a texture and blend, and Low draws none (`tests/projected_decals.rs`). The pass
+//!   reads the prepass's normal `w` (1 takes decals, 0.5 does not, from the motion slot's `id.y`), so a new prepass entry
+//!   writes it as `fs_depth` does. The shader's clip cosine and fade are the scene crate's
+//!   (`the_decal_shaders_constants_are_the_scene_crates`). Its GPU time is the `decals` mark (`decals-profile`, under the
+//!   bench lock, prints it against a 0.5 ms mark for 4096 decals in view at 1080p High; `--huge` puts 64-unit boxes around the
+//!   eye, held by the fill budget: `decals_around_the_eye_are_held_to_the_fill_budget`).
 //! - A loose shape of radius 4 or more that holds the capture's eye stays in the capture (`reflect::CAPTURE_SHAPE_HELD`): a
 //!   room built of shapes would otherwise show the capture the sky through its walls, and the ambient would bounce it. Smaller
 //!   ones (the client's own player and held item) are left out

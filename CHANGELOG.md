@@ -101,6 +101,15 @@ different.
   `distortionOnly`) bends what is behind it, for glass, water, heat haze, force fields and shockwaves; what is in front is not
   bent. Applied after the TAA, skipped at Low, and free in a frame with no distorter in sight. The fields travel in the engine
   protocol only (framing 5); `HdScene::distorters` takes them from code.
+- Projected decals in the enhanced renderer at Medium and up: each bullet hole or mark is a box the GPU projects onto the
+  opaque frame's depth (the CPU path's clip angle as a fade, its texture coordinates, look, fade and lifetime), in one
+  instanced draw a texture, in place of the CPU's triangle clipping. They land on the static geometry and on the objects a
+  host marks (`DynamicObject::takes_decals`), never on Players, vehicles or other moving shapes. Up to 4096 are kept by
+  default; `$Pref::Decals::MaxProjected` raises or lowers it and is held to 16384. Low keeps TGE's clipped decals and its cap.
+  A bending decal's distorter is culled to the view and capped with the shapes' distorters. A frame's decals cover at most
+  eight screens of area (the nearest kept). For extensions and hosts: `DynamicObject::takes_decals` (false by default), the
+  prepass's `PrepassOut.id` is a `vec2<f32>` (x the object's id, y 1 where decals do not land; extension WGSL that builds one
+  sets both) and its normal's `w` says the same (1 or 0.5), and `DecalManager::distorters` takes a `sees` test of the view.
 - `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
   scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
   identical picture (`has_gpu`, `gpu_geometry_bytes`).

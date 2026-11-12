@@ -118,6 +118,7 @@ fn box_object(dy: f32, moved: f32) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 

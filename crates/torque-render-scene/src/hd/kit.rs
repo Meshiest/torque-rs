@@ -86,5 +86,6 @@ pub fn box_object(ghost: u32, centre: [f32; 3], h: [f32; 3]) -> DynamicObject {
         }],
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }

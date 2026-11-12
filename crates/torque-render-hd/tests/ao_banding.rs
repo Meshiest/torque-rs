@@ -132,6 +132,7 @@ fn scene(quality: Quality, full_res: bool) -> PlainScene {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }];
     s
 }

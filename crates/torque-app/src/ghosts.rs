@@ -32,7 +32,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use glam::Vec3;
 
 use torque_ghost_world::images::ImageRecoil;
-use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
+use torque_render_scene::decals::{
+    DEFAULT_PROJECTED_DECALS, DecalManager, MAX_PROJECTED_DECALS, Triangle, projectile_decal,
+};
 use torque_render_scene::dissolve::Dissolves;
 use torque_render_scene::distorters::shape_distorters;
 use torque_render_scene::emitter_nodes::EmitterNodes;
@@ -172,11 +174,14 @@ fn node_pitch(forward: [f32; 3]) -> f32 {
 /// The most a view's pitch reaches either way (radians): short of straight up or down, where its yaw would be lost.
 pub const MAX_VIEW_PITCH: f32 = 1.55;
 
-/// The bolt holes kept: at most `max`, each for `seconds`, fading out over its last `fade`; multiplied over the surface they
-/// lie on (`Blend::Modulate2x`) with `multiply`.
+/// The bolt holes kept: at most `max` where the client clips them to the surfaces (the CPU path), at most `projected` where the
+/// renderer projects them (Medium and up; held to [`MAX_PROJECTED_DECALS`], `$Pref::Decals::MaxProjected` by
+/// [`GhostScene::read_prefs`]), each for `seconds`, fading out over its last `fade`; multiplied over the surface they lie on
+/// (`Blend::Modulate2x`) with `multiply`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DecalLimits {
     pub max: usize,
+    pub projected: usize,
     pub seconds: f32,
     pub fade: f32,
     pub multiply: bool,
@@ -186,11 +191,22 @@ impl Default for DecalLimits {
     fn default() -> DecalLimits {
         DecalLimits {
             max: 64,
+            projected: DEFAULT_PROJECTED_DECALS,
             seconds: 25.0,
             fade: 4.0,
             multiply: false,
         }
     }
+}
+
+/// The decals' prefs (the client's script engine has them; [`GhostScene::read_prefs`] reads them).
+#[derive(torque_engine::Prefs)]
+#[prefs(prefix = "$Pref::Decals")]
+pub struct DecalPrefs {
+    /// The most bullet holes and marks kept where the renderer projects them (Medium and up). A server or a script cannot set it
+    /// past 16384; Low keeps Torque's own cap.
+    #[pref(default = 4096, range = 0..=16384)]
+    pub max_projected: i32,
 }
 
 /// What a [`GhostScene`] draws beyond TGE's rules.
@@ -993,6 +1009,16 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
+    /// Reads the decals' prefs ([`DecalPrefs`]) from the client's script engine `vm`: the projected path's cap
+    /// ([`DecalLimits::projected`]), held to [`MAX_PROJECTED_DECALS`] whatever a script or a server set.
+    pub fn read_prefs(&mut self, vm: &torque_ts_vm::vm::Vm) {
+        use torque_engine::VmPrefs;
+        let prefs = vm.prefs::<DecalPrefs>();
+        self.options.decals.projected = usize::try_from(prefs.max_projected)
+            .unwrap_or(0)
+            .min(MAX_PROJECTED_DECALS);
+    }
+
     /// Lays tire tracks behind the vehicles' wheels as `rules` say (none: no tracks, TGE's).
     pub fn set_tire_tracks(&mut self, rules: Option<TrackRules>) {
         self.tracks = rules.map(TireTracks::new);
@@ -1724,10 +1750,15 @@ impl<S: GhostStyle> GhostScene<S> {
                             d.blend = torque_render_scene::Blend::Modulate2x;
                         }
                         let angle = self.rng.f() * std::f32::consts::TAU;
-                        let reach = d.size[0].max(d.size[1]);
-                        let mut surface = (input.surfaces)(world, at, reach);
-                        surface.extend(self.interiors.faces_near(at, reach));
-                        self.decals.add_clipped(&d, at, normal, angle, &surface);
+                        if self.decals.projected().is_some() && d.distortion.is_none() {
+                            // Projected onto whatever surface is there: no faces to clip it to.
+                            self.decals.add_box(&d, at, normal, angle);
+                        } else {
+                            let reach = d.size[0].max(d.size[1]);
+                            let mut surface = (input.surfaces)(world, at, reach);
+                            surface.extend(self.interiors.faces_near(at, reach));
+                            self.decals.add_clipped(&d, at, normal, angle, &surface);
+                        }
                     }
                 }
                 continue;
@@ -2080,12 +2111,37 @@ impl<S: GhostStyle> GhostScene<S> {
             &mut set,
             &mut draws,
         );
-        let mut decals = self.decals.draws(eye.position, &mut set);
+        // The holes as boxes the renderer projects where it does (the CPU path's triangles elsewhere), kept to the cap of the
+        // path they are drawn by.
+        let projects = view.projected_decals();
+        self.decals
+            .set_projected(projects.then_some(self.options.decals.projected));
+        let mut boxes_set = TextureSet::new(assets);
+        let boxes = if projects {
+            self.decals.boxes(&mut boxes_set)
+        } else {
+            Vec::new()
+        };
+        view.set_decals(&boxes, boxes_set);
+        let mut decals = if projects {
+            Vec::new()
+        } else {
+            self.decals.draws(eye.position, &mut set)
+        };
         if let Some(tracks) = &self.tracks {
             decals.extend(tracks.draws(eye.position, &mut set));
         }
+        let frame = view.scene();
+        let camera = HdCamera::new(
+            *eye,
+            frame.fov,
+            frame.visible_distance,
+            frame.size.0,
+            frame.size.1,
+        );
+        let sees = |c: [f32; 3], r: f32| camera.sees_box(c.map(|v| v - r), c.map(|v| v + r));
         let mut maps = TextureSet::new(assets);
-        let bends = self.decals.distorters(eye.position, &mut maps);
+        let bends = self.decals.distorters(eye.position, sees, &mut maps);
         if !bends.is_empty() {
             view.add_distorters(bends, maps);
         }
@@ -2096,6 +2152,26 @@ impl<S: GhostStyle> GhostScene<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The projected decals' cap is the pref's default when no script set it, a script's value, and never past the hard cap
+    /// (or under none) whatever a script or a server writes.
+    #[test]
+    fn the_decal_prefs_are_read_and_held_to_the_hard_cap() {
+        let mut scene = GhostScene::new(GhostOptions::default());
+        let mut vm = torque_ts_vm::vm::Vm::new();
+        scene.read_prefs(&vm);
+        assert_eq!(scene.options.decals.projected, DEFAULT_PROJECTED_DECALS);
+        for (set, read) in [
+            ("1000", 1000),
+            ("99999999", MAX_PROJECTED_DECALS),
+            ("-5", 0),
+            ("lots", 0),
+        ] {
+            vm.set_global("$Pref::Decals::MaxProjected", set);
+            scene.read_prefs(&vm);
+            assert_eq!(scene.options.decals.projected, read, "{set}");
+        }
+    }
 
     /// Another Player is drawn swimming by its server's rule: deep enough in a box of water, held through the band once
     /// swimming, and never for poses that do not swim or out of every box.

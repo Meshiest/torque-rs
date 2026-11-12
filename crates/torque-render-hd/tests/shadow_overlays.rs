@@ -129,6 +129,7 @@ fn world_box(ghost: u32, l: [f32; 3], h: [f32; 3], own: bool) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 
@@ -163,6 +164,7 @@ fn figure(at: [f32; 3], before: [f32; 3]) -> DynamicObject {
         previous: None,
         stamp: Some(7),
         nodes,
+        takes_decals: false,
     }
 }
 

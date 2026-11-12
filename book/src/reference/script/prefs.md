@@ -2,10 +2,11 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 25 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 26 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
+| `$Pref::Decals::MaxProjected` | int | `4096` | 0 to 16384 | The most bullet holes and marks kept where the renderer projects them (Medium and up). A server or a script cannot set it past 16384; Low keeps Torque's own cap. | client |
 | `$Pref::Gui::RevealFocus` | bool | `0` |  | Whether a control that takes the key focus (a click, Tab, `makeFirstResponder`) scrolls its nearest scroll control to show it (`setRevealFocus` writes it). Off, focus moves no content, as TGE's does. | client |
 | `$Pref::Gui::SmoothScroll` | bool | `0` |  | Whether the scroll controls draw their content gliding to where the wheel puts it (`setSmoothScroll` writes it). Off, a wheel notch steps the content as TGE's does. | client |
 | `$Pref::Hierarchy::MaxChildren` | int | `256` | 1 to 1024 | The most children of one parent. | server; needs `torque.hierarchy` |

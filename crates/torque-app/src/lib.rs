@@ -65,6 +65,12 @@
 //!   drawn as the bend alone) and its `effects` adds the decals' ([`view::WorldView::set_distorters`],
 //!   [`view::WorldView::add_distorters`]): call `objects` first in a frame (`a_shape_whose_datablock_bends_is_a_distorter_of_the_frame`,
 //!   in `tests/drawn_shapes.rs`).
+//! - A [`ghosts::GhostScene`] keeps its decals for the path the view draws them by ([`view::WorldView::projected_decals`], read
+//!   in `effects` each frame): at Medium and up a hit lays a box with no clip (a bending decal is still clipped, for its
+//!   distorter) and the boxes go to the view ([`view::WorldView::set_decals`]); at Low the CPU path's clipped triangles at
+//!   [`ghosts::DecalLimits::max`], as before. The projected cap is [`ghosts::DecalLimits::projected`], which
+//!   [`ghosts::GhostScene::read_prefs`] sets from `$Pref::Decals::MaxProjected` held to the hard cap
+//!   (`the_decal_prefs_are_read_and_held_to_the_hard_cap`). `TORQUE_PROJECTED_DECALS=0` or `1` forces a path for a run.
 //! - A [`ghosts::GhostScene`] gives the Sky's wind ([`torque_render_scene::sky::wind`]) to every emitter it runs at the start
 //!   of a frame (an emitter made in a frame has it from the next) and to the pool's frame, and runs the ghosted
 //!   `ParticleEmitterNode`s ([`torque_render_scene::emitter_nodes::EmitterNodes`]) beside the trails and the dust, handing their

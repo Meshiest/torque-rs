@@ -3,6 +3,7 @@
 //! particles and one texture table. What fills it from a world is the world's own.
 
 use crate::hd::cells::StaticGeometry;
+use crate::hd::decals::HdDecal;
 use crate::hd::particle_light::{ParticleLight, shape_sprites};
 use crate::hd::sprites::GpuSprites;
 use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, post, sh, shadow, sky};
@@ -328,6 +329,9 @@ pub struct HdScene<G> {
     /// The surfaces that bend the picture behind them this frame ([`distortion`](super::distortion)); set every frame, as the
     /// particles are. None in sight: the frame is drawn as without them.
     pub distorters: Vec<super::distortion::HdDistorter>,
+    /// The decals the renderer projects onto the opaque frame ([`decals`](super::decals)); set every frame, as the particles
+    /// are. Drawn where the renderer projects decals (Medium and up by default); the CPU path's decals are particles' draws.
+    pub decals: Vec<super::decals::HdDecal>,
 }
 
 impl<G> HdScene<G> {
@@ -399,6 +403,7 @@ impl<G> HdScene<G> {
             cloud_look: None,
             size: (1, 1),
             distorters: Vec::new(),
+            decals: Vec::new(),
         }
     }
 
@@ -410,6 +415,21 @@ impl<G> HdScene<G> {
     ) {
         self.distorters.clear();
         self.add_distorters(distorters, textures);
+    }
+
+    /// The frame's projected decals (their textures indices into `textures`): those [`HdDecal::sanitized`] keeps whose texture
+    /// is in the set, in order. Replaces the last frame's.
+    pub fn set_decals(&mut self, decals: &[HdDecal], textures: TextureSet) {
+        let local: Vec<usize> = textures
+            .into_textures()
+            .into_iter()
+            .map(|t| self.textures.intern(t))
+            .collect();
+        self.decals.clear();
+        self.decals.extend(decals.iter().filter_map(|d| {
+            let texture = (*local.get(d.texture.0)?, d.texture.1);
+            HdDecal { texture, ..*d }.sanitized()
+        }));
     }
 
     /// More distorters this frame (their maps' indices into `textures`), after those set.

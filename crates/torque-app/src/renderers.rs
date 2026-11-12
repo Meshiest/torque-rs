@@ -217,6 +217,7 @@ const FEATURES_DEFAULT: HdFeatures = HdFeatures {
     cloud_cube: true,
     gpu_particles: torque_render_hd::ParticlePool::Auto,
     froxel_fog: true,
+    projected_decals: torque_render_hd::DecalProjection::Auto,
 };
 
 /// Why a swap of renderers was refused.
@@ -580,6 +581,8 @@ impl Plugin for RendererPlugin {
             make: None,
         });
         feature_set(engine);
+        // The projected decals' cap (`GhostScene::read_prefs` reads it).
+        engine.client_script().prefs::<crate::ghosts::DecalPrefs>();
     }
 }
 

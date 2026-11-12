@@ -77,7 +77,7 @@ struct DissolveDepthOut {
     @location(3) world: vec3<f32>,
     @location(4) @interpolate(flat) material: u32,
     @location(5) lod: f32,
-    @location(6) @interpolate(flat) id: f32,
+    @location(6) @interpolate(flat) id: vec2<f32>,
     @location(7) rest: vec3<f32>,
     @location(8) @interpolate(flat) slot: u32,
 };

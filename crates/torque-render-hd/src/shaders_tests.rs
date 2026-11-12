@@ -268,23 +268,24 @@ fn the_cpu_field_is_the_shaders() {
 /// own extension: a change to any of them moves pixels that must not move (the PBR path has modules of its own).
 /// The forward, water, dissolve, sprite and particle entries changed their hashes for the round small sprites and the bounce (the
 /// forward fragment tests a pool sprite's footprint, zero for every other draw); `shots-diff` against main's pictures showed no
-/// other pixel move.
-const NON_PBR_SOURCES: [(&str, u64); 40] = [
+/// other pixel move. The forward entries changed again when the projected decals moved the prepass's id to a `vec2`; the level
+/// shots matched main's exactly.
+const NON_PBR_SOURCES: [(&str, u64); 41] = [
     (
         "forward.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
-        0xa6e7003aadbda92e,
+        0x6b8bf5d77577880b,
     ),
     (
         "forward.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
-        0x62c9e19bc14ac72f,
+        0x2aa7de84d9c03ac0,
     ),
     (
         "forward.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
-        0xf88fa3639a8c2b81,
+        0x80e914678aa10b2e,
     ),
     (
         "forward.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
-        0xd7c805c5fe3bcef6,
+        0x9503d6f6076b8393,
     ),
     ("clusters.wgsl", 0xf9910b500be3f387),
     ("tonemap.wgsl", 0xaf3880f9b042906f),
@@ -299,9 +300,9 @@ const NON_PBR_SOURCES: [(&str, u64); 40] = [
     ("fxaa.wgsl", 0xa96525dca2b78bff),
     (
         "forward.wgsl (a secondary view: CLUSTERED = false, CLIP = true)",
-        0x4656f582511e7c1e,
+        0x3cd1975ebba2495b,
     ),
-    ("water.wgsl", 0x75969dc22b5356d8),
+    ("water.wgsl", 0x092b2cec714e1ae1),
     ("hiz.wgsl", 0x0b2dc8f0063114ed),
     ("ssr.wgsl", 0x736fc1e3bce41d02),
     ("down.wgsl", 0x3d4a40d1d9c5b930),
@@ -318,28 +319,28 @@ const NON_PBR_SOURCES: [(&str, u64); 40] = [
     ("cull.wgsl", 0x0ff6b6076072b463),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
-        0xea177317e4aaab87,
+        0x50675895a8c5b8a0,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
-        0x9b4f15430df388b4,
+        0x03b5750c21ddc4b9,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
-        0x30d38738ffa946d6,
+        0x1ce58e3b86220187,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
-        0x393d87a7f8da108f,
+        0x58507470beb1ab28,
     ),
     ("gpu_particles.wgsl", 0x4f73054f871a31ee),
     (
         "forward.wgsl with dissolve.wgsl (CLUSTERED = true)",
-        0xb150a24fb12900ca,
+        0x295c6778db371af9,
     ),
     (
         "forward.wgsl with dissolve.wgsl (CLUSTERED = false)",
-        0x93671b88f6fca6c7,
+        0xa2df584679a09586,
     ),
     (
         "shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = true)",
@@ -349,6 +350,7 @@ const NON_PBR_SOURCES: [(&str, u64); 40] = [
         "shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = false)",
         0xe5b1ff61bdf5fc90,
     ),
+    ("forward.wgsl with decals.wgsl", 0xb816b66574d7223b),
 ];
 
 #[test]
@@ -369,4 +371,30 @@ fn the_permutations_without_pbr_materials_are_unchanged() {
         .map(|(name, _)| (*name).to_string())
         .collect();
     assert_eq!(changed, Vec::<String>::new());
+}
+
+/// The projected decals' clip cosine and facing fade are the scene crate's, and their module is the opaque pass's forward module
+/// with its entries after it (every other module is as without them).
+#[test]
+fn the_decal_shaders_constants_are_the_scene_crates() {
+    use torque_render_scene::decals::CLIP_ANGLE_COS;
+    use torque_render_scene::hd::decals::FACING_FADE;
+    assert_eq!(
+        constant("decals.wgsl", "DECAL_CLIP_COS") as f32,
+        CLIP_ANGLE_COS
+    );
+    assert_eq!(
+        constant("decals.wgsl", "DECAL_FACING_FADE") as f32,
+        FACING_FADE
+    );
+    let forward = Permutation::Forward {
+        clustered: true,
+        front_layer: false,
+    }
+    .source();
+    for p in Permutation::ALL {
+        let own = p == Permutation::Decals;
+        assert_eq!(p.source().contains("fn vs_decal("), own, "{}", p.name());
+    }
+    assert!(Permutation::Decals.source().starts_with(&forward));
 }

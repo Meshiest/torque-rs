@@ -86,6 +86,7 @@ fn draw(gpu: &Gpu, yaw: f32, pitch: f32) -> (Frame, HdCamera) {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }];
     let (y, d) = (yaw.to_radians(), pitch.to_radians());
     let at = [

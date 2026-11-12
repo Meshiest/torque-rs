@@ -203,6 +203,7 @@ pub fn options() -> GhostOptions {
         ribbon_trails: true,
         decals: DecalLimits {
             max: MAX_DECALS,
+            projected: DecalLimits::default().projected,
             seconds: DECAL_SECONDS,
             fade: DECAL_FADE,
             multiply: true,
@@ -481,7 +482,7 @@ fn make_cube(
     let center = m.column(3);
     let top = center[2] + scale[2].abs() * 0.5;
     let tint = cube_tint(top);
-    let object = view.shape_object_with(
+    let mut object = view.shape_object_with(
         assets,
         shape,
         &instance,
@@ -490,6 +491,8 @@ fn make_cube(
         cube_id(index),
         &mut |d| retexture(d, tint, filter),
     );
+    // The cubes are the surfaces the holes lie on (`cube_triangles_near`): the projected holes land on them too.
+    object.takes_decals = true;
     Some(KeptCube { pose, object })
 }
 

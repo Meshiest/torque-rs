@@ -28,11 +28,12 @@ use torque_client::conn::ConnGame;
 use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::ext::{HdExtension, NoExtension, PlainScene, ViewScene};
-use torque_render_hd::{HdSettings, HdWorld, ParticlePool};
+use torque_render_hd::{DecalProjection, HdSettings, HdWorld, ParticlePool};
 use torque_render_scene::dissolve::Dissolves;
 use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
+use torque_render_scene::hd::decals::HdDecal;
 use torque_render_scene::hd::distortion::HdDistorter;
 use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::{KeptObject, carry_motion, objects_of};
@@ -436,6 +437,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         view.set_daylight(&Daylight::default());
         // The effects' pipelines made beside the menus and the map's loading, not at the first shot.
         if let Some(world) = &mut view.world {
+            force_decals(world);
             world.warm_effects();
         }
         view
@@ -581,6 +583,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         if self.slot.is_some() {
             world.features = self.features.features;
         }
+        force_decals(&mut world);
         if self.unbudgeted {
             world.set_unbudgeted();
         }
@@ -689,6 +692,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         self.scene.set_mode(Some(self.features.mode(self.quality)));
         if let Some(world) = &mut self.world {
             world.features = self.features.features;
+            force_decals(world);
         }
         let lit = self.features.particle_light;
         self.scene.particle_light = self.particle_light.filter(|_| lit);
@@ -1259,6 +1263,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
             previous: None,
             stamp: None,
             nodes: Vec::new(),
+            takes_decals: false,
         }
     }
 
@@ -1488,6 +1493,22 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     /// indices into `textures`, in place of the last frame's. Every frame hands its own (none: an empty list).
     pub fn set_distorters(&mut self, distorters: Vec<HdDistorter>, textures: TextureSet) {
         self.scene.set_distorters(distorters, textures);
+    }
+
+    /// The frame's projected decals ([`torque_render_scene::decals::DecalManager::boxes`], their textures indices into
+    /// `textures`): drawn where the renderer projects them ([`WorldView::projected_decals`]). Every frame hands its own.
+    pub fn set_decals(&mut self, decals: &[HdDecal], textures: TextureSet) {
+        self.scene.set_decals(decals, textures);
+    }
+
+    /// Whether the frames project the decals ([`HdWorld::projected_decals_at`], at the view's quality: Medium and up) instead of
+    /// drawing the CPU path's triangles. `TORQUE_PROJECTED_DECALS=1` in the environment projects them for the run at every
+    /// quality and `TORQUE_PROJECTED_DECALS=0` at none (the two paths' pictures compared; set on the world as the view takes
+    /// it). False with no renderer.
+    pub fn projected_decals(&self) -> bool {
+        self.world
+            .as_ref()
+            .is_some_and(|w| w.projected_decals_at(self.quality))
     }
 
     /// More distorters this frame, after those set ([`WorldView::set_distorters`]).
@@ -1826,6 +1847,24 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
+    }
+}
+
+/// Whether the environment projects the decals (`TORQUE_PROJECTED_DECALS=1`) or not (`0`) for the run, read once.
+fn projected_decals_forced() -> Option<DecalProjection> {
+    static FORCED: std::sync::OnceLock<Option<DecalProjection>> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| match std::env::var_os("TORQUE_PROJECTED_DECALS") {
+        Some(v) if v == "1" => Some(DecalProjection::On),
+        Some(v) if v == "0" => Some(DecalProjection::Off),
+        _ => None,
+    })
+}
+
+/// `world`'s decal projection as the environment forces it for the run ([`projected_decals_forced`]); as it is otherwise.
+fn force_decals<E: HdExtension>(world: &mut HdWorld<E>) {
+    if let Some(forced) = projected_decals_forced() {
+        world.features.projected_decals = forced;
     }
 }
 

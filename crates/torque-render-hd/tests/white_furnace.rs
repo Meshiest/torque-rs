@@ -178,6 +178,7 @@ fn sphere(case: Case, ghost: u32) -> DynamicObject {
         previous: None,
         stamp: None,
         nodes: Vec::new(),
+        takes_decals: false,
     }
 }
 
