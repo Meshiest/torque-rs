@@ -2,9 +2,12 @@
 //! `common.wgsl` (with the extension's common chunk) when the file uses it, then the file. [`validate_all`] parses and validates
 //! every permutation with naga (the same front end wgpu compiles them with): the `shaders N of N valid`.
 
+use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
+
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 32] = [
+pub const FILES: [(&str, &str); 34] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
+    ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
     ("clusters.wgsl", include_str!("../shaders/clusters.wgsl")),
@@ -24,6 +27,7 @@ pub const FILES: [(&str, &str); 32] = [
     ("hiz.wgsl", include_str!("../shaders/hiz.wgsl")),
     ("ssr.wgsl", include_str!("../shaders/ssr.wgsl")),
     ("down.wgsl", include_str!("../shaders/down.wgsl")),
+    ("prefilter.wgsl", include_str!("../shaders/prefilter.wgsl")),
     ("skycommon.wgsl", include_str!("../shaders/skycommon.wgsl")),
     ("skyfog.wgsl", include_str!("../shaders/skyfog.wgsl")),
     (
@@ -129,6 +133,8 @@ pub enum Permutation {
     Ssr,
     /// A mip level from the one above it.
     Down,
+    /// An environment cube's prefiltered level from the cube's level above it (a face a pipeline: its `FACE` constant).
+    Prefilter,
     /// The physical sky's tables (compute).
     Atmosphere,
     /// The atmosphere's sky and the sun disk (full-frame, in the opaque pass).
@@ -149,7 +155,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 28] = [
+    pub const ALL: [Permutation; 29] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -182,6 +188,7 @@ impl Permutation {
         Permutation::Hiz,
         Permutation::Ssr,
         Permutation::Down,
+        Permutation::Prefilter,
         Permutation::Atmosphere,
         Permutation::Sky,
         Permutation::Volumetric,
@@ -214,6 +221,7 @@ impl Permutation {
             Permutation::Hiz => "hiz.wgsl".to_string(),
             Permutation::Ssr => "ssr.wgsl".to_string(),
             Permutation::Down => "down.wgsl".to_string(),
+            Permutation::Prefilter => "prefilter.wgsl".to_string(),
             Permutation::Atmosphere => "atmosphere.wgsl".to_string(),
             Permutation::Sky => "sky.wgsl".to_string(),
             Permutation::Volumetric => "volumetric.wgsl".to_string(),
@@ -257,27 +265,30 @@ impl Permutation {
                 clustered,
                 front_layer,
             } => format!(
-                "const CLUSTERED: bool = {clustered};\nconst FRONT_LAYER: bool = {front_layer};\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = {clustered};\nconst FRONT_LAYER: bool = {front_layer};\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
+                file("brdf.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::View => format!(
-                "const CLUSTERED: bool = false;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = true;\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = false;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = true;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
+                file("brdf.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::Water => format!(
-                "const CLUSTERED: bool = true;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = true;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
+                file("brdf.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),
@@ -287,6 +298,16 @@ impl Permutation {
             Permutation::Hiz => file("hiz.wgsl").to_string(),
             Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),
             Permutation::Down => file("down.wgsl").to_string(),
+            Permutation::Prefilter => format!(
+                "const CUBE_SIZE: f32 = {CAPTURE_SIZE}.0;\nconst CUBE_LEVELS: f32 = {CAPTURE_MIPS}.0;\n{}\n{}\n{}",
+                // brdf.wgsl's PI without the rest of common.wgsl (its helpers read the frame's uniform).
+                file("common.wgsl")
+                    .lines()
+                    .find(|l| l.starts_with("const PI: f32"))
+                    .unwrap_or_default(),
+                file("brdf.wgsl"),
+                file("prefilter.wgsl")
+            ),
             Permutation::Clusters => format!("{}\n{}", common, file("clusters.wgsl")),
             Permutation::Tonemap => format!("{}\n{}", full, file("tonemap.wgsl")),
             Permutation::Shadow { unclipped } => format!(

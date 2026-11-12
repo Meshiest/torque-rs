@@ -19,6 +19,21 @@
 //!   crate built on it can implement it for its scene) and `ext` re-exports it, so a path through either names one trait. The shader modules are composed with one extension's chunks a process
 //!   ([`shaders::register`]; [`HdWorld::try_from_device`] panics on a second), so a test comparing two extensions' pictures
 //!   draws one of them in another process (`torque-app`'s `tests/render_ext.rs`).
+//! - The shading's BRDF is one file, `shaders/brdf.wgsl` (the forward pass, the water and the cubes' prefilter take it): GGX
+//!   with the split sum's environment BRDF, the multiple-scattering compensation, the specular occlusion and the horizon fade.
+//!   With `linear_light` on (the default) the diffuse is Lambert in linear light and takes what the specular lobe leaves, and a
+//!   surface that reflects no environment reflects the ambient as one, so a white surface under a uniform sky gives back the
+//!   sky: within 1 % at every pixel for five roughnesses of reflective dielectrics and metals and of plain ones, with all and
+//!   with half of the highlights (`tests/white_furnace.rs`). `linear_light` off
+//!   keeps the fixed-function gamma-space response (`ImageSettings::linear_light`): its diffuse is not split with the specular
+//!   and a metal keeps its key light; only the specular terms are shared. A new lobe term goes in `brdf.wgsl` and must keep the
+//!   furnace.
+//! - The light capture's and the sky cube's levels are the GGX lobe of each level's roughness over the whole cube
+//!   ([`capture::PrefilterPipe`]), read at `sqrt(roughness) x (levels - 1)`; the faces drawn in a frame are all drawn before
+//!   their levels are filtered, a level of every face before the next (each reads its neighbors' level above). A face's
+//!   orientation against the device's cube sampling and each level's lobe are checked by `capture_tests.rs` (every texel of a
+//!   direction-colored cube still points along its direction, and each level's mean length is the product of the documented
+//!   schedule's lobes). The clouds' cube and the color pyramid keep the box filter ([`capture::DownPipe`]).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are

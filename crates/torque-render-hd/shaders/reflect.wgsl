@@ -2,10 +2,11 @@
 // techniques named where they are used. Prepended to forward.wgsl (after common.wgsl).
 //
 // - The environment: the camera-local light capture (a cube of the opaque scene drawn around the eye, one face a frame) at High
-//   and up, else the sky cube (the sky's draws around the eye); a rough surface reads a blurrier mip (roughness times the levels).
+//   and up, else the sky cube (the sky's draws around the eye); their mips are GGX-prefiltered (prefilter.wgsl) and a rough
+//   surface reads the level of its roughness (brdf.wgsl's env_lod).
 // - Screen-space reflections: ssr.wgsl's accumulated result (premultiplied colour and its hit weight), sampled bilinearly at the
 //   pixel; where it misses (weight below 1) the environment shows through.
-// - The split-sum's environment BRDF in closed form (Karis 2014, "Physically Based Shading on Mobile", after Lazarov 2013).
+// - The environment BRDF that weighs them is brdf.wgsl's.
 // - Binding 5 is the extension's (its chunk declares it).
 // - The clouds' cube (binding 8; clouds.rs): the volumetric clouds around the eye at a low resolution (rgb their light, a their
 //   transmittance), read where the main view's image of them does not reach.
@@ -34,7 +35,7 @@ fn cube_clouds(r: vec3<f32>, lod: f32) -> vec4<f32> {
 
 // The sky cube in direction `r` at roughness `rough`.
 fn sky_radiance(r: vec3<f32>, rough: f32) -> vec3<f32> {
-    let lod = select(rough * (refl.capture.z - 1.0), 0.0, refl.mode.w > 0.5);
+    let lod = select(env_lod(rough, refl.capture.z), 0.0, refl.mode.w > 0.5);
     return textureSampleLevel(sky_cube, refl_samp, r, lod).rgb;
 }
 
@@ -74,7 +75,7 @@ fn capture_dir(r: vec3<f32>, lod: f32) -> vec3<f32> {
 
 // The environment in direction `r`: the light capture when it holds the scene, else the sky cube.
 fn env_radiance(r: vec3<f32>, rough: f32) -> vec3<f32> {
-    let lod = select(rough * (refl.capture.z - 1.0), 0.0, refl.mode.w > 0.5);
+    let lod = select(env_lod(rough, refl.capture.z), 0.0, refl.mode.w > 0.5);
     if refl.mode.z > 0.5 {
         return textureSampleLevel(capture_cube, refl_samp, capture_dir(r, lod), lod).rgb;
     }
@@ -101,15 +102,3 @@ fn reflection(frag: vec2<f32>, r: vec3<f32>, rough: f32) -> vec3<f32> {
     }
     return c;
 }
-
-// The split-sum's environment BRDF (Karis 2014): the share of the environment a surface of reflectance `f0` and roughness `rough`
-// reflects at N.V `nv`.
-fn env_brdf(f0: vec3<f32>, rough: f32, nv: f32) -> vec3<f32> {
-    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
-    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
-    let r = rough * c0 + c1;
-    let a004 = min(r.x * r.x, exp2(-9.28 * nv)) * r.x + r.y;
-    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
-    return f0 * ab.x + ab.y;
-}
-

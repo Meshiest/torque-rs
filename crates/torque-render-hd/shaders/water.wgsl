@@ -14,8 +14,8 @@
 //   colour (DECAL or MODULATE), lit as the fixed-function pipeline lights it, blended in gamma space by the plane's alpha over the
 //   refracted floor. With clear water the lit colour is scattered into the path instead, with the texture as a light detail and foam where the water is shallow.
 // - Above it: the reflection by Schlick's Fresnel (F0 0.02): the planar reflection (High and up; the uv offset by the normal), the
-//   screen-space reflection over the sky cube (Medium), the sky cube (Low); none with the eye under the water. The sun's glint: GGX on
-//   the wave normal at roughness 0.06, through the sun's shadow.
+//   screen-space reflection over the sky cube (Medium), the sky cube (Low); none with the eye under the water. The sun's glint:
+//   brdf.wgsl's GGX on the wave normal at roughness 0.06, through the sun's shadow.
 // - The fog: the surface's own over its distance (skyfog.wgsl's, with the height fog, toward the sky behind it) on its own light
 //   and on the sky cube's and the screen-space reflections; the planar reflection was fogged along the reflected path in the
 //   mirrored view and is not fogged again.
@@ -212,7 +212,7 @@ fn wave_field(xy: vec2<f32>, t: f32, ds: vec2<f32>, dt: vec2<f32>) -> Waves {
 }
 
 fn schlick(f0: f32, nv: f32) -> f32 {
-    return f0 + (1.0 - f0) * pow(1.0 - clamp(nv, 0.0, 1.0), 5.0);
+    return fresnel(vec3<f32>(f0), vec3<f32>(1.0), nv).x;
 }
 
 // shade() with the extension face's share of the sun.

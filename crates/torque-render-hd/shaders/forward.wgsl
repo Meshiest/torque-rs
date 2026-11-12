@@ -1,12 +1,15 @@
 // The enhanced renderer's forward pass: every surface into the HDR target, lit per pixel.
 //
-// - Sun and ambient, the light response (`frame.surf0.w`, the linear_light setting): the gamma-space response takes the fixed-function light factor
-//   k = ambient + max(N.L, 0) diffuse (gamma space, as GL light 0), applies it to the albedo in gamma space and takes the result to
-//   linear, so a sunlit and a shadowed face land on the fixed-function colours; the linear response lights in linear light (albedo x
-//   (ambient + N.L sun)). The ambient is shaped by the sky's irradiance SH (its variation only, weighted: the level stays the
-//   ambient's).
-// - Specular: GGX (Walter et al. 2007) with Smith's height-correlated visibility (Heitz 2014) and Schlick's Fresnel, F0 0.04 and
-//   the material table's roughness, from the sun and every point light.
+// - Sun and ambient, the light response (`frame.surf0.w`, the linear_light setting): the linear response (the default) is
+//   physically based: Lambert in linear light, albedo x (ambient + N.L sun + the lights), times what the specular lobe leaves
+//   (brdf.wgsl: 1 - its directional albedo), and the lobe reflects the environment (a reflective surface) or the ambient as a
+//   uniform one (the rest), so under a uniform sky a white surface gives back the sky. The gamma-space response (linear_light off)
+//   takes the fixed-function light factor k = ambient + max(N.L, 0) diffuse (gamma space, as GL light 0), applies it to the albedo
+//   in gamma space and takes the result to linear, so a sunlit and a shadowed face land on the fixed-function colors; its diffuse
+//   is not split with the specular. The ambient is shaped by the sky's irradiance SH (its variation only, weighted: the level stays
+//   the ambient's).
+// - Specular (brdf.wgsl): GGX with Smith's height-correlated visibility and Schlick's Fresnel, F0 0.04 and the material table's
+//   roughness, from the sun and every point light, with the multiple-scattering compensation.
 // - Point lights: Lambert plus the specular, an inverse-square falloff with a 2-unit core, windowed to the fxLight's radius
 //   ((1 - (d/r)^4)^2, as Karis 2013), a spot's cut to its cone with a smooth edge, found through the cluster masks (forward+,
 //   Olsson et al. 2012) or, in the brute-force permutation, all of them in order (the gate compares the two).
@@ -58,9 +61,10 @@
 //   within a pixel (curved shapes, a metal, a face's rounded edge) gets the blurrier highlight its pixel covers instead of sparkling.
 //
 // - Reflections (reflect.wgsl): a surface of reflective class 1 is a metal (no diffuse, F0 the paint as shown, the class's
-//   roughness from `refl.ext`) that also mirrors a key light over the eye, class 2 a half-metallic paint; the extension's
-//   `reflect_class` names a surface's class. Both reflect the screen-space reflections (the main view) over the environment (the
-//   light capture or the sky cube), weighted by the split-sum's environment BRDF and the AO. The prepass writes their class beside
+//   roughness from `refl.ext`; with the gamma-space response it also mirrors a key light over the eye), class 2 a half-metallic
+//   paint; the extension's `reflect_class` names a surface's class. Both reflect the screen-space reflections (the main view) over
+//   the environment (the light capture or the sky cube), weighted by the lobe's directional albedo (brdf.wgsl), the specular
+//   occlusion of the AO and the horizon of the face's own normal. The prepass writes their class beside
 //   the normal for the SSR pass. Debug view 4: the reflection's radiance on reflecting surfaces (black elsewhere), the reflection
 //   gates' picture.
 // - Secondary views (CLIP; the water's mirrored camera, the light capture's faces): with `frame.flags.z` everything but the sky
@@ -472,28 +476,6 @@ fn point_shadow(slot: i32, light: Light, p: vec3<f32>, n: vec3<f32>, frag: vec2<
     return lit / f32(taps);
 }
 
-// GGX's distribution, Smith's height-correlated visibility, Schlick's Fresnel: the specular BRDF times pi (the diffuse convention of
-// the fixed-function lighting: radiance = albedo x irradiance).
-fn specular(n: vec3<f32>, v: vec3<f32>, l: vec3<f32>, f0: vec3<f32>, rough: f32) -> vec3<f32> {
-    let h = normalize(v + l);
-    let nl = max(dot(n, l), 0.0);
-    let nv = max(dot(n, v), 1e-4);
-    let nh = max(dot(n, h), 0.0);
-    let vh = max(dot(v, h), 0.0);
-    let a = rough * rough;
-    let a2 = a * a;
-    let d = nh * nh * (a2 - 1.0) + 1.0;
-    let dist = a2 / (PI * d * d);
-    let gv = nl * sqrt(nv * nv * (1.0 - a2) + a2);
-    let gl = nv * sqrt(nl * nl * (1.0 - a2) + a2);
-    let vis = 0.5 / max(gv + gl, 1e-6);
-    // Schlick with the grazing reflectance lowered for rough surfaces (F90 = max(1 - roughness, F0)): a rough plate seen edge-on
-    // does not turn into a mirror.
-    let f90 = max(vec3<f32>(1.0 - rough), f0);
-    let f = f0 + (f90 - f0) * pow(1.0 - vh, 5.0);
-    return PI * dist * vis * f;
-}
-
 // The ambient (gamma) for a normal: the scene's ambient times the sky's shape, its luminance and chroma weighted; a hemisphere
 // below the horizontal: a face turned down takes the ground's bounce (the extension's share of the ambient straight down), not
 // the sky's light.
@@ -586,7 +568,7 @@ const METAL_KEY_LIFT: f32 = 0.5;
 
 // Schlick's Fresnel of a dielectric of reflectance f0 at N.V `nv`.
 fn coat_fresnel(f0: f32, nv: f32) -> f32 {
-    return f0 + (1.0 - f0) * pow(1.0 - nv, 5.0);
+    return fresnel(vec3<f32>(f0), vec3<f32>(1.0), nv).x;
 }
 
 // `occlusion`: the ambient occlusion (1 none); `spec_kernel`: the normal's screen-space variance term for GGX's alpha squared; `rest`
@@ -598,13 +580,23 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
     let nv = max(dot(n, v), 1e-4);
     var rough = s.rough;
     let f0 = s.f0;
-    let diffuse = s.albedo * (1.0 - s.metal);
     // Specular AA: alpha^2 widened by the normal's variance over the pixel.
     let a2 = rough * rough * rough * rough;
     rough = sqrt(sqrt(clamp(a2 + spec_kernel, 0.0, 1.0)));
     // The settings' share of the occlusion, in linear light (k is a gamma-space factor of the gamma albedo), and the detail's.
     let occl = mix(1.0, occlusion, frame.ao.y) * s.occlusion;
     let occl_gamma = pow(occl, 1.0 / 2.2);
+    // The specular lobe's directional albedo with its multiple scattering, and its occlusion. The linear response's diffuse takes
+    // what the lobe leaves of the light: a reflective surface's lobe reflects the environment, the others' the ambient (their
+    // share of the highlights, as of the sun's).
+    let lobe = spec_albedo(f0, rough, nv);
+    let spec_occl = spec_occlusion(nv, occl, rough);
+    let spec_share = select(s.spec_level, 1.0, s.reflects);
+    let kd = select(vec3<f32>(1.0), 1.0 - lobe.e * spec_share, s.linear);
+    // The diffuse albedo takes that share and the highlights' scale holds the compensation, so nothing more stays live through
+    // the lights' loop (two more vectors live there make the valley's opaque pass a third slower).
+    let diffuse = s.albedo * (1.0 - s.metal) * kd;
+    let spec_scale = lobe.comp * s.spec_level;
     // The sun (through its shadows: looked up with the face's own normal; the shadow colour's share of it gets through).
     let sl_face = dot(s.ng, frame.sun_dir.xyz);
     let sl = dot(n, frame.sun_dir.xyz);
@@ -654,33 +646,34 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
     vis = vis * cloud_sun(rest, sky.cloud_use.x);
     let sun_on = select(0.0, 1.0, sl_face > 0.0);
     if s.linear {
-        // The linear response: albedo x (the ambient + the sun), the shadow colour's share as light. The sun's part is what the
-        // gamma-space response's light (ambient + N.L the sun, gamma) has over the ambient in linear light, so an unshadowed,
-        // unoccluded face keeps the gamma-space response's colour at every N.L (taking N.L times the full sun's linear part was
-        // brighter at a slant).
+        // The linear response: albedo x (the ambient + N.L the sun) with the shadow color's share as light (the sun's linear
+        // strength is what a face toward it has over the ambient in the gamma-space response), less the lobe's share; the lobe
+        // reflects the ambient where it reflects no environment.
         let tint = srgb_to_linear(shadows.tint.rgb);
         let through = vis * tr + (1.0 - vis) * tint;
-        let amb_g = ambient(n);
-        let amb = srgb_to_linear(amb_g);
-        let sun = max(srgb_to_linear(amb_g + frame.sun_diffuse.rgb * (max(sl, 0.0) * sun_on)) - amb, vec3<f32>(0.0));
+        let amb = srgb_to_linear(ambient(n));
+        let sun = frame.sun_linear.rgb * (max(sl, 0.0) * sun_on);
         out.diffuse = diffuse * (amb * occl + sun * through);
+        if !s.reflects {
+            out.spec = amb * lobe.e * (spec_share * spec_occl);
+        }
     } else {
         let through = vis * tr + (1.0 - vis) * shadows.tint.rgb;
         let k = ambient(n) * occl_gamma + max(sl, 0.0) * sun_on * frame.sun_diffuse.rgb * through;
         out.diffuse = srgb_to_linear(linear_to_srgb(diffuse) * k);
     }
     if sl > 0.0 && sl_face > 0.0 {
-        out.spec = specular(n, v, frame.sun_dir.xyz, f0, rough) * frame.sun_linear.rgb * (sl * vis) * tr * s.spec_level;
+        out.spec = out.spec + specular(n, v, frame.sun_dir.xyz, f0, rough) * frame.sun_linear.rgb * (sl * vis) * tr * spec_scale;
     }
     if s.reflects {
-        // The reflection (screen space over the environment) by the split-sum's environment BRDF, occluded by the AO.
+        // The reflection (screen space over the environment) by the lobe's directional albedo, its occlusion and the horizon.
         let r = reflect(-v, n);
         let env = reflection(frag, r, rough);
-        out.spec = out.spec + env * env_brdf(f0, rough, nv) * occl;
-        if s.metal > 0.0 {
-            // The key: a soft light behind and over the eye that the metal mirrors where it faces the viewer, of the scene's
-            // ambient light. In a plain room the camera-local light capture is the walls' even grey, and an even mirror reads as
-            // plastic; this gives a metal a bright face and darker turns, indoors and out.
+        out.spec = out.spec + env * lobe.e * (spec_occl * horizon_fade(r, s.ng));
+        if s.metal > 0.0 && !s.linear {
+            // The key (the gamma-space response's): a soft light behind and over the eye that the metal mirrors where it faces
+            // the viewer, of the scene's ambient light. In a plain room the camera-local light capture is the walls' even gray,
+            // and an even mirror reads as plastic; this gives a metal a bright face and darker turns, indoors and out.
             let key_dir = normalize(v + vec3<f32>(0.0, 0.0, METAL_KEY_LIFT));
             let key = pow(max(dot(r, key_dir), 0.0), METAL_KEY_POWER) * METAL_KEY * s.metal;
             out.spec = out.spec + key * srgb_to_linear(frame.sun_ambient.rgb) * env_brdf(f0, rough, nv) * occl;
@@ -729,7 +722,7 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
                 if i < count {
                     let l = point_light(i, p, n, v, diffuse, f0, rough, frag);
                     out.diffuse = out.diffuse + l.diffuse * hollow_light;
-                    out.spec = out.spec + l.spec * s.spec_level;
+                    out.spec = out.spec + l.spec * spec_scale;
                     shaded = shaded + 1u;
                 }
             }
@@ -738,7 +731,7 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
         for (var i = 0u; i < count; i = i + 1u) {
             let l = point_light(i, p, n, v, diffuse, f0, rough, frag);
             out.diffuse = out.diffuse + l.diffuse * hollow_light;
-            out.spec = out.spec + l.spec * s.spec_level;
+            out.spec = out.spec + l.spec * spec_scale;
         }
     }
     // Nothing shines in a hollow.

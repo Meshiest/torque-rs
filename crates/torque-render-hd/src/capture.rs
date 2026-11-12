@@ -1,6 +1,8 @@
 //! The environment's cube maps: the **sky cube** (the sky's draws around the eye, drawn again when the
 //! scene's draws change) and the camera-local **light capture** (the opaque scene around the eye, [`CAPTURE_SIZE`]² a face, one
-//! face a frame in turn, all six when it starts again), each with its mip chain (the rough reflections' blur, [`DownPipe`]). Their
+//! face a frame in turn, all six when it starts again), each with its mip chain: the GGX lobe of each level's roughness over the
+//! whole cube ([`PrefilterPipe`], `prefilter.wgsl`), filtered after every face drawn that frame, the drawn faces' levels from the
+//! cube's level above. A box-filtered chain ([`DownPipe`]) is the clouds' cube's and the color pyramid's. Their
 //! faces are drawn by the forward pass's secondary-view module (`Permutation::View`) through
 //! `torque_render_scene::hd::reflect::cube_face_camera`: a direction samples what was drawn along it. A capture face's alpha holds
 //! 2 + the distance of what it drew (the sky leaves 1 or less) and [`LightCapture::eyes`] the eye it was drawn from: the main view's
@@ -122,6 +124,83 @@ impl DownPipe {
     }
 }
 
+/// The environment cubes' prefilter (`prefilter.wgsl`): a level of one face from the whole cube's level above it, one pipeline
+/// a face (its `FACE` constant).
+pub struct PrefilterPipe {
+    pub layout: wgpu::BindGroupLayout,
+    pipelines: [wgpu::ComputePipeline; 6],
+    sampler_group: wgpu::BindGroup,
+}
+
+impl PrefilterPipe {
+    pub fn new(device: &wgpu::Device, cache: Option<&wgpu::PipelineCache>) -> PrefilterPipe {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hd prefilter"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                crate::storage_target(2, CUBE_FORMAT),
+            ],
+        });
+        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hd prefilter sampler"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            }],
+        });
+        let module = crate::module(device, Permutation::Prefilter);
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hd prefilter"),
+            bind_group_layouts: &[Some(&layout), Some(&sampler_layout)],
+            immediate_size: 0,
+        });
+        let pipelines = std::array::from_fn(|face| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("hd prefilter"),
+                layout: Some(&pl),
+                module: &module,
+                entry_point: Some("cs_prefilter"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &[("FACE", face as f64)],
+                    ..wgpu::PipelineCompilationOptions::default()
+                },
+                cache,
+            })
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("hd prefilter"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..wgpu::SamplerDescriptor::default()
+        });
+        let sampler_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hd prefilter sampler"),
+            layout: &sampler_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            }],
+        });
+        PrefilterPipe {
+            layout,
+            pipelines,
+            sampler_group,
+        }
+    }
+}
+
 /// The size of a texture's mip `m` (at least 1 x 1).
 pub fn mip_size(w: u32, h: u32, m: u32) -> (u32, u32) {
     ((w >> m).max(1), (h >> m).max(1))
@@ -193,18 +272,100 @@ impl Chained {
     }
 }
 
+/// The checks write a cube's texture and read it back (`capture_tests.rs`); a build's cubes need neither.
+const CHECK_USAGES: wgpu::TextureUsages = if cfg!(test) {
+    wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST)
+} else {
+    wgpu::TextureUsages::empty()
+};
+
+/// How a cube's levels below the first are made.
+enum Mips {
+    /// `[f][m]`: reads face `f`'s level `m` to fill its level `m + 1` (a 2 x 2 box, [`DownPipe`]).
+    Box(Vec<Vec<wgpu::BindGroup>>),
+    /// `[m][f]`: reads the whole cube's level `m` to fill face `f`'s level `m + 1` (the GGX lobe, [`PrefilterPipe`]).
+    Ggx(Vec<Vec<wgpu::BindGroup>>),
+}
+
 /// A cube map with its mip chain: each face's level views (render targets) and the groups that filter each level from the one above.
 pub struct Cube {
     pub view: wgpu::TextureView,
     /// `faces[f][m]`: face `f`'s level `m`.
     pub faces: Vec<Vec<wgpu::TextureView>>,
-    /// `down[f][m]`: reads face `f`'s level `m` (to fill level `m + 1`).
-    down: Vec<Vec<wgpu::BindGroup>>,
+    mips: Mips,
     texture: wgpu::Texture,
 }
 
 impl Cube {
+    /// A cube whose levels are box-filtered from each face's level above ([`Cube::encode_mips`]).
     pub fn new(device: &wgpu::Device, label: &str, size: u32, mips: u32, down: &DownPipe) -> Cube {
+        let (texture, view, faces) = Cube::views(device, label, size, mips);
+        let groups = faces
+            .iter()
+            .map(|levels| {
+                levels
+                    .windows(2)
+                    .map(|v| down.group(device, &v[0], &v[1]))
+                    .collect()
+            })
+            .collect();
+        Cube {
+            view,
+            faces,
+            mips: Mips::Box(groups),
+            texture,
+        }
+    }
+
+    /// A cube whose levels are GGX-prefiltered from the whole cube's level above ([`Cube::encode_prefilter`]).
+    pub fn prefiltered(
+        device: &wgpu::Device,
+        label: &str,
+        size: u32,
+        mips: u32,
+        prefilter: &PrefilterPipe,
+    ) -> Cube {
+        let (texture, view, faces) = Cube::views(device, label, size, mips);
+        let groups = (1..mips)
+            .map(|m| {
+                let above = texture.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some(label),
+                    dimension: Some(wgpu::TextureViewDimension::Cube),
+                    base_mip_level: m - 1,
+                    mip_level_count: Some(1),
+                    ..wgpu::TextureViewDescriptor::default()
+                });
+                faces
+                    .iter()
+                    .map(|levels| {
+                        device.create_bind_group(&wgpu::BindGroupDescriptor {
+                            label: Some("hd prefilter"),
+                            layout: &prefilter.layout,
+                            entries: &[crate::tv(0, &above), crate::tv(2, &levels[m as usize])],
+                        })
+                    })
+                    .collect()
+            })
+            .collect();
+        Cube {
+            view,
+            faces,
+            mips: Mips::Ggx(groups),
+            texture,
+        }
+    }
+
+    /// The texture, its cube view and its faces' level views.
+    fn views(
+        device: &wgpu::Device,
+        label: &str,
+        size: u32,
+        mips: u32,
+    ) -> (
+        wgpu::Texture,
+        wgpu::TextureView,
+        Vec<Vec<wgpu::TextureView>>,
+    ) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size: wgpu::Extent3d {
@@ -218,7 +379,8 @@ impl Cube {
             format: CUBE_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                 | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::STORAGE_BINDING,
+                | wgpu::TextureUsages::STORAGE_BINDING
+                | CHECK_USAGES,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -243,30 +405,53 @@ impl Cube {
                     .collect()
             })
             .collect();
-        let down_groups = faces
-            .iter()
-            .map(|levels| {
-                levels
-                    .windows(2)
-                    .map(|v| down.group(device, &v[0], &v[1]))
-                    .collect()
-            })
-            .collect();
-        Cube {
-            view,
-            faces,
-            down: down_groups,
-            texture,
-        }
+        (texture, view, faces)
     }
 
-    /// Face `face`'s mip chain from its level 0.
+    /// Face `face`'s mip chain from its level 0 (a box-filtered cube's; a prefiltered cube's are [`Cube::encode_prefilter`]'s).
     pub fn encode_mips(&self, encoder: &mut wgpu::CommandEncoder, face: usize, down: &DownPipe) {
+        let Mips::Box(groups) = &self.mips else {
+            return;
+        };
         let s = self.texture.width();
-        let sizes: Vec<(u32, u32)> = (1..=self.down[face].len() as u32)
+        let sizes: Vec<(u32, u32)> = (1..=groups[face].len() as u32)
             .map(|m| mip_size(s, s, m))
             .collect();
-        down.encode_chain(encoder, &self.down[face], &sizes);
+        down.encode_chain(encoder, &groups[face], &sizes);
+    }
+
+    /// The prefiltered levels of `faces` (each drawn this frame) in one compute pass, a level of every one of them before the
+    /// next level: a face's level reads its neighbors' level above, so every face drawn must have that level first (the faces
+    /// not drawn keep the levels they were filtered with). Nothing for a box-filtered cube.
+    pub fn encode_prefilter(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        faces: impl Iterator<Item = usize> + Clone,
+        prefilter: &PrefilterPipe,
+    ) {
+        let Mips::Ggx(groups) = &self.mips else {
+            return;
+        };
+        let s = self.texture.width();
+        let chain: Vec<crate::Dispatch<'_>> = groups
+            .iter()
+            .enumerate()
+            .flat_map(|(k, level)| {
+                let size = mip_size(s, s, k as u32 + 1);
+                faces.clone().map(move |f| crate::Dispatch {
+                    pipeline: &prefilter.pipelines[f],
+                    group: &level[f],
+                    size,
+                })
+            })
+            .collect();
+        crate::encode_chain_with(
+            encoder,
+            "hd prefilter",
+            &chain,
+            &[&prefilter.sampler_group],
+            None,
+        );
     }
 
     pub fn bytes(&self) -> u64 {
@@ -298,7 +483,7 @@ pub struct LightCapture {
 
 impl LightCapture {
     /// `frame_bytes`: the frame uniform's size (the engine's fields and the extension's block).
-    pub fn new(device: &wgpu::Device, down: &DownPipe, frame_bytes: u64) -> LightCapture {
+    pub fn new(device: &wgpu::Device, prefilter: &PrefilterPipe, frame_bytes: u64) -> LightCapture {
         let depth = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("hd capture depth"),
@@ -326,8 +511,8 @@ impl LightCapture {
             })
             .collect();
         LightCapture {
-            scene: Cube::new(device, "hd capture", CAPTURE_SIZE, CAPTURE_MIPS, down),
-            sky: Cube::new(device, "hd sky cube", CAPTURE_SIZE, CAPTURE_MIPS, down),
+            scene: Cube::prefiltered(device, "hd capture", CAPTURE_SIZE, CAPTURE_MIPS, prefilter),
+            sky: Cube::prefiltered(device, "hd sky cube", CAPTURE_SIZE, CAPTURE_MIPS, prefilter),
             depth,
             frames,
             valid: false,
@@ -365,3 +550,7 @@ impl LightCapture {
         self.scene.bytes() + self.sky.bytes()
     }
 }
+
+#[cfg(test)]
+#[path = "capture_tests.rs"]
+mod tests;

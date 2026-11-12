@@ -30,9 +30,10 @@ pub struct ImageSettings {
     /// The water is clear: absorbing toward its colour along the path to the floor, scattering, foam where it is shallow, its
     /// reflection by Fresnel whole; else its texture stays its face (a blend over the floor, at most three quarters reflection).
     pub clear_water: bool,
-    /// Surfaces are lit in linear light (albedo x (ambient + N.L sun)) and the sky's cloud layers are lit by the sun; else the
-    /// fixed-function response: the light factor ambient + N.L diffuse (as GL light 0) applied to the albedo in gamma space, so a
-    /// lit face lands on the fixed-function colour.
+    /// Surfaces are shaded physically based in linear light (Lambert, albedo x (ambient + N.L sun), sharing the light with the
+    /// specular lobe so none is made or lost) and the sky's cloud layers are lit by the sun; else the fixed-function response:
+    /// the light factor ambient + N.L diffuse (as GL light 0) applied to the albedo in gamma space, so a lit face lands on the
+    /// fixed-function color (a look that wants TGE's shading turns this off).
     pub linear_light: bool,
     /// The physical sky: the atmosphere's sky view table shades the server's sky box and, where the scene asks
     /// ([`crate::hd::HdScene::atmosphere`]), draws its own sky in the box's place.

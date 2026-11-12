@@ -34,7 +34,7 @@ use torque_render_scene::{Blend, Cull};
 
 use super::{DebugView, DrawRef, HdWorld, PipelineKey, SamplerKey, TexRef};
 use crate::Stage;
-use crate::capture::{CUBE_FORMAT, DownPipe, LightCapture};
+use crate::capture::{CUBE_FORMAT, DownPipe, LightCapture, PrefilterPipe};
 use crate::shaders::Permutation;
 use crate::ssr::{SsrInputs, SsrPipes, SsrTargets};
 use crate::water::Planar;
@@ -111,6 +111,8 @@ pub(crate) struct Reflections {
     ext: wgpu::Buffer,
     pub capture: LightCapture,
     pub down: DownPipe,
+    /// The capture's and the sky cube's mips.
+    pub prefilter: PrefilterPipe,
     ssr_pipes: SsrPipes,
     pub ssr: Option<SsrTargets>,
     pub planar: Option<Planar>,
@@ -246,6 +248,7 @@ impl Reflections {
             })
             .collect();
         let down = DownPipe::new(device, cache);
+        let prefilter = PrefilterPipe::new(device, cache);
         let module = |p: Permutation| {
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some(&p.name()),
@@ -266,8 +269,9 @@ impl Reflections {
             ),
             uniforms,
             ext: crate::ext::ExtSlots::empty(device),
-            capture: LightCapture::new(device, &down, frame_bytes),
+            capture: LightCapture::new(device, &prefilter, frame_bytes),
             down,
+            prefilter,
             ssr_pipes: SsrPipes::new(device, cache),
             ssr: None,
             planar: None,
@@ -1067,8 +1071,12 @@ impl<E: HdExtension> HdWorld<E> {
                 stamp(n),
             );
             n += 1;
-            capture.sky.encode_mips(encoder, *face, &self.refl.down);
         }
+        capture.sky.encode_prefilter(
+            encoder,
+            plan.sky_faces.iter().map(|(f, _)| *f),
+            &self.refl.prefilter,
+        );
         for (face, draws) in &plan.capture_faces {
             self.encode_view(
                 encoder,
@@ -1081,8 +1089,12 @@ impl<E: HdExtension> HdWorld<E> {
                 stamp(n),
             );
             n += 1;
-            capture.scene.encode_mips(encoder, *face, &self.refl.down);
         }
+        capture.scene.encode_prefilter(
+            encoder,
+            plan.capture_faces.iter().map(|(f, _)| *f),
+            &self.refl.prefilter,
+        );
         if let (Some(draws), Some(pl)) = (&plan.planar, &self.refl.planar) {
             self.encode_view(
                 encoder,
