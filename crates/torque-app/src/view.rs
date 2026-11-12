@@ -28,7 +28,7 @@ use torque_client::conn::ConnGame;
 use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::ext::{HdExtension, NoExtension, PlainScene, ViewScene};
-use torque_render_hd::{HdSettings, HdWorld};
+use torque_render_hd::{HdSettings, HdWorld, ParticlePool};
 use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
@@ -1493,17 +1493,19 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         self.scene.particle_light = rule.filter(|_| lit);
     }
 
-    /// Whether the frames hand their emitters' particles to the renderer's GPU particle pool ([`HdWorld::gpu_particles_on`])
-    /// instead of drawing them on the CPU. `TORQUE_GPU_PARTICLES=1` in the environment turns the pool on for the run whatever the
-    /// features say (the two paths' pictures compared).
+    /// Whether the frames hand their emitters' particles to the renderer's GPU particle pool ([`HdWorld::gpu_particles_at`], at
+    /// the view's quality) instead of drawing them on the CPU. `TORQUE_GPU_PARTICLES=1` in the environment turns the pool on for the
+    /// run at every quality and `TORQUE_GPU_PARTICLES=0` off (the two paths' pictures compared); else it runs at Medium and up.
     pub fn gpu_particles(&mut self) -> bool {
         let Some(world) = &mut self.world else {
             return false;
         };
-        if gpu_particles_forced() {
-            world.features.gpu_particles = true;
+        match gpu_particles_forced() {
+            Some(true) => world.features.gpu_particles = ParticlePool::On,
+            Some(false) => world.features.gpu_particles = ParticlePool::Off,
+            None => {}
         }
-        world.gpu_particles_on()
+        world.gpu_particles_at(self.quality)
     }
 
     /// [`WorldView::set_particles_and_decals`] with the frame's hand-over to the GPU particle pool (its looks' textures indices
@@ -1806,10 +1808,14 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
     }
 }
 
-/// Whether the environment turns the GPU particle pool on for the run (`TORQUE_GPU_PARTICLES=1`), read once.
-fn gpu_particles_forced() -> bool {
-    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *FORCED.get_or_init(|| std::env::var_os("TORQUE_GPU_PARTICLES").is_some_and(|v| v == "1"))
+/// Whether the environment turns the GPU particle pool on (`TORQUE_GPU_PARTICLES=1`) or off (`0`) for the run, read once.
+fn gpu_particles_forced() -> Option<bool> {
+    static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| match std::env::var_os("TORQUE_GPU_PARTICLES") {
+        Some(v) if v == "1" => Some(true),
+        Some(v) if v == "0" => Some(false),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

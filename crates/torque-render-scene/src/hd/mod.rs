@@ -12,6 +12,7 @@ use glam::Vec3;
 use crate::math::Mat;
 use crate::{Blend, Cull, Draw, Sampler, TexEnv, Texture};
 
+pub mod atlas;
 pub mod atmosphere;
 pub mod camera;
 pub mod cells;

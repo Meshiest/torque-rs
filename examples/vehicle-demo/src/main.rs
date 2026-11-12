@@ -57,11 +57,23 @@ torque::app::web_host_exports! {
     host_start: torque_example_vehicle_demo::web::host_start,
 }
 
+/// A picture size typed as `WIDTHxHEIGHT`.
+fn parse_size(text: &str) -> Result<(u32, u32), String> {
+    let (w, h) = text
+        .split_once('x')
+        .ok_or(format!("{text}: a size is WIDTHxHEIGHT"))?;
+    Ok((
+        w.parse().map_err(|e| format!("{text}: {e}"))?,
+        h.parse().map_err(|e| format!("{text}: {e}"))?,
+    ))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = Args::from_env();
     let mut shots_dir = None;
     let mut lit_dir = None;
+    let mut lit_size = SHOT_SIZE;
     let mut cloud_dir = None;
     let mut name_dir = None;
     let mut switch_dir = None;
@@ -74,6 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--shots" => shots_dir = Some(args.dir(&arg)?),
             "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
+            "--lit-shot-size" => {
+                lit_size = parse_size(&args.value(&arg, "a size like 1920x1080")?)?
+            }
             "--cloud-shots" => cloud_dir = Some(args.dir(&arg)?),
             "--name-shots" => name_dir = Some(args.dir(&arg)?),
             "--switch-shots" => switch_dir = Some(args.dir(&arg)?),
@@ -116,7 +131,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(dir) = lit_dir {
-        for path in shots::write_lit_particles(&dir, SHOT_SIZE, GameFiles::bundled)? {
+        for path in shots::write_lit_particles(&dir, lit_size, GameFiles::bundled)? {
             println!("{}", path.display());
         }
         return Ok(());

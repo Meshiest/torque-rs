@@ -79,7 +79,8 @@ use glam::Vec3;
 
 use torque_render_core::wgpu;
 use torque_render_scene::hd::{
-    HD_VERTEX_BYTES, HdAreaLight, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, srgb_to_linear,
+    HD_VERTEX_BYTES, HdAreaLight, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, Quality,
+    srgb_to_linear,
 };
 use torque_render_scene::{Blend, Cull, Filter, Sampler};
 use wgpu::util::DeviceExt;
@@ -116,7 +117,7 @@ pub(crate) mod reflect;
 
 #[path = "gpu_particles.rs"]
 mod gpu_particles;
-pub use gpu_particles::{SpriteCounts, sprite_capacity};
+pub use gpu_particles::{FillCounts, ParticlePool, SpriteCounts, fill_budget, sprite_capacity};
 
 /// The most bytes of the levels' block meshes a live window's upload puts in (at least one block).
 pub const LOD_BYTES_A_FRAME: u64 = 4 << 20;
@@ -865,8 +866,9 @@ pub struct HdFeatures {
     /// off screen and the reflections' fog takes them; off: the main view's image alone, its edge stretched past it, as before.
     pub cloud_cube: bool,
     /// The particles handed over to the GPU particle pool are stepped and drawn there (where the device runs it:
-    /// [`HdWorld::gpu_particles_on`]); off by default: the pool is not made, and the CPU path's particles are all there is.
-    pub gpu_particles: bool,
+    /// [`HdWorld::gpu_particles_on`]): at Medium and up by default ([`ParticlePool::Auto`]); where it does not run the pool is not
+    /// made, and the CPU path's particles are all there is.
+    pub gpu_particles: ParticlePool,
     /// The froxel volumetrics where the quality has them ([`crate::froxels`]: the point lights scatter in the fog too, beside
     /// the march's god rays); off: the march alone at every quality, as before (the checks' before pictures).
     pub froxel_fog: bool,
@@ -895,7 +897,7 @@ impl Default for HdFeatures {
             fog_sky_mean: true,
             cloud_from_eye: true,
             cloud_cube: true,
-            gpu_particles: false,
+            gpu_particles: ParticlePool::Auto,
             froxel_fog: true,
         }
     }
@@ -923,7 +925,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
-        gpu_particles: false,
+        gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
     };
     /// No anti-aliasing and no AO.
@@ -948,7 +950,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
-        gpu_particles: false,
+        gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
     };
     /// No reflections.
@@ -973,7 +975,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
-        gpu_particles: false,
+        gpu_particles: ParticlePool::Auto,
         froxel_fog: true,
     };
 }
@@ -1204,6 +1206,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     sprites_supported: bool,
     /// The most particles the pool holds ([`HdWorld::set_gpu_particle_cap`]).
     sprite_cap: u32,
+    /// The quality of the scene last prepared (what [`HdWorld::gpu_particles_on`] answers for).
+    pool_quality: Quality,
     /// The last upload's table of mesh places in bytes (its room kept).
     node_bytes: Vec<u8>,
     /// The forward passes' frame groups made in the last frames, by what they bind ([`GroupCache`]).
@@ -2108,6 +2112,12 @@ fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
 }
 
+/// `e` seen by the vertex stage too.
+fn vertex_too(mut e: wgpu::BindGroupLayoutEntry) -> wgpu::BindGroupLayoutEntry {
+    e.visibility |= wgpu::ShaderStages::VERTEX;
+    e
+}
+
 /// `e` seen by the compute stage too (the froxel volumetrics' gather reads the lights, their masks and the shadows).
 fn and_compute(mut e: wgpu::BindGroupLayoutEntry) -> wgpu::BindGroupLayoutEntry {
     e.visibility |= wgpu::ShaderStages::COMPUTE;
@@ -2128,6 +2138,7 @@ fn sun_linear(s: &torque_render_scene::hd::HdSun) -> [f32; 3] {
 pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let vf = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
     let fc = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
+    let vfc = fc | wgpu::ShaderStages::VERTEX;
     vec![
         uniform(0, vf | wgpu::ShaderStages::COMPUTE),
         storage(1, true, fc),
@@ -2137,12 +2148,14 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             wgpu::TextureSampleType::Float { filterable: false },
             wgpu::TextureViewDimension::D2,
         ),
-        uniform(4, fc),
-        and_compute(texture_entry(
+        // The sun's cascades are read in the vertex stage too (a pool sprite's sun visibility at its center): the shadows' uniform
+        // (4), the cascades (5) and their gather sampler (7).
+        uniform(4, vfc),
+        and_compute(vertex_too(texture_entry(
             5,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::D2Array,
-        )),
+        ))),
         wgpu::BindGroupLayoutEntry {
             binding: 6,
             visibility: fc,
@@ -2151,7 +2164,7 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         },
         wgpu::BindGroupLayoutEntry {
             binding: 7,
-            visibility: fc,
+            visibility: vfc,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
             count: None,
         },
@@ -2880,6 +2893,7 @@ impl<E: HdExtension> HdWorld<E> {
             sprites: None,
             sprites_supported,
             sprite_cap: torque_render_scene::particles::MAX_PARTICLES as u32,
+            pool_quality: Quality::High,
             node_bytes: Vec::new(),
             frame_groups: std::sync::Mutex::new(GroupCache::default()),
             tonemap_groups: std::sync::Mutex::new(GroupCache::default()),
@@ -5836,7 +5850,7 @@ impl<E: HdExtension> HdWorld<E> {
         self.ext.fill_slots(&mut self.ext_slots);
         self.refl.set_ext(&self.ext_slots.reflect);
         self.upload_particles(scene);
-        self.prepare_sprites(scene);
+        self.prepare_sprites(scene, camera);
         // The glow lights switched on or off since the lights went up, or the quality's area lights.
         let area = E::mode(scene)
             .unwrap_or_else(E::fallback_mode)
@@ -6168,8 +6182,13 @@ impl<E: HdExtension> HdWorld<E> {
                 .filter(|(_, c)| !(taa && c.late))
                 .map(|(d, c)| (*d, *c)),
         );
-        // The pool's buckets nearest (each holds particles anywhere: weighted or added, their order does not matter).
-        sorted.extend(self.sprite_draws(scene).map(|d| (0.0, d)));
+        // The pool's buckets nearest (each holds particles anywhere: weighted or added, their order does not matter); with the TAA
+        // the fast thin ones are drawn after it.
+        sorted.extend(
+            self.sprite_draws(scene)
+                .filter(|d| !(taa && d.late))
+                .map(|d| (0.0, d)),
+        );
         let mut over_sorted: Vec<(f32, DrawRef)> = Vec::new();
         if taa {
             over_sorted.extend(
@@ -6191,6 +6210,11 @@ impl<E: HdExtension> HdWorld<E> {
                     .iter()
                     .filter(|(_, c)| c.late)
                     .map(|(d, c)| (*d, *c)),
+            );
+            over_sorted.extend(
+                self.sprite_draws(scene)
+                    .filter(|d| d.late)
+                    .map(|d| (0.0, d)),
             );
             over_sorted.sort_by(|a, b| b.0.total_cmp(&a.0));
         }

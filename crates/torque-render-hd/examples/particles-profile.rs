@@ -15,9 +15,9 @@
 mod common;
 
 use torque_render_core::Gpu;
-use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_hd::profile::Profile;
+use torque_render_hd::{HdWorld, ParticlePool};
 use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::{HdCamera, HdMode, Quality};
 use torque_render_scene::particles::{Emitter, EmitterData, ParticleData, Rng, SpriteFrame};
@@ -253,7 +253,11 @@ fn main() -> Result<(), String> {
     let right = [camera.view[0], camera.view[4], camera.view[8]];
     let up = [camera.view[1], camera.view[5], camera.view[9]];
     let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
-    world.features.gpu_particles = !a.cpu;
+    world.features.gpu_particles = if a.cpu {
+        ParticlePool::Off
+    } else {
+        ParticlePool::On
+    };
     // The quality's whole pool (by default it holds no more than the CPU path's cap).
     world.set_gpu_particle_cap(u32::MAX);
     let pool = world.gpu_particles_on();
@@ -285,12 +289,14 @@ fn main() -> Result<(), String> {
         draw(&mut world, &mut s)?;
         with.frame(&mut world);
     }
-    let (live, dropped) = if pool {
-        world
-            .gpu_particle_counts()?
-            .map_or((0, 0), |c| (c.live() as usize, c.dropped))
+    let counts = if pool {
+        world.gpu_particle_counts()?
     } else {
-        (sources.live(), 0)
+        None
+    };
+    let (live, dropped) = match &counts {
+        Some(c) => (c.live() as usize, c.dropped),
+        None => (sources.live(), 0),
     };
     // The same world with no particle: the frame without them.
     s.frame.set_particles_decals_and_sprites(
@@ -319,6 +325,16 @@ fn main() -> Result<(), String> {
         a.quality.name(),
         a.frames
     );
+    if let Some(c) = &counts {
+        let f = c.fill;
+        let frames = f.requested / (w * h) as f32;
+        println!(
+            "fill governor: {frames:.2} frames of sprite area asked, budget {:.1}, sizes drawn at {:.3} and alpha at {:.3}",
+            f.budget / (w * h) as f32,
+            f.size_scale,
+            f.alpha_scale
+        );
+    }
     println!("with the particles:\n{}", with.report(0.01));
     println!("without them:\n{}", without.report(0.01));
     let (g1, _) = with.gpu_medians();

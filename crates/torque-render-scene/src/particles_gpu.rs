@@ -8,7 +8,7 @@
 //! [`SpriteLook`]s (a particle datablock's keys and textures, with the emitter's own colors where it uses them), and the
 //! simulation time the pool steps its particles by before it takes the new ones.
 
-use super::{AGED_SPIN_TO_RADIANS, Emitter, MAX_MISSING_NAMES, MISSING, Orient};
+use super::{AGED_SPIN_TO_RADIANS, Emitter, Lit, MAX_MISSING_NAMES, MISSING, Orient};
 use crate::textures::TextureSet;
 use crate::{Blend, Filter, Sampler};
 
@@ -114,7 +114,7 @@ pub struct SpriteLook {
     pub times: [f32; 4],
     pub drag: f32,
     pub gravity: f32,
-    /// `windCoefficient` (the pool's air is still: kept for the wind's term).
+    /// `windCoefficient` (what the pool takes of the scene's wind).
     pub wind: f32,
     /// Additive, or alpha-blended (`useInvAlpha`).
     pub blend: Blend,
@@ -126,6 +126,14 @@ pub struct SpriteLook {
     pub hidden: bool,
     /// How its particles are turned (`orientParticles`, `orientOnVelocity`).
     pub orient: Orient,
+    /// Whether they are lit (`lit`: the renderer's rule, always, never).
+    pub lit: Lit,
+    /// The depth over which they fade into what is behind them (`softDistance`, units).
+    pub soft_distance: f32,
+    /// A flipbook's frame blends into the next (`flipbookBlend`).
+    pub flipbook_blend: bool,
+    /// The seconds of its speed a sprite stretches back along its motion (`sizeByVelocity`; 0: TGE's square). Fast and thin.
+    pub size_by_velocity: f32,
 }
 
 /// A frame's hand-over to the pool: the particles made since the last one and their looks, the simulation steps (ms, in
@@ -186,6 +194,7 @@ impl Emitter {
                     l
                 }
             };
+            self.handed.push(q.life_ms.saturating_sub(q.age_ms));
             out.spawns.push(GpuSpawn {
                 pos: q.pos,
                 age_ms: q.age_ms,
@@ -254,6 +263,10 @@ impl Emitter {
             fps: if p.animate { p.fps } else { 0 },
             hidden,
             orient: self.data.extras.orient,
+            lit: p.extras.lit,
+            soft_distance: p.extras.soft_distance,
+            flipbook_blend: p.extras.flipbook_blend,
+            size_by_velocity: p.extras.size_by_velocity,
         }
     }
 }

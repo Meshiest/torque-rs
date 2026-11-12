@@ -6,15 +6,19 @@
 //! A record and a bucket keep their slot while a particle handed over can still name them (each spawn's time left on the
 //! pool's clock): a table that is full ([`MAX_RECORDS`] records or [`MAX_BUCKETS`] buckets) frees the ones no live particle can
 //! be in and gives their slots to new looks; a look still without room is hidden and counted in [`GpuSprites::overflow`].
-//! Records are found by their bytes (`look_key`), and a clear empties the table with the pool. The same clock says which
+//! Records are found by their bytes (`look_key`), and a clear empties the table with the pool. A flipbook's frames are laid out
+//! in one atlas texture (`atlas`), added to the scene's table when the record is made, so the look is one bucket whatever its
+//! frame count. A bucket drawn `late` holds the fast thin blended looks (`sizeByVelocity`). The same clock says which
 //! buckets can hold a live particle, so the frame draws only those. A frame handed over must be drawn: one the renderer never
 //! runs leaves its steps and spawns out of the pool, and its particles then outlive the clock's count.
 
 use std::collections::HashMap;
 
+use crate::hd::TextureTable;
+use crate::hd::atlas;
 use crate::hd::material;
 use crate::hd::particle_light::ParticleLight;
-use crate::particles::{GpuSpawn, SPRITE_SAMPLER, SpriteFrame, SpriteLook};
+use crate::particles::{GpuSpawn, Lit, SPRITE_SAMPLER, SpriteFrame, SpriteLook};
 use crate::{Blend, Cull, Draw, Sampler, TexEnv};
 
 /// The most records the table holds.
@@ -26,13 +30,15 @@ pub const MAX_STEPS: usize = 32;
 /// The most texture frames a record steps through (a longer `animateTexture` list keeps its first ones).
 pub const MAX_FRAMES: usize = 32;
 
-/// What one indirect draw of the pool draws with: a texture of the scene's table (none: untextured), its blend, and whether
-/// its particles are lit ([`material::LIT`]); `drawn` false for the hidden looks' bucket.
+/// What one indirect draw of the pool draws with: a texture of the scene's table (none: untextured), its blend, whether its
+/// particles are lit ([`material::LIT`]) and whether it is drawn after the anti-aliasing (`late`: fast thin particles, which
+/// have no motion in the history and need no anti-aliasing); `drawn` false for the hidden looks' bucket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpriteBucket {
     pub texture: Option<(usize, Sampler)>,
     pub blend: Blend,
     pub lit: bool,
+    pub late: bool,
     pub drawn: bool,
 }
 
@@ -41,22 +47,26 @@ const HIDDEN: SpriteBucket = SpriteBucket {
     texture: None,
     blend: Blend::Alpha,
     lit: false,
+    late: false,
     drawn: false,
 };
 
 /// A look as the pool reads it: the look (its frames indices into the scene's texture table), the vertex material word its
-/// sprites are drawn with, and the bucket of each frame (one when it does not step through frames).
+/// sprites are drawn with, the bucket of each frame (one when it does not step through frames), and the grid (columns, rows)
+/// of the atlas its frames were laid out in (every frame's bucket is then the atlas's).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpriteRecord {
     pub look: SpriteLook,
     pub material: u32,
     pub buckets: Vec<u8>,
+    pub atlas: Option<[u32; 2]>,
 }
 
 impl SpriteRecord {
-    /// The record's bytes as the pool's `Look` holds them (160): the color keys, the size keys, the time keys, `drag, gravity,
-    /// wind, fps`, `material, frame count, orient mode, 0`, and the frames' buckets a byte each.
-    pub const BYTES: usize = 160;
+    /// The record's bytes as the pool's `Look` holds them (192): the color keys, the size keys, the time keys, `drag, gravity,
+    /// wind, fps`, `material, frame count, orient mode, 0`, the frames' buckets a byte each, `atlas columns, atlas rows, 1 when a
+    /// frame blends into the next, 0`, and `softDistance, sizeByVelocity, 0, 0`.
+    pub const BYTES: usize = 192;
 
     pub fn write(&self, out: &mut Vec<u8>) {
         let f = |out: &mut Vec<u8>, v: f32| out.extend_from_slice(&v.to_le_bytes());
@@ -74,6 +84,14 @@ impl SpriteRecord {
         let mut frames = [0u8; MAX_FRAMES];
         frames[..self.buckets.len()].copy_from_slice(&self.buckets);
         out.extend_from_slice(&frames);
+        let [cols, rows] = self.atlas.unwrap_or([0, 0]);
+        let blend = f32::from(u8::from(self.atlas.is_some() && l.flipbook_blend));
+        for v in [cols as f32, rows as f32, blend, 0.0] {
+            f(out, v);
+        }
+        for v in [l.soft_distance, l.size_by_velocity, 0.0, 0.0] {
+            f(out, v);
+        }
     }
 }
 
@@ -114,13 +132,15 @@ pub struct GpuSprites {
 }
 
 impl GpuSprites {
-    /// Takes `frame`: its looks into the table (each frame index `textures` maps to the scene's table; an unmapped one
-    /// dropped), lit where `rule` says so, its spawns naming records. Replaces the last frame's spawns and counts a frame.
-    /// A clear empties the table with the pool.
+    /// Takes `frame`: its looks into the table (each frame index `textures` maps to a texture of `table`, the scene's; an
+    /// unmapped one dropped; the frames of a flipbook laid out in an atlas added to `table`), lit where the look's `lit` or
+    /// `rule` says so, its spawns naming records. Replaces the last frame's spawns and counts a frame. A clear empties the
+    /// table with the pool.
     pub fn push(
         &mut self,
         frame: &SpriteFrame,
         textures: impl Fn(usize) -> Option<usize>,
+        table: &mut TextureTable,
         rule: Option<ParticleLight>,
     ) {
         if frame.clear {
@@ -137,7 +157,7 @@ impl GpuSprites {
         let records: Vec<Option<u32>> = frame
             .looks
             .iter()
-            .map(|l| self.record(l, &textures, rule))
+            .map(|l| self.record(l, &textures, table, rule))
             .collect();
         self.spawns.clear();
         for s in &frame.spawns {
@@ -219,6 +239,7 @@ impl GpuSprites {
         &mut self,
         look: &SpriteLook,
         textures: &impl Fn(usize) -> Option<usize>,
+        table: &mut TextureTable,
         rule: Option<ParticleLight>,
     ) -> Option<u32> {
         let mut look = look.clone();
@@ -226,10 +247,16 @@ impl GpuSprites {
         look.frames = look.frames.iter().filter_map(|&t| textures(t)).collect();
         look.frames.truncate(MAX_FRAMES);
         look.hidden |= named > 0 && look.frames.is_empty();
-        if look.frames.len() < 2 {
+        if look.frames.len() < 2 || look.fps <= 0 {
             look.fps = 0;
+            look.frames.truncate(1);
         }
-        let lit = !look.hidden && rule.is_some_and(|r| r.lights(&probe(&look)));
+        let lit = !look.hidden
+            && match look.lit {
+                Lit::On => true,
+                Lit::Off => false,
+                Lit::Auto => rule.is_some_and(|r| r.lights(&probe(&look))),
+            };
         let key = look_key(&look, lit);
         if let Some(&at) = self.index.get(&key) {
             // Named this frame: kept at least until its spawns are counted.
@@ -237,17 +264,23 @@ impl GpuSprites {
             *u = (*u).max(self.clock_ms + 1);
             return Some(at);
         }
-        let mut wanted = wanted_buckets(&look, lit);
-        if !self.record_room() || !self.bucket_room(&wanted) {
+        if !self.record_room() {
+            self.collect();
+            if !self.record_room() {
+                self.overflow += 1;
+                return None;
+            }
+        }
+        let atlas = flipbook_atlas(&look, table);
+        let mut wanted = wanted_buckets(&look, lit, atlas.map(|a| a.texture));
+        if !self.bucket_room(&wanted) {
             self.collect();
         }
-        if !self.record_room() {
-            self.overflow += 1;
-            return None;
-        }
+        let mut atlas = atlas.map(|a| a.grid);
         if !self.bucket_room(&wanted) {
             self.overflow += 1;
             look.hidden = true;
+            atlas = None;
             wanted = vec![HIDDEN];
         }
         let buckets: Vec<u8> = wanted.into_iter().map(|b| self.bucket(b)).collect();
@@ -261,6 +294,7 @@ impl GpuSprites {
             material: sprite_material(&look, lit && !look.hidden),
             look,
             buckets,
+            atlas,
         };
         let at = match self.record_free.iter().position(|f| *f) {
             Some(at) => {
@@ -328,8 +362,33 @@ impl GpuSprites {
     }
 }
 
-/// The buckets of `look`'s frames (the hidden bucket for a hidden look; one untextured for a look with no texture).
-fn wanted_buckets(look: &SpriteLook, lit: bool) -> Vec<SpriteBucket> {
+/// A flipbook's atlas as the table holds it: the table index of its texture and its grid.
+#[derive(Debug, Clone, Copy)]
+struct FlipAtlas {
+    texture: usize,
+    grid: [u32; 2],
+}
+
+/// The atlas of `look`'s frames, added to `table` (None for a look with one frame or none, or frames the table does not hold).
+fn flipbook_atlas(look: &SpriteLook, table: &mut TextureTable) -> Option<FlipAtlas> {
+    if look.hidden || look.frames.len() < 2 {
+        return None;
+    }
+    let frames: Vec<&crate::Texture> = look
+        .frames
+        .iter()
+        .map(|&t| table.textures.get(t))
+        .collect::<Option<_>>()?;
+    let a = atlas::build(&frames)?;
+    Some(FlipAtlas {
+        grid: [a.cols, a.rows],
+        texture: table.intern(a.texture),
+    })
+}
+
+/// The buckets of `look`'s frames (the hidden bucket for a hidden look; one untextured for a look with no texture; the atlas's,
+/// once a frame, for a flipbook laid out in one).
+fn wanted_buckets(look: &SpriteLook, lit: bool, atlas: Option<usize>) -> Vec<SpriteBucket> {
     if look.hidden {
         return vec![HIDDEN];
     }
@@ -337,8 +396,12 @@ fn wanted_buckets(look: &SpriteLook, lit: bool) -> Vec<SpriteBucket> {
         texture,
         blend: look.blend,
         lit,
+        late: is_late(look),
         drawn: true,
     };
+    if let Some(t) = atlas {
+        return vec![of(Some((t, SPRITE_SAMPLER))); look.frames.len()];
+    }
     if look.frames.is_empty() {
         return vec![of(None)];
     }
@@ -348,8 +411,15 @@ fn wanted_buckets(look: &SpriteLook, lit: bool) -> Vec<SpriteBucket> {
         .collect()
 }
 
-/// A look's key in the table: its keys, coefficients, frames' rate, blend, whether it is lit or hidden, and its frames (the
-/// label only decides whether it is lit).
+/// Whether `look`'s alpha-blended particles are drawn after the anti-aliasing: the fast thin ones (`sizeByVelocity`: drops,
+/// sparks, streaks) have no motion of their own in its history, and a sprite that thin needs none of its smoothing. (Added
+/// ones always are.)
+fn is_late(look: &SpriteLook) -> bool {
+    look.blend == Blend::Alpha && look.size_by_velocity > 0.0
+}
+
+/// A look's key in the table: its keys, coefficients, frames' rate, blend, whether it is lit or hidden, its orientation, its
+/// soft distance, flipbook blend and stretch, and its frames (the label only decides whether it is lit).
 fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
     let mut k = Vec::with_capacity(128 + 8 * look.frames.len());
     let floats = look
@@ -358,7 +428,13 @@ fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
         .flatten()
         .chain(&look.sizes)
         .chain(&look.times)
-        .chain([&look.drag, &look.gravity, &look.wind]);
+        .chain([
+            &look.drag,
+            &look.gravity,
+            &look.wind,
+            &look.soft_distance,
+            &look.size_by_velocity,
+        ]);
     for v in floats {
         k.extend_from_slice(&v.to_bits().to_le_bytes());
     }
@@ -366,7 +442,8 @@ fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
     k.push(
         u8::from(look.blend == Blend::Additive)
             | (u8::from(lit) << 1)
-            | (u8::from(look.hidden) << 2),
+            | (u8::from(look.hidden) << 2)
+            | (u8::from(look.flipbook_blend) << 3),
     );
     k.push(look.orient as u8);
     for &t in &look.frames {

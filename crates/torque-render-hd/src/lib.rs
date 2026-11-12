@@ -53,7 +53,7 @@
 //!   orientation against the device's cube sampling and each level's lobe are checked by `capture_tests.rs` (every texel of a
 //!   direction-colored cube still points along its direction, and each level's mean length is the product of the documented
 //!   schedule's lobes). The clouds' cube and the color pyramid keep the box filter ([`capture::DownPipe`]).
-//! - The GPU particle pool (`world.rs`'s `gpu_particles` module, [`HdFeatures::gpu_particles`], off by default) keeps the CPU
+//! - The GPU particle pool (`world.rs`'s `gpu_particles` module, [`HdFeatures::gpu_particles`], on at Medium and up by default) keeps the CPU
 //!   path's particles and pictures: the same particles alive, the same picture every run, the CPU path's within a few levels
 //!   (`tests/gpu_particles.rs`); its draws are the forward pass's fragment entries over its own vertex entry. The Sky's wind
 //!   (`GpuSprites::wind`, a frame's) carries its particles by their `windCoefficient` as the CPU path's does, and a look that

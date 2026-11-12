@@ -1,6 +1,6 @@
 //! The GPU particle pool: the particles an emitter handed over (`torque_render_scene::particles::Emitter::hand_over`, through
 //! [`HdScene::sprites`](torque_render_scene::hd::HdScene::sprites)) stepped, aged and drawn on the GPU, with
-//! [`HdFeatures::gpu_particles`] on.
+//! [`HdFeatures::gpu_particles`] on ([`ParticlePool::Auto`]: at Medium and up).
 //!
 //! - **The pool**: [`sprite_capacity`] particles of the quality (64 bytes each: `gpu_particle_types.wgsl`'s `PoolParticle`), a
 //!   free slot all zero, held to [`HdWorld::set_gpu_particle_cap`] (by default the CPU path's `MAX_PARTICLES`: turning the
@@ -9,27 +9,45 @@
 //!   dropped when the feature goes off.
 //! - **A frame** (`gpu_particles.wgsl`, one compute pass before the frame's other passes, only when the scene handed over a new
 //!   frame or the render origin moved): the step and the deaths (`cs_update`, TGE's step and key walk), the spawns into the
-//!   free slots of the last frame's list (`cs_spawn`), then the lists: each slot's key (its look's bucket at its age, or free),
+//!   free slots of the last frame's list (`cs_spawn`), the fill governor (`cs_fill`, `cs_governor`), then the lists: each slot's
+//!   key (its look's bucket at its age, or free),
 //!   its rank among its workgroup's slots of that key by bit masks, the counts' prefix sums, the scatter. A bucket's
 //!   particles are in slot order and the free slots after the last bucket's, so the same frames make the same pictures byte
 //!   for byte (no atomic append decides an order).
 //! - **The draws**: one [`DrawRef`] a bucket that may hold a live particle ([`GpuSprites::live_buckets`]), its `sprites` the
 //!   bucket. They go through the translucent list as the CPU path's particles do (`particle: true`: weighted by the WBOIT, never
-//!   the front layer; the additive ones in the late pass after the TAA), each one `draw_indirect` of the bucket's args with the
+//!   the front layer; the additive ones in the late pass after the TAA; the blended fast thin ones, a bucket's `late`, in the
+//!   TAA frame's over pass after it), each one `draw_indirect` of the bucket's args with the
 //!   forward module's `vs_gpu_sprite` (`gpu_sprite.wgsl`) and the stage's own fragment entry: lighting, soft particles, fog
-//!   and the late pass are the forward pass's code. Group 1 is the texture group with the pool's particles, list and looks for
-//!   the vertex stage (read-only: a vertex stage gets no writable storage).
+//!   and the late pass are the forward pass's code. Group 1 is the texture group with the pool's particles, list, looks and
+//!   fill scales for the vertex stage (read-only: a vertex stage gets no writable storage).
+//! - **Looks beyond TGE's**: a flipbook's frames are one atlas texture (`torque_render_scene::hd::atlas`, built when its record
+//!   is made) and its bucket the atlas's: the vertex stage finds the frame from the particle's age and the next frame's place
+//!   (`VertexOut::uv2`), the fragment mixes them by `pool.x` when the look asks (`flipbookBlend`). `softDistance` is the soft
+//!   particle's distance (`pool.z`), `lit` decides the material's lit bit, `sizeByVelocity` stretches the sprite along its motion
+//!   and makes a blended bucket late. A lit sprite's sun visibility is found once in the vertex stage (`pool.y`; the frame
+//!   group's shadow bindings are visible to it), where the CPU path's lit sprites still find it at each pixel.
+//! - **The fill governor**: `cs_fill` sums the screen area every live sprite covers (clipped to the screen, from the main
+//!   camera in the `Sim` uniform: workgroup partial sums in a fixed tree, so the same frame sums the same), `cs_governor` adds
+//!   the partials and, past the quality's budget ([`fill_budget`], in frames of the screen), writes the scale the sprites' sizes
+//!   draw at (the root of budget over total, so their area meets the budget) and the alpha scale (its root, not below 0.3);
+//!   the vertex stage applies both. It reads the same frame's positions: no frame of lag. [`HdWorld::gpu_particle_counts`]
+//!   reads the last frame's total and scales back.
 //!
 //! # Maintaining
 //!
 //! - Module map: this file (the pool's buffers, its compute pass, its pipelines and groups, the frame's hooks: `prepare_sprites`,
 //!   `encode_sprites`, `sprite_draws`, `ensure_sprites`, `draw_sprites`); `shaders/gpu_particle_types.wgsl` (the records, shared);
 //!   `shaders/gpu_particles.wgsl` (the compute pass); `shaders/gpu_sprite.wgsl` (the vertex entry); `torque_render_scene::hd::sprites`
-//!   (the record table, the buckets, the hand-over) and `torque_render_scene::particles` (`hand_over`, `SpriteLook`, `GpuSpawn`).
+//!   (the record table, the buckets, the hand-over), `torque_render_scene::hd::atlas` (the flipbook atlases) and
+//!   `torque_render_scene::particles` (`hand_over`, `SpriteLook`, `GpuSpawn`).
 //! - Invariants: the records' and particles' byte layouts are `SpriteRecord::write` and `GpuSpawn::write` (the scene's tests check
 //!   their sizes, `every_shader_permutation_is_valid_wgsl` the shaders); `Sim::keys` is the scene's bucket count plus one (the free
 //!   slots' key, last) and at most `MAX_KEYS` (65: 64 buckets); a bucket's draw is its 16 bytes of `args`; the free slots' place
-//!   and count and the spawns dropped (the last pass's, all passes') follow at `FREE_AT`. The two-run test (`tests/gpu_particles.rs`) holds the pictures byte-identical; its CPU-path
+//!   and count and the spawns dropped (the last pass's, all passes') follow at `FREE_AT`; `SIM_BYTES` is the `Sim` uniform's size
+//!   (`prepare` writes it in `gpu_particles.wgsl`'s field order); the compute group binds eight storage buffers, the most a
+//!   WebGPU device promises a stage, so a new buffer must share one of these (`sprites_supported` checks the limit);
+//!   `keys` holds the fill governor's partial sums between `cs_fill` and `cs_governor`, then `cs_count`'s keys. The two-run test (`tests/gpu_particles.rs`) holds the pictures byte-identical; its CPU-path
 //!   comparison holds the step and the corners to the CPU path's.
 //! - The wind is `Sim::wind` (the frame's `GpuSprites::wind`, the Sky's): the step carries a particle by `windCoefficient` times it
 //!   on top of its own velocity (`p += (v + wind * coef) dt`, as `Emitter::step` does). A particle's ejection direction rides in
@@ -38,9 +56,12 @@
 //! - Extension points: the step's new terms (turbulence,
 //!   collision: `cs_update`, which can bind more after `args`), a look's new fields (`PoolLook` and `SpriteRecord::write`
 //!   together), a per-emitter budget (`cs_spawn` takes the free slots in request order), a sort (a pass after `cs_scatter` over a
-//!   bucket's list), trails (another vertex entry over the same lists), a fill governor (sum the buckets' areas in `cs_count`).
-//! - Checks: `cargo test -p torque-render-hd --test gpu_particles`, `cargo test -p torque-render-scene sprites gpu::tests`,
-//!   `cargo run -p torque-render-hd --release --example particles-profile` (under the GPU bench lock).
+//!   bucket's list), trails (another vertex entry over the same lists), the governor's rule (`cs_governor`: the scales it writes
+//!   are all the vertex stage reads).
+//! - Checks: `cargo test -p torque-render-hd --test gpu_particles` (the pictures, the atlas blend, the fill governor's budget and
+//!   time, the late bucket, a sprite over bare sky), `cargo test -p torque-render-scene --lib -- sprites atlas`,
+//!   `cargo run -p torque-render-hd --release --example particles-profile` (under the GPU bench lock; `--scale 64` with
+//!   `--count 10000` is 512-pixel sprites and prints the governor's line).
 
 use torque_render_scene::hd::Quality;
 use torque_render_scene::hd::sprites::{GpuSprites, MAX_BUCKETS, MAX_STEPS, SpriteRecord};
@@ -58,13 +79,58 @@ pub fn sprite_capacity(quality: Quality) -> u32 {
     }
 }
 
-/// The particles the last frame's lists hold in each bucket of the scene's table (in its order), the free slots, and the
-/// spawns the pool dropped so far for want of a free slot ([`HdWorld::gpu_particle_counts`]).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Whether the frames run the GPU particle pool ([`HdFeatures::gpu_particles`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ParticlePool {
+    /// At [`Quality::Medium`] and up; Low draws its particles as the CPU path builds them.
+    #[default]
+    Auto,
+    /// At every quality.
+    On,
+    /// At none: the CPU path's particles are all there is.
+    Off,
+}
+
+impl ParticlePool {
+    /// Whether the pool runs at `quality`.
+    pub fn runs_at(self, quality: Quality) -> bool {
+        match self {
+            ParticlePool::Auto => quality != Quality::Low,
+            ParticlePool::On => true,
+            ParticlePool::Off => false,
+        }
+    }
+}
+
+/// The sprite area a frame may cover at `quality`, in frames of the screen (the fill governor's budget: past it the sprites
+/// shrink and thin until their summed area is under it).
+pub fn fill_budget(quality: Quality) -> f32 {
+    match quality {
+        Quality::Low => 2.0,
+        Quality::Medium => 4.0,
+        Quality::High => 8.0,
+        Quality::Ultra => 16.0,
+    }
+}
+
+/// The fill governor's last frame: the screen area (pixels) the pool's live sprites cover at full size, the budget they were
+/// held to (0: none), and the scale their sizes were drawn at (1 under the budget).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct FillCounts {
+    pub requested: f32,
+    pub budget: f32,
+    pub size_scale: f32,
+    pub alpha_scale: f32,
+}
+
+/// The particles the last frame's lists hold in each bucket of the scene's table (in its order), the free slots, the
+/// spawns the pool dropped so far for want of a free slot, and the fill governor's last frame ([`HdWorld::gpu_particle_counts`]).
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SpriteCounts {
     pub buckets: Vec<u32>,
     pub free: u32,
     pub dropped: u64,
+    pub fill: FillCounts,
 }
 
 impl SpriteCounts {
@@ -82,11 +148,13 @@ const FREE_AT: u32 = MAX_KEYS * 4;
 /// The words after `FREE_AT`: the free slots' place and count, the spawns dropped by the last pass and by all of them.
 const ARGS_TAIL: u32 = 4;
 /// The `Sim` uniform's bytes.
-const SIM_BYTES: u64 = 192;
+const SIM_BYTES: u64 = 288;
 /// The compute pass's entries, in dispatch order.
-const PASSES: [&str; 6] = [
+const PASSES: [&str; 8] = [
     "cs_update",
     "cs_spawn",
+    "cs_fill",
+    "cs_governor",
     "cs_count",
     "cs_scan_blocks",
     "cs_scan_top",
@@ -111,6 +179,8 @@ pub(crate) struct GpuParticles {
     scan: wgpu::Buffer,
     instances: wgpu::Buffer,
     args: wgpu::Buffer,
+    /// The fill governor's result (`gpu_particles.wgsl`'s `fill`).
+    fill: wgpu::Buffer,
     sim: wgpu::Buffer,
     sim_layout: wgpu::BindGroupLayout,
     sim_group: wgpu::BindGroup,
@@ -131,10 +201,11 @@ pub(crate) struct GpuParticles {
     bytes: Vec<u8>,
 }
 
-/// The sprites' group 1: the texture and sampler (the fragment's), the particles, the list and the looks (the vertex stage's).
+/// The sprites' group 1: the texture and sampler (the fragment's), the particles, the list, the looks and the fill governor's
+/// scales (the vertex stage's).
 fn sprite_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let mut e = texture_entries();
-    for b in 2..5 {
+    for b in 2..6 {
         e.push(crate::storage(b, true, wgpu::ShaderStages::VERTEX));
     }
     e
@@ -152,6 +223,7 @@ fn sim_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         (5, false),
         (6, false),
         (7, false),
+        (8, false),
     ] {
         e.push(crate::storage(b, read_only, c));
     }
@@ -242,6 +314,12 @@ impl GpuParticles {
             contents: &arg_bytes,
             usage: storage | wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_SRC,
         });
+        let fill = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("hd particle fill"),
+            // Before the first frame's pass: no scale.
+            contents: &[1.0f32, 1.0, 0.0, 0.0].map(f32::to_le_bytes).concat(),
+            usage: storage | wgpu::BufferUsages::COPY_SRC,
+        });
         let spawns = buffer(
             device,
             "hd particle spawns",
@@ -286,7 +364,7 @@ impl GpuParticles {
                 device,
                 &sim_layout,
                 [
-                    &sim, &particles, &spawns, &looks, &keys, &scan, &instances, &args,
+                    &sim, &particles, &spawns, &looks, &keys, &scan, &instances, &args, &fill,
                 ],
             ),
             particles,
@@ -296,6 +374,7 @@ impl GpuParticles {
             scan,
             instances,
             args,
+            fill,
             sim,
             sim_layout,
             passes,
@@ -328,6 +407,7 @@ impl GpuParticles {
                 &self.scan,
                 &self.instances,
                 &self.args,
+                &self.fill,
             ],
         );
         self.sprite_groups.clear();
@@ -344,7 +424,14 @@ impl GpuParticles {
 
     /// Takes the scene's hand-over: the record table when it changed, and (when the frame is new or the origin moved) the
     /// frame's spawns and its `Sim` (the frame's [`Run`]).
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, s: &GpuSprites) {
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        s: &GpuSprites,
+        camera: &HdCamera,
+        budget: f32,
+    ) {
         self.run = None;
         let mut grown = false;
         if self.records_generation != Some(s.records_generation) {
@@ -425,6 +512,10 @@ impl GpuParticles {
         push_f32(&mut sim, &[shift[0], shift[1], shift[2], 0.0]);
         push_f32(&mut sim, &[s.wind[0], s.wind[1], s.wind[2], 0.0]);
         push_u32(&mut sim, &steps);
+        push_f32(&mut sim, &camera.view_proj);
+        let (w, h) = (camera.width as f32, camera.height as f32);
+        push_f32(&mut sim, &[camera.proj[0], camera.proj[5], w, h]);
+        push_f32(&mut sim, &[budget * w * h, 0.0, 0.0, 0.0]);
         queue.write_buffer(&self.sim, 0, &sim);
         self.keys_run = keys;
         self.run = Some(Run {
@@ -447,6 +538,8 @@ impl GpuParticles {
         let sizes = [
             self.groups,
             run.spawns.div_ceil(GROUP),
+            self.groups,
+            1,
             self.groups,
             (run.keys * self.groups).div_ceil(SCAN_BLOCK),
             1,
@@ -515,6 +608,7 @@ impl GpuParticles {
                 whole(2, &self.particles),
                 whole(3, &self.instances),
                 whole(4, &self.looks),
+                whole(5, &self.fill),
             ],
         });
         self.sprite_groups.insert(key, group);
@@ -532,7 +626,7 @@ fn whole(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 fn sim_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    buffers: [&wgpu::Buffer; 8],
+    buffers: [&wgpu::Buffer; 9],
 ) -> wgpu::BindGroup {
     let entries: Vec<wgpu::BindGroupEntry> = buffers
         .iter()
@@ -547,10 +641,16 @@ fn sim_group(
 }
 
 impl<E: HdExtension> HdWorld<E> {
-    /// Whether the frames run the GPU particle pool: [`HdFeatures::gpu_particles`] on a device that runs it (indirect draws
-    /// executed, room for its bindings). A caller hands its emitters' particles over only then; else they draw as before.
+    /// Whether the frames run the GPU particle pool at the quality of the scene last drawn ([`HdFeatures::gpu_particles`]) on a
+    /// device that runs it (indirect draws executed, room for its bindings). A caller hands its emitters' particles over only
+    /// then; else they draw as before.
     pub fn gpu_particles_on(&self) -> bool {
-        self.features.gpu_particles && self.sprites_supported
+        self.gpu_particles_at(self.pool_quality)
+    }
+
+    /// [`HdWorld::gpu_particles_on`] at `quality`.
+    pub fn gpu_particles_at(&self, quality: Quality) -> bool {
+        self.features.gpu_particles.runs_at(quality) && self.sprites_supported
     }
 
     /// The most particles the pool holds, below its quality's [`sprite_capacity`] (by default the CPU path's
@@ -571,21 +671,37 @@ impl<E: HdExtension> HdWorld<E> {
             let at = i as usize * 4;
             u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
         };
+        let fill = self.read_buffer(&pool.fill, 16)?;
+        let scale = |i: usize| {
+            f32::from_le_bytes([
+                fill[4 * i],
+                fill[4 * i + 1],
+                fill[4 * i + 2],
+                fill[4 * i + 3],
+            ])
+        };
         Ok(Some(SpriteCounts {
             buckets: (0..pool.keys_run - 1).map(|b| word(b * 4) / 6).collect(),
             free: word(FREE_AT + 1),
             dropped: u64::from(word(FREE_AT + 3)) + pool.dropped,
+            fill: FillCounts {
+                requested: scale(2),
+                budget: scale(3),
+                size_scale: scale(0),
+                alpha_scale: scale(1),
+            },
         }))
     }
 
     /// The frame's hand-over into the pool (made or made again for the quality; dropped with the feature off), and the textures
     /// its looks name.
-    pub(super) fn prepare_sprites(&mut self, scene: &E::Scene) {
+    pub(super) fn prepare_sprites(&mut self, scene: &E::Scene, camera: &HdCamera) {
+        let quality = E::mode(scene).unwrap_or_else(E::fallback_mode).quality;
+        self.pool_quality = quality;
         if !self.gpu_particles_on() {
             self.sprites = None;
             return;
         }
-        let quality = E::mode(scene).unwrap_or_else(E::fallback_mode).quality;
         let capacity = sprite_capacity(quality).min(self.sprite_cap).max(1);
         if self.sprites.as_ref().is_none_or(|p| p.capacity != capacity) {
             self.sprites = Some(GpuParticles::new(
@@ -600,7 +716,13 @@ impl<E: HdExtension> HdWorld<E> {
             self.textures.push(view);
         }
         if let Some(pool) = &mut self.sprites {
-            pool.prepare(&self.device, &self.queue, &scene.sprites);
+            pool.prepare(
+                &self.device,
+                &self.queue,
+                &scene.sprites,
+                camera,
+                fill_budget(quality),
+            );
         }
     }
 
@@ -630,7 +752,7 @@ impl<E: HdExtension> HdWorld<E> {
             motion: 0,
             particle: true,
             sprites: Some(i as u8),
-            late: false,
+            late: b.late,
             shadow_only: false,
             view_only: false,
             cutout: false,

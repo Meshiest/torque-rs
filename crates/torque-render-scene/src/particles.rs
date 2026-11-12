@@ -363,6 +363,9 @@ pub struct Emitter {
     pub particle_data: Vec<ParticleData>,
     /// The live particles, oldest first (TGE links each new one at the head of its list: it draws them newest first).
     pub particles: Vec<Particle>,
+    /// The ms of life left to each particle handed to the GPU particle pool ([`Emitter::hand_over`]): what the emitter's
+    /// `budget` counts of them while they live.
+    handed: Vec<i32>,
     /// The time to the next particle (`mNextParticleTime`), the emitter's clock (`mInternalClock`, ms).
     next_ms: i32,
     clock_ms: i32,
@@ -402,6 +405,7 @@ impl Emitter {
             data,
             particle_data,
             particles: Vec::new(),
+            handed: Vec::new(),
             next_ms: 0,
             clock_ms: 0,
             last: None,
@@ -450,6 +454,11 @@ impl Emitter {
         live: &mut usize,
     ) -> Option<usize> {
         if *live >= MAX_PARTICLES {
+            return None;
+        }
+        // The emitter's own share: past it a new particle is dropped, as one past the cap is.
+        let budget = self.data.extras.budget as usize;
+        if budget > 0 && self.particles.len() + self.handed.len() >= budget {
             return None;
         }
         let d = &self.data;
@@ -673,6 +682,10 @@ impl Emitter {
         if ms == 0 {
             return;
         }
+        self.handed.retain_mut(|left| {
+            *left -= ms;
+            *left >= 0
+        });
         let before = self.particles.len();
         let mut parts = std::mem::take(&mut self.particles);
         parts.retain_mut(|q| {

@@ -427,8 +427,12 @@ impl<G> HdScene<G> {
             .map(|t| self.textures.intern(t))
             .collect();
         if let Some(frame) = sprites {
-            self.sprites
-                .push(frame, |t| local.get(t).copied(), self.particle_light);
+            self.sprites.push(
+                frame,
+                |t| local.get(t).copied(),
+                &mut self.textures,
+                self.particle_light,
+            );
         }
         // (None before and none now: the renderer keeps what it has.)
         if self.particles.is_empty() && particles.is_empty() && decals.is_empty() {
@@ -467,8 +471,12 @@ impl<G> HdScene<G> {
     /// texture set: the checks', the examples').
     pub fn push_sprites(&mut self, frame: &SpriteFrame) {
         let n = self.textures.textures.len();
-        self.sprites
-            .push(frame, |t| (t < n).then_some(t), self.particle_light);
+        self.sprites.push(
+            frame,
+            |t| (t < n).then_some(t),
+            &mut self.textures,
+            self.particle_light,
+        );
     }
 
     /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the physical sky's

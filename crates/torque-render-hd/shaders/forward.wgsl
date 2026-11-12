@@ -149,6 +149,12 @@ struct VertexOut {
     @location(6) rest: vec3<f32>,
     // How far a draw that fades with distance has faded out (0 whole, 1 gone; 0 for everything else; an extension's).
     @location(7) lod: f32,
+    // A pool sprite's own terms (vs_gpu_sprite; vs_main gives every other draw "none"): x the next flipbook frame's share of
+    // the texture, y the sun's visibility at the sprite's center (-1: none, found at each pixel), z its soft-particle distance
+    // (-1: SOFT_PARTICLE), w unused.
+    @location(8) @interpolate(flat) pool: vec4<f32>,
+    // Where the next flipbook frame lies in the texture (the atlas), in the same place of its cell as `uv` in its own.
+    @location(9) uv2: vec2<f32>,
 };
 
 // Whether a material word is a plane's lit by the lightmap.
@@ -252,6 +258,8 @@ fn vs_main(v: VertexIn) -> VertexOut {
     out.lod = 0.0;
     out.normal = placed_normal(oct_decode(v.normal), v.material, v.extra);
     out.uv = v.uv;
+    out.pool = vec4<f32>(0.0, -1.0, -1.0, 0.0);
+    out.uv2 = v.uv;
     out.color = color;
     out.material = v.material;
     out.extra = select(v.extra, 0u, (v.material & MAT_NODE) != 0u);
@@ -1155,6 +1163,18 @@ fn fs_modulate2x(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(0.5 * pow(max(factor, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0);
 }
 
+// The sprite's texel: its frame's, mixed with the next frame's by the flipbook's blend share (a pool sprite whose look blends).
+// Called in uniform control flow (the derivatives); the next frame is sampled at the same gradient.
+fn flip_texel(in: VertexOut) -> vec4<f32> {
+    let dx = dpdx(in.uv);
+    let dy = dpdy(in.uv);
+    var t = textureSample(tex, samp, in.uv);
+    if in.pool.x > 0.0 {
+        t = mix(t, textureSampleGrad(tex, samp, in.uv2, dx, dy), in.pool.x);
+    }
+    return t;
+}
+
 fn forward_color(in: VertexOut) -> vec4<f32> {
     let material = in.material;
     // The normal's change across the pixel (in uniform control flow, before any branch): the specular AA's kernel (variance 1/4,
@@ -1163,7 +1183,7 @@ fn forward_color(in: VertexOut) -> vec4<f32> {
     let dndy = dpdy(in.normal);
     let spec_kernel = min(2.0 * 0.25 * (dot(dndx, dndx) + dot(dndy, dndy)), 0.18);
     let d = derivs(in);
-    let t = textureSample(tex, samp, in.uv);
+    let t = flip_texel(in);
     let kind = (material >> MAT_KIND_SHIFT) & 3u;
     if CLIP && frame.flags.z > 0.5 && kind != KIND_SKY && in.world.z < frame.flags.w {
         discard;
@@ -1217,17 +1237,22 @@ struct WboitOut {
 // How much of a particle's sprite shows at this pixel: it fades out over SOFT_PARTICLE units in front of the surface behind it
 // (the front layer's depth: the opaque frame, or the nearest translucent surface) instead of a hard cut along every surface it
 // meets; seen behind a translucent front layer it shows whole. Our own form of the soft-particle depth fade. A decal lies on
-// its surface and shows whole.
+// its surface and shows whole; a pool sprite's look sets the distance (`pool.z`; 0: no fade).
 const SOFT_PARTICLE: f32 = 0.4;
 fn soft_particle(in: VertexOut) -> f32 {
     if (in.material & MAT_DECAL) != 0u {
         return 1.0;
     }
+    var distance = SOFT_PARTICLE;
+    if in.pool.z >= 0.0 {
+        distance = in.pool.z;
+    }
     let front = textureLoad(trans_front, vec2<i32>(in.clip.xy), 0);
-    if in.clip.z < front {
+    // Nothing behind it (the depth is still the far plane's clear: bare sky), or the sprite in front of it, or no fade asked for.
+    if distance <= 0.0 || front <= 0.0 || in.clip.z < front {
         return 1.0;
     }
-    return clamp((linear_depth(front) - linear_depth(in.clip.z)) / SOFT_PARTICLE, 0.0, 1.0);
+    return clamp((linear_depth(front) - linear_depth(in.clip.z)) / distance, 0.0, 1.0);
 }
 
 // A translucent fragment behind the front layer into the weighted blend (McGuire and Bavoil 2013's weight, eq. 7's shape scaled to
@@ -1238,7 +1263,7 @@ fn fs_wboit(in: VertexOut) -> WboitOut {
     let dndy = dpdy(in.normal);
     let spec_kernel = min(2.0 * 0.25 * (dot(dndx, dndx) + dot(dndy, dndy)), 0.18);
     let d = derivs(in);
-    let t = textureSample(tex, samp, in.uv);
+    let t = flip_texel(in);
     let s = shaded(in, d, t, spec_kernel);
     // The front layer is blended exactly after the composite: not here. A particle is never the front layer (it is weighted
     // wherever it is) and fades into what is behind it.

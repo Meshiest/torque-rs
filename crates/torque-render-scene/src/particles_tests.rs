@@ -55,6 +55,7 @@ fn emitter() -> Emitter {
         data: d,
         particle_data: vec![p],
         particles: Vec::new(),
+        handed: Vec::new(),
         next_ms: 0,
         clock_ms: 0,
         last: None,
@@ -737,4 +738,47 @@ fn a_particle_dropped_at_birth_does_not_leak_the_live_count() {
     }
     assert!(live <= 1, "{live}");
     assert!(e.particles.len() <= 1);
+}
+
+/// The most an emitter holds at once is its `budget`, kept as its particles live on the CPU path and while the pool holds the
+/// ones it handed over; a budget of 0 is no share of its own.
+#[test]
+fn an_emitters_budget_bounds_the_particles_it_holds_on_either_path() {
+    struct NoFiles;
+    impl Assets for NoFiles {
+        fn read(&self, _: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+    let (mut rng, mut live) = (Rng::new(3), 0);
+    let held = |e: &Emitter| e.particles.len() + e.handed.len();
+    for budget in [0u32, 5, 12] {
+        let mut e = emitter();
+        e.data.extras.budget = budget;
+        e.particle_data[0].lifetime_ms = 400;
+        let mut peak = 0;
+        for k in 0..60 {
+            e.emit_path([0.0; 3], [0.0, 0.0, 1.0], [0.0; 3], 10, &mut rng, &mut live);
+            e.advance(10, &mut live);
+            if k % 2 == 1 {
+                let mut out = SpriteFrame::default();
+                let mut set = crate::textures::TextureSet::new(&NoFiles);
+                e.hand_over(&mut out, &mut set, "x", &mut live);
+            }
+            peak = peak.max(held(&e));
+        }
+        match budget {
+            0 => assert!(peak > 12, "no budget: {peak} held"),
+            n => assert_eq!(peak, n as usize, "a budget of {n}"),
+        }
+    }
+    // A particle's room comes back when it dies: after its life the emitter emits again.
+    let mut e = emitter();
+    e.data.extras.budget = 3;
+    e.particle_data[0].lifetime_ms = 100;
+    for _ in 0..40 {
+        e.emit_path([0.0; 3], [0.0, 0.0, 1.0], [0.0; 3], 10, &mut rng, &mut live);
+        e.advance(10, &mut live);
+    }
+    assert!(!e.particles.is_empty() && e.particles.len() <= 3);
 }

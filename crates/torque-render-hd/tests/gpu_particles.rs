@@ -8,9 +8,10 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use std::sync::Arc;
 
 use torque_render_core::{Frame, Gpu};
-use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
+use torque_render_hd::{HdWorld, ParticlePool};
 use torque_render_scene::hd::kit::{box_object, look_at};
+use torque_render_scene::hd::particle_light::ParticleLight;
 use torque_render_scene::hd::{HdCamera, HdMode, Quality, material};
 use torque_render_scene::particles::{
     Emitter, EmitterData, GpuSpawn, MAX_PARTICLES, ParticleData, Rng, SpriteFrame, SpriteLook,
@@ -123,13 +124,25 @@ struct Run {
 /// The emitters run `FRAMES` frames, drawn through the pool (`gpu`) or the CPU path. None: no GPU, or one that does not run
 /// the pool.
 fn run(gpu: &Gpu, pool: bool, wind: [f32; 3]) -> Option<Run> {
+    run_with(gpu, pool, wind, false)
+}
+
+/// [`run`] with the smoke lit (`lit`: the usual rule for blended particles) or not.
+fn run_with(gpu: &Gpu, pool: bool, wind: [f32; 3], lit: bool) -> Option<Run> {
     let mut s = scene();
+    if lit {
+        s.frame.particle_light = Some(ParticleLight::BLENDED);
+    }
     let eye = s.frame.eye.expect("the eye");
     let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
     let right = [camera.view[0], camera.view[4], camera.view[8]];
     let up = [camera.view[1], camera.view[5], camera.view[9]];
     let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
-    world.features.gpu_particles = pool;
+    world.features.gpu_particles = if pool {
+        ParticlePool::On
+    } else {
+        ParticlePool::Off
+    };
     if pool && !world.gpu_particles_on() {
         return None;
     }
@@ -269,7 +282,7 @@ fn a_blended_spawn_draws_in_its_bucket_and_a_clear_empties_the_pool() {
     let eye = s.frame.eye.expect("the eye");
     let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
     let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
-    world.features.gpu_particles = true;
+    world.features.gpu_particles = ParticlePool::On;
     if !world.gpu_particles_on() {
         return;
     }
@@ -343,6 +356,10 @@ fn look_of(frames: Vec<usize>) -> SpriteLook {
         fps: 0,
         hidden: false,
         orient: torque_render_scene::particles::Orient::default(),
+        lit: torque_render_scene::particles::Lit::default(),
+        soft_distance: 0.4,
+        flipbook_blend: false,
+        size_by_velocity: 0.0,
     }
 }
 
@@ -353,7 +370,7 @@ fn small_pool(gpu: &Gpu, cap: u32, frames: &[u32]) -> Option<(u32, u64, Vec<u8>)
     let eye = s.frame.eye.expect("the eye");
     let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
     let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
-    world.features.gpu_particles = true;
+    world.features.gpu_particles = ParticlePool::On;
     world.set_gpu_particle_cap(cap);
     if !world.gpu_particles_on() {
         return None;
@@ -400,7 +417,7 @@ fn looks_past_the_buckets_are_hidden_and_the_rest_drawn() {
     let eye = s.frame.eye.expect("the eye");
     let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
     let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
-    world.features.gpu_particles = true;
+    world.features.gpu_particles = ParticlePool::On;
     if !world.gpu_particles_on() {
         return;
     }
@@ -473,42 +490,92 @@ fn the_pool_carries_its_particles_by_the_wind_as_the_cpu_path_does() {
     );
 }
 
-/// The pixels a single particle of `look` at the middle of the scene covers, as the width and height of their box: the particle
-/// is drawn over a few frames (the pool steps it by nothing) and compared with the scene alone. None: no pool.
-fn extent(gpu: &Gpu, look: SpriteLook, spawn: GpuSpawn) -> Option<(u32, u32)> {
-    let mut s = scene();
-    let eye = s.frame.eye.expect("the eye");
-    let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
-    let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
-    world.features.gpu_particles = true;
-    if !world.gpu_particles_on() {
-        return None;
-    }
-    s.frame.generation += 1;
-    world.upload(&s);
-    s.frame.push_sprites(&SpriteFrame {
+/// `scene` drawn for a few frames with one particle of `look` in it, and again with none: the pixels the particle changes,
+/// as the width and height of their box and their count. None: no pool.
+fn covered(
+    gpu: &Gpu,
+    scene: &PlainScene,
+    look: SpriteLook,
+    spawn: GpuSpawn,
+) -> Option<(u32, u32, usize)> {
+    let draw = |sprites: Option<SpriteFrame>| {
+        let mut s = scene.clone();
+        let eye = s.frame.eye.expect("the eye");
+        let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
+        let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
+        world.features.gpu_particles = ParticlePool::On;
+        if !world.gpu_particles_on() {
+            return None;
+        }
+        s.frame.generation += 1;
+        world.upload(&s);
+        if let Some(frame) = sprites {
+            s.frame.push_sprites(&frame);
+        }
+        for _ in 0..4 {
+            world.draw(&s, &camera, None).expect("a frame");
+        }
+        Some(world.read_ldr().expect("the picture").rgba)
+    };
+    let drawn = draw(Some(SpriteFrame {
         looks: vec![look],
         spawns: vec![spawn],
         ..SpriteFrame::default()
-    });
-    for _ in 0..4 {
-        world.draw(&s, &camera, None).expect("a frame");
-    }
-    let drawn = world.read_ldr().expect("the picture").rgba;
-    let blank = run_blank(gpu).rgba;
-    let (mut lo, mut hi) = ((u32::MAX, u32::MAX), (0, 0));
+    }))?;
+    let blank = draw(None)?;
+    let (mut lo, mut hi, mut n) = ((u32::MAX, u32::MAX), (0, 0), 0);
     for (i, (p, q)) in drawn.chunks(4).zip(blank.chunks(4)).enumerate() {
         if p.iter().zip(q).take(3).any(|(x, y)| x.abs_diff(*y) > 12) {
             let (x, y) = (i as u32 % SIZE.0, i as u32 / SIZE.0);
             lo = (lo.0.min(x), lo.1.min(y));
             hi = (hi.0.max(x), hi.1.max(y));
+            n += 1;
         }
     }
-    Some(if hi.0 < lo.0 {
-        (0, 0)
+    Some(if n == 0 {
+        (0, 0, 0)
     } else {
-        (hi.0 - lo.0 + 1, hi.1 - lo.1 + 1)
+        (hi.0 - lo.0 + 1, hi.1 - lo.1 + 1, n)
     })
+}
+
+/// The box of the pixels a single particle at the middle of the floor scene covers.
+fn extent(gpu: &Gpu, look: SpriteLook, spawn: GpuSpawn) -> Option<(u32, u32)> {
+    covered(gpu, &scene(), look, spawn).map(|(w, h, _)| (w, h))
+}
+
+/// The scene with nothing in it but the sky.
+fn sky_scene() -> PlainScene {
+    let mut s = scene();
+    s.frame.planes.clear();
+    s.frame.planes_generation += 1;
+    s.frame.eye = Some(look_at([0.0, -4.0, 2.0], [0.0, 4.0, 3.0]));
+    s
+}
+
+#[test]
+fn a_sprite_over_bare_sky_draws_blended_and_added() {
+    let Some(gpu) = gpu() else { return };
+    for blend in [Blend::Alpha, Blend::Additive] {
+        let look = SpriteLook {
+            blend,
+            ..look_of(Vec::new())
+        };
+        let spawn = GpuSpawn {
+            pos: [0.0, 4.0, 2.5],
+            size: 1.0,
+            color: [1.0, 0.1, 0.1, 1.0],
+            ..still(0, 0.0)
+        };
+        let Some((w, h, n)) = covered(&gpu, &sky_scene(), look, spawn) else {
+            eprintln!("skipped: the device does not run the pool");
+            return;
+        };
+        assert!(
+            w >= 10 && h >= 10 && n >= 80,
+            "{blend:?}: a sprite over bare sky covers {w} x {h} ({n} pixels)"
+        );
+    }
 }
 
 #[test]
@@ -546,4 +613,269 @@ fn an_oriented_particle_lies_along_its_direction_and_one_at_rest_has_no_velocity
     assert!(vw.abs_diff(ew) <= 2 && vh.abs_diff(eh) <= 2, "{vw} x {vh}");
     spawn.vel = [0.0; 3];
     assert_eq!(extent(&gpu, look(Orient::Velocity), spawn), Some((0, 0)));
+}
+
+#[test]
+fn a_lit_pool_sprite_takes_its_suns_visibility_from_its_vertex_stage_as_the_cpu_path_does_per_pixel()
+ {
+    let Some(gpu) = gpu() else { return };
+    let Some(pool) = run_with(&gpu, true, [0.0; 3], true) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    let cpu = run_with(&gpu, false, [0.0; 3], true).expect("the CPU path");
+    assert_eq!(pool.live, cpu.live);
+    let unlit = run_with(&gpu, true, [0.0; 3], false).expect("the pool");
+    assert!(
+        share_differing(&pool.picture.rgba, &unlit.picture.rgba) > 0.01,
+        "lighting the smoke did not change its picture"
+    );
+    assert!(
+        share_differing(&pool.picture.rgba, &cpu.picture.rgba) < 0.002,
+        "the lit pool's picture is not the lit CPU path's"
+    );
+}
+
+/// A table texture of one color, `size` texels square with a mip chain (the atlas builds from level 0 and below).
+fn solid_texture(size: u32, rgba: [u8; 4]) -> Texture {
+    let mut levels = Vec::new();
+    let mut side = size;
+    loop {
+        levels.push(rgba.repeat((side * side) as usize));
+        if side == 1 {
+            break;
+        }
+        side /= 2;
+    }
+    Texture {
+        path: format!("solid{rgba:?}"),
+        width: size,
+        height: size,
+        levels: Arc::new(levels),
+    }
+}
+
+/// The color at the middle of the box one particle changes (the particle's center), drawn over the floor scene with the
+/// scene's table holding `textures` (the look's frames name them in order).
+fn center_color(
+    gpu: &Gpu,
+    textures: Vec<Texture>,
+    look: SpriteLook,
+    spawn: GpuSpawn,
+) -> Option<[u8; 4]> {
+    let mut s = scene();
+    let eye = s.frame.eye.expect("the eye");
+    let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
+    let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
+    world.features.gpu_particles = ParticlePool::On;
+    if !world.gpu_particles_on() {
+        return None;
+    }
+    for t in textures {
+        s.frame.textures.intern(t);
+    }
+    s.frame.generation += 1;
+    world.upload(&s);
+    s.frame.push_sprites(&SpriteFrame {
+        looks: vec![look],
+        spawns: vec![spawn],
+        ..SpriteFrame::default()
+    });
+    for _ in 0..4 {
+        world.draw(&s, &camera, None).expect("a frame");
+    }
+    let drawn = world.read_ldr().expect("the picture").rgba;
+    let blank = run_blank(gpu).rgba;
+    let (mut lo, mut hi) = ((u32::MAX, u32::MAX), (0, 0));
+    for (i, (p, q)) in drawn.chunks(4).zip(blank.chunks(4)).enumerate() {
+        if p.iter().zip(q).take(3).any(|(x, y)| x.abs_diff(*y) > 12) {
+            let (x, y) = (i as u32 % SIZE.0, i as u32 / SIZE.0);
+            lo = (lo.0.min(x), lo.1.min(y));
+            hi = (hi.0.max(x), hi.1.max(y));
+        }
+    }
+    let (x, y) = ((lo.0 + hi.0) / 2, (lo.1 + hi.1) / 2);
+    let at = 4 * (y * SIZE.0 + x) as usize;
+    Some(drawn[at..at + 4].try_into().expect("a pixel"))
+}
+
+#[test]
+fn a_flipbook_shows_its_frame_and_blends_it_into_the_next_by_the_fraction_of_a_frame_when_asked() {
+    let Some(gpu) = gpu() else { return };
+    let frames = || {
+        vec![
+            solid_texture(8, [255, 0, 0, 255]),
+            solid_texture(8, [0, 0, 255, 255]),
+        ]
+    };
+    // One frame a second: at 0 ms the first, at 1000 ms the second, and at 500 ms half of each when the look blends.
+    let at = |blend: bool, age_ms: i32| {
+        let look = SpriteLook {
+            fps: 1,
+            flipbook_blend: blend,
+            ..look_of(vec![0, 1])
+        };
+        let spawn = GpuSpawn {
+            age_ms,
+            size: 1.0,
+            color: [1.0; 4],
+            ..still(0, 0.0)
+        };
+        center_color(&gpu, frames(), look, spawn)
+    };
+    let Some(first) = at(true, 0) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    let second = at(true, 1000).expect("the pool");
+    let half = at(true, 500).expect("the pool");
+    let hard = at(false, 500).expect("the pool");
+    assert!(
+        first[0] > 150 && first[2] < 60,
+        "the first frame: {first:?}"
+    );
+    assert!(
+        second[2] > 150 && second[0] < 60,
+        "the second frame: {second:?}"
+    );
+    assert!(
+        half[0].abs_diff(half[2]) <= 8 && half[0] > 60 && half[2] > 60,
+        "half of each: {half:?}"
+    );
+    // Without the blend the frame in view stays whole until the next begins.
+    assert_eq!(hard, first, "a hard step");
+}
+
+/// `count` sprites `sprite_px` pixels across at 1080p, spread over the interior of the screen so none is clipped: the fill
+/// governor's frame. The pool's counts, the sprites' world size, and the GPU time of its pass and draws when the device times them.
+fn governed(
+    gpu: &Gpu,
+    sprite_px: f32,
+    count: u32,
+) -> Option<(torque_render_hd::SpriteCounts, Option<f64>)> {
+    const HD: (u32, u32) = (1920, 1080);
+    let mut s = scene();
+    s.frame.size = HD;
+    s.frame.eye = Some(look_at([0.0, -4.0, 2.0], [0.0, 4.0, 2.0]));
+    let eye = s.frame.eye.expect("the eye");
+    let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, HD.0, HD.1);
+    let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
+    world.features.gpu_particles = ParticlePool::On;
+    world.set_gpu_particle_cap(u32::MAX);
+    if !world.gpu_particles_on() {
+        return None;
+    }
+    s.frame.generation += 1;
+    world.upload(&s);
+    // The plane 8 units ahead: a pixel's world place, and the world size of `sprite_px` pixels there.
+    let depth = 8.0;
+    let (sx, sy) = (camera.proj[0], camera.proj[5]);
+    let side = sprite_px * 2.0 * depth / (sy * HD.1 as f32);
+    let half = sprite_px / 2.0;
+    let cols = (count as f32).sqrt().ceil() as u32;
+    let spawns: Vec<GpuSpawn> = (0..count)
+        .map(|k| {
+            let u = (k % cols) as f32 / (cols - 1).max(1) as f32;
+            let v = (k / cols) as f32 / (cols - 1).max(1) as f32;
+            let px = half + u * (HD.0 as f32 - sprite_px);
+            let py = half + v * (HD.1 as f32 - sprite_px);
+            let ndc = [px / HD.0 as f32 * 2.0 - 1.0, 1.0 - py / HD.1 as f32 * 2.0];
+            GpuSpawn {
+                pos: [ndc[0] * depth / sx, 4.0, 2.0 + ndc[1] * depth / sy],
+                size: side,
+                color: [0.6, 0.6, 0.6, 0.3],
+                ..still(0, 0.0)
+            }
+        })
+        .collect();
+    s.frame.push_sprites(&SpriteFrame {
+        looks: vec![look_of(Vec::new())],
+        spawns,
+        ..SpriteFrame::default()
+    });
+    for _ in 0..3 {
+        world.draw(&s, &camera, None).expect("a frame");
+    }
+    world.finish().expect("the frames");
+    let mut profile = torque_render_hd::profile::Profile::begin(&mut world);
+    for _ in 0..20 {
+        world.draw(&s, &camera, None).expect("a frame");
+        profile.frame(&mut world);
+    }
+    let counts = world.gpu_particle_counts().expect("the counts")?;
+    let (marks, _) = profile.gpu_medians();
+    let ms = |name: &str| marks.iter().find(|m| m.0 == name).map(|m| m.1);
+    let time = ms("particles").zip(ms("translucent")).map(|(a, b)| a + b);
+    Some((counts, time))
+}
+
+#[test]
+fn ten_thousand_big_sprites_are_held_to_the_fill_budget_within_five_percent_in_under_two_milliseconds()
+ {
+    let Some(gpu) = gpu() else { return };
+    let Some((counts, time)) = governed(&gpu, 512.0, 10_000) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    assert_eq!(counts.live(), 10_000);
+    let fill = counts.fill;
+    // The summed area of what was handed over: 10,000 squares of 512 pixels, none clipped.
+    let asked = 10_000.0 * 512.0 * 512.0;
+    assert!(
+        (f64::from(fill.requested) / asked - 1.0).abs() < 0.01,
+        "the governor counted {} pixels of sprite, {asked} drawn",
+        fill.requested
+    );
+    // The budget at High is eight frames of the screen.
+    assert_eq!(fill.budget, 8.0 * 1920.0 * 1080.0);
+    // What is drawn: the sprites at the scale the governor drew them, their area with its square.
+    let drawn = f64::from(fill.requested) * f64::from(fill.size_scale).powi(2);
+    assert!(
+        drawn <= f64::from(fill.budget) * 1.05 && drawn >= f64::from(fill.budget) * 0.95,
+        "{drawn} pixels of sprite drawn against a budget of {}",
+        fill.budget
+    );
+    assert!(fill.alpha_scale < 1.0 && fill.alpha_scale >= 0.3);
+    if let Some(ms) = time {
+        assert!(ms < 2.0, "the pool's pass and draws took {ms:.3} ms");
+    }
+}
+
+#[test]
+fn sprites_under_the_budget_are_drawn_as_they_are() {
+    let Some(gpu) = gpu() else { return };
+    let Some((counts, _)) = governed(&gpu, 16.0, 2_000) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    assert_eq!(
+        (counts.fill.size_scale, counts.fill.alpha_scale),
+        (1.0, 1.0)
+    );
+    assert!(counts.fill.requested > 0.0 && counts.fill.requested < counts.fill.budget);
+}
+
+#[test]
+fn a_blended_fast_thin_look_is_drawn_after_the_anti_aliasing_and_shows_as_the_others_do() {
+    let Some(gpu) = gpu() else { return };
+    let spawn = GpuSpawn {
+        size: 1.0,
+        color: [1.0, 0.1, 0.1, 1.0],
+        ..still(0, 0.0)
+    };
+    let fast = SpriteLook {
+        size_by_velocity: 0.02,
+        ..look_of(Vec::new())
+    };
+    let Some(a) = covered(&gpu, &scene(), look_of(Vec::new()), spawn) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    // At rest a stretched look is the square (the stretch follows its motion), drawn in the over pass of the TAA frame.
+    let b = covered(&gpu, &scene(), fast, spawn).expect("the pool");
+    assert!(b.2 >= 100, "the late sprite covers {} pixels", b.2);
+    assert!(
+        a.0.abs_diff(b.0) <= 2 && a.1.abs_diff(b.1) <= 2,
+        "{a:?} against {b:?}"
+    );
 }

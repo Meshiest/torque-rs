@@ -88,7 +88,11 @@ fn particle_lit(in: VertexOut, albedo: vec3<f32>) -> vec3<f32> {
     let n = normalize(v + in.normal * PARTICLE_BEND);
     let c = p - in.normal * bitcast<f32>(in.extra);
     let l = frame.sun_dir.xyz;
-    let vis = particle_sun_shadow(c) * cloud_sun(c, sky.cloud_use.x);
+    // A pool sprite's vertex stage found the sun's visibility at its center once (`pool.y`); another sprite's is found here.
+    var vis = in.pool.y;
+    if vis < 0.0 {
+        vis = particle_sun_shadow(c) * cloud_sun(c, sky.cloud_use.x);
+    }
     let forward = PARTICLE_FORWARD * pow(max(dot(-v, l), 0.0), PARTICLE_FORWARD_POWER);
     let w = max(particle_wrap(n, l), 0.0) + forward;
     let amb_g = ambient(n);

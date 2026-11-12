@@ -215,7 +215,7 @@ const FEATURES_DEFAULT: HdFeatures = HdFeatures {
     fog_sky_mean: true,
     cloud_from_eye: true,
     cloud_cube: true,
-    gpu_particles: false,
+    gpu_particles: torque_render_hd::ParticlePool::Auto,
     froxel_fog: true,
 };
 

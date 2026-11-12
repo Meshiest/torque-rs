@@ -6,6 +6,8 @@
 //                   render origin's shift; all let go on a clear;
 //   cs_spawn        each of the frame's spawns into a free slot of the last frame's list (in the list's order; past its end
 //                   dropped, and counted by its first invocation);
+//   cs_fill         each workgroup's sum of the screen area its live particles' sprites cover (clipped to the screen);
+//   cs_governor     the frame's total of those, and the scale that brings it to the quality's budget (see `fill`);
 //   cs_count        each slot's key (its look's bucket at its age, or the free key) and its rank among the slots of its group with
 //                   that key (bit masks: no atomic appends, no order of arrival), and each group's count of each key;
 //   cs_scan_blocks  the exclusive prefix sum of the counts (key-major: key k's groups in order), a block of SCAN_BLOCK at a time;
@@ -32,6 +34,11 @@ struct Sim {
     wind: vec4<f32>,
     // The frame's steps (ms, in order), four a vector.
     steps: array<vec4<u32>, 8>,
+    // The main camera's world to clip space (the fill governor projects each sprite with it), its projection's x and y scales and
+    // the screen's size in pixels, and the fill budget (x: pixels of sprite area the frame may cover; 0: no budget).
+    view_proj: mat4x4<f32>,
+    cam: vec4<f32>,
+    budget: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> sim: Sim;
@@ -44,6 +51,9 @@ struct Sim {
 // Four words a bucket (a non-indexed indirect draw), then the free slots' first place in the list and their count, the spawns
 // the last pass dropped and those all of them dropped.
 @group(0) @binding(7) var<storage, read_write> args: array<u32>;
+// The fill governor's result for the sprites' vertex stage: the sprites' size scale, their alpha scale, the frame's summed sprite
+// area (pixels) at full size, and the budget.
+@group(0) @binding(8) var<storage, read_write> fill: array<f32>;
 
 const GROUP: u32 = 256u;
 const MAX_KEYS: u32 = 65u;
@@ -52,6 +62,8 @@ const SCAN_PER_THREAD: u32 = 4u;
 const SCAN_BLOCK: u32 = 1024u;
 const FREE_AT: u32 = 260u;
 const POOL_GRAVITY: f32 = 9.81;
+// The least a sprite's alpha is scaled to by the governor.
+const FILL_ALPHA_FLOOR: f32 = 0.3;
 
 // One step of `ms` (TGE's `updateSingleParticle`).
 fn pool_step(p: ptr<function, PoolParticle>, ms: i32) {
@@ -134,6 +146,77 @@ fn cs_spawn(@builtin(global_invocation_id) id: vec3<u32>) {
     var p = spawns[i];
     p.flags = p.flags | POOL_ALIVE;
     particles[slot] = p;
+}
+
+// The screen area (pixels) `p`'s sprite covers: its square at the size its last step keyed, clipped to the screen; none for a
+// particle behind the eye or whose alpha is 0.
+fn sprite_area(p: PoolParticle) -> f32 {
+    let c = sim.view_proj * vec4<f32>(p.pos, 1.0);
+    if !(c.w > 1e-4) || unpack4x8unorm(p.color).a <= 0.0 {
+        return 0.0;
+    }
+    let size = sim.cam.zw;
+    let at = vec2<f32>(c.x / c.w * 0.5 + 0.5, 0.5 - c.y / c.w * 0.5) * size;
+    let half = 0.25 * p.size * sim.cam.xy * size / c.w;
+    let lo = max(at - half, vec2<f32>(0.0));
+    let hi = min(at + half, size);
+    return max(hi.x - lo.x, 0.0) * max(hi.y - lo.y, 0.0);
+}
+
+var<workgroup> fill_sums: array<f32, 256>;
+
+// The sum of `fill_sums` across the workgroup (a fixed tree: the same sum every run): every invocation calls it.
+fn sum_fill(li: u32) -> f32 {
+    workgroupBarrier();
+    for (var s = GROUP / 2u; s > 0u; s = s >> 1u) {
+        if li < s {
+            fill_sums[li] = fill_sums[li] + fill_sums[li + s];
+        }
+        workgroupBarrier();
+    }
+    return fill_sums[0];
+}
+
+@compute @workgroup_size(256)
+fn cs_fill(@builtin(global_invocation_id) id: vec3<u32>, @builtin(local_invocation_index) li: u32,
+           @builtin(workgroup_id) wg: vec3<u32>) {
+    var area = 0.0;
+    if id.x < sim.capacity {
+        let p = particles[id.x];
+        if (p.flags & POOL_ALIVE) != 0u {
+            area = sprite_area(p);
+        }
+    }
+    fill_sums[li] = area;
+    let sum = sum_fill(li);
+    if li == 0u {
+        // `keys` is the next pass's to fill: its first words hold the groups' sums until then.
+        keys[wg.x] = bitcast<u32>(sum);
+    }
+}
+
+// One workgroup: the groups' sums added (a fixed order), and past the budget the sprites' size scaled by the root of the share the
+// budget is of the total (their area goes with its square) and their alpha by its root again (not below FILL_ALPHA_FLOOR).
+@compute @workgroup_size(256)
+fn cs_governor(@builtin(local_invocation_index) li: u32) {
+    var sum = 0.0;
+    for (var g = li; g < sim.groups; g = g + GROUP) {
+        sum = sum + bitcast<f32>(keys[g]);
+    }
+    fill_sums[li] = sum;
+    let total = sum_fill(li);
+    if li == 0u {
+        var scale = 1.0;
+        var alpha = 1.0;
+        if sim.budget.x > 0.0 && total > sim.budget.x {
+            scale = sqrt(sim.budget.x / total);
+            alpha = max(sqrt(scale), FILL_ALPHA_FLOOR);
+        }
+        fill[0] = scale;
+        fill[1] = alpha;
+        fill[2] = total;
+        fill[3] = sim.budget.x;
+    }
 }
 
 var<workgroup> masks: array<atomic<u32>, 520>;

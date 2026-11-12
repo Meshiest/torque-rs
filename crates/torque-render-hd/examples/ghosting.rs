@@ -32,9 +32,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use torque_render_core::Gpu;
-use torque_render_hd::HdWorld;
 use torque_render_hd::ext::{NoExtension, PlainScene};
 use torque_render_hd::ghosting::{self, AREA_OK, Image, MAX_SETTLE, MAX_TRAIL, Measure, TOLERANCE};
+use torque_render_hd::{HdWorld, ParticlePool};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::{Lcg, box_object, look_at};
 use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
@@ -567,6 +567,10 @@ fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
         fps: 0,
         hidden: false,
         orient: torque_render_scene::particles::Orient::default(),
+        lit: torque_render_scene::particles::Lit::default(),
+        soft_distance: 0.4,
+        flipbook_blend: false,
+        size_by_velocity: 0.0,
     };
     let spawns = age
         .map(puffs)
@@ -802,7 +806,11 @@ struct Drawer {
 impl Drawer {
     fn new(gpu: &Gpu, sprites: bool) -> Result<Drawer, String> {
         let mut world = HdWorld::new(gpu);
-        world.features.gpu_particles = sprites;
+        world.features.gpu_particles = if sprites {
+            ParticlePool::On
+        } else {
+            ParticlePool::Off
+        };
         Ok(Drawer {
             world,
             target: gpu.offscreen(SIZE.0, SIZE.1).map_err(|e| e.to_string())?,

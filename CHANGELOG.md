@@ -114,6 +114,12 @@ different.
   light, by linearly transformed cosines (after Heitz, Dupuy, Hill and Neubelt 2016) over a GGX table the crate fits itself
   (`torque_render_scene::hd::ltc`), at High and Ultra; Low and Medium draw them as point lights. Their shadows are a point
   light's from their center.
+- `torque-render-hd`: particles are stepped and drawn by a GPU pool at Medium and up (`HdFeatures::gpu_particles`, `TORQUE_GPU_PARTICLES=0`
+  or `1` forces it off or on); Low keeps the CPU path's quads. The emitters keep TGE's emission and random numbers and hand the pool one
+  record per particle born. A flipbook's frames are one atlas texture and the fragment blends a frame into the next with
+  `flipbookBlend`; a lit particle finds the sun's visibility once at its center; `softDistance`, `lit` and `sizeByVelocity` are
+  honored, and fast thin blended particles (`sizeByVelocity`) are drawn after the TAA. A fill governor holds the summed area the
+  sprites cover to a budget of the screen (2, 4, 8 and 16 frames from Low to Ultra), shrinking and thinning them past it.
 - `torque::app`: interiors as static meshes kept on the GPU and culled there, with their shadows cached, so interiors
   that stay put cost nothing on the CPU each frame.
 - `torque-render-core::pipeline_cache`: compiled pipelines kept in a per-user wgpu pipeline cache on Vulkan, keyed by

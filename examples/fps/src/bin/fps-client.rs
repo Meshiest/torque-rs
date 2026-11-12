@@ -203,6 +203,17 @@ mod page {
     }
 }
 
+/// A picture size typed as `WIDTHxHEIGHT`.
+fn parse_size(text: &str) -> Result<(u32, u32), String> {
+    let (w, h) = text
+        .split_once('x')
+        .ok_or(format!("{text}: a size is WIDTHxHEIGHT"))?;
+    Ok((
+        w.parse().map_err(|e| format!("{text}: {e}"))?,
+        h.parse().map_err(|e| format!("{text}: {e}"))?,
+    ))
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = Args::from_env();
@@ -215,6 +226,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut polish2_dir = None;
     let mut hitbox_dir = None;
     let mut lit_dir = None;
+    let mut lit_size = SHOT_SIZE;
     let mut pack_file = None;
     let mut web_dir = None;
     let mut options = ClientOptions::default();
@@ -229,6 +241,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--polish2-shots" => polish2_dir = Some(args.dir(&arg)?),
             "--hitbox-shots" => hitbox_dir = Some(args.dir(&arg)?),
             "--lit-particle-shots" => lit_dir = Some(args.dir(&arg)?),
+            "--lit-shot-size" => {
+                lit_size = parse_size(&args.value(&arg, "a size like 1920x1080")?)?
+            }
             "--web-pack" => pack_file = Some(args.dir(&arg)?),
             "--web-files" => web_dir = Some(args.dir(&arg)?),
             "--bind" => options.host_address = args.ipv4(&arg)?,
@@ -269,7 +284,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if let Some(dir) = lit_dir {
-        for path in shots::write_lit_smoke(&dir, SHOT_SIZE, GameFiles::bundled)? {
+        for path in shots::write_lit_smoke(&dir, lit_size, GameFiles::bundled)? {
             println!("{}", path.display());
         }
         return Ok(());
