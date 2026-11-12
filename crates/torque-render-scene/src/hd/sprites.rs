@@ -63,10 +63,11 @@ pub struct SpriteRecord {
 }
 
 impl SpriteRecord {
-    /// The record's bytes as the pool's `Look` holds them (192): the color keys, the size keys, the time keys, `drag, gravity,
+    /// The record's bytes as the pool's `Look` holds them (224): the color keys, the size keys, the time keys, `drag, gravity,
     /// wind, fps`, `material, frame count, orient mode, 0`, the frames' buckets a byte each, `atlas columns, atlas rows, 1 when a
-    /// frame blends into the next, 0`, and `softDistance, sizeByVelocity, 0, 0`.
-    pub const BYTES: usize = 192;
+    /// frame blends into the next, 0`, `softDistance, sizeByVelocity, 0, 0`, `turbulence, turbulenceScale, 0, 0` and
+    /// `collide (1 or 0), bounceElasticity, bounceFriction, 0`.
+    pub const BYTES: usize = 224;
 
     pub fn write(&self, out: &mut Vec<u8>) {
         let f = |out: &mut Vec<u8>, v: f32| out.extend_from_slice(&v.to_le_bytes());
@@ -90,6 +91,13 @@ impl SpriteRecord {
             f(out, v);
         }
         for v in [l.soft_distance, l.size_by_velocity, 0.0, 0.0] {
+            f(out, v);
+        }
+        for v in [l.turbulence, l.turbulence_scale, 0.0, 0.0] {
+            f(out, v);
+        }
+        let collide = f32::from(u8::from(l.collide));
+        for v in [collide, l.bounce_elasticity, l.bounce_friction, 0.0] {
             f(out, v);
         }
     }
@@ -419,7 +427,7 @@ fn is_late(look: &SpriteLook) -> bool {
 }
 
 /// A look's key in the table: its keys, coefficients, frames' rate, blend, whether it is lit or hidden, its orientation, its
-/// soft distance, flipbook blend and stretch, and its frames (the label only decides whether it is lit).
+/// soft distance, flipbook blend and stretch, its turbulence and bounce, and its frames (the label only decides whether it is lit).
 fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
     let mut k = Vec::with_capacity(128 + 8 * look.frames.len());
     let floats = look
@@ -434,6 +442,10 @@ fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
             &look.wind,
             &look.soft_distance,
             &look.size_by_velocity,
+            &look.turbulence,
+            &look.turbulence_scale,
+            &look.bounce_elasticity,
+            &look.bounce_friction,
         ]);
     for v in floats {
         k.extend_from_slice(&v.to_bits().to_le_bytes());
@@ -443,7 +455,8 @@ fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
         u8::from(look.blend == Blend::Additive)
             | (u8::from(lit) << 1)
             | (u8::from(look.hidden) << 2)
-            | (u8::from(look.flipbook_blend) << 3),
+            | (u8::from(look.flipbook_blend) << 3)
+            | (u8::from(look.collide) << 4),
     );
     k.push(look.orient as u8);
     for &t in &look.frames {

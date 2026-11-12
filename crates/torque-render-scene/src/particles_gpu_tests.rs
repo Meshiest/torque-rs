@@ -143,6 +143,27 @@ fn a_frame_keeps_each_look_once_and_a_spawn_is_64_bytes() {
     assert!(!frame.is_empty());
 }
 
+#[test]
+fn the_named_offsets_find_the_fields_in_a_spawns_bytes() {
+    let spawn = GpuSpawn {
+        pos: [1.0, 2.0, 3.0],
+        vel: [4.0, 5.0, 6.0],
+        look: 7,
+        ..spawn_of_flags()
+    };
+    let mut bytes = Vec::new();
+    spawn.write(&mut bytes);
+    let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let floats = |at: usize| [0, 4, 8].map(|k| f32::from_bits(word(at + k)));
+    assert_eq!(floats(GpuSpawn::POS_AT), spawn.pos);
+    assert_eq!(floats(GpuSpawn::VEL_AT), spawn.vel);
+    assert_eq!(word(GpuSpawn::LOOK_AT), 7);
+    assert_eq!(
+        word(GpuSpawn::LOOK_AT + 4) & GpuSpawn::ALIVE,
+        GpuSpawn::ALIVE
+    );
+}
+
 /// The ejection direction the pool's vertex stage unfolds from a particle's flags (`gpu_particle_types.wgsl`'s `pool_orient_dir`).
 fn unfolded(flags: u32) -> [f32; 3] {
     let bits = flags >> GpuSpawn::ORIENT_SHIFT;

@@ -151,10 +151,12 @@ struct VertexOut {
     @location(7) lod: f32,
     // A pool sprite's own terms (vs_gpu_sprite; vs_main gives every other draw "none"): x the next flipbook frame's share of
     // the texture, y the sun's visibility at the sprite's center (-1: none, found at each pixel), z its soft-particle distance
-    // (-1: SOFT_PARTICLE), w unused.
+    // (-1: SOFT_PARTICLE), w the radius (pixels) of the round footprint a small sprite is drawn with (0: the sprite is square).
     @location(8) @interpolate(flat) pool: vec4<f32>,
     // Where the next flipbook frame lies in the texture (the atlas), in the same place of its cell as `uv` in its own.
     @location(9) uv2: vec2<f32>,
+    // The place in the sprite's quad in pixels from its center (a small sprite's round footprint, `pool.w`).
+    @location(10) disc: vec2<f32>,
 };
 
 // Whether a material word is a plane's lit by the lightmap.
@@ -971,6 +973,9 @@ fn resolve(in: VertexOut, t_in: vec4<f32>, d: Derivs) -> Resolved {
         // A terrain layer: its share at the samples sharpened about one half, lowered by the texture's dips.
         base.a = clamp((in.color.a - 0.5) * LAYER_SHARPNESS + 0.5 - (1.0 - t.a) * LAYER_DIP, 0.0, 1.0);
     }
+    if in.pool.w > 0.0 {
+        base.a = base.a * disc_mask(in.pool.w, in.disc);
+    }
     r.alpha = base.a;
     r.unlit = base.rgb;
     r.lit = lit;
@@ -1161,6 +1166,14 @@ fn fs_modulate2x(in: VertexOut) -> @location(0) vec4<f32> {
     }
     let factor = mix(vec3<f32>(1.0), 2.0 * linear_to_srgb(t.rgb) * in.color.rgb, keep);
     return vec4<f32>(0.5 * pow(max(factor, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0);
+}
+
+// How much of a small pool sprite its round footprint shows at this pixel (`radius`, pixels, from the sprite's center): whole inside
+// a pixel of the edge, then a soft falloff over a pixel and a half. The footprint fades to the whole square as the sprite grows to
+// 6 pixels across (the vertex stage's `SPRITE_ROUND_PX`), where a texture's own falloff is resolved.
+fn disc_mask(radius: f32, at: vec2<f32>) -> f32 {
+    let round = 1.0 - smoothstep(4.0, 6.0, 2.0 * radius);
+    return mix(1.0, 1.0 - smoothstep(radius - 1.0, radius + 0.5, length(at)), round);
 }
 
 // The sprite's texel: its frame's, mixed with the next frame's by the flipbook's blend share (a pool sprite whose look blends).

@@ -266,22 +266,25 @@ fn the_cpu_field_is_the_shaders() {
 
 /// Every permutation that draws without a PBR material, by name, and the FNV-1a hash of its source composed with the engine's
 /// own extension: a change to any of them moves pixels that must not move (the PBR path has modules of its own).
+/// The forward, water, dissolve, sprite and particle entries changed their hashes for the round small sprites and the bounce (the
+/// forward fragment tests a pool sprite's footprint, zero for every other draw); `shots-diff` against main's pictures showed no
+/// other pixel move.
 const NON_PBR_SOURCES: [(&str, u64); 40] = [
     (
         "forward.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
-        0xe46c25ea019d12ce,
+        0xa6e7003aadbda92e,
     ),
     (
         "forward.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
-        0x76b22a462d114991,
+        0x62c9e19bc14ac72f,
     ),
     (
         "forward.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
-        0x62e1616826810b3b,
+        0xf88fa3639a8c2b81,
     ),
     (
         "forward.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
-        0x17d5d70f3882df96,
+        0xd7c805c5fe3bcef6,
     ),
     ("clusters.wgsl", 0xf9910b500be3f387),
     ("tonemap.wgsl", 0xaf3880f9b042906f),
@@ -296,9 +299,9 @@ const NON_PBR_SOURCES: [(&str, u64); 40] = [
     ("fxaa.wgsl", 0xa96525dca2b78bff),
     (
         "forward.wgsl (a secondary view: CLUSTERED = false, CLIP = true)",
-        0x08da7cd004431b5e,
+        0x4656f582511e7c1e,
     ),
-    ("water.wgsl", 0x49f470d463a99cf8),
+    ("water.wgsl", 0x75969dc22b5356d8),
     ("hiz.wgsl", 0x0b2dc8f0063114ed),
     ("ssr.wgsl", 0x736fc1e3bce41d02),
     ("down.wgsl", 0x3d4a40d1d9c5b930),
@@ -315,28 +318,28 @@ const NON_PBR_SOURCES: [(&str, u64); 40] = [
     ("cull.wgsl", 0x0ff6b6076072b463),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
-        0xfe537ba2c072ba3a,
+        0xea177317e4aaab87,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
-        0xb257954275fb6af5,
+        0x9b4f15430df388b4,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
-        0x1c3d5e10c77887ab,
+        0x30d38738ffa946d6,
     ),
     (
         "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
-        0x5c9b6c6d409392c2,
+        0x393d87a7f8da108f,
     ),
-    ("gpu_particles.wgsl", 0xaabc7bb4a1b83dd7),
+    ("gpu_particles.wgsl", 0x4f73054f871a31ee),
     (
         "forward.wgsl with dissolve.wgsl (CLUSTERED = true)",
-        0x379ac79f045ac5a2,
+        0xb150a24fb12900ca,
     ),
     (
         "forward.wgsl with dissolve.wgsl (CLUSTERED = false)",
-        0x3d7056fbbad76969,
+        0x93671b88f6fca6c7,
     ),
     (
         "shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = true)",

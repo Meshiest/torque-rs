@@ -30,6 +30,7 @@ impl Assets for NoFiles {
     }
 }
 
+/// The sparks are over 6 pixels across at the view's size: the pool draws smaller sprites round, which the CPU path's squares are not.
 fn particle(inv_alpha: bool) -> ParticleData {
     ParticleData {
         drag: if inv_alpha { 0.6 } else { 0.1 },
@@ -61,7 +62,7 @@ fn particle(inv_alpha: bool) -> ParticleData {
         sizes: if inv_alpha {
             [0.4, 0.9, 1.4, 1.8]
         } else {
-            [0.12, 0.1, 0.08, 0.05]
+            [0.6, 0.55, 0.5, 0.5]
         },
         times: [0.0, 0.2, 0.6, 1.0],
         textures: Vec::new(),
@@ -360,6 +361,11 @@ fn look_of(frames: Vec<usize>) -> SpriteLook {
         soft_distance: 0.4,
         flipbook_blend: false,
         size_by_velocity: 0.0,
+        turbulence: 0.0,
+        turbulence_scale: 1.0,
+        collide: false,
+        bounce_elasticity: 0.5,
+        bounce_friction: 0.2,
     }
 }
 

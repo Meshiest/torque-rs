@@ -33,35 +33,61 @@
 //!   draw at (the root of budget over total, so their area meets the budget) and the alpha scale (its root, not below 0.3);
 //!   the vertex stage applies both. It reads the same frame's positions: no frame of lag. [`HdWorld::gpu_particle_counts`]
 //!   reads the last frame's total and scales back.
+//! - **Turbulence and bounces** (`cs_update`'s step, a look's `motion` and `surface` words): a look with `turbulence`
+//!   adds that times the curl of a drifting noise potential, at `turbulenceScale`, to a particle's acceleration (swirls
+//!   that neither gather nor spread the particles; the pool's own clock, wrapped every 2^20 ms, is the noise's time). A
+//!   look with `collide` puts a particle that went behind the surface the last frame's working depth shows (or that
+//!   rests on it) back above it, its velocity reflected about the surface's normal from the depth's neighbors:
+//!   `bounceElasticity` of the speed into the surface kept, `bounceFriction` of the speed along it lost, and under a
+//!   rest speed no bounce, the particle staying and sliding. The depth is the one the previous frame's passes left in
+//!   the world's targets and the camera it was drawn with (jitter and all, `HdWorld::depth_view_proj`); a particle off
+//!   the screen, over bare sky, in front of the surface by more than its reach or deeper behind one than about a step
+//!   keeps flying, and the frames with no depth yet or a moved render origin bounce nothing. Every term is a function
+//!   of the particle, the frame's steps and the clock: no atomics, the same run makes the same pictures. A look with
+//!   neither runs the step as before, to the bit.
+//! - **Small sprites**: a billboard under 6 pixels across (`vs_gpu_sprite`; not an oriented or stretched one) is drawn
+//!   round (`disc_mask` in `forward.wgsl`, from the quad's place in pixels and the footprint radius in
+//!   `VertexOut::pool.w`), one under 4 pixels across 4 wide with its alpha scaled by its share of the footprint, so a
+//!   few-pixel ember is a soft dot and not a square whose texture's falloff the mips lost.
 //!
 //! # Maintaining
 //!
-//! - Module map: this file (the pool's buffers, its compute pass, its pipelines and groups, the frame's hooks: `prepare_sprites`,
-//!   `encode_sprites`, `sprite_draws`, `ensure_sprites`, `draw_sprites`); `shaders/gpu_particle_types.wgsl` (the records, shared);
-//!   `shaders/gpu_particles.wgsl` (the compute pass); `shaders/gpu_sprite.wgsl` (the vertex entry); `torque_render_scene::hd::sprites`
-//!   (the record table, the buckets, the hand-over), `torque_render_scene::hd::atlas` (the flipbook atlases) and
-//!   `torque_render_scene::particles` (`hand_over`, `SpriteLook`, `GpuSpawn`).
-//! - Invariants: the records' and particles' byte layouts are `SpriteRecord::write` and `GpuSpawn::write` (the scene's tests check
-//!   their sizes, `every_shader_permutation_is_valid_wgsl` the shaders); `Sim::keys` is the scene's bucket count plus one (the free
-//!   slots' key, last) and at most `MAX_KEYS` (65: 64 buckets); a bucket's draw is its 16 bytes of `args`; the free slots' place
-//!   and count and the spawns dropped (the last pass's, all passes') follow at `FREE_AT`; `SIM_BYTES` is the `Sim` uniform's size
-//!   (`prepare` writes it in `gpu_particles.wgsl`'s field order); the compute group binds eight storage buffers, the most a
-//!   WebGPU device promises a stage, so a new buffer must share one of these (`sprites_supported` checks the limit);
-//!   `keys` holds the fill governor's partial sums between `cs_fill` and `cs_governor`, then `cs_count`'s keys. The two-run test (`tests/gpu_particles.rs`) holds the pictures byte-identical; its CPU-path
-//!   comparison holds the step and the corners to the CPU path's.
+//! - Module map: this file (the pool's buffers, its compute pass, its pipelines and groups, the frame's hooks:
+//!   `prepare_sprites`, `encode_sprites`, `sprite_draws`, `ensure_sprites`, `draw_sprites`);
+//!   `shaders/gpu_particle_types.wgsl` (the records, shared); `shaders/gpu_particles.wgsl` (the compute pass);
+//!   `shaders/gpu_sprite.wgsl` (the vertex entry); `shaders/forward.wgsl` (`disc_mask`, in `resolve`);
+//!   `torque_render_scene::hd::sprites` (the record table, the buckets, the hand-over),
+//!   `torque_render_scene::hd::atlas` (the flipbook atlases) and `torque_render_scene::particles` (`hand_over`,
+//!   `SpriteLook`, `GpuSpawn`).
+//! - Invariants: the records' and particles' byte layouts are `SpriteRecord::write` and `GpuSpawn::write` (the scene's
+//!   tests check their sizes, `every_shader_permutation_is_valid_wgsl` the shaders); `Sim::keys` is the scene's bucket
+//!   count plus one (the free slots' key, last) and at most `MAX_KEYS` (65: 64 buckets); a bucket's draw is its 16
+//!   bytes of `args`; the free slots' place and count and the spawns dropped (the last pass's, all passes') follow at
+//!   `FREE_AT`; `SIM_BYTES` is the `Sim` uniform's size (`prepare` writes it in `gpu_particles.wgsl`'s field order);
+//!   the compute group binds eight storage buffers, the most a WebGPU device promises a stage, so a new buffer must
+//!   share one of these (`sprites_supported` checks the limit), and the last frame's depth (binding 9, a texture, not a
+//!   storage buffer; a 1 x 1 of nothing drawn until a frame has been, replaced in `prepare` whenever the world's depth
+//!   view is another one: the group is made again); a look's record is 224 bytes (the turbulence and the bounce at
+//!   192); the turbulence clock (`clock_ms`) wraps every 2^20 ms (`CLOCK_WRAP_MS`), so its `f32` seconds keep a fine
+//!   step; `keys` holds the fill governor's partial sums between `cs_fill` and `cs_governor`, then `cs_count`'s keys.
+//!   The two-run test (`tests/gpu_particles.rs`) holds the pictures byte-identical; its CPU-path comparison holds the
+//!   step and the corners to the CPU path's.
 //! - The wind is `Sim::wind` (the frame's `GpuSprites::wind`, the Sky's): the step carries a particle by `windCoefficient` times it
 //!   on top of its own velocity (`p += (v + wind * coef) dt`, as `Emitter::step` does). A particle's ejection direction rides in
 //!   its flags above the two low bits (`pool_orient_dir`, `orient_bits`), and a look's orient mode is the third word of
 //!   its record (`SpriteRecord::write`): `vs_gpu_sprite` turns the square along the direction (mode 1) or the velocity (mode 2).
-//! - Extension points: the step's new terms (turbulence,
-//!   collision: `cs_update`, which can bind more after `args`), a look's new fields (`PoolLook` and `SpriteRecord::write`
-//!   together), a per-emitter budget (`cs_spawn` takes the free slots in request order), a sort (a pass after `cs_scatter` over a
-//!   bucket's list), trails (another vertex entry over the same lists), the governor's rule (`cs_governor`: the scales it writes
-//!   are all the vertex stage reads).
-//! - Checks: `cargo test -p torque-render-hd --test gpu_particles` (the pictures, the atlas blend, the fill governor's budget and
-//!   time, the late bucket, a sprite over bare sky), `cargo test -p torque-render-scene --lib -- sprites atlas`,
-//!   `cargo run -p torque-render-hd --release --example particles-profile` (under the GPU bench lock; `--scale 64` with
-//!   `--count 10000` is 512-pixel sprites and prints the governor's line).
+//! - Extension points: the step's new terms (`pool_step`: turbulence and the bounce are its two; the compute group can
+//!   bind more after `args`), a look's new fields (`PoolLook` and `SpriteRecord::write` together), a per-emitter budget
+//!   (`cs_spawn` takes the free slots in request order), a sort (a pass after `cs_scatter` over a bucket's list),
+//!   trails (another vertex entry over the same lists), the governor's rule (`cs_governor`: the scales it writes are
+//!   all the vertex stage reads).
+//! - Checks: `cargo test -p torque-render-hd --test gpu_particles` (the pictures, the atlas blend, the fill governor's
+//!   budget and time, the late bucket, a sprite over bare sky), `--test gpu_particles_motion` (a fall onto a floor
+//!   stops above it and bounces by the elasticity, comes to rest, flies on off the screen and behind a wall; turbulence
+//!   off moves nothing and on moves a bounded amount the same every run; a 3-pixel sprite is a round dot; the pool read
+//!   back with `gpu_particle_states`), `cargo test -p torque-render-scene --lib -- sprites atlas`, `cargo run -p
+//!   torque-render-hd --release --example particles-profile` (under the GPU bench lock; `--scale 64` with `--count
+//!   10000` is 512-pixel sprites and prints the governor's line).
 
 use torque_render_scene::hd::Quality;
 use torque_render_scene::hd::sprites::{GpuSprites, MAX_BUCKETS, MAX_STEPS, SpriteRecord};
@@ -133,6 +159,16 @@ pub struct SpriteCounts {
     pub fill: FillCounts,
 }
 
+/// A live particle of the pool as its last step left it ([`HdWorld::gpu_particle_states`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoolState {
+    pub pos: [f32; 3],
+    pub vel: [f32; 3],
+    /// Its age (ms) and its look's index in the scene's record table.
+    pub age_ms: i32,
+    pub look: u32,
+}
+
 impl SpriteCounts {
     /// The live particles.
     pub fn live(&self) -> u32 {
@@ -148,7 +184,9 @@ const FREE_AT: u32 = MAX_KEYS * 4;
 /// The words after `FREE_AT`: the free slots' place and count, the spawns dropped by the last pass and by all of them.
 const ARGS_TAIL: u32 = 4;
 /// The `Sim` uniform's bytes.
-const SIM_BYTES: u64 = 288;
+const SIM_BYTES: u64 = 432;
+/// The pool's clock as the turbulence reads it wraps every this many ms (an `f32` second count keeps a fine step).
+const CLOCK_WRAP_MS: u64 = 1 << 20;
 /// The compute pass's entries, in dispatch order.
 const PASSES: [&str; 8] = [
     "cs_update",
@@ -194,6 +232,10 @@ pub(crate) struct GpuParticles {
     generation: Option<u64>,
     records_generation: Option<u64>,
     offset: [f64; 3],
+    /// The steps the pool has run (ms): the turbulence's time.
+    clock_ms: u64,
+    /// The depth the compute pass bounces particles off (the last frame's working depth; before one, a 1 x 1 of nothing drawn).
+    depth: wgpu::TextureView,
     keys_run: u32,
     /// The spawns past the pool's capacity, left out before the pass.
     dropped: u64,
@@ -211,10 +253,20 @@ fn sprite_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     e
 }
 
-/// The compute pass's group: the uniform, then the pool's buffers (`gpu_particles.wgsl`'s bindings).
+/// The compute pass's group: the uniform, then the pool's buffers and the last frame's depth (`gpu_particles.wgsl`'s bindings).
 fn sim_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let c = wgpu::ShaderStages::COMPUTE;
     let mut e = vec![crate::uniform(0, c)];
+    e.push(wgpu::BindGroupLayoutEntry {
+        binding: 9,
+        visibility: c,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Depth,
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    });
     for (b, read_only) in [
         (1, false),
         (2, true),
@@ -288,7 +340,7 @@ impl GpuParticles {
             device,
             "hd particle pool",
             u64::from(capacity) * GpuSpawn::BYTES as u64,
-            storage,
+            storage | wgpu::BufferUsages::COPY_SRC,
         );
         let keys = buffer(device, "hd particle keys", u64::from(capacity) * 4, storage);
         let scan = buffer(
@@ -351,6 +403,23 @@ impl GpuParticles {
             label: Some("hd particle sprites"),
             entries: &sprite_entries(),
         });
+        // Zeroed: nothing drawn, no bounce.
+        let depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("hd particle no depth"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: crate::DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let [frame, sky, refl] = layouts;
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("hd particle sprites"),
@@ -366,6 +435,7 @@ impl GpuParticles {
                 [
                     &sim, &particles, &spawns, &looks, &keys, &scan, &instances, &args, &fill,
                 ],
+                &depth,
             ),
             particles,
             spawns,
@@ -386,6 +456,8 @@ impl GpuParticles {
             generation: None,
             records_generation: None,
             offset: [0.0; 3],
+            clock_ms: 0,
+            depth,
             keys_run: 1,
             dropped: 0,
             run: None,
@@ -409,6 +481,7 @@ impl GpuParticles {
                 &self.args,
                 &self.fill,
             ],
+            &self.depth,
         );
         self.sprite_groups.clear();
     }
@@ -423,7 +496,8 @@ impl GpuParticles {
     }
 
     /// Takes the scene's hand-over: the record table when it changed, and (when the frame is new or the origin moved) the
-    /// frame's spawns and its `Sim` (the frame's [`Run`]).
+    /// frame's spawns and its `Sim` (the frame's [`Run`]), with the last frame's `depth` (None before one) and the camera that
+    /// drew it to bounce off.
     fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -431,9 +505,17 @@ impl GpuParticles {
         s: &GpuSprites,
         camera: &HdCamera,
         budget: f32,
+        depth: Option<(&wgpu::TextureView, [f32; 16])>,
     ) {
         self.run = None;
         let mut grown = false;
+        let seen = depth.map(|(view, view_proj)| {
+            if *view != self.depth {
+                self.depth = view.clone();
+                grown = true;
+            }
+            view_proj
+        });
         if self.records_generation != Some(s.records_generation) {
             self.records_generation = Some(s.records_generation);
             self.bytes.clear();
@@ -516,6 +598,14 @@ impl GpuParticles {
         let (w, h) = (camera.width as f32, camera.height as f32);
         push_f32(&mut sim, &[camera.proj[0], camera.proj[5], w, h]);
         push_f32(&mut sim, &[budget * w * h, 0.0, 0.0, 0.0]);
+        let clock = (self.clock_ms % CLOCK_WRAP_MS) as f32 / 1000.0;
+        self.clock_ms += steps.iter().map(|&ms| u64::from(ms)).sum::<u64>();
+        // A moved origin: the last frame's depth is in the old place.
+        let bounce = seen.is_some() && shift == [0.0; 3];
+        push_f32(&mut sim, &[clock, f32::from(u8::from(bounce)), 0.0, 0.0]);
+        let last = seen.unwrap_or(camera.view_proj);
+        push_f32(&mut sim, &last);
+        push_f32(&mut sim, &crate::invert(&last));
         queue.write_buffer(&self.sim, 0, &sim);
         self.keys_run = keys;
         self.run = Some(Run {
@@ -627,12 +717,14 @@ fn sim_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     buffers: [&wgpu::Buffer; 9],
+    depth: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    let entries: Vec<wgpu::BindGroupEntry> = buffers
+    let mut entries: Vec<wgpu::BindGroupEntry> = buffers
         .iter()
         .enumerate()
         .map(|(b, buffer)| whole(b as u32, buffer))
         .collect();
+    entries.push(crate::tv(9, depth));
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("hd particle frame"),
         layout,
@@ -693,6 +785,43 @@ impl<E: HdExtension> HdWorld<E> {
         }))
     }
 
+    /// The pool's live particles in slot order (a particle keeps its slot until it dies; the first spawns take the lowest free
+    /// slots), as the last frame's pass left them: None without a pool. Waits for the GPU and reads the whole pool back: for
+    /// tests and tools.
+    pub fn gpu_particle_states(&self) -> Result<Option<Vec<PoolState>>, HdError> {
+        let Some(pool) = &self.sprites else {
+            return Ok(None);
+        };
+        let bytes = self.read_buffer(
+            &pool.particles,
+            u64::from(pool.capacity) * GpuSpawn::BYTES as u64,
+        )?;
+        let words = |p: &[u8; GpuSpawn::BYTES], at: usize| -> [u32; 4] {
+            std::array::from_fn(|k| {
+                let i = at + 4 * k;
+                u32::from_le_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]])
+            })
+        };
+        let float3 = |w: [u32; 4]| [w[0], w[1], w[2]].map(f32::from_bits);
+        Ok(Some(
+            bytes
+                .as_chunks::<{ GpuSpawn::BYTES }>()
+                .0
+                .iter()
+                .filter(|p| words(p, GpuSpawn::LOOK_AT)[1] & GpuSpawn::ALIVE != 0)
+                .map(|p| {
+                    let (head, vel) = (words(p, GpuSpawn::POS_AT), words(p, GpuSpawn::VEL_AT));
+                    PoolState {
+                        pos: float3(head),
+                        vel: float3(vel),
+                        age_ms: head[3] as i32,
+                        look: words(p, GpuSpawn::LOOK_AT)[0],
+                    }
+                })
+                .collect(),
+        ))
+    }
+
     /// The frame's hand-over into the pool (made or made again for the quality; dropped with the feature off), and the textures
     /// its looks name.
     pub(super) fn prepare_sprites(&mut self, scene: &E::Scene, camera: &HdCamera) {
@@ -716,12 +845,18 @@ impl<E: HdExtension> HdWorld<E> {
             self.textures.push(view);
         }
         if let Some(pool) = &mut self.sprites {
+            let depth = self
+                .targets
+                .as_ref()
+                .map(|t| &t.depth_view)
+                .zip(self.depth_view_proj);
             pool.prepare(
                 &self.device,
                 &self.queue,
                 &scene.sprites,
                 camera,
                 fill_budget(quality),
+                depth,
             );
         }
     }

@@ -50,6 +50,10 @@ impl GpuSpawn {
     pub const ALIVE: u32 = 1;
     pub const FRESH: u32 = 2;
     pub const ORIENT_SHIFT: u32 = 2;
+    /// The byte offsets of the position (3 floats), the velocity (3 floats) and the `look, flags` words in the particle's bytes.
+    pub const POS_AT: usize = 0;
+    pub const VEL_AT: usize = 16;
+    pub const LOOK_AT: usize = 48;
 
     /// The particle's bytes as the pool's `Particle` holds them, the color rounded to bytes as the CPU path's vertices are.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -134,6 +138,15 @@ pub struct SpriteLook {
     pub flipbook_blend: bool,
     /// The seconds of its speed a sprite stretches back along its motion (`sizeByVelocity`; 0: TGE's square). Fast and thin.
     pub size_by_velocity: f32,
+    /// The curl noise's acceleration on its particles (`turbulence`, units a second squared; 0: none) and the size of its swirls
+    /// (`turbulenceScale`, units).
+    pub turbulence: f32,
+    pub turbulence_scale: f32,
+    /// Whether they bounce off what the last frame's depth shows (`collide`), keeping `bounce_elasticity` of their speed into it
+    /// and losing `bounce_friction` of their speed along it (`bounceElasticity`, `bounceFriction`).
+    pub collide: bool,
+    pub bounce_elasticity: f32,
+    pub bounce_friction: f32,
 }
 
 /// A frame's hand-over to the pool: the particles made since the last one and their looks, the simulation steps (ms, in
@@ -267,6 +280,11 @@ impl Emitter {
             soft_distance: p.extras.soft_distance,
             flipbook_blend: p.extras.flipbook_blend,
             size_by_velocity: p.extras.size_by_velocity,
+            turbulence: p.extras.turbulence,
+            turbulence_scale: p.extras.turbulence_scale,
+            collide: p.extras.collide,
+            bounce_elasticity: p.extras.bounce_elasticity,
+            bounce_friction: p.extras.bounce_friction,
         }
     }
 }

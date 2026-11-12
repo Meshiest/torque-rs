@@ -571,6 +571,11 @@ fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
         soft_distance: 0.4,
         flipbook_blend: false,
         size_by_velocity: 0.0,
+        turbulence: 0.0,
+        turbulence_scale: 1.0,
+        collide: false,
+        bounce_elasticity: 0.5,
+        bounce_friction: 0.2,
     };
     let spawns = age
         .map(puffs)

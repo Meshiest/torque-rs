@@ -19,6 +19,11 @@ fn look(blend: Blend, frames: Vec<usize>) -> SpriteLook {
         soft_distance: 0.4,
         flipbook_blend: false,
         size_by_velocity: 0.0,
+        turbulence: 0.0,
+        turbulence_scale: 1.0,
+        collide: false,
+        bounce_elasticity: 0.5,
+        bounce_friction: 0.2,
     }
 }
 
@@ -424,4 +429,34 @@ fn the_soft_distance_and_the_stretch_reach_the_record() {
     s.records[0].write(&mut bytes);
     let f = |i: usize| f32::from_le_bytes(bytes[176 + 4 * i..180 + 4 * i].try_into().unwrap());
     assert_eq!([f(0), f(1)], [2.5, 0.1]);
+}
+
+#[test]
+fn the_turbulence_and_the_bounce_reach_the_record_and_tell_looks_apart() {
+    let mut x = look(Blend::Alpha, Vec::new());
+    x.turbulence = 3.0;
+    x.turbulence_scale = 0.5;
+    x.collide = true;
+    x.bounce_elasticity = 0.6;
+    x.bounce_friction = 0.25;
+    let (s, _) = pushed(x.clone(), None);
+    let mut bytes = Vec::new();
+    s.records[0].write(&mut bytes);
+    assert_eq!(bytes.len(), SpriteRecord::BYTES);
+    let f = |i: usize| f32::from_le_bytes(bytes[192 + 4 * i..196 + 4 * i].try_into().unwrap());
+    assert_eq!([f(0), f(1), f(2), f(3)], [3.0, 0.5, 0.0, 0.0]);
+    assert_eq!([f(4), f(5), f(6), f(7)], [1.0, 0.6, 0.25, 0.0]);
+    // A look with neither turbulence nor a bounce writes none, and is another record than one that has them.
+    let plain = look(Blend::Alpha, Vec::new());
+    let mut none = Vec::new();
+    pushed(plain.clone(), None).0.records[0].write(&mut none);
+    let g = |i: usize| f32::from_le_bytes(none[192 + 4 * i..196 + 4 * i].try_into().unwrap());
+    assert_eq!([g(0), g(4)], [0.0, 0.0]);
+    let mut s = GpuSprites::default();
+    let frame = SpriteFrame {
+        looks: vec![plain, x],
+        ..SpriteFrame::default()
+    };
+    s.push(&frame, Some, &mut TextureTable::default(), None);
+    assert_eq!(s.records.len(), 2);
 }

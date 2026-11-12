@@ -15,12 +15,21 @@
 // when the frame's summed sprite area is past the quality's budget. A flipbook look's frame is found from the particle's age in
 // its atlas: the frame in view and the next one's place (`uv2`) with the share of the next the fragment mixes in (`pool.x`). A lit
 // look's sun visibility is found here once, at the particle's center, instead of at every pixel (`pool.y`).
+//
+// A square billboard under SPRITE_ROUND_PX pixels across is drawn as a round, soft dot instead (the fragment stage's `disc_mask`,
+// from the quad's place in pixels `disc` and the footprint's radius `pool.w`): a quad of a few pixels has no shape of its own, and
+// a texture's falloff is lost in its mips. One under SPRITE_MIN_PX across is drawn that wide, its alpha scaled by the share of the
+// area it had, so its light stays about what it was.
 
 @group(1) @binding(2) var<storage, read> sprite_particles: array<PoolParticle>;
 @group(1) @binding(3) var<storage, read> sprite_instances: array<u32>;
 @group(1) @binding(4) var<storage, read> sprite_looks: array<PoolLook>;
 // The governor's size scale and alpha scale.
 @group(1) @binding(5) var<storage, read> sprite_fill: array<f32>;
+
+// The widths (pixels) under which a billboard is drawn round, and under which it is grown to.
+const SPRITE_ROUND_PX: f32 = 6.0;
+const SPRITE_MIN_PX: f32 = 4.0;
 
 // Degrees a second at an age in ms, to radians.
 const SPRITE_SPIN: f32 = (1.0 / 1000.0) * (3.14159265358979 / 180.0);
@@ -54,7 +63,23 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
     let z = select(-1.0, 1.0, k >= 2u);
     let right = vec3<f32>(frame.view[0][0], frame.view[1][0], frame.view[2][0]);
     let up = vec3<f32>(frame.view[0][1], frame.view[1][1], frame.view[2][1]);
-    let width = q.size * 0.5 * sprite_fill[0];
+    var width = q.size * 0.5 * sprite_fill[0];
+    let orient = sprite_looks[q.look].words.z;
+    let by_velocity = sprite_looks[q.look].fx.y;
+    // A small billboard's round footprint (radius in pixels; 0: none) and the share of its area it keeps.
+    var footprint = 0.0;
+    var coverage = 1.0;
+    if orient == 0u && by_velocity <= 0.0 {
+        let depth = (frame.view_proj * vec4<f32>(q.pos, 1.0)).w;
+        let wide = 2.0 * width * frame.proj[1][1] * 0.5 * frame.screen.y / depth;
+        if depth > 1e-4 && wide > 1e-4 && wide < SPRITE_ROUND_PX {
+            let grown = max(wide, SPRITE_MIN_PX);
+            footprint = 0.5 * grown;
+            // The footprint's mask shows about 1.25 radii squared of the sprite's square: the light stays about what it was.
+            coverage = min(1.0, wide * wide / (1.25 * footprint * footprint));
+            width = width * (grown / wide);
+        }
+    }
     let angle = q.spin * f32(q.age) * SPRITE_SPIN;
     let s = sin(angle);
     let c = cos(angle);
@@ -62,8 +87,6 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
     var center = q.pos;
     // An oriented particle (TGE's `setupOriented`): a square of its size whose z axis lies along its direction (ejection, or
     // velocity: a particle at rest draws nothing) and whose x axis is across it and the line of sight; it has no spin.
-    let orient = sprite_looks[q.look].words.z;
-    let by_velocity = sprite_looks[q.look].fx.y;
     if orient != 0u {
         var dir = pool_orient_dir(q.flags);
         if orient == POOL_ORIENT_VELOCITY {
@@ -110,6 +133,7 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
     let base = vec2<f32>(0.5 + 0.5 * x, 0.5 - 0.5 * z);
     out.uv = base;
     out.uv2 = base;
+    out.disc = vec2<f32>(x, z) * footprint;
     var share = 0.0;
     let flip = sprite_looks[q.look].flip;
     if flip.x > 0.0 {
@@ -124,7 +148,7 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
         }
     }
     let rgba = unpack4x8unorm(q.color);
-    out.color = vec4<f32>(rgba.rgb, rgba.a * sprite_fill[1]);
+    out.color = vec4<f32>(rgba.rgb, rgba.a * sprite_fill[1] * coverage);
     out.normal = vec3<f32>(0.0, 0.0, 1.0);
     out.extra = 0u;
     var vis = -1.0;
@@ -138,7 +162,7 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
             material = material & ~MAT_LIT;
         }
     }
-    out.pool = vec4<f32>(share, vis, sprite_looks[q.look].fx.x, 0.0);
+    out.pool = vec4<f32>(share, vis, sprite_looks[q.look].fx.x, footprint);
     out.material = material;
     return out;
 }

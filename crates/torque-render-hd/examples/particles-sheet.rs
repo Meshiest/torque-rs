@@ -1,5 +1,5 @@
-//! Eight particle effects (smoke, sparks, fire, dust, explosion, snow, rain, debris) drawn one picture each through the GPU
-//! particle pool or, with `--cpu`, the CPU path's quads: the pictures a look is judged by.
+//! Ten particle effects (smoke, sparks, fire, dust, explosion, snow, rain, debris, bounce, swirl) drawn one picture each through
+//! the GPU particle pool or, with `--cpu`, the CPU path's quads: the pictures a look is judged by.
 //!
 //! Every effect is a few particle datablocks as the client holds them (the engine's optional fields too: the fire's flipbook
 //! blends its frames, the sparks and the rain stretch along their motion) and a script of emitters that runs 160 frames of
@@ -28,7 +28,7 @@ const MS: u32 = 16;
 const SIDE: u32 = 64;
 
 /// The effects, in the order of the sheet.
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 10] = [
     "smoke",
     "sparks",
     "fire",
@@ -37,6 +37,8 @@ const NAMES: [&str; 8] = [
     "snow",
     "rain",
     "debris",
+    "bounce",
+    "swirl",
 ];
 
 struct Args {
@@ -281,6 +283,68 @@ fn effect(name: &str) -> (Vec<Source>, [f32; 3], [f32; 3]) {
             };
             (vec![continuous(emitter(r, p), [0.0, 0.0, 0.5])], eye, look)
         }
+        "bounce" => {
+            // Sparks that land on the floor and bounce off it, the depth buffer their ground.
+            let extras = ParticleExtras {
+                size_by_velocity: 0.03,
+                collide: true,
+                bounce_elasticity: 0.55,
+                bounce_friction: 0.3,
+                ..x()
+            };
+            let p = particle(
+                &["spark"],
+                false,
+                [[1.0, 0.85, 0.5], [0.9, 0.3, 0.05]],
+                [1.0, 0.95, 0.8, 0.0],
+                [0.07, 0.06, 0.05, 0.04],
+                2600,
+                1.0,
+                0.05,
+                extras,
+            );
+            let r = Rules {
+                period_ms: 6,
+                velocity: 4.5,
+                variance: 1.5,
+                theta: (10.0, 55.0),
+            };
+            (
+                vec![continuous(emitter(r, p), [0.0, 0.0, 0.4])],
+                [3.5, -5.0, 1.0],
+                [0.0, 0.0, 0.5],
+            )
+        }
+        "swirl" => {
+            // The smoke again, in smaller puffs carried through curling air.
+            let extras = ParticleExtras {
+                turbulence: 0.6,
+                turbulence_scale: 1.8,
+                ..x()
+            };
+            let p = particle(
+                &["puff"],
+                true,
+                [[0.62, 0.6, 0.57], [0.4, 0.4, 0.4]],
+                [0.0, 0.5, 0.3, 0.0],
+                [0.25, 0.5, 0.8, 1.1],
+                4200,
+                -0.06,
+                0.5,
+                extras,
+            );
+            let r = Rules {
+                period_ms: 10,
+                velocity: 1.4,
+                variance: 0.3,
+                theta: (0.0, 12.0),
+            };
+            (
+                vec![continuous(emitter(r, p), [0.0, 0.0, 0.2])],
+                [0.0, -8.0, 2.6],
+                [0.0, 0.0, 2.4],
+            )
+        }
         "fire" => {
             let extras = ParticleExtras {
                 flipbook_blend: true,
@@ -497,6 +561,11 @@ fn scene(size: (u32, u32), quality: Quality, eye: [f32; 3], target: [f32; 3]) ->
 fn draw(gpu: &Gpu, a: &Args, name: &str) -> Result<torque_render_core::Frame, String> {
     let (mut sources, eye, target) = effect(name);
     let mut s = scene(a.size, a.quality, eye, target);
+    if name == "bounce" {
+        // A dim room: the sparks are the light.
+        s.frame.sun.diffuse = [0.1, 0.1, 0.12];
+        s.frame.sun.ambient = [0.06, 0.06, 0.08];
+    }
     let camera = HdCamera::new(
         s.frame.eye.expect("the eye"),
         f32::from(s.frame.fov),

@@ -118,7 +118,9 @@ pub(crate) mod reflect;
 
 #[path = "gpu_particles.rs"]
 mod gpu_particles;
-pub use gpu_particles::{FillCounts, ParticlePool, SpriteCounts, fill_budget, sprite_capacity};
+pub use gpu_particles::{
+    FillCounts, ParticlePool, PoolState, SpriteCounts, fill_budget, sprite_capacity,
+};
 
 #[path = "dissolve.rs"]
 mod dissolve;
@@ -1231,6 +1233,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     sprite_cap: u32,
     /// The quality of the scene last prepared (what [`HdWorld::gpu_particles_on`] answers for).
     pool_quality: Quality,
+    /// The world to clip space (jitter included) the last frame's working depth was drawn with: what the pool's bounces read it by.
+    depth_view_proj: Option<[f32; 16]>,
     /// The last upload's table of mesh places in bytes (its room kept).
     node_bytes: Vec<u8>,
     /// The forward passes' frame groups made in the last frames, by what they bind ([`GroupCache`]).
@@ -3081,6 +3085,7 @@ impl<E: HdExtension> HdWorld<E> {
             clipped: Vec::new(),
             sprite_cap: torque_render_scene::particles::MAX_PARTICLES as u32,
             pool_quality: Quality::High,
+            depth_view_proj: None,
             node_bytes: Vec::new(),
             frame_groups: std::sync::Mutex::new(GroupCache::default()),
             tonemap_groups: std::sync::Mutex::new(GroupCache::default()),
@@ -6145,6 +6150,7 @@ impl<E: HdExtension> HdWorld<E> {
         };
         let jcam = icam.jittered(j);
         let p = self.temporal.parity;
+        self.depth_view_proj = Some(jcam.view_proj);
         // The shapes moved between the last frame and this one when the draws were synced again in between.
         let moved = self
             .temporal

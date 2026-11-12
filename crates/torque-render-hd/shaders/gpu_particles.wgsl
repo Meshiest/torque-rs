@@ -2,7 +2,8 @@
 // in order:
 //   cs_update       each live particle aged by each of the frame's steps in turn and stepped as TGE's `updateSingleParticle` steps it
 //                   (`v += (a - v drag - (0, 0, 9.81 gravityCoefficient)) dt; p += (v + wind windCoefficient) dt`, the color and
-//                   size between the keys its age reached), or let go past its life; a fresh one aged only; all moved by the
+//                   size between the keys its age reached; a look's curl-noise turbulence added to the acceleration, and its bounce
+//                   off the last frame's depth after the move), or let go past its life; a fresh one aged only; all moved by the
 //                   render origin's shift; all let go on a clear;
 //   cs_spawn        each of the frame's spawns into a free slot of the last frame's list (in the list's order; past its end
 //                   dropped, and counted by its first invocation);
@@ -39,6 +40,12 @@ struct Sim {
     view_proj: mat4x4<f32>,
     cam: vec4<f32>,
     budget: vec4<f32>,
+    // The pool's clock at the frame's first step (x: seconds, wrapped every 2^20 ms): the turbulence's time; y: 1 when `last_depth`
+    // holds the last frame's depth as `last_view_proj` saw it (the bounces), else 0.
+    clock: vec4<f32>,
+    // The camera that drew the last frame's depth (jitter and all), and its inverse.
+    last_view_proj: mat4x4<f32>,
+    last_inv_view_proj: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> sim: Sim;
@@ -54,6 +61,8 @@ struct Sim {
 // The fill governor's result for the sprites' vertex stage: the sprites' size scale, their alpha scale, the frame's summed sprite
 // area (pixels) at full size, and the budget.
 @group(0) @binding(8) var<storage, read_write> fill: array<f32>;
+// The last frame's working depth (reversed: 1 at the near plane, 0 far away).
+@group(0) @binding(9) var last_depth: texture_depth_2d;
 
 const GROUP: u32 = 256u;
 const MAX_KEYS: u32 = 65u;
@@ -64,17 +73,142 @@ const FREE_AT: u32 = 260u;
 const POOL_GRAVITY: f32 = 9.81;
 // The least a sprite's alpha is scaled to by the governor.
 const FILL_ALPHA_FLOOR: f32 = 0.3;
+// A bounce puts a particle this far above the surface it met, and a particle within `COLLIDE_CONTACT` above one touches it.
+const COLLIDE_SKIN: f32 = 0.02;
+const COLLIDE_CONTACT: f32 = 0.03;
+// How far in front of the surface the depth shows along the line of sight a particle may be and still touch it (the line meets
+// a surface seen at a grazing angle far from the point under the particle).
+const COLLIDE_FRONT: f32 = 0.3;
+// The speed (units a second) a bounce leaves a particle moving away at, under which it stays on the surface instead.
+const COLLIDE_REST: f32 = 0.5;
 
-// One step of `ms` (TGE's `updateSingleParticle`).
-fn pool_step(p: ptr<function, PoolParticle>, ms: i32) {
+// The curl noise's vector potential: a few warped sine waves per axis, drifting with `t` (seconds).
+fn curl_potential(p: vec3<f32>, t: f32) -> vec3<f32> {
+    let q = p + 0.6 * sin(p.yzx * 1.37 + vec3<f32>(0.31, 1.7, 2.9) * t);
+    var a = vec3<f32>(
+        sin(q.y * 1.11 + t * 0.53) * cos(q.z * 0.93 - t * 0.21),
+        sin(q.z * 1.07 - t * 0.47) * cos(q.x * 1.19 + t * 0.29),
+        sin(q.x * 0.97 + t * 0.41) * cos(q.y * 1.23 - t * 0.37),
+    );
+    let r = q.zxy * 2.13 + vec3<f32>(5.2, 1.3, 7.7);
+    a = a + 0.45 * vec3<f32>(
+        sin(r.y + t * 0.83) * cos(r.z),
+        sin(r.z - t * 0.71) * cos(r.x),
+        sin(r.x + t * 0.67) * cos(r.y),
+    );
+    return a;
+}
+
+// The curl of `curl_potential` at `p` by central differences: a field with no divergence (swirls that neither gather nor spread
+// the particles), of strength about 1 to a few.
+fn curl_noise(p: vec3<f32>, t: f32) -> vec3<f32> {
+    let e = 0.08;
+    let dx = (curl_potential(p + vec3<f32>(e, 0.0, 0.0), t) - curl_potential(p - vec3<f32>(e, 0.0, 0.0), t)) / (2.0 * e);
+    let dy = (curl_potential(p + vec3<f32>(0.0, e, 0.0), t) - curl_potential(p - vec3<f32>(0.0, e, 0.0), t)) / (2.0 * e);
+    let dz = (curl_potential(p + vec3<f32>(0.0, 0.0, e), t) - curl_potential(p - vec3<f32>(0.0, 0.0, e), t)) / (2.0 * e);
+    return vec3<f32>(dy.z - dz.y, dz.x - dx.z, dx.y - dy.x);
+}
+
+// The world point at normalized device coordinates `ndc` and reversed depth `z` of the last frame.
+fn last_world(ndc: vec2<f32>, z: f32) -> vec3<f32> {
+    let w = sim.last_inv_view_proj * vec4<f32>(ndc, z, 1.0);
+    return w.xyz / w.w;
+}
+
+// The last frame's surface at texel `px` (its depth) as a world point.
+fn last_surface(px: vec2<i32>, size: vec2<f32>) -> vec3<f32> {
+    let ndc = (vec2<f32>(px) + 0.5) / size * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+    return last_world(ndc, textureLoad(last_depth, px, 0));
+}
+
+// The step from `s0` to the nearer of its two neighbors along one screen axis: a silhouette's far side does not skew the normal.
+fn surface_edge(s0: vec3<f32>, ahead: vec3<f32>, behind: vec3<f32>) -> vec3<f32> {
+    return select(s0 - behind, ahead - s0, distance(ahead, s0) < distance(behind, s0));
+}
+
+// A particle that went behind the surface the last frame's depth shows (or rests on it) is put back above it, its velocity
+// reflected about the surface's normal (from the depth's neighbors): `surface.y` of its speed into the surface kept, `surface.z`
+// of its speed along it lost; a bounce that would leave it slower than `COLLIDE_REST` leaves it on the surface, sliding with
+// the friction it loses a 60th of a second. One off the screen, in front of the surface or deeper behind one than about a step
+// is not in contact, so it keeps flying.
+fn pool_collide(p: ptr<function, PoolParticle>, surface: vec4<f32>, dt: f32) {
+    let reach = 0.05 + 2.0 * length((*p).vel) * dt;
+    let clip = sim.last_view_proj * vec4<f32>((*p).pos, 1.0);
+    if clip.w <= 1e-4 {
+        return;
+    }
+    let ndc = clip.xyz / clip.w;
+    if abs(ndc.x) >= 1.0 || abs(ndc.y) >= 1.0 {
+        return;
+    }
+    let size = vec2<f32>(textureDimensions(last_depth));
+    let px = min(max(vec2<i32>((ndc.xy * vec2<f32>(0.5, -0.5) + 0.5) * size), vec2<i32>(1)), vec2<i32>(size) - 2);
+    let d = textureLoad(last_depth, px, 0);
+    // Nothing drawn there (the sky).
+    if d <= 0.0 {
+        return;
+    }
+    let hit = last_world(ndc.xy, d);
+    if distance(hit, (*p).pos) > select(reach, COLLIDE_FRONT, ndc.z >= d) {
+        return;
+    }
+    let s0 = last_surface(px, size);
+    let ex = surface_edge(s0, last_surface(px + vec2<i32>(1, 0), size), last_surface(px - vec2<i32>(1, 0), size));
+    let ey = surface_edge(s0, last_surface(px + vec2<i32>(0, 1), size), last_surface(px - vec2<i32>(0, 1), size));
+    var n = cross(ex, ey);
+    let len = length(n);
+    // A neighbor texel of bare sky is at infinity (w = 0): its step is not finite, and no comparison with it holds.
+    if !(len > 1e-12) {
+        return;
+    }
+    n = n / len;
+    if !(abs(dot(n, n) - 1.0) < 0.01) {
+        return;
+    }
+    // Toward the eye.
+    if dot(n, last_world(ndc.xy, 1.0) - hit) < 0.0 {
+        n = -n;
+    }
+    let gap = dot((*p).pos - hit, n);
+    if gap > COLLIDE_CONTACT || gap < -reach {
+        return;
+    }
+    let v = (*p).vel;
+    let into = dot(v, n);
+    if into < 0.0 {
+        let along = v - into * n;
+        let away = -into * surface.y;
+        if away < COLLIDE_REST {
+            (*p).vel = along * pow(max(1.0 - surface.z, 1e-4), dt * 60.0);
+        } else {
+            (*p).vel = along * (1.0 - surface.z) + away * n;
+        }
+    }
+    if gap < COLLIDE_SKIN {
+        (*p).pos = (*p).pos + n * (COLLIDE_SKIN - gap);
+    }
+}
+
+// One step of `ms` at the pool's clock `now` (seconds): TGE's `updateSingleParticle`, plus the look's turbulence (the curl noise
+// at its scale, times its strength) and, for a look that collides, its bounce.
+fn pool_step(p: ptr<function, PoolParticle>, ms: i32, now: f32) {
     let li = (*p).look;
     let coef = looks[li].coef;
     let dt = f32(ms) / 1000.0;
     let g = vec3<f32>(0.0, 0.0, POOL_GRAVITY * coef.y);
     let wind = sim.wind.xyz * coef.z;
-    let v = (*p).vel + ((*p).acc - (*p).vel * coef.x - g) * dt;
+    var a = (*p).acc - (*p).vel * coef.x - g;
+    let motion = looks[li].motion;
+    if motion.x != 0.0 {
+        a = a + motion.x * curl_noise((*p).pos / max(motion.y, 1e-3), now);
+    }
+    let v = (*p).vel + a * dt;
     (*p).vel = v;
     (*p).pos = (*p).pos + (v + wind) * dt;
+    let surface = looks[li].surface;
+    if surface.x != 0.0 && sim.clock.y != 0.0 {
+        pool_collide(p, surface, dt);
+    }
     var t = 1.0;
     if (*p).life > 0 {
         t = f32((*p).age) / f32((*p).life);
@@ -114,8 +248,10 @@ fn cs_update(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     p.pos = p.pos + sim.shift.xyz;
+    var now = sim.clock.x;
     for (var s = 0u; s < sim.step_count; s = s + 1u) {
         let ms = i32(sim.steps[s / 4u][s % 4u]);
+        now = now + f32(ms) / 1000.0;
         p.age = p.age + ms;
         if p.age > p.life {
             particles[i].flags = 0u;
@@ -124,7 +260,7 @@ fn cs_update(@builtin(global_invocation_id) id: vec3<u32>) {
         if (p.flags & POOL_FRESH) != 0u {
             p.flags = p.flags & ~POOL_FRESH;
         } else {
-            pool_step(&p, ms);
+            pool_step(&p, ms, now);
         }
     }
     particles[i] = p;

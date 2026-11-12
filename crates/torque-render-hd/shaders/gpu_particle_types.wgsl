@@ -19,7 +19,9 @@ struct PoolParticle {
 
 // A look: a particle datablock's color, size and time keys, its coefficients (drag, gravity, wind, frames a second), its
 // vertex material word, frame count and orient mode, each frame's bucket a byte (POOL_MAX_FRAMES), its flipbook atlas
-// (columns and rows, 0 for none; 1 when a frame blends into the next) and its `softDistance` and `sizeByVelocity`.
+// (columns and rows, 0 for none; 1 when a frame blends into the next), its `softDistance` and `sizeByVelocity` (`fx`: x and y),
+// its `turbulence` and `turbulenceScale` (`motion`: x and y) and its bounce (`surface`: x `collide` as 1 or 0, y `bounceElasticity`,
+// z `bounceFriction`).
 struct PoolLook {
     colors: array<vec4<f32>, 4>,
     sizes: vec4<f32>,
@@ -29,6 +31,8 @@ struct PoolLook {
     frames: array<vec4<u32>, 2>,
     flip: vec4<f32>,
     fx: vec4<f32>,
+    motion: vec4<f32>,
+    surface: vec4<f32>,
 };
 
 const POOL_ALIVE: u32 = 1u;
