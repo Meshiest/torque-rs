@@ -71,7 +71,7 @@ struct Frame {
     cluster_z: vec4<f32>,
     // F0, roughness, the SH's luminance weight, its chroma weight.
     surface: vec4<f32>,
-    // x: the most lights a cluster shades.
+    // x: the most lights a cluster shades; y: 1 when the ambient is the sky's irradiance (forward.wgsl's `irradiance`).
     limits: vec4<u32>,
     // Eye to clip space (reversed depth; jittered as view_proj is).
     proj: mat4x4<f32>,

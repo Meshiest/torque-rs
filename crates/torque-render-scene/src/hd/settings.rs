@@ -43,6 +43,11 @@ pub struct ImageSettings {
     /// The physical sky: the atmosphere's sky view table shades the server's sky box and, where the scene asks
     /// ([`crate::hd::HdScene::atmosphere`]), draws its own sky in the box's place.
     pub physical_sky: bool,
+    /// The diffuse ambient is the sky's irradiance: the sky cube's light (the physical sky's own scale where it is drawn in the
+    /// box's place, else scaled so the horizontal normals take the scene's ambient on average), and at High and up the light
+    /// capture's (what is around the eye: a colored wall's bounce, the sky through a window); else the scene's ambient color
+    /// shaped by the sky's SH (the fixed-function ambient, for a look that keeps it).
+    pub sky_irradiance: bool,
     /// An exponential height fog ([`crate::hd::sky::DEFAULT_HEIGHT_FOG`]) under the distance fog, and a volumetric medium that thins
     /// with height as it does (else a constant one).
     pub height_fog: bool,
@@ -57,8 +62,8 @@ pub struct ImageSettings {
 impl ImageSettings {
     /// The engine's settings: fixed exposure, the neutral tonemap and grade, the whole frame mixed into a low bloom, a small bright sun
     /// disk with strong limb darkening, volumetrics and volumetric clouds always on, the AO at full strength estimated at half
-    /// resolution, a light sharpen, clear water, linear light and blending, the physical sky and the height fog; the occlusion smooth
-    /// only where the scene asks.
+    /// resolution, a light sharpen, clear water, linear light and blending, the physical sky, the sky's irradiance and the height
+    /// fog; the occlusion smooth only where the scene asks.
     pub const DEFAULT: ImageSettings = ImageSettings {
         exposure: ExposureMode::Fixed(1.0),
         tonemap: Tonemap::Neutral,
@@ -93,6 +98,7 @@ impl ImageSettings {
         clear_water: true,
         linear_light: true,
         physical_sky: true,
+        sky_irradiance: true,
         height_fog: true,
         linear_blend: true,
         smooth_occlusion: false,

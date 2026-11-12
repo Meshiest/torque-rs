@@ -1,14 +1,24 @@
-//! The sky's irradiance as L2 spherical harmonics (the ambient's shape).
+//! The sky's irradiance as L2 spherical harmonics.
 //!
-//! The sky is what the fixed-function frame draws behind everything (the sky box, the clouds, the fog bans and
-//! anything below the horizon): [`sky_shape`] casts [`DIRECTIONS`] fixed rays from the eye through those draws in their order
-//! (each hit sampled from a small mip level of its texture, the texture environment applied, alpha blended over what is behind),
-//! takes the radiance to linear, projects it on the nine real SH basis functions and convolves it with the clamped cosine
-//! (Ramamoorthi and Hanrahan 2001). The result is normalised so that its mean over the horizontal normals is 1: the shader
-//! multiplies the frame's ambient by this shape (only its variation is used: the ambient stays calibrated to the sun's).
+//! - **The sky's irradiance** (the default ambient: [`ImageSettings::sky_irradiance`](crate::hd::ImageSettings::sky_irradiance))
+//!   is projected on the GPU from the environment cubes the frame draws (`torque_render_hd::irradiance`) with the basis and the
+//!   clamped cosine's bands here ([`basis`], [`BANDS`]). The physical sky's drawn radiance becomes light by [`sky_light_scale`];
+//!   its ground below the horizon has [`GROUND_ALBEDO`].
+//! - **The fixed-function ambient's shape** ([`sky_shape`]): the sky is what the fixed-function frame draws behind everything (the
+//!   sky box, the clouds, the fog bans and anything below the horizon); [`sky_shape`] casts [`DIRECTIONS`] fixed rays from the eye
+//!   through those draws in their order (each hit sampled from a small mip level of its texture, the texture environment applied,
+//!   alpha blended over what is behind), takes the radiance to linear, projects it on the nine real SH basis functions and
+//!   convolves it with the clamped cosine (Ramamoorthi and Hanrahan 2001). The result is normalised so that its mean over the
+//!   horizontal normals is 1: the shader multiplies the frame's ambient by this shape (only its variation is used: the ambient
+//!   stays calibrated to the sun's).
+
+use std::sync::OnceLock;
 
 use glam::Vec3;
 
+use crate::hd::atmosphere::{CAMERA_HEIGHT, EARTH};
+use crate::hd::scatter::NOON_SUN;
+use crate::hd::sky::DEFAULT_SKY_GAIN;
 use crate::hd::{TextureTable, srgb_to_linear};
 use crate::{Blend, Draw, TexEnv};
 
@@ -18,6 +28,30 @@ pub const DIRECTIONS: usize = 1024;
 pub const SAMPLE_WIDTH: u32 = 64;
 /// `Y_0^0`.
 const Y00: f32 = 0.282_094_8;
+/// The clamped cosine's convolution of each band (0, 1, 2) over pi: what a coefficient of the radiance becomes in the irradiance
+/// over pi (the ambient's radiance: a white Lambertian surface gives it back).
+pub const BANDS: [f32; 3] = [1.0, 2.0 / 3.0, 0.25];
+/// The physical sky's ground (below its horizon, where a world's own ground does not reach): the atmosphere's ground albedo.
+pub const GROUND_ALBEDO: [f32; 3] = [
+    EARTH.ground_albedo[0] as f32,
+    EARTH.ground_albedo[1] as f32,
+    EARTH.ground_albedo[2] as f32,
+];
+
+/// The physical sky's light per unit of its drawn radiance. The sky it draws is its sky view table times
+/// [`DEFAULT_SKY_GAIN`] for a sun of 1 above the atmosphere; its light is that of the sun that gives [`NOON_SUN`] straight
+/// overhead (a face toward it takes `NOON_SUN`, so the sun above the atmosphere is pi `NOON_SUN` over the transmittance from the
+/// camera's height straight up): `pi NOON_SUN / (gain T)`, luminances. The ambient then follows the atmosphere through the day
+/// (blue above by day, warm toward a low sun, dark at dusk), not the scene's ambient color.
+pub fn sky_light_scale() -> f32 {
+    static SCALE: OnceLock<f32> = OnceLock::new();
+    *SCALE.get_or_init(|| {
+        let t = EARTH.transmittance_direct(EARTH.bottom + CAMERA_HEIGHT, 1.0, 256);
+        let t = (0.2126 * t[0] + 0.7152 * t[1] + 0.0722 * t[2]) as f32;
+        let sun = 0.2126 * NOON_SUN[0] + 0.7152 * NOON_SUN[1] + 0.0722 * NOON_SUN[2];
+        std::f32::consts::PI * sun / (DEFAULT_SKY_GAIN * t.max(1e-6))
+    })
+}
 
 /// The SH of a constant 1 (the shape without a sky).
 pub fn uniform() -> [[f32; 3]; 9] {

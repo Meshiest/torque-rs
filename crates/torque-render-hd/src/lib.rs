@@ -1,11 +1,11 @@
 //! The enhanced renderer on the GPU: its WGSL and the shader registry ([`shaders`]), and its passes over a
 //! [`torque_render_core::Gpu`]'s device: the bloom chain ([`bloom`]), the automatic exposure ([`exposure`]), the volumetric light
 //! ([`volumetric`], and its froxel grid: [`froxels`]), the moving shapes' vertex runs ([`slots`]), the environment's cube maps
-//! and the light capture ([`capture`]), the screen-space reflections ([`ssr`]), the volumetric clouds ([`clouds`]), the
-//! anti-aliasing and AO ([`post`]), the sky ([`sky`]), the water's planar target and its frame terms ([`water`]), and the static
-//! geometry's arena ([`arena`]) culled into draw lists ([`cull`]); what a world's static geometry brings beside the engine's
-//! frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains, full-frame pipelines, the pass and
-//! draw counts by kind).
+//! and the light capture ([`capture`]), the diffuse ambient's irradiance ([`irradiance`]), the screen-space reflections ([`ssr`]),
+//! the volumetric clouds ([`clouds`]), the anti-aliasing and AO ([`post`]), the sky ([`sky`]), the water's planar target and its
+//! frame terms ([`water`]), and the static geometry's arena ([`arena`]) culled into draw lists ([`cull`]); what a world's static
+//! geometry brings beside the engine's frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains,
+//! full-frame pipelines, the pass and draw counts by kind).
 //!
 //! # Maintaining
 //!
@@ -45,6 +45,25 @@
 //!   pass, its noise or its filter keeps the 4 x 4 tile's period in AO texels, and is judged at both scales
 //!   (`tests/ao_banding.rs`; `level-profile --scene office --quality ultra` for the `ao` mark, under
 //!   the bench lock).
+//! - The diffuse ambient (`ImageSettings::sky_irradiance`, on by default; off keeps the fixed-function ambient, the scene's
+//!   ambient color times the CPU's sky shape, `torque_render_scene::hd::sh::sky_shape`) is the L2 SH irradiance of the
+//!   environment cubes ([`irradiance`], `irradiance.wgsl`): the faces a frame draws are projected (the sky cube's six when the
+//!   scene's draws change, the capture's one in turn) at [`irradiance::LEVEL`], their sums kept, then resolved after the
+//!   secondary views and before the main view (group 0's binding 20; `frame.limits.y` says the forward pass reads it). The
+//!   physical sky drawn in the box's place lights by `sh::sky_light_scale` over a ground of `sh::GROUND_ALBEDO`; the server's
+//!   sky by its luminance alone, the horizontal normals taking the scene's ambient on average. At High and up the main view
+//!   takes the light capture's bounce (the capture is drawn every frame there, so the ambient does not jump as reflective
+//!   surfaces come into sight; the reflections still read it only where they did), the secondary views the sky the capture sees
+//!   through the scene's gaps (a closed room bounces no sky light; the capture is not lit by itself, so a light change settles in
+//!   six frames; they are drawn before the projection and read the last frame's). The extension's ground bounce shares only a
+//!   lower half that is the sky as drawn (the ground model and the capture hold the ground's light already); a texel that is not
+//!   finite adds nothing. A uniform sky gives pi L at every normal within 1 % and a two-tone sky each hemisphere's irradiance
+//!   within 2 % (`irradiance_tests.rs`, with the ratio's horizontal normals, the ground, the capture's geometry beside its sky
+//!   and a closed room); the furnace holds with it on.
+//! - A loose shape of radius 4 or more that holds the capture's eye stays in the capture (`reflect::CAPTURE_SHAPE_HELD`): a
+//!   room built of shapes would otherwise show the capture the sky through its walls, and the ambient would bounce it. Smaller
+//!   ones (the client's own player and held item) are left out
+//!   (`a_small_shape_that_holds_the_capture_eye_is_left_out_and_a_room_is_not`).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are
@@ -112,6 +131,7 @@ pub mod froxels;
 pub mod ghosting;
 #[cfg(feature = "gizmos")]
 pub mod gizmos;
+pub mod irradiance;
 pub mod limits;
 pub mod passes;
 pub mod post;

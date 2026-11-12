@@ -454,6 +454,11 @@ impl Cube {
         );
     }
 
+    /// Level `m` of the six faces as a 2D array (the irradiance's projection reads it).
+    pub fn level(&self, m: u32) -> wgpu::TextureView {
+        crate::irradiance::level_view(&self.texture, m)
+    }
+
     pub fn bytes(&self) -> u64 {
         let s = u64::from(self.texture.width());
         // Six faces, 8 bytes a texel, a third more for the mips.

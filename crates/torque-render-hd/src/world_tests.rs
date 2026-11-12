@@ -205,3 +205,45 @@ fn targets_made_again_let_go_of_the_groups_kept_over_the_old_ones() {
     assert!(!world.exposure.holds_source());
     assert!(!world.volumetric.holds_depth());
 }
+
+/// The loose shapes `view_draws` draws for a capture face with its eye at `eye`, among boxes of half-extent `half` centered there.
+fn capture_shapes(half: f32, eye: [f32; 3]) -> usize {
+    use crate::reflect::Source;
+    use torque_render_scene::hd::kit::{box_object, look_at};
+    let Ok(gpu) = torque_render_core::Gpu::new() else {
+        return usize::MAX;
+    };
+    let mut world: HdWorld<crate::ext::NoExtension> = HdWorld::new(&gpu);
+    let mut scene = crate::ext::PlainScene::default();
+    let mut shape = box_object(0, eye, [half; 3]);
+    shape.stamp = None;
+    scene.frame.objects.push(shape);
+    world.upload(&scene);
+    let camera = HdCamera::new(
+        look_at(eye, [eye[0], eye[1] + 1.0, eye[2]]),
+        90.0_f32,
+        100.0,
+        64,
+        64,
+    );
+    world
+        .view_draws(&camera, false, false, Some(eye))
+        .iter()
+        .filter(|d| matches!(d.source, Source::Loose(_)))
+        .count()
+}
+
+#[test]
+fn a_small_shape_that_holds_the_capture_eye_is_left_out_and_a_room_is_not() {
+    if torque_render_core::Gpu::new().is_err() {
+        eprintln!("skipped: no device");
+        return;
+    }
+    let eye = [0.0, 0.0, 2.0];
+    // Radius sqrt(3) * half: 1.7 (a held item) and 5.2 (a room built of shapes), both around the eye.
+    assert_eq!(capture_shapes(1.0, eye), 0, "a small shape is left out");
+    assert!(
+        capture_shapes(3.0, eye) > 0,
+        "a shape of radius 4 or more stays"
+    );
+}

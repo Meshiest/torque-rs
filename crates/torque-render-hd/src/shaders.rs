@@ -5,7 +5,7 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 38] = [
+pub const FILES: [(&str, &str); 40] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
@@ -40,6 +40,11 @@ pub const FILES: [(&str, &str); 38] = [
     ("ssr.wgsl", include_str!("../shaders/ssr.wgsl")),
     ("down.wgsl", include_str!("../shaders/down.wgsl")),
     ("prefilter.wgsl", include_str!("../shaders/prefilter.wgsl")),
+    ("cubeface.wgsl", include_str!("../shaders/cubeface.wgsl")),
+    (
+        "irradiance.wgsl",
+        include_str!("../shaders/irradiance.wgsl"),
+    ),
     ("skycommon.wgsl", include_str!("../shaders/skycommon.wgsl")),
     ("skyfog.wgsl", include_str!("../shaders/skyfog.wgsl")),
     (
@@ -148,6 +153,8 @@ pub enum Permutation {
     Down,
     /// An environment cube's prefiltered level from the cube's level above it (a face a pipeline: its `FACE` constant).
     Prefilter,
+    /// The diffuse ambient's spherical harmonics from the environment cubes (compute).
+    Irradiance,
     /// The physical sky's tables (compute).
     Atmosphere,
     /// The atmosphere's sky and the sun disk (full-frame, in the opaque pass).
@@ -177,7 +184,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 35] = [
+    pub const ALL: [Permutation; 36] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -211,6 +218,7 @@ impl Permutation {
         Permutation::Ssr,
         Permutation::Down,
         Permutation::Prefilter,
+        Permutation::Irradiance,
         Permutation::Atmosphere,
         Permutation::Sky,
         Permutation::Volumetric,
@@ -262,6 +270,7 @@ impl Permutation {
             Permutation::Ssr => "ssr.wgsl".to_string(),
             Permutation::Down => "down.wgsl".to_string(),
             Permutation::Prefilter => "prefilter.wgsl".to_string(),
+            Permutation::Irradiance => "irradiance.wgsl".to_string(),
             Permutation::Atmosphere => "atmosphere.wgsl".to_string(),
             Permutation::Sky => "sky.wgsl".to_string(),
             Permutation::Volumetric => "volumetric.wgsl".to_string(),
@@ -365,15 +374,19 @@ impl Permutation {
             Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),
             Permutation::Down => file("down.wgsl").to_string(),
             Permutation::Prefilter => format!(
-                "const CUBE_SIZE: f32 = {CAPTURE_SIZE}.0;\nconst CUBE_LEVELS: f32 = {CAPTURE_MIPS}.0;\n{}\n{}\n{}",
+                "const CUBE_SIZE: f32 = {CAPTURE_SIZE}.0;\nconst CUBE_LEVELS: f32 = {CAPTURE_MIPS}.0;\n{}\n{}\n{}\n{}",
                 // brdf.wgsl's PI without the rest of common.wgsl (its helpers read the frame's uniform).
                 file("common.wgsl")
                     .lines()
                     .find(|l| l.starts_with("const PI: f32"))
                     .unwrap_or_default(),
                 file("brdf.wgsl"),
+                file("cubeface.wgsl"),
                 file("prefilter.wgsl")
             ),
+            Permutation::Irradiance => {
+                format!("{}\n{}", file("cubeface.wgsl"), file("irradiance.wgsl"))
+            }
             Permutation::Clusters => format!("{}\n{}", common, file("clusters.wgsl")),
             Permutation::Tonemap => format!("{}\n{}", full, file("tonemap.wgsl")),
             Permutation::Shadow { unclipped } => format!(

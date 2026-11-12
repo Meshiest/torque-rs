@@ -6,8 +6,9 @@
 //   uniform one (the rest), so under a uniform sky a white surface gives back the sky. The gamma-space response (linear_light off)
 //   takes the fixed-function light factor k = ambient + max(N.L, 0) diffuse (gamma space, as GL light 0), applies it to the albedo
 //   in gamma space and takes the result to linear, so a sunlit and a shadowed face land on the fixed-function colors; its diffuse
-//   is not split with the specular. The ambient is shaped by the sky's irradiance SH (its variation only, weighted: the level stays
-//   the ambient's).
+//   is not split with the specular. The ambient is the sky's irradiance (irradiance.wgsl's L2 SH: the sky cube's, at High and up
+//   with the light capture's bounce; `frame.limits.y`), else (the fixed-function ambient) the scene's ambient shaped by the sky's
+//   SH (its variation only, weighted: the level stays the ambient's).
 // - Specular (brdf.wgsl): GGX with Smith's height-correlated visibility and Schlick's Fresnel, F0 0.04 and the material table's
 //   roughness, from the sun and every point light, with the multiple-scattering compensation.
 // - Point lights: Lambert plus the specular, an inverse-square falloff with a 2-unit core, windowed to the fxLight's radius
@@ -103,6 +104,11 @@ const MAT_LIGHTMAP: u32 = 0x08000000u;
 const MAT_CUTOUT: u32 = 0x20000000u;
 // The scene's lightmap (MAT_LIGHTMAP planes), sampled with trans_samp (linear, clamped).
 @group(0) @binding(19) var lightmap_tex: texture_2d<f32>;
+// The diffuse ambient's L2 SH (irradiance.wgsl's: 0-8 the main view's, 9-17 the sky's alone, a secondary view's).
+struct Irradiance {
+    sh: array<vec4<f32>, 18>,
+};
+@group(0) @binding(20) var<uniform> irradiance: Irradiance;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 // The prepass's motion slots: the matrix taking a shape's current world point to where it was (the identity for everything else, and
@@ -489,6 +495,44 @@ fn ambient(n: vec3<f32>) -> vec3<f32> {
     return frame.sun_ambient.rgb * level * tint;
 }
 
+// The sky's irradiance over pi at a normal (linear: the ambient's radiance), irradiance.wgsl's (the main view's with the light
+// capture's bounce; a secondary view's the sky it sees, the last frame's: those views are drawn before the projection, so the
+// first frame's are zero); a face turned down takes the extension's share of a sky drawn below the horizon.
+fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let o = select(0u, 9u, frame.flags.y > 0.5);
+    var c = irradiance.sh[o].rgb * 0.2820948;
+    c = c + irradiance.sh[o + 1u].rgb * (0.4886025 * n.y);
+    c = c + irradiance.sh[o + 2u].rgb * (0.4886025 * n.z);
+    c = c + irradiance.sh[o + 3u].rgb * (0.4886025 * n.x);
+    c = c + irradiance.sh[o + 4u].rgb * (1.0925484 * n.x * n.y);
+    c = c + irradiance.sh[o + 5u].rgb * (1.0925484 * n.y * n.z);
+    c = c + irradiance.sh[o + 6u].rgb * (0.3153916 * (3.0 * n.z * n.z - 1.0));
+    c = c + irradiance.sh[o + 7u].rgb * (1.0925484 * n.x * n.z);
+    c = c + irradiance.sh[o + 8u].rgb * (0.5462742 * (n.x * n.x - n.y * n.y));
+    // Only where the SH's lower half is the sky as drawn (its first coefficient's w): a ground or the capture's own is the
+    // ground's light already.
+    let share = select(1.0, ext_ground_bounce(), irradiance.sh[o].w > 0.5);
+    let down = clamp(-n.z, 0.0, 1.0);
+    return max(c, vec3<f32>(0.0)) * mix(1.0, share, down);
+}
+
+// The ambient in linear light: the sky's irradiance where the frame says so (`frame.limits.y`), else the scene's ambient shaped
+// by the sky's SH.
+fn ambient_linear(n: vec3<f32>) -> vec3<f32> {
+    if frame.limits.y != 0u {
+        return sky_irradiance(n);
+    }
+    return srgb_to_linear(ambient(n));
+}
+
+// The same in gamma space (the gamma-space response's light factor).
+fn ambient_gamma(n: vec3<f32>) -> vec3<f32> {
+    if frame.limits.y != 0u {
+        return linear_to_srgb(sky_irradiance(n));
+    }
+    return ambient(n);
+}
+
 // A point light's falloff at distance d: inverse square with a 2-unit core, windowed to the radius (exactly 0 beyond it).
 fn falloff(d: f32, radius: f32) -> f32 {
     let x = d / max(radius, 1e-4);
@@ -651,7 +695,7 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
         // reflects the ambient where it reflects no environment.
         let tint = srgb_to_linear(shadows.tint.rgb);
         let through = vis * tr + (1.0 - vis) * tint;
-        let amb = srgb_to_linear(ambient(n));
+        let amb = ambient_linear(n);
         let sun = frame.sun_linear.rgb * (max(sl, 0.0) * sun_on);
         out.diffuse = diffuse * (amb * occl + sun * through);
         if !s.reflects {
@@ -659,7 +703,7 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
         }
     } else {
         let through = vis * tr + (1.0 - vis) * shadows.tint.rgb;
-        let k = ambient(n) * occl_gamma + max(sl, 0.0) * sun_on * frame.sun_diffuse.rgb * through;
+        let k = ambient_gamma(n) * occl_gamma + max(sl, 0.0) * sun_on * frame.sun_diffuse.rgb * through;
         out.diffuse = srgb_to_linear(linear_to_srgb(diffuse) * k);
     }
     if sl > 0.0 && sl_face > 0.0 {

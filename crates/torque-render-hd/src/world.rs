@@ -105,9 +105,9 @@ use crate::shadows::{MAX_DIRTY, ObjectCaster, ShadowInput, Shadows};
 pub use crate::shadows::{ShadowStats, ShadowSwitches};
 use crate::{
     DEPTH_FORMAT, DRAW_KIND_MARKS, HDR_FORMAT, PASS_KIND_MARKS, PASS_KIND_NAMES, PASSES, PassKind,
-    arena, bloom, capture, clouds, colour, cull, exposure, froxels, invert, module, passes_by_kind,
-    post, push_f32, push_u32, set_pass_kind, shaders, shadows, sky, slots, storage, tv, uniform,
-    volumetric, water,
+    arena, bloom, capture, clouds, colour, cull, exposure, froxels, invert, irradiance, module,
+    passes_by_kind, post, push_f32, push_u32, set_pass_kind, shaders, shadows, sky, slots, storage,
+    tv, uniform, volumetric, water,
 };
 
 #[path = "reflect.rs"]
@@ -1223,6 +1223,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     pub render_scale: RenderScale,
     /// The reflections.
     refl: reflect::Reflections,
+    /// The diffuse ambient's irradiance from the sky cube and the capture.
+    irradiance: irradiance::IrradiancePipe,
     /// A plane (its height) the planar reflection is drawn for whether or not the scene has water (the SSR check's reference).
     pub planar_override: Option<f32>,
     /// Reflected rays as a mirror's (no roughness; the reflections' checks).
@@ -1990,6 +1992,16 @@ fn and_compute(mut e: wgpu::BindGroupLayoutEntry) -> wgpu::BindGroupLayoutEntry 
     e
 }
 
+/// The sun's linear strength (a face toward it takes this much light over the ambient): what the fixed-function light factor
+/// adds to the ambient's, in linear light.
+fn sun_linear(s: &torque_render_scene::hd::HdSun) -> [f32; 3] {
+    [0, 1, 2].map(|k| {
+        (srgb_to_linear((s.ambient[k] + s.diffuse[k]).max(0.0))
+            - srgb_to_linear(s.ambient[k].max(0.0)))
+        .max(0.0)
+    })
+}
+
 /// The frame group's bindings (group 0 of the forward, sky and effect pipelines).
 pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let vf = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
@@ -2075,6 +2087,8 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             wgpu::TextureSampleType::Float { filterable: true },
             wgpu::TextureViewDimension::D2,
         ),
+        // The diffuse ambient's coefficients ([`irradiance::IrradiancePipe::output`]).
+        uniform(20, wgpu::ShaderStages::FRAGMENT),
     ]
 }
 
@@ -2269,6 +2283,12 @@ impl<E: HdExtension> HdWorld<E> {
             ],
         });
         let refl = reflect::Reflections::new(&device, cache, frame_size::<E>() as u64);
+        let irradiance = irradiance::IrradiancePipe::new(
+            &device,
+            cache,
+            &refl.capture.sky.level(irradiance::LEVEL),
+            &refl.capture.scene.level(irradiance::LEVEL),
+        );
         let mut clouds =
             clouds::Clouds::new(&device, cache, &frame_layout, frame_size::<E>() as u64);
         let sky = sky::SkyGpu::new(
@@ -2763,6 +2783,7 @@ impl<E: HdExtension> HdWorld<E> {
             debug: DebugView::Off,
             stats: DrawStats::default(),
             refl,
+            irradiance,
             planar_override: None,
             mirror_reflections: false,
             capture_every_frame: false,
@@ -3172,6 +3193,10 @@ impl<E: HdExtension> HdWorld<E> {
                     resource: wgpu::BindingResource::TextureView(self.shadows.point_view(2)),
                 },
                 tv(19, &self.lightmap.1),
+                wgpu::BindGroupEntry {
+                    binding: 20,
+                    resource: self.irradiance.output.as_entire_binding(),
+                },
             ],
         })
     }
@@ -5436,6 +5461,39 @@ impl<E: HdExtension> HdWorld<E> {
         Ok(true)
     }
 
+    /// The diffuse ambient's irradiance ([`irradiance`]) this frame, and the cube faces it drew (encoded after the secondary views,
+    /// before the main view's passes read it); none where the ambient is the fixed-function one. The physical sky drawn in the
+    /// box's place lights by its own scale over its ground; the server's sky by its shape, the horizontal normals taking the
+    /// scene's ambient on average.
+    fn irradiance_params(
+        &self,
+        scene: &E::Scene,
+        image: &torque_render_scene::hd::ImageSettings,
+    ) -> Option<(irradiance::IrradianceParams, u32)> {
+        if !image.sky_irradiance {
+            return None;
+        }
+        let plan = &self.refl.plan;
+        let bits = |faces: &[(usize, Vec<reflect::ViewDraw>)]| {
+            faces.iter().fold(0u32, |b, (f, _)| b | 1 << f)
+        };
+        let faces = bits(&plan.sky_faces) | bits(&plan.capture_faces) << 6;
+        let physical = image.physical_sky && scene.atmosphere;
+        let sky = if physical {
+            irradiance::SkyLight::Scaled(torque_render_scene::hd::sh::sky_light_scale())
+        } else {
+            irradiance::SkyLight::Ambient(scene.sun.ambient.map(|c| srgb_to_linear(c.max(0.0))))
+        };
+        let params = irradiance::IrradianceParams {
+            sky,
+            bounce: plan.bounce,
+            ground: physical.then_some(torque_render_scene::hd::sh::GROUND_ALBEDO),
+            sun: sun_linear(&scene.sun),
+            sun_z: scene.sun.towards[2],
+        };
+        Some((params, faces))
+    }
+
     /// The frame uniform for the (jittered, internal) `camera`; `post` turns on `common.wgsl`'s `prev_view_proj`; `main` the main
     /// view's (a secondary view, the water's mirrored camera or a capture face, is never under water: its eye is not the camera's).
     fn frame_bytes(&self, scene: &E::Scene, camera: &HdCamera, post: &[u8], main: bool) -> Vec<u8> {
@@ -5449,11 +5507,7 @@ impl<E: HdExtension> HdWorld<E> {
         push_f32(&mut b, &[s.towards[0], s.towards[1], s.towards[2], 0.0]);
         push_f32(&mut b, &[s.diffuse[0], s.diffuse[1], s.diffuse[2], 0.0]);
         push_f32(&mut b, &[s.ambient[0], s.ambient[1], s.ambient[2], 0.0]);
-        let lin = [0, 1, 2].map(|k| {
-            (srgb_to_linear((s.ambient[k] + s.diffuse[k]).max(0.0))
-                - srgb_to_linear(s.ambient[k].max(0.0)))
-            .max(0.0)
-        });
+        let lin = sun_linear(s);
         push_f32(&mut b, &[lin[0], lin[1], lin[2], 0.0]);
         for c in &scene.sky_sh {
             push_f32(&mut b, &[c[0], c[1], c[2], 0.0]);
@@ -5493,7 +5547,10 @@ impl<E: HdExtension> HdWorld<E> {
         let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
         push_f32(&mut b, &surfaces.light);
         let per_cluster = quality.lights_per_cluster();
-        push_u32(&mut b, &[per_cluster, 0, 0, 0]);
+        push_u32(
+            &mut b,
+            &[per_cluster, u32::from(mode.image.sky_irradiance), 0, 0],
+        );
         push_f32(&mut b, &camera.proj);
         b.extend_from_slice(post);
         // The surfaces.
@@ -6489,6 +6546,11 @@ impl<E: HdExtension> HdWorld<E> {
                 .map(|t| (&t.queries, Q_VIEWS_BEGIN, Q_VIEWS_END)),
         ) && self.timer.is_some();
         mark!("views");
+        if let Some((params, faces)) = self.irradiance_params(scene, &image) {
+            self.irradiance
+                .encode(&self.queue, &mut encoder, &params, faces);
+        }
+        mark!("irradiance");
         let _ = set_pass_kind(PassKind::Main);
         let clear_colour = scene.clear.map(|c| f64::from(srgb_to_linear(c)));
         let frame_group = self.frame_group(

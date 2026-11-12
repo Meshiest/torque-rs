@@ -2,7 +2,8 @@
 //!
 //! **A frame's reflections** ([`HdWorld::plan_reflections`], then the encoders in their places in [`HdWorld::draw`]):
 //! 1. The secondary views, before the main view: the sky cube's faces when the scene's draws changed, the light capture's face (all six
-//!    when it starts again) when a reflective surface ([`crate::ext::HdExtension::reflective`]) is in sight at High and up, the planar reflection when the scene has water, the
+//!    when it starts again) when a reflective surface ([`crate::ext::HdExtension::reflective`]) is in sight at High and up (and
+//!    always there for the ambient's bounce, [`crate::irradiance`]), the planar reflection when the scene has water, the
 //!    quality reflects it in a plane and the eye is above it. Each is the opaque scene (sky, opaque cells, ground, opaque shapes)
 //!    through the forward pass's secondary-view module: every light in turn, no contact shadows, AO or SSR, front faces turned (a
 //!    mirrored or cube camera is left-handed), the planar one cut at the water.
@@ -45,6 +46,9 @@ const REFL_BYTES: usize = 176;
 /// Player and held item in first person, drawn from inside them. A camera-local capture shows what is near its eye hugely and in
 /// the wrong place for every surface away from the eye, and those shapes swing and bob with every step and jump.
 pub const CAPTURE_SHAPE_CLEAR: f32 = 1.0;
+/// Only a shape smaller than this (its bounding sphere's radius, units) is left out that way: a larger one that holds the eye is
+/// around it (a room, a hall built of shapes), and leaving it out would show the capture the sky through its walls.
+pub const CAPTURE_SHAPE_HELD: f32 = 4.0;
 /// The uniforms: the main view's, the planar view's, the capture faces', the sky faces'.
 const U_MAIN: usize = 0;
 const U_PLANAR: usize = 1;
@@ -84,6 +88,8 @@ pub(crate) struct ReflectPlan {
     pub capture_faces: Vec<(usize, Vec<ViewDraw>)>,
     /// The capture (a cube of every direction from the eye) is drawn this frame.
     pub capture: bool,
+    /// The capture lights the ambient this frame (its bounce: [`crate::irradiance`]).
+    pub bounce: bool,
     pub planar: Option<Vec<ViewDraw>>,
     /// The scene's clear colour (linear).
     pub clear: [f64; 3],
@@ -574,6 +580,7 @@ impl<E: HdExtension> HdWorld<E> {
                 let seen = crate::sphere_seen(&planes, o.centre, o.radius);
                 // The objects the extension keeps stay (a floor the eye stands over holds the eye in its sphere).
                 let near = !E::kept_near_capture(o.ghost)
+                    && o.radius < CAPTURE_SHAPE_HELD
                     && clear_of.is_some_and(|e| {
                         Vec3::from(o.centre).distance(e.into()) < o.radius + CAPTURE_SHAPE_CLEAR
                     });
@@ -660,8 +667,11 @@ impl<E: HdExtension> HdWorld<E> {
         }
         let ssr = ssr_surfaces || (water_mode == 2 && above);
         // Where the extension asks, the capture is drawn at every quality: indoors the sky cube is no stand-in for what is around
-        // the eye.
-        let capture = (shiny && rq.capture) || (on && E::capture_always(scene));
+        // the eye. Where the quality has it and the ambient is the sky's irradiance, it is drawn for the bounce too (always, so the
+        // ambient does not change as reflective surfaces come into sight); the reflections read it only where they did.
+        let reflected = (shiny && rq.capture) || (on && E::capture_always(scene));
+        let bounce = on && rq.capture && mode.image.sky_irradiance;
+        let capture = reflected || bounce;
         let scale = match rq.ssr {
             SsrResolution::Full => 1,
             _ => 2,
@@ -774,6 +784,10 @@ impl<E: HdExtension> HdWorld<E> {
             self.refl.capture.sky_generation = draws_gen;
         }
         if capture {
+            // Drawn again for the bounce after frames without it: its faces show what was around the eye then.
+            if bounce && !self.refl.plan.capture {
+                self.refl.capture.refresh = true;
+            }
             if self.capture_every_frame {
                 self.refl.capture.refresh = true;
             }
@@ -812,7 +826,8 @@ impl<E: HdExtension> HdWorld<E> {
             }
         }
         // The uniforms.
-        let capture_valid = capture && self.refl.capture.valid;
+        let capture_valid = reflected && self.refl.capture.valid;
+        plan.bounce = bounce && self.refl.capture.valid;
         let levels = self.refl.ssr.as_ref().map_or(1, SsrTargets::color_levels);
         let time = E::time(scene);
         let ext = self.ext.refl_ext(scene);
