@@ -20,3 +20,15 @@ config = "../../crates/torque-plugin-lua/torque_lua.toml"
 bin = "mods-demo"
 args = ["--rounds", "1", "--work", "{work}"]
 expect = ["server mod soccer: ", "round 1"]
+
+[web]
+# The browser build: the page loads the Lua module before the game starts. `web/build.mjs` and `web/lua-build.mjs` make it.
+scripts = "../../web"
+example = "mods-demo"
+flags = ["--lua"]
+lua = "../../crates/torque-plugin-lua/Cargo.toml"
+
+[web.check]
+# Headless Chrome loads the folder from a local server and a file changed by one byte must be refused. The page is join-only (it
+# connects to the server that served it), so a static server cannot show its menu: `menu` is for pages that run on their own.
+modes = ["refused"]

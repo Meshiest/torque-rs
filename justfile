@@ -302,9 +302,20 @@ deny:
 # reproducibly;
 # `just bundle --verify <bundle folder>` checks a bundle against its manifest; every file of the game folder is opened by its
 # loader first and a refused one fails the bundle (`--no-validate` skips that; `just bundle --validate <game crate>` does only
-# that, with nothing built); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source, in TGE 1.4's format with `--classic-scripts`)
+# that, with nothing built); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source, in TGE 1.4's format with `--classic-scripts`);
+# `--web` packages the browser build instead (`[web]` in bundle.toml: web/build.mjs's output and the Lua module as a folder a static host
+# serves, its pack's files opened by their loaders, then web/check.mjs run in headless Chrome; needs WASI_SDK_PATH and TORQUE_WEB_TOOLS)
 bundle *args:
     cargo run -p torque-bundle --release -- {{args}}
+
+# The mods demo's web bundle, end to end: the module and the Lua module built, the pack's files opened by their loaders,
+# `files.json` checked against the folder and the manifest, and `web/check.mjs` run against the folder in headless Chrome (it never
+# takes the pointer lock), then the folder verified against its manifest. Needs `WASI_SDK_PATH` (a WASI SDK, as for `lua-web`),
+# the `wasm32-unknown-unknown` and `wasm32-wasip1` targets and Chrome; puppeteer-core goes into `TORQUE_WEB_TOOLS`
+bundle-web-check:
+    npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
+    cargo run -p torque-bundle --release -- examples/mods-demo --web
+    cargo run -p torque-bundle --release -- --verify "{{web_target}}/bundles/mods-demo-web"
 
 # The checks on a game's assets and compiled scripts: the mods demo's game folder opens with nothing refused, a planted bad
 # asset is reported, and the trace world run from a compiled script hashes as it does from its source

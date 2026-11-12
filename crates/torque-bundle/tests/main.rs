@@ -123,3 +123,63 @@ fn a_file_below_a_linked_folder_is_not_read() {
         eprintln!("no symbolic links here: the linked folder case is skipped");
     }
 }
+
+/// Whatever the program prints is made printable: a folder named with an escape sequence (the command line takes any name, and
+/// a game folder or a bundle can hold one) writes none of it to the terminal, in standard output or standard error.
+#[test]
+fn nothing_printed_holds_a_control_character() {
+    let dir = tmp("escape");
+    let hostile = dir.join("x\u{1b}]0;title\u{7}\u{1b}[2J");
+    for args in [
+        vec![hostile.as_os_str().to_owned()],
+        vec!["--validate".into(), hostile.as_os_str().to_owned()],
+        vec!["--verify".into(), hostile.as_os_str().to_owned()],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        for (stream, bytes) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(
+                !text
+                    .chars()
+                    .any(|c| c.is_control() && c != '\n' && c != '\r'),
+                "{stream}: {text:?}"
+            );
+        }
+        assert!(String::from_utf8_lossy(&output.stderr).contains("title"));
+    }
+}
+
+/// The same through the walk of a game folder that holds a file and a link named with an escape (Unix only: Windows file names
+/// hold no control character).
+#[cfg(unix)]
+#[test]
+fn a_file_and_a_link_named_with_an_escape_are_reported_without_it() {
+    let dir = tmp("escape-game");
+    let game = dir.join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(
+        dir.join("bundle.toml"),
+        "[bundle]\nname = \"x\"\npackage = \"x\"\nbins = [\"x\"]\n",
+    )
+    .unwrap();
+    std::fs::write(game.join("f\u{1b}[31m.txt"), "x").unwrap();
+    std::os::unix::fs::symlink(&dir, game.join("l\u{1b}]0;title\u{7}")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
+        .arg("--validate")
+        .arg(&dir)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("l?]0;title?: a link"), "{error:?}");
+    assert!(
+        !error
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\r'),
+        "{error:?}"
+    );
+}

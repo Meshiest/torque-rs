@@ -71,7 +71,9 @@ export function noLock(url) {
 
 /**
  * Launches headless Chrome with puppeteer-core (from the folder `TORQUE_WEB_TOOLS` names; the program `CHROME` names, else the
- * installed stable channel) and returns the browser. Every page it opens, in any context, has the pointer lock replaced
+ * installed stable channel) and returns the browser. Chrome's sandbox stays on unless `TORQUE_CHROME_NO_SANDBOX=1` is set (a
+ * container that cannot run it; a hostile page then has the process's own rights). Every page it opens, in any context, has the pointer
+ * lock replaced
  * before its own scripts run. `options` are puppeteer's launch options (`args`, `defaultViewport`); `headless` is always on.
  * With `browser: 'firefox'` it is headless Firefox instead (the program `FIREFOX` names, else the installed one), driven over
  * WebDriver BiDi in a fresh profile with Firefox's own defaults but for the guards: the pointer lock switched off in the
@@ -86,7 +88,8 @@ export async function launchGuarded(options = {}) {
   if (options.browser && options.browser !== 'chrome') throw new Error(`no guarded browser "${options.browser}"`);
   // No popups: `window.open` and `target=_blank` open nothing (a page made outside `newPage` could run a script before the
   // guard reaches it).
-  const args = [...(options.args ?? []), '--block-new-web-contents', ...(process.env.CI ? ['--no-sandbox'] : [])];
+  const noSandbox = process.env.TORQUE_CHROME_NO_SANDBOX === '1' ? ['--no-sandbox'] : [];
+  const args = [...(options.args ?? []), '--block-new-web-contents', ...noSandbox];
   const browser = await puppeteer.launch({
     ...(process.env.CHROME ? { executablePath: process.env.CHROME } : { channel: 'chrome' }),
     ...options,

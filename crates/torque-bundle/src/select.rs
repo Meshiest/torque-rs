@@ -3,9 +3,11 @@
 //! A pattern without `/` matches a file or folder name anywhere (`*.bak`, `tests`); one with `/` matches the path from the game
 //! folder (`dev/**`, `scripts/debug.cs`). `*` and `?` stay within a name, `**` crosses folders. Names compare without regard to
 //! ASCII case, as Windows and macOS file systems do. Links are never followed: a link in a game folder is an error, since it
-//! could pull in a file from anywhere.
+//! could pull in a file from anywhere. Every message that names an entry is made printable, since the names are the folder's.
 
 use std::path::{Path, PathBuf};
+
+use crate::precompile::printable;
 
 /// Left out of every bundle: hidden files and folders, build and test folders, backups and editor files, logs, debug symbols,
 /// source maps and the operating systems' folder files.
@@ -90,9 +92,9 @@ struct Walk<'a> {
 
 impl Walk<'_> {
     fn dir(&mut self, dir: &Path, prefix: &str, depth: usize) -> Result<(), String> {
-        let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let entries = std::fs::read_dir(dir).map_err(|e| io_error(dir, &e))?;
         for entry in entries {
-            let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
+            let entry = entry.map_err(|e| io_error(dir, &e))?;
             self.met += 1;
             if self.met > self.caps.entries {
                 return Err(format!(
@@ -101,26 +103,23 @@ impl Walk<'_> {
                 ));
             }
             let name = entry.file_name();
-            let name = name
-                .to_str()
-                .ok_or_else(|| format!("{}: a file name is not UTF-8", dir.display()))?;
+            let name = name.to_str().ok_or_else(|| {
+                printable(&format!("{}: a file name is not UTF-8", dir.display()))
+            })?;
             let path = format!("{prefix}{name}");
-            let kind = entry.file_type().map_err(|e| format!("{path}: {e}"))?;
+            let kind = entry
+                .file_type()
+                .map_err(|e| printable(&format!("{path}: {e}")))?;
             if is_excluded(&path, self.patterns) {
                 self.skipped.push(path);
                 continue;
             }
             if kind.is_symlink() {
-                return Err(format!(
-                    "{path}: a link; a game folder ships only plain files"
-                ));
+                return Err(link_error(&path));
             }
             if kind.is_dir() {
                 if depth >= self.caps.depth {
-                    return Err(format!(
-                        "{path}: folders nested more than {} deep",
-                        self.caps.depth
-                    ));
+                    return Err(depth_error(&path, self.caps.depth));
                 }
                 self.dir(&entry.path(), &format!("{path}/"), depth + 1)?;
             } else if kind.is_file() {
@@ -132,6 +131,23 @@ impl Walk<'_> {
         }
         Ok(())
     }
+}
+
+/// The error for a read of the folder `dir` that failed with `error`.
+fn io_error(dir: &Path, error: &std::io::Error) -> String {
+    printable(&format!("{}: {error}", dir.display()))
+}
+
+/// The error for a link at `path`.
+fn link_error(path: &str) -> String {
+    printable(&format!(
+        "{path}: a link; a game folder ships only plain files"
+    ))
+}
+
+/// The error for a folder at `path` nested past `depth`.
+fn depth_error(path: &str, depth: usize) -> String {
+    printable(&format!("{path}: folders nested more than {depth} deep"))
 }
 
 /// Whether `path` (from the game folder, `/` between folders) is left out by one of `patterns`.
@@ -171,6 +187,47 @@ pub fn glob(pattern: &[u8], text: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A name with an escape in it, as a hostile folder could hold on a file system that allows one.
+    const HOSTILE: &str = "a\u{1b}]0;title\u{7}/b\u{9b}.cs";
+
+    #[test]
+    fn the_messages_that_name_an_entry_hold_no_control_character() {
+        let messages = [
+            link_error(HOSTILE),
+            depth_error(HOSTILE, 64),
+            io_error(
+                Path::new(HOSTILE),
+                &std::io::Error::other(format!("cannot read {HOSTILE}")),
+            ),
+        ];
+        for message in messages {
+            assert!(message.contains("a?]0;title?/b?.cs"), "{message:?}");
+            assert!(!message.chars().any(char::is_control), "{message:?}");
+        }
+    }
+
+    /// The same through the walk, where the file system takes the name (not Windows, whose names hold no control character).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_or_a_deep_folder_named_with_an_escape_is_reported_without_it() {
+        let dir = crate::test_dir("select-escape");
+        std::fs::create_dir_all(dir.join("x\u{1b}[2J/y")).unwrap();
+        let caps = Caps {
+            depth: 0,
+            ..Caps::default()
+        };
+        let error = select(&dir, &[], caps).unwrap_err();
+        assert!(error.contains("x?[2J"), "{error:?}");
+        assert!(!error.chars().any(char::is_control), "{error:?}");
+
+        let linked = dir.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&dir, linked.join("l\u{1b}[31m")).unwrap();
+        let error = select(&linked, &[], Caps::default()).unwrap_err();
+        assert!(error.contains("l?[31m"), "{error:?}");
+        assert!(!error.chars().any(char::is_control), "{error:?}");
+    }
 
     #[test]
     fn globs_stay_within_names_unless_doubled() {

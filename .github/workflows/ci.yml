@@ -216,7 +216,8 @@ jobs:
       - name: A guarded page never gets the pointer lock
         run: |
           npm install --prefix web-tools --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
-          TORQUE_WEB_TOOLS="$PWD/web-tools" node web/guard.test.mjs
+          # The runner cannot use Chrome's sandbox; the guard drops it only when asked.
+          TORQUE_CHROME_NO_SANDBOX=1 TORQUE_WEB_TOOLS="$PWD/web-tools" node web/guard.test.mjs
 
   trace-hash:
     name: trace hash (native = wasm32)

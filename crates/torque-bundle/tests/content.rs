@@ -55,6 +55,10 @@ fn options(dir: &Path, crate_dir: PathBuf) -> Options {
         max_inflated_bytes: torque_bundle::scan::MAX_INFLATED_BYTES,
         mode: validate_only(),
         limits: Limits::default(),
+        web: false,
+        scripts: None,
+        lua: None,
+        allow: Vec::new(),
     }
 }
 

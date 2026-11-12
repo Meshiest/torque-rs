@@ -21,7 +21,8 @@
 //! `--validate <game crate>` does only this. `--precompile` ships the `.cs` and `.gui` scripts as `<name>.dso` in place of
 //! their source, which the engine loads without compiling ([`precompile`]).
 //!
-//! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]).
+//! `--archive` also writes the bundle as one file ([`archive`]); `--server` packages the game's dedicated server ([`server`]);
+//! `--web` packages its browser build ([`web`]).
 //! `--twice` is for a game maker to verify that a game builds reproducibly: it bundles two times from clean build folders and
 //! fails unless the two archives have the same SHA-256, naming the files that differ.
 //!
@@ -29,7 +30,7 @@
 //!
 //! **Module map.** `spec` (bundle.toml), `select` (which game files ship), `validate` (the game folder read within
 //! [`validate::Limits`] and opened by the engine's loaders; `Kind` is the extension table), `precompile` (a script to its `.dso`),
-//! `cargo` and `features` (the builds), `licenses`, `scan` (the leak scan), `manifest`, `archive`, `server`; `bundle` in this file
+//! `cargo` and `features` (the builds), `licenses`, `scan` (the leak scan), `manifest`, `archive`, `server`, `web` (the browser build); `bundle` in this file
 //! runs them.
 //!
 //! **Flow of the game folder.** `bundle` reads and opens the game folder first (`read_game`), before any build, so a refused
@@ -50,6 +51,56 @@
 //! `.dso`. Every refusal and note is printable text (`precompile::printable`): a file's own bytes cannot reach the terminal as
 //! escapes. The loaders are the engine's own and are fuzzed, so a hostile file is an error value, not a panic. The errors of
 //! this crate stay `String`s, as the rest of it, rather than an enum: nothing matches on them.
+//!
+//! **Nothing printed holds a control character.** `main` prints only through `emit`, which makes each line printable, so a
+//! message that forgot to is still safe (`tests/main.rs::nothing_printed_holds_a_control_character`); `select` and the reads
+//! of `bundle` also make theirs printable where they are built
+//! (`select::tests::the_messages_that_name_an_entry_hold_no_control_character`). A new `println!` in `main` is a bug.
+//!
+//! **The web target** (`--web`, `[web]` in `bundle.toml`, module `web`) packages the engine's browser build as `<name>`, a folder
+//! any static host serves: `web/build.mjs`'s output (page, scripts, the game's module, `files.json` and the pack it names), the
+//! Lua module `web/lua-build.mjs` builds when the page loads Lua, `licenses/` and `manifest.toml`. The tool runs those two scripts
+//! with the bundle's build folder and the paths remapped (`CARGO_ENCODED_RUSTFLAGS`; `lua-build.mjs` sets its own remaps), reads
+//! the output folder once through `select` and the no-follow reader (within `Limits::total_bytes` as it reads), and then:
+//! 1. reads `files.json` as the engine's page does (`web::parse_list_text`: its caps and its path rule, a mirror of
+//!    `torque_app_server::manifest` that `web::tests::the_list_is_the_engines` holds equal on a set of lists) and checks every
+//!    listed file against the folder and the manifest's entry (size, SHA-256; `web::list_matches`);
+//! 2. opens every listed file (`web::open_listed`): a path that ends in `.pack` in any case must unpack (`web::unpack`) and each
+//!    file in it is opened by its loader under the game folder's limits (`validate::process_with`); any other listed file is
+//!    opened by the loader for its kind as a single file. A refusal fails the bundle with the path and the reason
+//!    (`--no-validate` skips the loaders, not the unpacking; `--precompile` is refused, since the pack is the example's own and its
+//!    hash is in the list). Files the page does not fetch through the list (its scripts, the modules) are not game data and are
+//!    shipped as built;
+//! 3. gathers the licenses of the crates the module (`wasm32-unknown-unknown`) and the Lua module (`wasm32-wasip1`) link;
+//! 4. scans every file for the computer's folders, writes the folder, and runs `web/check.mjs` against it for each mode of
+//!    `[web.check]` (headless; `TORQUE_WEB_TOOLS` names the folder with puppeteer-core), and the bundle must match its manifest
+//!    afterwards.
+//!
+//! **What the tool runs.** `bundle.toml` is a build input that can come from anywhere, and `[web].scripts` names programs the
+//! tool runs, so it may only name the `web` folder of the crate's workspace (or a folder in it); `--scripts <folder>` names any
+//! other (`web::web_scripts`, tested in `only_the_workspaces_web_folder_is_run_unless_scripts_are_given`). `[web].lua` and
+//! `[[extension]]`'s manifest and config (built, so run) must lie in the crate's workspace or a folder given with `--allow`, both
+//! sides resolved through links (`inside`; `--lua <Cargo.toml>` names the Lua extension directly). The scripts run with no
+//! input and their output relayed line by line, made printable; each has `BUILD_TIMEOUT_SECS` and a check has `[web.check]`'s
+//! `timeout_secs`. A program past its time is killed with everything it started (`run_limited`, `kill_tree`: the process group on
+//! Unix, asked to stop first so the browser driver can stop its browser, then killed; `taskkill /T` on Windows, since the
+//! workspace forbids the `unsafe` of a job object), covered by `tests::a_program_past_its_time_is_killed_with_everything_it_started`;
+//! `check.mjs` also kills its browser if it runs past its own limit or gets SIGTERM, SIGINT or SIGHUP, and the command line
+//! calls `kill_running` on an interrupt (`ctrlc`), since a program in a process group of its own gets no terminal Ctrl-C. After a
+//! program exits its output is read for `READER_GRACE` more: a process it left holding the pipe (Windows has no group to
+//! signal) cannot hold the run (`tests::a_process_left_holding_the_pipe_does_not_hold_the_run`). The browser keeps Chrome's sandbox unless
+//! `TORQUE_CHROME_NO_SANDBOX=1` is set (`web/guard.mjs`). The check keeps `TORQUE_WEB_TOOLS` and that variable of the environment
+//! and no other `TORQUE_*` one.
+//!
+//! The pack is parsed by this crate (`web::unpack`) so the tool links none of the engine; `web::tests::the_pack_is_the_engines`
+//! holds it equal to the engine's. A pack with a name the engine does not serve, a count past `Limits::files`, a cut or trailing
+//! bytes is refused. The modes the check can run are those that need no input (`menu`, `refused`; a page that joins the server that
+//! served it, such as the mods demo's, can only be asked for `refused` from a static server); `modes = []` is an error.
+//! `check.mjs` never takes the pointer lock and the browser is the guard's. **Tests:** `web::tests` (the pack, the list, the
+//! loaders on the listed files), `spec::tests::the_web_target_reads_with_its_defaults`. **Check commands:** `just bundle-web-check`
+//! (the mods demo end to end; needs `WASI_SDK_PATH`, `wasm32-wasip1`, `wasm32-unknown-unknown` and Chrome) and
+//! `just bundle examples/mods-demo --web`; the build is the engine's own web build, so `[web]` gains an option only when
+//! `build.mjs` gains the flag.
 //!
 //! **What is not opened.** `.lua` and anything a plugin owns are unowned. So are `.obj`, `.bbmodel` and `.map`: the engine reads
 //! them only when a game turns their format plugin on (off by default, trusted files only), and their loaders live in
@@ -161,11 +212,13 @@ pub mod select;
 pub mod server;
 pub mod spec;
 pub mod validate;
+pub mod web;
 
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use cargo::{Build, Metadata, Toolchain};
@@ -199,6 +252,16 @@ pub struct Options {
     pub mode: validate::Mode,
     /// The caps on the game folder and on the work of opening it.
     pub limits: validate::Limits,
+    /// Package the web target (`[web]` in `bundle.toml`, [`web`]) instead of the binaries.
+    pub web: bool,
+    /// The folder of the engine's web scripts, given on the command line (`--scripts`); the web target otherwise takes the one
+    /// `[web].scripts` names, which must be the `web` folder of the crate's workspace.
+    pub scripts: Option<PathBuf>,
+    /// The Lua extension's manifest for the web target, given on the command line (`--lua`); otherwise `[web].lua`, which must lie
+    /// in the crate's workspace or a folder of `allow`.
+    pub lua: Option<PathBuf>,
+    /// Folders besides the crate's workspace that `[[extension]]` and `[web].lua` may name (`--allow`, repeatable).
+    pub allow: Vec<PathBuf>,
 }
 
 /// What the server variant's checks counted. A bundle is refused when a count that must be 0 is not, so a report holds zeros.
@@ -242,6 +305,8 @@ pub struct Report {
     pub content: validate::Report,
     /// What the leak scan noticed that does not fail a bundle: the user or host name of the build computer as a path component.
     pub warnings: Vec<String>,
+    /// What the web target's checks counted, when it was packaged.
+    pub web: Option<web::Report>,
 }
 
 /// The bundle folder's name for `name` on `target`: `name-windows-x86_64`.
@@ -271,6 +336,9 @@ fn absolute(path: &Path) -> Result<PathBuf, String> {
 
 /// Packages the game (module docs).
 pub fn bundle(options: &Options) -> Result<Report, String> {
+    if options.web {
+        return web::bundle(options);
+    }
     let crate_dir = absolute(&options.crate_dir)?;
     let target_dir = absolute(&options.target_dir)?;
     let spec = Spec::load(&crate_dir)?.variant(options.server)?;
@@ -302,55 +370,46 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     };
 
     // The computer's folders: remapped in the builds (most specific last) and looked for in every file.
-    let home = env_dir("USERPROFILE").or_else(|| env_dir("HOME"));
-    let cargo_home = env_dir("CARGO_HOME").or_else(|| home.as_ref().map(|h| h.join(".cargo")));
-    let rustup_home = env_dir("RUSTUP_HOME").or_else(|| home.as_ref().map(|h| h.join(".rustup")));
-    let mut folders: Vec<(&str, PathBuf, &str)> = Vec::new();
-    if let Some(home) = &home {
-        folders.push(("the home folder", home.clone(), "/home"));
+    for extension in &spec.extensions {
+        for (key, named) in [
+            ("manifest", &extension.manifest),
+            ("config", &extension.config),
+        ] {
+            if !inside(
+                &crate_dir.join(named),
+                &trusted_roots(&members.workspace_root, &options.allow),
+            ) {
+                return Err(outside_message(
+                    &format!("extension.{key}"),
+                    named,
+                    &members.workspace_root,
+                    "--allow <folder>",
+                ));
+            }
+        }
     }
-    folders.push((
+    let mut extension_roots = Vec::new();
+    let mut workspaces = vec![(
         "the workspace",
         members.workspace_root.clone(),
         "/workspace",
-    ));
-    let mut extension_roots = Vec::new();
+    )];
     for extension in &spec.extensions {
         let ext = Metadata::read(&crate_dir.join(&extension.manifest), &target, false)?;
-        folders.push((
+        workspaces.push((
             "an extension's workspace",
             ext.workspace_root.clone(),
             "/extension",
         ));
         extension_roots.push(ext.workspace_root);
     }
-    if let Some(dir) = &cargo_home {
-        folders.push(("the cargo home", dir.clone(), "/cargo"));
-    }
-    if let Some(dir) = &rustup_home {
-        folders.push(("the rustup home", dir.clone(), "/rustup"));
-    }
-    folders.push((
-        "the toolchain",
-        toolchain.sysroot.clone(),
-        "/rustup/toolchain",
-    ));
-    folders.push(("the build folder", target_dir.clone(), "/target"));
-    let remaps: Vec<(PathBuf, &str)> = folders
-        .iter()
-        .map(|(_, path, to)| (path.clone(), *to))
-        .collect();
-    let needles: Vec<Needle> = folders
-        .iter()
-        .filter_map(|(label, path, _)| Needle::new(label, path))
-        .chain(Needle::new("the crate folder", &crate_dir))
-        .chain(scan::name_needles(
-            |name| std::env::var(name).ok().filter(|v| !v.is_empty()),
-            |path| std::fs::read_to_string(path).ok(),
-            home.as_deref(),
-        ))
-        .collect();
-    let scanner = Scanner::new(needles, options.max_inflated_bytes)?;
+    let Computer { remaps, scanner } = Computer::find(
+        &workspaces,
+        &toolchain,
+        &target_dir,
+        &crate_dir,
+        options.max_inflated_bytes,
+    )?;
 
     // The game's binaries.
     let mut game_build = Build {
@@ -462,16 +521,11 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
 
     // Everything in memory, scanned before anything is written: a bundle that holds a folder of this computer never reaches
     // the disk.
-    let mut written: Vec<(String, Vec<u8>)> = Vec::new();
-    for (path, text) in files {
-        let bytes = match text {
-            Text::File(source) => read_plain(&source, options.limits.total_bytes, None)
-                .map_err(|e| format!("{path}: {e}"))?,
-            Text::Made(text) => text.into_bytes(),
-            Text::Bytes(bytes) => bytes,
-        };
-        written.push((path, bytes));
-    }
+    let mut written = read_files(
+        files,
+        options.limits.total_bytes,
+        options.limits.total_bytes,
+    )?;
     written.push((
         format!("{}/index.txt", licenses::DIR),
         gathered.index.clone().into_bytes(),
@@ -487,61 +541,16 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     };
     let manifest_text = manifest::write(&header, &entries);
     written.push((manifest::FILE.to_string(), manifest_text.into_bytes()));
-    let mut leaks = Vec::new();
-    let mut warnings = Vec::new();
-    for (path, bytes) in &written {
-        for hit in scanner.scan_file(bytes) {
-            let line = hit.describe(path);
-            if hit.is_hard() {
-                leaks.push(line);
-            } else {
-                warnings.push(line);
-            }
-        }
-    }
-    if !leaks.is_empty() {
-        return Err(format!(
-            "the bundle holds folders of this computer, or something the scan could not look into (nothing was written):\n  {}",
-            leaks.join("\n  ")
-        ));
-    }
+    let warnings = scan_files(&scanner, &written)?;
 
-    // Written beside the folder, then moved over it: a bundle folder is whole or not there. An old one is replaced only
-    // when it is a bundle.
     let out = absolute(&options.out)?;
     let name = folder_name(&spec.bundle.name, &target);
-    let folder = out.join(&name);
-    if folder.exists() {
-        let is_bundle = folder.join(manifest::FILE).is_file();
-        let empty = std::fs::read_dir(&folder).is_ok_and(|mut d| d.next().is_none());
-        if !is_bundle && !empty {
-            return Err(format!(
-                "{} is not a bundle folder (no {}); it is left as it is",
-                folder.display(),
-                manifest::FILE
-            ));
-        }
-    }
     let executable: Vec<String> = built
         .bins
         .iter()
         .filter_map(|(_, exe)| file_name(exe).ok())
         .collect();
-    let staging = out.join(format!("{name}.partial"));
-    own_folder(&staging)?;
-    for (path, bytes) in &written {
-        let dest = staging.join(path);
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
-        }
-        write_file(&dest, bytes, is_executable(path, &executable))
-            .map_err(|e| format!("{path}: {e}"))?;
-    }
-    std::fs::remove_file(staging.join(MARKER)).map_err(|e| format!("{MARKER}: {e}"))?;
-    if folder.exists() {
-        std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
-    }
-    std::fs::rename(&staging, &folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    let folder = publish(&out, &name, &written, &executable)?;
 
     let check = match (&spec.check, options.check) {
         (Some(check), true) => {
@@ -566,7 +575,13 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
     };
 
     let archive = if options.archive {
-        Some(write_archive(&out, &name, &target, &written, &executable)?)
+        Some(write_archive(
+            &out,
+            &name,
+            archive::Format::for_target(&target),
+            &written,
+            &executable,
+        )?)
     } else {
         None
     };
@@ -589,7 +604,155 @@ pub fn bundle(options: &Options) -> Result<Report, String> {
         archive,
         content: game.content,
         warnings,
+        web: None,
     })
+}
+
+/// The folders of the build computer: remapped to neutral names in the builds, and looked for in every file of a bundle.
+struct Computer {
+    remaps: Vec<(PathBuf, &'static str)>,
+    scanner: Scanner,
+}
+
+impl Computer {
+    /// The home folder, then `workspaces` (label, folder and the name it is remapped to), then the cargo and rustup homes, the
+    /// toolchain, the build folder and the crate folder; the user and host names are only warnings.
+    fn find(
+        workspaces: &[(&'static str, PathBuf, &'static str)],
+        toolchain: &Toolchain,
+        target_dir: &Path,
+        crate_dir: &Path,
+        max_inflated_bytes: usize,
+    ) -> Result<Computer, String> {
+        let home = env_dir("USERPROFILE").or_else(|| env_dir("HOME"));
+        let cargo_home = env_dir("CARGO_HOME").or_else(|| home.as_ref().map(|h| h.join(".cargo")));
+        let rustup_home =
+            env_dir("RUSTUP_HOME").or_else(|| home.as_ref().map(|h| h.join(".rustup")));
+        let mut folders: Vec<(&str, PathBuf, &'static str)> = Vec::new();
+        if let Some(home) = &home {
+            folders.push(("the home folder", home.clone(), "/home"));
+        }
+        folders.extend(workspaces.iter().cloned());
+        if let Some(dir) = &cargo_home {
+            folders.push(("the cargo home", dir.clone(), "/cargo"));
+        }
+        if let Some(dir) = &rustup_home {
+            folders.push(("the rustup home", dir.clone(), "/rustup"));
+        }
+        folders.push((
+            "the toolchain",
+            toolchain.sysroot.clone(),
+            "/rustup/toolchain",
+        ));
+        folders.push(("the build folder", target_dir.to_path_buf(), "/target"));
+        let remaps = folders
+            .iter()
+            .map(|(_, path, to)| (path.clone(), *to))
+            .collect();
+        let needles: Vec<Needle> = folders
+            .iter()
+            .filter_map(|(label, path, _)| Needle::new(label, path))
+            .chain(Needle::new("the crate folder", crate_dir))
+            .chain(scan::name_needles(
+                |name| std::env::var(name).ok().filter(|v| !v.is_empty()),
+                |path| std::fs::read_to_string(path).ok(),
+                home.as_deref(),
+            ))
+            .collect();
+        Ok(Computer {
+            remaps,
+            scanner: Scanner::new(needles, max_inflated_bytes)?,
+        })
+    }
+}
+
+/// Scans every file of `written` for the computer's folders. Err when one is found, or something the scan could not look into
+/// (nothing is written then); Ok holds the warnings.
+fn scan_files(scanner: &Scanner, written: &[(String, Vec<u8>)]) -> Result<Vec<String>, String> {
+    let mut leaks = Vec::new();
+    let mut warnings = Vec::new();
+    for (path, bytes) in written {
+        for hit in scanner.scan_file(bytes) {
+            let line = hit.describe(path);
+            if hit.is_hard() {
+                leaks.push(line);
+            } else {
+                warnings.push(line);
+            }
+        }
+    }
+    if leaks.is_empty() {
+        return Ok(warnings);
+    }
+    Err(format!(
+        "the bundle holds folders of this computer, or something the scan could not look into (nothing was written):\n  {}",
+        leaks.join("\n  ")
+    ))
+}
+
+/// Writes `written` as the bundle folder `<out>/<name>`, beside it first and then moved over it, so a bundle folder is whole or
+/// not there. An old folder is replaced only when it is a bundle. The files named in `executable` get the executable mode.
+fn publish(
+    out: &Path,
+    name: &str,
+    written: &[(String, Vec<u8>)],
+    executable: &[String],
+) -> Result<PathBuf, String> {
+    let folder = out.join(name);
+    if folder.exists() {
+        let is_bundle = folder.join(manifest::FILE).is_file();
+        let empty = std::fs::read_dir(&folder).is_ok_and(|mut d| d.next().is_none());
+        if !is_bundle && !empty {
+            return Err(format!(
+                "{} is not a bundle folder (no {}); it is left as it is",
+                folder.display(),
+                manifest::FILE
+            ));
+        }
+    }
+    let staging = out.join(format!("{name}.partial"));
+    own_folder(&staging)?;
+    for (path, bytes) in written {
+        let dest = staging.join(path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        write_file(&dest, bytes, is_executable(path, executable))
+            .map_err(|e| precompile::printable(&format!("{path}: {e}")))?;
+    }
+    std::fs::remove_file(staging.join(MARKER)).map_err(|e| format!("{MARKER}: {e}"))?;
+    if folder.exists() {
+        std::fs::remove_dir_all(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    }
+    std::fs::rename(&staging, &folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+    Ok(folder)
+}
+
+/// The bytes of each of `files`, a file read with the no-follow reader up to `cap` bytes, in the order of the map. The reading
+/// stops with an error as soon as the files read hold more than `total` bytes together.
+fn read_files(
+    files: BTreeMap<String, Text>,
+    cap: u64,
+    total: u64,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut written = Vec::with_capacity(files.len());
+    let mut held = 0u64;
+    for (path, text) in files {
+        let bytes = match text {
+            Text::File(source) => read_plain(&source, cap.min(total.saturating_sub(held)), None)
+                .map_err(|e| precompile::printable(&format!("{path}: {e}")))?,
+            Text::Made(text) => text.into_bytes(),
+            Text::Bytes(bytes) => bytes,
+        };
+        held = held.saturating_add(bytes.len() as u64);
+        if held > total {
+            return Err(precompile::printable(&format!(
+                "{path}: the files hold more than {total} bytes in all"
+            )));
+        }
+        written.push((path, bytes));
+    }
+    Ok(written)
 }
 
 /// Opens every file of the game crate `crate_dir`'s game folder with its loader under `limits` ([`validate`]), and compiles its
@@ -717,7 +880,7 @@ fn is_executable(path: &str, bins: &[String]) -> bool {
 fn write_archive(
     out: &Path,
     name: &str,
-    target: &str,
+    format: archive::Format,
     written: &[(String, Vec<u8>)],
     executable: &[String],
 ) -> Result<ArchiveReport, String> {
@@ -731,7 +894,6 @@ fn write_archive(
             executable: is_executable(path, executable),
         })
         .collect();
-    let format = archive::Format::for_target(target);
     let bytes = archive::build(name, &items, format)?;
     let path = out.join(format!("{name}.{}", format.extension()));
     let partial = out.join(format!("{name}.{}.partial", format.extension()));
@@ -803,59 +965,277 @@ pub fn run_check(
         .map(|a| a.replace("{work}", &work_text))
         .collect();
     let mut command = Command::new(exe);
-    command
-        .args(&args)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    command.args(&args).current_dir(dir);
     for (name, _) in std::env::vars_os() {
         let text = name.to_string_lossy();
         if text.starts_with("CARGO") || text.starts_with("RUST") || text.starts_with("TORQUE_") {
             command.env_remove(&name);
         }
     }
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("the check {}: {e}", exe.display()))?;
-    let reader = |mut pipe: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut text = Vec::new();
-            let _ = pipe.read_to_end(&mut text);
-            String::from_utf8_lossy(&text).into_owned()
-        })
-    };
-    let stdout = reader(Box::new(child.stdout.take().ok_or("no stdout")?));
-    let stderr = reader(Box::new(child.stderr.take().ok_or("no stderr")?));
-    let deadline = Instant::now() + Duration::from_secs(check.timeout_secs);
+    run_limited(
+        command,
+        "the check",
+        check.timeout_secs,
+        &check.expect,
+        Output::Keep,
+    )
+}
+
+/// What `run_limited` keeps of a program's output, and of one line of it.
+const KEPT_BYTES: usize = 4 << 20;
+const LINE_BYTES: u64 = 64 << 10;
+
+/// How a program's output is handled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Output {
+    /// Kept (a bounded amount) for the caller.
+    Keep,
+    /// Printed as it comes, a line at a time, each made printable; nothing is kept.
+    Relay,
+}
+
+/// Runs `command` with no input until it exits or `timeout_secs` pass; then it and every process it started are killed
+/// ([`kill_tree`]). Its standard output, when it exits 0 and prints every line of `expect`; `what` names it in the errors.
+fn run_limited(
+    mut command: Command,
+    what: &str,
+    timeout_secs: u64,
+    expect: &[String],
+    output: Output,
+) -> Result<String, String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Its own process group on Unix, so the whole tree can be signalled.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let program = command.get_program().to_string_lossy().into_owned();
+    let mut child = command.spawn().map_err(|e| {
+        format!(
+            "{what}: cannot run {}: {e}",
+            precompile::printable(&program)
+        )
+    })?;
+    let _registered = Registered::new(child.id());
+    let stdout = relay(child.stdout.take().ok_or("no stdout")?, output, false);
+    let stderr = relay(child.stderr.take().ok_or("no stderr")?, output, true);
+    let deadline = Instant::now().checked_add(Duration::from_secs(timeout_secs));
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             break status;
         }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "the check ran past {} s and was stopped",
-                check.timeout_secs
-            ));
+        if deadline.is_some_and(|deadline| Instant::now() > deadline) {
+            kill_tree(&mut child);
+            return Err(format!("{what} ran past {timeout_secs} s and was stopped"));
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    let out = stdout.join().unwrap_or_default();
-    let err = stderr.join().unwrap_or_default();
+    // What it left running after it exited (a browser it started) goes too.
+    #[cfg(unix)]
+    kill_group(child.id(), rustix::process::Signal::KILL);
+    // A process it started that still holds the pipes (Windows has no group to signal) cannot hold this up for long.
+    let end = Instant::now() + READER_GRACE;
+    let out = stdout.finish(end);
+    let err = stderr.finish(end);
     if !status.success() {
-        return Err(format!("the check failed ({status}):\n{out}{err}"));
+        return Err(format!("{what} failed ({status}):\n{out}{err}"));
     }
-    let absent: Vec<&String> = check
-        .expect
+    let absent: Vec<&String> = expect
         .iter()
         .filter(|line| !out.contains(line.as_str()))
         .collect();
     if !absent.is_empty() {
-        return Err(format!("the check did not print {absent:?}:\n{out}{err}"));
+        return Err(format!("{what} did not print {absent:?}:\n{out}{err}"));
     }
     Ok(out)
+}
+
+/// How long after a program exits its output is still read: a process it left running may hold the pipes open.
+const READER_GRACE: Duration = Duration::from_secs(5);
+
+/// A thread reading a program's output, and what it has kept so far.
+struct Reader {
+    handle: std::thread::JoinHandle<()>,
+    kept: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Reader {
+    /// What was kept, once the pipe is closed or `end` has come (the thread is then left to end by itself).
+    fn finish(self, end: Instant) -> String {
+        while !self.handle.is_finished() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if self.handle.is_finished() {
+            let _ = self.handle.join();
+        }
+        let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        String::from_utf8_lossy(&kept).into_owned()
+    }
+}
+
+/// A thread that reads `pipe` to its end: line by line (a line cut at [`LINE_BYTES`]), printed when `output` relays (to standard
+/// error when `to_error`), and kept up to [`KEPT_BYTES`] otherwise.
+fn relay(pipe: impl Read + Send + 'static, output: Output, to_error: bool) -> Reader {
+    use std::io::BufRead as _;
+
+    let kept = Arc::new(Mutex::new(Vec::new()));
+    let keep = Arc::clone(&kept);
+    let handle = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(pipe);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match (&mut reader).take(LINE_BYTES).read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            match output {
+                Output::Relay => {
+                    let text = String::from_utf8_lossy(&line);
+                    let shown = precompile::printable(text.trim_end_matches(['\r', '\n']));
+                    if to_error {
+                        eprintln!("{shown}");
+                    } else {
+                        println!("{shown}");
+                    }
+                }
+                Output::Keep => {
+                    let mut kept = keep.lock().unwrap_or_else(PoisonError::into_inner);
+                    let room = KEPT_BYTES.saturating_sub(kept.len());
+                    kept.extend_from_slice(&line[..line.len().min(room)]);
+                }
+            }
+        }
+    });
+    Reader { handle, kept }
+}
+
+/// The programs [`run_limited`] is running (their process ids), for [`kill_running`].
+static RUNNING: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// A program in [`RUNNING`] for as long as this lives.
+struct Registered(u32);
+
+impl Registered {
+    fn new(pid: u32) -> Registered {
+        RUNNING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(pid);
+        Registered(pid)
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        RUNNING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|pid| *pid != self.0);
+    }
+}
+
+/// Kills every program a bundle is running, with everything it started: what the command line calls when it is interrupted
+/// (a program in a process group of its own does not get a terminal's Ctrl-C).
+pub fn kill_running() {
+    let running: Vec<u32> = RUNNING
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    for pid in &running {
+        #[cfg(unix)]
+        kill_group(*pid, rustix::process::Signal::TERM);
+        #[cfg(windows)]
+        taskkill(*pid);
+    }
+    #[cfg(unix)]
+    {
+        // Asked to stop first, so the browser driver can stop its browser; then it goes.
+        std::thread::sleep(Duration::from_secs(2));
+        for pid in &running {
+            kill_group(*pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+/// Kills `child` and everything it started: its process group on Unix (asked to stop first, so a program that cleans up after
+/// itself, such as the browser driver, can stop what it started in a group of its own), `taskkill /T` on Windows (the workspace
+/// forbids the `unsafe` a job object takes). A check's headless browser is one of them.
+fn kill_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        kill_group(child.id(), rustix::process::Signal::TERM);
+        let end = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < end && matches!(child.try_wait(), Ok(None)) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        kill_group(child.id(), rustix::process::Signal::KILL);
+    }
+    #[cfg(windows)]
+    taskkill(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// `taskkill /T /F` on `pid`: the process and the ones it started.
+#[cfg(windows)]
+fn taskkill(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// The folders a `bundle.toml` may name build inputs in: the crate's workspace and the ones given on the command line.
+fn trusted_roots(workspace_root: &Path, allow: &[PathBuf]) -> Vec<PathBuf> {
+    std::iter::once(workspace_root.to_path_buf())
+        .chain(allow.iter().cloned())
+        .collect()
+}
+
+/// Whether `named` exists and lies inside one of `roots`, both resolved through links first.
+fn inside(named: &Path, roots: &[PathBuf]) -> bool {
+    let Ok(named) = named.canonicalize() else {
+        return false;
+    };
+    roots
+        .iter()
+        .filter_map(|root| root.canonicalize().ok())
+        .any(|root| named.starts_with(root))
+}
+
+/// The error for a `bundle.toml` key `key` naming `named`, outside `root` or not there, with the command-line way to say it.
+fn outside_message(key: &str, named: &str, root: &Path, flag: &str) -> String {
+    precompile::printable(&format!(
+        "bundle.toml: `{key}` is {named}, which is not there or is outside the workspace ({}); a bundle.toml can come from anywhere and this is built or run, so name it with {flag} to use it",
+        root.display()
+    ))
+}
+
+/// Sends `signal` to the process group `pid` leads (a child made with `process_group(0)`).
+#[cfg(unix)]
+fn kill_group(pid: u32, signal: rustix::process::Signal) {
+    use rustix::process::{Pid, kill_process_group};
+
+    if let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) {
+        let _ = kill_process_group(pid, signal);
+    }
+}
+
+/// A clean folder named `name` beside the test program, in the build folder.
+#[cfg(test)]
+pub(crate) fn test_dir(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().expect("the test program's path");
+    let dir = exe
+        .parent()
+        .expect("the test program's folder")
+        .join(format!("torque-bundle-{name}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder for the test");
+    dir
 }
 
 #[cfg(test)]
@@ -888,6 +1268,188 @@ mod tests {
         assert_eq!(
             folder_name("demo", "x86_64-unknown-linux-gnu"),
             "demo-linux-x86_64"
+        );
+    }
+
+    /// The tests that run programs go one at a time: [`kill_running`] stops every program there is.
+    static PROGRAMS: Mutex<()> = Mutex::new(());
+
+    fn node_found() -> bool {
+        Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success())
+    }
+
+    /// Whether a process of this id is running.
+    fn alive(pid: u32) -> bool {
+        #[cfg(unix)]
+        {
+            use rustix::process::{Pid, test_kill_process};
+            i32::try_from(pid)
+                .ok()
+                .and_then(Pid::from_raw)
+                .is_some_and(|pid| test_kill_process(pid).is_ok())
+        }
+        #[cfg(windows)]
+        {
+            let out = Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .unwrap_or_default();
+            out.split_whitespace().any(|word| word == pid.to_string())
+        }
+    }
+
+    /// A program that starts another and then never finishes (a browser that hangs on a page), cut off by its time: nothing it
+    /// started stays running. On Windows the child is detached, since Node otherwise ties the children it starts to its own life.
+    #[test]
+    fn a_program_past_its_time_is_killed_with_everything_it_started() {
+        let _one = PROGRAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        if !node_found() {
+            eprintln!("no node here: the process tree case is skipped");
+            return;
+        }
+        let dir = test_dir("run-limited");
+        let pid_file = dir.join("child.pid");
+        let script = "const c = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: process.platform === 'win32' });\
+                      require('node:fs').writeFileSync(process.argv[1], String(c.pid)); setInterval(() => {}, 1000);";
+        let mut command = Command::new("node");
+        command.arg("-e").arg(script).arg(&pid_file);
+        let started = Instant::now();
+        let error = run_limited(command, "the hanging page", 5, &[], Output::Keep).unwrap_err();
+        assert!(error.contains("ran past 5 s"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(30));
+        let child: u32 = std::fs::read_to_string(&pid_file)
+            .expect("the program did not start its child in time")
+            .trim()
+            .parse()
+            .unwrap();
+        let end = Instant::now() + Duration::from_secs(10);
+        while alive(child) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(!alive(child), "the child {child} is still running");
+    }
+
+    #[test]
+    fn a_program_that_cannot_start_is_named_and_a_huge_time_does_not_overflow() {
+        let _one = PROGRAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        let error = run_limited(
+            Command::new("no-such-program-for-the-test"),
+            "the check",
+            1,
+            &[],
+            Output::Keep,
+        )
+        .unwrap_err();
+        assert!(error.contains("no-such-program-for-the-test"), "{error}");
+        if node_found() {
+            let mut command = Command::new("node");
+            command.arg("--version");
+            let out = run_limited(command, "node", u64::MAX, &[], Output::Keep).unwrap();
+            assert!(out.starts_with('v'), "{out}");
+        }
+    }
+
+    #[test]
+    fn the_files_are_read_up_to_a_total() {
+        let files = |sizes: &[usize]| {
+            sizes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (format!("f{i}"), Text::Bytes(vec![0; *n])))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(read_files(files(&[5, 5]), 10, 10).unwrap().len(), 2);
+        let error = read_files(files(&[5, 6]), 10, 10).unwrap_err();
+        assert!(error.contains("f1") && error.contains("in all"), "{error}");
+    }
+
+    /// A script that exits at once but leaves a process holding its output (a build that started a server): the run ends when
+    /// the script does, not when the pipe closes.
+    #[test]
+    fn a_process_left_holding_the_pipe_does_not_hold_the_run() {
+        let _one = PROGRAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        if !node_found() {
+            eprintln!("no node here: the held pipe case is skipped");
+            return;
+        }
+        // The process it leaves ends by itself after a while, so nothing is left behind.
+        let script = "require('node:child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { stdio: ['ignore', 'inherit', 'inherit'], detached: process.platform === 'win32' }).unref(); console.log('script done');";
+        let mut command = Command::new("node");
+        command.arg("-e").arg(script);
+        let started = Instant::now();
+        let out = run_limited(
+            command,
+            "the script",
+            120,
+            &["script done".to_string()],
+            Output::Keep,
+        )
+        .unwrap();
+        assert!(out.contains("script done"), "{out}");
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the run waited {:?} for the process holding the pipe",
+            started.elapsed()
+        );
+    }
+
+    /// What a Ctrl-C calls: the programs being run, with what they started, are stopped.
+    #[test]
+    fn an_interrupt_stops_the_running_programs() {
+        let _one = PROGRAMS.lock().unwrap_or_else(PoisonError::into_inner);
+        if !node_found() {
+            eprintln!("no node here: the interrupt case is skipped");
+            return;
+        }
+        let run = std::thread::spawn(|| {
+            let mut command = Command::new("node");
+            command.args(["-e", "setInterval(() => {}, 1000)"]);
+            run_limited(command, "the program", 300, &[], Output::Keep)
+        });
+        let end = Instant::now() + Duration::from_secs(20);
+        while RUNNING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+            && Instant::now() < end
+        {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let started = Instant::now();
+        kill_running();
+        let result = run.join().unwrap();
+        assert!(result.is_err(), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(30));
+    }
+
+    #[test]
+    fn a_build_input_must_lie_in_a_folder_it_may_name() {
+        let dir = test_dir("inside");
+        let (root, elsewhere) = (dir.join("root"), dir.join("elsewhere"));
+        for folder in ["root/sub", "elsewhere"] {
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        std::fs::write(root.join("sub/Cargo.toml"), "").unwrap();
+        std::fs::write(elsewhere.join("Cargo.toml"), "").unwrap();
+        let roots = trusted_roots(&root, &[]);
+        assert!(inside(&root.join("sub/Cargo.toml"), &roots));
+        assert!(inside(&root.join("sub/../sub/Cargo.toml"), &roots));
+        assert!(!inside(
+            &root.join("sub/../../elsewhere/Cargo.toml"),
+            &roots
+        ));
+        assert!(!inside(&root.join("missing/Cargo.toml"), &roots));
+        assert!(!inside(&root.join("sub/Cargo.toml"), &[]));
+        let allowed = trusted_roots(&root, std::slice::from_ref(&elsewhere));
+        assert!(inside(&elsewhere.join("Cargo.toml"), &allowed));
+        let message = outside_message("web.lua", "../x\u{1b}[2J", &root, "--lua <Cargo.toml>");
+        assert!(
+            message.contains("--lua") && !message.contains('\u{1b}'),
+            "{message}"
         );
     }
 }

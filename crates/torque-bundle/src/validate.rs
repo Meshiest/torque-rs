@@ -301,8 +301,13 @@ impl GameInfo {
     /// What `game_dir` says: its `game.toml`, read within [`MAX_CONFIG_BYTES`] (a missing or unreadable one says nothing).
     pub fn read(game_dir: &std::path::Path) -> GameInfo {
         let toml = read_plain(&game_dir.join("game.toml"), MAX_CONFIG_BYTES, None).ok();
+        GameInfo::from_toml(toml.as_deref())
+    }
+
+    /// What the text of a `game.toml` says (`None`: the game has none).
+    pub fn from_toml(toml: Option<&[u8]>) -> GameInfo {
         GameInfo {
-            mods_folder: precompile::mods_folder(toml.as_deref()),
+            mods_folder: precompile::mods_folder(toml),
         }
     }
 }
@@ -325,33 +330,53 @@ pub fn process(
     mode: Mode,
     game: &GameInfo,
 ) -> (Vec<GameFile>, Report) {
+    let paths: Vec<&str> = selected.iter().map(|file| file.path.as_str()).collect();
+    process_with(
+        &paths,
+        |index| {
+            read_plain(&selected[index].source, limits.file_bytes, None).map_err(|e| e.to_string())
+        },
+        limits,
+        mode,
+        game,
+    )
+}
+
+/// [`process`] for files that are not on disk: `paths` names them and `read` gives the bytes of the one at an index (called once
+/// for each, in order, and only for a file that is not refused by its name). The pack of a web game is opened this way.
+pub fn process_with(
+    paths: &[&str],
+    mut read: impl FnMut(usize) -> Result<Vec<u8>, String>,
+    limits: &Limits,
+    mode: Mode,
+    game: &GameInfo,
+) -> (Vec<GameFile>, Report) {
     let mut report = Report::default();
     let mut files = Vec::new();
-    if selected.len() > limits.files {
+    if paths.len() > limits.files {
         report.refuse(
             "",
             format!(
                 "{} files in the game folder; the limit is {}",
-                selected.len(),
+                paths.len(),
                 limits.files
             ),
         );
         return (files, report);
     }
     // Two paths that differ only in case are one file to the engine (and to Windows and macOS): neither is read.
-    let mut taken: HashMap<String, &str> = HashMap::with_capacity(selected.len());
+    let mut taken: HashMap<String, &str> = HashMap::with_capacity(paths.len());
     let mut doubled: HashSet<&str> = HashSet::new();
-    for file in selected {
-        if let Some(first) = taken.insert(file.path.to_ascii_lowercase(), file.path.as_str()) {
+    for &path in paths {
+        if let Some(first) = taken.insert(path.to_ascii_lowercase(), path) {
             report.refuse(
-                &file.path,
+                path,
                 format!("the same name as {first} when case is ignored"),
             );
-            doubled.insert(file.path.as_str());
+            doubled.insert(path);
         }
     }
-    let mod_dirs =
-        precompile::mod_dirs(&game.mods_folder, selected.iter().map(|f| f.path.as_str()));
+    let mod_dirs = precompile::mod_dirs(&game.mods_folder, paths.iter().copied());
     let context = Context {
         taken: &taken,
         mod_dirs: &mod_dirs,
@@ -363,8 +388,7 @@ pub fn process(
         entries: 0,
         inflated: 0,
     };
-    for file in selected {
-        let path = file.path.as_str();
+    for (index, &path) in paths.iter().enumerate() {
         if doubled.contains(path) {
             continue;
         }
@@ -373,10 +397,10 @@ pub fn process(
             continue;
         }
         let kind = Kind::of(path);
-        let bytes = match read_plain(&file.source, limits.file_bytes, None) {
+        let bytes = match read(index) {
             Ok(bytes) => bytes,
-            Err(e) => {
-                report.refuse(path, e.to_string());
+            Err(reason) => {
+                report.refuse(path, reason);
                 continue;
             }
         };

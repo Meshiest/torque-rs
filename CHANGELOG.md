@@ -518,6 +518,7 @@ different.
   Every file of the game folder that a loader of the engine owns (shapes, interiors, terrains, images, sounds, fonts, scripts, zips,
   settings) is opened by that loader under its caps before anything is built, and a refused file fails the bundle with its path
   and the reason (`--no-validate` skips this, `--validate` does only this); `--precompile` ships the `.cs` and `.gui` scripts compiled.
+  `--web` packages the browser build as a folder a static host serves: its pack's files opened by their loaders, `files.json` checked against the folder and the manifest, then a headless check.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

@@ -52,6 +52,10 @@ fn options(dir: &Path, crate_dir: PathBuf, out: &str) -> Options {
             ..torque_bundle::validate::Mode::default()
         },
         limits: torque_bundle::validate::Limits::default(),
+        web: false,
+        scripts: None,
+        lua: None,
+        allow: Vec::new(),
     }
 }
 
@@ -484,4 +488,56 @@ fn the_inflate_limit_of_the_leak_scan_is_a_flag() {
     let bad = run(&["--max-inflated", "lots"], "bad");
     assert!(!bad.status.success());
     assert!(String::from_utf8_lossy(&bad.stderr).contains("--max-inflated needs a number"));
+}
+
+#[test]
+fn the_web_target_needs_a_web_table_and_refuses_what_does_not_apply_to_it() {
+    let dir = tmp("web-refused");
+    let crate_dir = fixture(&dir, |s| s);
+    let web = |server: bool, precompile: bool| Options {
+        web: true,
+        server,
+        mode: torque_bundle::validate::Mode {
+            validate: true,
+            precompile,
+            ..torque_bundle::validate::Mode::default()
+        },
+        ..options(&dir, crate_dir.clone(), "out")
+    };
+    let error = bundle(&web(false, false)).unwrap_err();
+    assert!(error.contains("no [web] table"), "{error}");
+    assert!(bundle(&web(true, false)).unwrap_err().contains("--server"));
+    assert!(
+        bundle(&web(false, true))
+            .unwrap_err()
+            .contains("--precompile")
+    );
+    assert!(!dir.join("out").exists());
+}
+
+#[test]
+fn an_extension_outside_the_workspace_needs_to_be_allowed() {
+    let dir = tmp("extension-outside");
+    let outside = dir.join("ext");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("Cargo.toml"), "").unwrap();
+    std::fs::write(outside.join("ext.toml"), "").unwrap();
+    let crate_dir = fixture(&dir, |s| {
+        format!(
+            "{s}\n[[extension]]\nmanifest = \"../ext/Cargo.toml\"\nconfig = \"../ext/ext.toml\"\n"
+        )
+    });
+    let error = bundle(&options(&dir, crate_dir.clone(), "out")).unwrap_err();
+    assert!(
+        error.contains("extension.manifest") && error.contains("--allow"),
+        "{error}"
+    );
+    assert!(!dir.join("out").exists());
+    // Allowed, it gets past that check (and fails later, on a manifest with nothing in it).
+    let allowed = Options {
+        allow: vec![outside],
+        ..options(&dir, crate_dir, "out")
+    };
+    let error = bundle(&allowed).unwrap_err();
+    assert!(!error.contains("--allow"), "{error}");
 }

@@ -184,4 +184,9 @@ fn only_cs_and_gui_files_are_compiled() {
 fn printable_replaces_every_control_character() {
     assert_eq!(printable("a\u{1b}[2Jb\u{7}\r\n\u{9b}c"), "a?[2Jb????c");
     assert_eq!(printable("plain ünïcode"), "plain ünïcode");
+    // Format characters that reorder or hide text go too.
+    assert_eq!(
+        printable("a\u{202E}b\u{200B}c\u{2066}d\u{FEFF}e\u{E0041}f\u{AD}g\u{061C}"),
+        "a?b?c?d?e?f?g?"
+    );
 }

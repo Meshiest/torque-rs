@@ -184,12 +184,31 @@ pub fn mods_folder(game_toml: Option<&[u8]>) -> String {
         .unwrap_or_else(|| MODS_FOLDER.to_string())
 }
 
-/// `text` with every control character replaced by `?`, so a message made of a file's bytes cannot move the cursor or set the
+/// `text` with every control character and every format character that hides or reorders text replaced by `?`, so a message made of a file's bytes cannot move the cursor or set the
 /// title of the terminal it is printed to.
 pub fn printable(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if hides_text(c) { '?' } else { c })
         .collect()
+}
+
+/// Whether `c` moves the cursor, sets the title or changes how text is read: a control character, or a format character that
+/// reorders text (the bidirectional marks and isolates) or has no width (zero-width spaces and joiners, the soft hyphen, the
+/// byte order mark, the language tags and the interlinear marks).
+fn hides_text(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{206F}'
+                | '\u{FEFF}'
+                | '\u{FFF9}'..='\u{FFFB}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 /// The errors of a compile, the first lines of them, each cut: a hostile script cannot make a message long or hold escapes.

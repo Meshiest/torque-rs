@@ -32,6 +32,8 @@ torque-ts-bytecode = { path = "../torque-ts-bytecode" }
 torque-ts-compiler = { path = "../torque-ts-compiler" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 memchr = "2.7"
+# Ctrl-C (and a terminate signal) stops the programs a bundle runs, which sit in process groups of their own.
+ctrlc = { version = "3", features = ["termination"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 sha2 = "0.10"
@@ -41,8 +43,14 @@ flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 # The leak scan looks inside the zips of a game folder, and the tests read the bundle's own archive back.
 zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
-# The constants of the mods plugin that `validate` and `precompile` repeat, held equal by a test (the tool does not link it).
+# A timed-out program's whole process group is killed (the workspace forbids `unsafe`, so no raw `kill`).
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["process", "std"] }
+
+# The constants of the mods plugin that `validate` and `precompile` repeat, and the engine's pack of files that `web` reads, held
+# equal by tests (the tool does not link them).
 [dev-dependencies]
+torque-app-server = { path = "../torque-app-server" }
 torque-mods = { path = "../torque-mods" }
 
 [lints]

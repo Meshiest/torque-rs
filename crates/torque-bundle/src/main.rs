@@ -1,10 +1,13 @@
-//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>]
+//! `torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--web] [--archive] [--twice] [--max-inflated <MiB>]
 //! [--no-validate] [--precompile] [--classic-scripts]`:
 //! packages the game for this computer (the library's docs say what goes in). `--server` packages its dedicated-server variant;
 //! `--archive` also writes the bundle as a zip (Windows) or a gzipped tar, the same bytes from the same inputs; `--twice` builds
 //! it two times from clean build folders (`<out>/one`, `<out>/two`) and fails unless the two archives have the same SHA-256.
 //! Every file of the game folder is opened by the engine's loader for it first, and a file that is refused fails the bundle
 //! (`--no-validate` skips that); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source.
+//! `--web` packages the game's browser build instead (the library's docs say what goes in); `--scripts <dir>` names the engine's
+//! web scripts when `bundle.toml` does not name the `web` folder of the crate's workspace, and `--lua <Cargo.toml>` the Lua
+//! extension; `--allow <dir>` (repeatable) lets `[[extension]]` and `[web].lua` name files in another folder.
 //! `--classic-scripts` says the game's executor reads TGE 1.4's script format, not Torque3D's.
 //! `torque-bundle --validate <game crate folder> [--precompile]` only opens the game folder's files (nothing is built), and
 //! `torque-bundle --verify <bundle folder>` checks a bundle against its manifest.
@@ -16,11 +19,33 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use torque_bundle::{
-    ArchiveReport, Options, Report, bundle, manifest, own_folder, precompile::ScriptFormat,
-    remove_owned_folder, scan, validate, validate_game,
+    ArchiveReport, Options, Report, bundle, manifest, own_folder, precompile,
+    precompile::ScriptFormat, remove_owned_folder, scan, validate, validate_game,
 };
 
-const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--archive] [--twice] [--max-inflated <MiB>] [--no-validate] [--precompile] [--classic-scripts]\n       torque-bundle --validate <game crate folder> [--precompile] [--classic-scripts]\n       torque-bundle --verify <bundle folder>";
+/// Prints `text` to standard output or standard error a line at a time with every control character replaced
+/// ([`precompile::printable`]). Everything this program prints goes through here, so no file name or message made of a file's
+/// bytes (a game folder's, a bundle's or a check's output) can write an escape sequence to the terminal.
+fn emit(text: &str, to_error: bool) {
+    for line in text.lines() {
+        let line = precompile::printable(line);
+        if to_error {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+}
+
+macro_rules! say {
+    ($($arg:tt)*) => { emit(&format!($($arg)*), false) };
+}
+
+macro_rules! say_err {
+    ($($arg:tt)*) => { emit(&format!($($arg)*), true) };
+}
+
+const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--web] [--scripts <dir>] [--lua <Cargo.toml>] [--allow <dir>] [--archive] [--twice] [--max-inflated <MiB>] [--no-validate] [--precompile] [--classic-scripts]\n       torque-bundle --validate <game crate folder> [--precompile] [--classic-scripts]\n       torque-bundle --verify <bundle folder>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -31,6 +56,10 @@ fn run() -> Result<(), String> {
         .map(PathBuf::from);
     let mut check = true;
     let mut server = false;
+    let mut web = false;
+    let mut scripts = None;
+    let mut lua = None;
+    let mut allow = Vec::new();
     let mut archive = false;
     let mut twice = false;
     let mut max_inflated = scan::MAX_INFLATED_BYTES;
@@ -50,7 +79,7 @@ fn run() -> Result<(), String> {
                 let dir = value("--verify")?;
                 let problems = manifest::verify(&dir)?;
                 if problems.is_empty() {
-                    println!("{}: every file matches the manifest", dir.display());
+                    say!("{}: every file matches the manifest", dir.display());
                     return Ok(());
                 }
                 return Err(problems.join("\n"));
@@ -63,6 +92,10 @@ fn run() -> Result<(), String> {
             "--target-dir" => target_dir = Some(value("--target-dir")?),
             "--no-check" => check = false,
             "--server" => server = true,
+            "--web" => web = true,
+            "--scripts" => scripts = Some(value("--scripts")?),
+            "--lua" => lua = Some(value("--lua")?),
+            "--allow" => allow.push(value("--allow")?),
             "--archive" => archive = true,
             "--twice" => twice = true,
             "--max-inflated" => {
@@ -73,7 +106,7 @@ fn run() -> Result<(), String> {
                 max_inflated = mib.saturating_mul(1 << 20);
             }
             "-h" | "--help" => {
-                println!("{USAGE}");
+                say!("{USAGE}");
                 return Ok(());
             }
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
@@ -93,6 +126,10 @@ fn run() -> Result<(), String> {
         target_dir,
         check,
         server,
+        web,
+        scripts,
+        lua,
+        allow,
         archive: archive || twice,
         max_inflated_bytes: max_inflated,
         mode,
@@ -113,10 +150,10 @@ fn validate_only(
 ) -> Result<(), String> {
     let report = validate_game(crate_dir, limits, mode)?;
     for line in report.summary() {
-        println!("{line}");
+        say!("{line}");
     }
     for skipped in &report.not_precompiled {
-        println!("  left as source: {skipped}");
+        say!("  left as source: {skipped}");
     }
     if report.refused.is_empty() {
         return Ok(());
@@ -153,10 +190,10 @@ fn build_twice(options: &Options) -> Result<(), String> {
     let [(first, a), (second, b)] = &runs[..] else {
         return Err("two builds were expected".into());
     };
-    println!("archive sha256 of build one: {}", a.sha256);
-    println!("archive sha256 of build two: {}", b.sha256);
+    say!("archive sha256 of build one: {}", a.sha256);
+    say!("archive sha256 of build two: {}", b.sha256);
     if a.sha256 == b.sha256 {
-        println!("the two archives are byte-identical ({} bytes)", a.bytes);
+        say!("the two archives are byte-identical ({} bytes)", a.bytes);
         return Ok(());
     }
     let differing = differing_files(&first.folder, &second.folder);
@@ -189,8 +226,8 @@ fn differing_files(one: &Path, two: &Path) -> Vec<String> {
 }
 
 fn print_report(report: &Report) {
-    println!("bundle: {}", report.folder.display());
-    println!(
+    say!("bundle: {}", report.folder.display());
+    say!(
         "  {} files, {} bytes; features [{}]",
         report.files,
         report.bytes,
@@ -198,50 +235,63 @@ fn print_report(report: &Report) {
     );
     if report.content.opened_total() > 0 || report.content.precompiled > 0 {
         for line in report.content.summary() {
-            println!("  game folder: {line}");
+            say!("  game folder: {line}");
         }
     }
     for skipped in &report.content.not_precompiled {
-        println!("  left as source: {skipped}");
+        say!("  left as source: {skipped}");
     }
-    println!("  left out of the game folder: {}", report.skipped.len());
+    say!("  left out of the game folder: {}", report.skipped.len());
     for warning in &report.warnings {
-        println!("  warning: {warning}");
+        say!("  warning: {warning}");
     }
     for path in &report.skipped {
-        println!("    {path}");
+        say!("    {path}");
     }
-    println!(
+    say!(
         "  licenses: {} crates, {} without a license text",
         report.crates,
         report.missing_licenses.len()
     );
     for name in &report.missing_licenses {
-        println!("    no text: {name}");
+        say!("    no text: {name}");
     }
     for name in &report.generic_licenses {
-        println!("    standard texts (the crate ships none): {name}");
+        say!("    standard texts (the crate ships none): {name}");
+    }
+    if let Some(web) = &report.web {
+        say!(
+            "  web target: {} files listed in files.json, each equal to the file and to the manifest's hash; {} files in packs and {} others, each opened by its loader",
+            web.listed,
+            web.pack_files,
+            web.other_files
+        );
+        if web.checks.is_empty() {
+            say!("  web check: nothing to run");
+        } else {
+            say!("  web checks passed: {}", web.checks.join(", "));
+        }
     }
     if let Some(server) = &report.server {
-        println!(
+        say!(
             "  server variant: {} crates linked, {} renderer, window or audio crates, {} GPU, window or audio system libraries imported",
-            server.linked, server.drawing, server.system_libraries
+            server.linked,
+            server.drawing,
+            server.system_libraries
         );
     }
-    println!("  leak scan: 0 local folders found");
+    say!("  leak scan: 0 local folders found");
     match &report.check {
         Some(out) => {
-            println!(
-                "  check: passed from the bundle folder; the bundle still matches its manifest"
-            );
+            say!("  check: passed from the bundle folder; the bundle still matches its manifest");
             for line in out.lines().take(12) {
-                println!("    | {line}");
+                say!("    | {line}");
             }
         }
-        None => println!("  check: not run"),
+        None => say!("  check: not run"),
     }
     if let Some(archive) = &report.archive {
-        println!(
+        say!(
             "archive: {}  {} ({} bytes)",
             archive.sha256,
             archive.path.display(),
@@ -251,10 +301,15 @@ fn print_report(report: &Report) {
 }
 
 fn main() -> ExitCode {
+    // An interrupt stops what the bundle is running (a build, a headless browser) before this program ends.
+    let _ = ctrlc::set_handler(|| {
+        torque_bundle::kill_running();
+        std::process::exit(130);
+    });
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("torque-bundle: {e}");
+            say_err!("torque-bundle: {e}");
             ExitCode::FAILURE
         }
     }

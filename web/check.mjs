@@ -66,6 +66,24 @@ const browser = await launchGuarded({
   ],
   defaultViewport: { width: 1400, height: 900 },
 });
+// A check that runs past every wait it has (a page that hangs the browser) is cut off: the browser is killed, so none is left
+// running when this program ends or is killed by a caller's time limit.
+const watchdog = setTimeout(
+  () => {
+    console.error('FAILED: the check ran past its time and its browser was killed');
+    browser.process()?.kill('SIGKILL');
+    process.exit(1);
+  },
+  (Number(seconds) * 3 + 300) * 1000,
+);
+// Asked to stop (a caller's time limit, Ctrl-C), the browser goes with this program: Chrome is started in a group of its own, so
+// the caller's signal to this program's group does not reach it.
+for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+  process.on(signal, () => {
+    browser.process()?.kill('SIGKILL');
+    process.exit(1);
+  });
+}
 const problems = [];
 const log = [];
 // Requests for the listed files, since the count was last reset.
@@ -249,6 +267,7 @@ try {
     }
   }
 } finally {
+  clearTimeout(watchdog);
   await browser.close();
   server?.close();
 }
