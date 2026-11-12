@@ -79,13 +79,14 @@ use glam::Vec3;
 
 use torque_render_core::wgpu;
 use torque_render_scene::hd::{
-    HD_VERTEX_BYTES, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, srgb_to_linear,
+    HD_VERTEX_BYTES, HdAreaLight, HdCamera, HdDraw, HdLight, HdSpot, HdVertex, srgb_to_linear,
 };
 use torque_render_scene::{Blend, Cull, Filter, Sampler};
 use wgpu::util::DeviceExt;
 
 use torque_render_scene::hd::cells::StaticGeometry;
 use torque_render_scene::hd::grade::{ExposureMode, Tonemap};
+use torque_render_scene::hd::ltc::{self, LTC_SIZE};
 use torque_render_scene::hd::lut::{CubeLut, LUT_SIZE};
 use torque_render_scene::hd::post::{AntiAliasing, AoMethod, RenderScale, internal_size, jitter};
 use torque_render_scene::hd::settings::ImageSettings;
@@ -127,39 +128,92 @@ pub const LDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 pub const CLUSTER_GRID: [u32; 3] = [16, 9, 24];
 pub const MAX_LIGHTS: usize = 1024;
 /// One light's bytes in the lights buffer (`common.wgsl`'s `Light`).
-pub const LIGHT_BYTES: usize = 64;
+pub const LIGHT_BYTES: usize = 96;
 
-/// The lights a frame uploads, in the buffer's order: the shadowed ones first (the point lights but the glowing surfaces', then
-/// the spots that cast shadows), then the spots that do not and the glowing surfaces' lights (`glow`: else left out); each one's
-/// packed cone ([`HdSpot::cone`], zeros for a point light) and how many of the first cast shadows. At most [`MAX_LIGHTS`].
+/// The lights a frame uploads, in the buffer's order ([`frame_lights`]), each with its packed cone ([`HdSpot::cone`], zeros for
+/// a point or area light) and its area shape's words ([`HdAreaLight::shape_words`], zeros for a point or spot light).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FrameLights {
+    pub lights: Vec<HdLight>,
+    pub cones: Vec<[f32; 4]>,
+    pub shapes: Vec<[[f32; 4]; 2]>,
+    /// The lights that cast shadows (their places in `lights`, in the shadow maps' order).
+    pub shadowed: Vec<usize>,
+    /// Where the area lights shaded as their shapes begin (they run to the end; `lights.len()`: none).
+    pub area_start: usize,
+}
+
+/// Which lights [`frame_lights`] uploads as their own kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LightKinds {
+    /// The glowing surfaces' lights go in (else left out).
+    pub glow: bool,
+    /// The area lights go with their shapes (else each is a point light at its center).
+    pub area: bool,
+}
+
+/// The lights a frame uploads, in the buffer's order: the scene's point lights but the glowing surfaces', the spots that cast
+/// shadows, the spots that do not, the glowing surfaces' lights (`glow`: else left out), then the area lights, those that cast
+/// shadows first. With `area` the area lights go with their shapes, from [`FrameLights::area_start`] to the end, where the
+/// forward pass shades them in a loop of their own (the point lights' loop is the one it always was); without (the qualities
+/// that do not shade area lights) each is a point light at its center among the point lights. At most [`MAX_LIGHTS`].
 pub fn frame_lights(
     lights: &[HdLight],
     glow_lights: usize,
     spots: &[HdSpot],
-    glow: bool,
-) -> (Vec<HdLight>, Vec<[f32; 4]>, usize) {
+    areas: &[HdAreaLight],
+    kinds: LightKinds,
+) -> FrameLights {
+    let LightKinds { glow, area } = kinds;
+    const NONE: [[f32; 4]; 2] = [[0.0; 4]; 2];
     let plain = lights.len() - glow_lights.min(lights.len());
-    let mut out: Vec<(HdLight, [f32; 4])> =
-        lights[..plain].iter().map(|l| (*l, [0.0; 4])).collect();
-    out.extend(
-        spots
-            .iter()
-            .filter(|s| s.shadows)
-            .map(|s| (s.light, s.cone())),
-    );
-    let shadowed = out.len().min(MAX_LIGHTS);
-    out.extend(
-        spots
-            .iter()
-            .filter(|s| !s.shadows)
-            .map(|s| (s.light, s.cone())),
-    );
-    if glow {
-        out.extend(lights[plain..].iter().map(|l| (*l, [0.0; 4])));
+    let spot = |s: &HdSpot| (s.light, s.cone(), NONE);
+    let area_light = |a: &HdAreaLight| {
+        let shape = if area { a.shape_words() } else { NONE };
+        (a.gpu_light(), [0.0; 4], shape)
+    };
+    let shadowed_areas = areas.iter().filter(|a| a.shadows).map(area_light);
+    let unshadowed_areas = areas.iter().filter(|a| !a.shadows).map(area_light);
+    let mut out: Vec<(HdLight, [f32; 4], [[f32; 4]; 2])> = lights[..plain]
+        .iter()
+        .map(|l| (*l, [0.0; 4], NONE))
+        .collect();
+    out.extend(spots.iter().filter(|s| s.shadows).map(spot));
+    if !area {
+        out.extend(shadowed_areas.clone());
     }
+    let mut shadowed: Vec<usize> = (0..out.len()).collect();
+    out.extend(spots.iter().filter(|s| !s.shadows).map(spot));
+    if !area {
+        out.extend(unshadowed_areas.clone());
+    }
+    if glow {
+        out.extend(lights[plain..].iter().map(|l| (*l, [0.0; 4], NONE)));
+    }
+    let area_start = if area {
+        let start = out.len();
+        out.extend(shadowed_areas);
+        shadowed.extend(start..out.len());
+        out.extend(unshadowed_areas);
+        start
+    } else {
+        out.len()
+    };
     out.truncate(MAX_LIGHTS);
-    let (l, c) = out.into_iter().unzip();
-    (l, c, shadowed)
+    shadowed.retain(|&i| i < out.len());
+    let mut f = FrameLights {
+        lights: Vec::with_capacity(out.len()),
+        cones: Vec::with_capacity(out.len()),
+        shapes: Vec::with_capacity(out.len()),
+        shadowed,
+        area_start: area_start.min(out.len()),
+    };
+    for (l, c, a) in out {
+        f.lights.push(l);
+        f.cones.push(c);
+        f.shapes.push(a);
+    }
+    f
 }
 const CLUSTER_WORDS: u64 = 32;
 /// A mesh's place in the frame's table (`torque_render_scene::hd::NodePlace`): the rows of its placement now, of its normals' turn and of
@@ -1168,13 +1222,16 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     contact_pipeline: wgpu::RenderPipeline,
     /// The lights as uploaded (their shadow slots patched in each frame) and the slots last written.
     light_bytes: Vec<u8>,
-    /// Per light, the static geometry's owners it is mounted in ([`HdExtension::light_hosts`]: left out of its shadow cube).
-    light_hosts: Vec<[u32; 4]>,
     written_slots: Option<Vec<[f32; 4]>>,
-    /// The lights as uploaded (the scene's point lights and spots in the buffer's order) and each one's packed cone
-    /// ([`HdSpot::cone`]; zeros: a point light).
-    frame_lights: Vec<HdLight>,
-    light_cones: Vec<[f32; 4]>,
+    /// The lights that cast shadows as uploaded (in the shadow maps' order: [`FrameLights::shadowed`]), each one's place in the
+    /// buffer, its packed cone ([`HdSpot::cone`]; zeros: a point or area light) and the static geometry's owners it is mounted
+    /// in ([`HdExtension::light_hosts`]: left out of its shadow cube).
+    shadow_lights: Vec<HdLight>,
+    shadow_index: Vec<usize>,
+    shadow_cones: Vec<[f32; 4]>,
+    shadow_hosts: Vec<[u32; 4]>,
+    /// Where the area lights begin in the buffer (the frame uniform's `limits.z`; the light count: none).
+    area_start: usize,
     /// The boxes of the cells changed since the last frame (old and new), or every cached shadow to be drawn again.
     shadow_dirty: Vec<[[f32; 3]; 2]>,
     shadow_reset: bool,
@@ -1254,6 +1311,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// The scene's lightmap (a texel of light 1 until a scene brings one) and the generation it was made for.
     lightmap: (wgpu::Texture, wgpu::TextureView),
     lightmap_generation: Option<u64>,
+    /// The area lights' fitted table ([`ltc_table_texture`]).
+    ltc_table: (wgpu::Texture, wgpu::TextureView),
     /// The extension's buffers in the renderer's groups.
     ext_slots: ExtSlots,
     /// The extension: what the world's static geometry brings beside the engine's frame.
@@ -1276,10 +1335,11 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     warm_queue: Vec<PipelineKey>,
     /// The scene's generation and control generation at the last upload.
     uploaded: Option<(u64, u64)>,
-    /// The scene's lights generation last uploaded, whether with the glow lights, and how many of them may cast shadows.
+    /// The scene's lights generation last uploaded, whether with the glow lights and whether with the area lights' shapes (the
+    /// quality shades area lights).
     lights_generation: Option<u64>,
     uploaded_glow: bool,
-    shadowed_lights: usize,
+    uploaded_area: bool,
     /// The passes from outside the renderer, by stage ([`crate::passes`]), and the copy of the frame [`PassStage::Post`] reads.
     passes: HdPasses,
     post_copy: Option<(wgpu::Texture, wgpu::TextureView)>,
@@ -1981,6 +2041,68 @@ fn lightmap_texture(
     (texture, view)
 }
 
+/// The area lights' table ([`torque_render_scene::hd::ltc::table`]) as the forward pass samples it (`ltc_table`): two layers of
+/// [`LTC_SIZE`] x [`LTC_SIZE`] half-float texels, x the roughness and y the view angle, layer 0 the inverse matrix's four entries
+/// and layer 1 the lobe's albedo and Schlick part.
+fn ltc_table_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let side = LTC_SIZE as u32;
+    let size = wgpu::Extent3d {
+        width: side,
+        height: side,
+        depth_or_array_layers: 2,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("hd area lights' table"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba16Float,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let cells = ltc::table();
+    let mut bytes = Vec::with_capacity(LTC_SIZE * LTC_SIZE * 16);
+    for layer in 0..2 {
+        for j in 0..LTC_SIZE {
+            for i in 0..LTC_SIZE {
+                let c = cells[i * LTC_SIZE + j];
+                let texel = if layer == 0 {
+                    c.minv
+                } else {
+                    [c.albedo, c.fresnel, 0.0, 0.0]
+                };
+                for v in texel {
+                    bytes.extend_from_slice(&f32_to_f16(v).to_le_bytes());
+                }
+            }
+        }
+    }
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(side * 8),
+            rows_per_image: Some(side),
+        },
+        size,
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    (texture, view)
+}
+
 /// The number of clusters.
 fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
@@ -2089,6 +2211,12 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         ),
         // The diffuse ambient's coefficients ([`irradiance::IrradiancePipe::output`]).
         uniform(20, wgpu::ShaderStages::FRAGMENT),
+        // The area lights' table ([`ltc_table_texture`]; sampled with binding 13's linear clamped sampler).
+        texture_entry(
+            21,
+            wgpu::TextureSampleType::Float { filterable: true },
+            wgpu::TextureViewDimension::D2Array,
+        ),
     ]
 }
 
@@ -2605,6 +2733,7 @@ impl<E: HdExtension> HdWorld<E> {
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
         let lightmap = lightmap_texture(&device, &queue, 1, 1, &[[0x3c00; 4]]);
+        let ltc_table = ltc_table_texture(&device, &queue);
         let arena = arena::Arena::new(&device);
         let cell_table = cull::CellTable::new(&device);
         let cull = cull::Cull::new(&device, cache);
@@ -2634,6 +2763,7 @@ impl<E: HdExtension> HdWorld<E> {
             dummy_depth,
             lightmap,
             lightmap_generation: None,
+            ltc_table,
             ext_slots,
             ext: E::new(&device),
             profile_passes: false,
@@ -2646,7 +2776,7 @@ impl<E: HdExtension> HdWorld<E> {
             uploaded: None,
             lights_generation: None,
             uploaded_glow: true,
-            shadowed_lights: 0,
+            uploaded_area: true,
             passes: HdPasses::default(),
             post_copy: None,
             marks: device
@@ -2762,10 +2892,12 @@ impl<E: HdExtension> HdWorld<E> {
             contact_layout,
             contact_pipeline,
             light_bytes: Vec::new(),
-            light_hosts: Vec::new(),
+            shadow_hosts: Vec::new(),
+            shadow_index: Vec::new(),
+            area_start: 0,
             written_slots: None,
-            frame_lights: Vec::new(),
-            light_cones: Vec::new(),
+            shadow_lights: Vec::new(),
+            shadow_cones: Vec::new(),
             shadow_dirty: Vec::new(),
             shadow_reset: true,
             ground_boxes: Vec::new(),
@@ -3197,6 +3329,7 @@ impl<E: HdExtension> HdWorld<E> {
                     binding: 20,
                     resource: self.irradiance.output.as_entire_binding(),
                 },
+                tv(21, &self.ltc_table.1),
             ],
         })
     }
@@ -4385,14 +4518,28 @@ impl<E: HdExtension> HdWorld<E> {
     fn upload_lights(&mut self, scene: &E::Scene) {
         self.lights_generation = Some(scene.lights_generation);
         self.uploaded_glow = self.features.glow_lights;
-        let (lights, cones, shadowed) = frame_lights(
+        let area = E::mode(scene)
+            .unwrap_or_else(E::fallback_mode)
+            .quality
+            .area_lights();
+        self.uploaded_area = area;
+        let FrameLights {
+            lights,
+            cones,
+            shapes,
+            shadowed,
+            area_start,
+        } = frame_lights(
             &scene.lights,
             scene.glow_lights,
             &scene.spots,
-            self.features.glow_lights,
+            &scene.area_lights,
+            LightKinds {
+                glow: self.features.glow_lights,
+                area,
+            },
         );
         let n = lights.len();
-        self.shadowed_lights = shadowed;
         if n > self.lights_capacity {
             self.lights_capacity = n.next_power_of_two();
             self.lights = Self::lights_buffer(&self.device, self.lights_capacity);
@@ -4405,7 +4552,7 @@ impl<E: HdExtension> HdWorld<E> {
             );
         }
         let mut lb = Vec::with_capacity(n * LIGHT_BYTES);
-        for (l, cone) in lights.iter().zip(&cones) {
+        for ((l, cone), shape) in lights.iter().zip(&cones).zip(&shapes) {
             push_f32(
                 &mut lb,
                 &[
@@ -4422,19 +4569,24 @@ impl<E: HdExtension> HdWorld<E> {
             push_f32(&mut lb, cone);
             // No shadow cube yet (the frame sets them).
             push_f32(&mut lb, &[-1.0, 0.0, -1.0, 0.0]);
+            push_f32(&mut lb, &shape[0]);
+            push_f32(&mut lb, &shape[1]);
         }
         if !lb.is_empty() {
             self.queue.write_buffer(&self.lights, 0, &lb);
         }
         self.light_bytes = lb;
-        self.light_hosts = lights
+        self.shadow_lights = shadowed.iter().map(|&i| lights[i]).collect();
+        self.shadow_cones = shadowed.iter().map(|&i| cones[i]).collect();
+        self.shadow_hosts = self
+            .shadow_lights
             .iter()
             .map(|l| E::light_hosts(scene, l.position))
             .collect();
+        self.shadow_index = shadowed;
         self.written_slots = None;
         self.light_count = n;
-        self.light_cones = cones;
-        self.frame_lights = lights;
+        self.area_start = area_start;
     }
 
     /// The scene's particles (and any texture they added) into their own buffers, when the set changed.
@@ -5549,7 +5701,12 @@ impl<E: HdExtension> HdWorld<E> {
         let per_cluster = quality.lights_per_cluster();
         push_u32(
             &mut b,
-            &[per_cluster, u32::from(mode.image.sky_irradiance), 0, 0],
+            &[
+                per_cluster,
+                u32::from(mode.image.sky_irradiance),
+                self.area_start as u32,
+                0,
+            ],
         );
         push_f32(&mut b, &camera.proj);
         b.extend_from_slice(post);
@@ -5680,8 +5837,12 @@ impl<E: HdExtension> HdWorld<E> {
         self.refl.set_ext(&self.ext_slots.reflect);
         self.upload_particles(scene);
         self.prepare_sprites(scene);
-        // The glow lights switched on or off since the lights went up.
-        if self.uploaded_glow != self.features.glow_lights {
+        // The glow lights switched on or off since the lights went up, or the quality's area lights.
+        let area = E::mode(scene)
+            .unwrap_or_else(E::fallback_mode)
+            .quality
+            .area_lights();
+        if self.uploaded_glow != self.features.glow_lights || self.uploaded_area != area {
             self.upload_lights(scene);
         }
         cpu_mark!("begin: particles");
@@ -6373,10 +6534,9 @@ impl<E: HdExtension> HdWorld<E> {
         let input = ShadowInput {
             camera: &icam,
             sun: &scene.sun,
-            // The glowing surfaces' lights at the end cast no shadows.
-            lights: &self.frame_lights[..self.shadowed_lights.min(self.frame_lights.len())],
-            cones: &self.light_cones,
-            hosts: &self.light_hosts,
+            lights: &self.shadow_lights,
+            cones: &self.shadow_cones,
+            hosts: &self.shadow_hosts,
             cells: &self.cells,
             grid: &self.grid,
             ext: &self.ext_slots.shadow,
@@ -6500,7 +6660,7 @@ impl<E: HdExtension> HdWorld<E> {
         // The lights' shadow slots.
         if self.written_slots.as_ref() != Some(&self.shadows.light_slots) {
             let mut lb = self.light_bytes.clone();
-            for (i, s) in self.shadows.light_slots.iter().enumerate() {
+            for (&i, s) in self.shadow_index.iter().zip(&self.shadows.light_slots) {
                 let at = i * LIGHT_BYTES + 48;
                 if at + 16 <= lb.len() {
                     for (k, v) in s.iter().enumerate() {
@@ -8115,9 +8275,10 @@ impl<E: HdExtension> HdWorld<E> {
         parts.push((
             "lights",
             (self.light_bytes.capacity()
-                + self.light_hosts.capacity() * 16
-                + self.frame_lights.capacity() * std::mem::size_of::<HdLight>()
-                + self.light_cones.capacity() * 16) as u64,
+                + self.shadow_hosts.capacity() * 16
+                + self.shadow_index.capacity() * std::mem::size_of::<usize>()
+                + self.shadow_lights.capacity() * std::mem::size_of::<HdLight>()
+                + self.shadow_cones.capacity() * 16) as u64,
         ));
         parts
     }

@@ -5,9 +5,10 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 40] = [
+pub const FILES: [(&str, &str); 41] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
+    ("area.wgsl", include_str!("../shaders/area.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
     (
@@ -322,30 +323,33 @@ impl Permutation {
                 clustered,
                 front_layer,
             } => format!(
-                "const CLUSTERED: bool = {clustered};\nconst FRONT_LAYER: bool = {front_layer};\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = {clustered};\nconst FRONT_LAYER: bool = {front_layer};\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
                 file("brdf.wgsl"),
+                file("area.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::View => format!(
-                "const CLUSTERED: bool = false;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = true;\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = false;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = true;\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
                 file("brdf.wgsl"),
+                file("area.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),
                 file("cloudshadow.wgsl")
             ),
             Permutation::Water => format!(
-                "const CLUSTERED: bool = true;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                "const CLUSTERED: bool = true;\nconst FRONT_LAYER: bool = false;\nconst CLIP: bool = false;\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
                 common,
                 file("skycommon.wgsl"),
                 file("brdf.wgsl"),
+                file("area.wgsl"),
                 file("reflect.wgsl"),
                 forward,
                 file("skyfog.wgsl"),

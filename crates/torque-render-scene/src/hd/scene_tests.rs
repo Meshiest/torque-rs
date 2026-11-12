@@ -147,3 +147,82 @@ fn a_spot_of_numbers_that_are_not_finite_packs_a_finite_cone() {
         assert!(spot.cone().iter().all(|v| v.is_finite()), "{bad}");
     }
 }
+
+fn area(shape: AreaShape) -> HdAreaLight {
+    HdAreaLight {
+        light: HdLight {
+            position: [1.0, 2.0, 3.0],
+            color: [1.0; 3],
+            radius: 0.5,
+            carrier: None,
+        },
+        shape,
+        shadows: false,
+    }
+}
+
+#[test]
+fn an_area_lights_words_hold_its_shape_and_its_radius_reaches_past_it() {
+    let rect = area(AreaShape::Rect {
+        half_u: [0.0, 0.6, 0.0],
+        half_v: [1.2, 0.0, 0.0],
+    });
+    assert_eq!(
+        rect.shape_words(),
+        [[0.0, 0.6, 0.0, AREA_RECT], [1.2, 0.0, 0.0, 0.0]]
+    );
+    let tube = area(AreaShape::Tube {
+        half_axis: [0.9, 0.0, 0.0],
+        radius: -0.02,
+    });
+    assert_eq!(
+        tube.shape_words(),
+        [[0.9, 0.0, 0.0, AREA_TUBE], [0.0, 0.0, 0.0, 0.02]]
+    );
+    // The window reaches past the farthest corner (the clusters bound the light by it), and a larger radius is kept.
+    let reach = (0.6f32 * 0.6 + 1.2 * 1.2).sqrt();
+    assert!((rect.reach() - reach).abs() < 1e-6);
+    assert!(rect.gpu_light().radius > reach);
+    assert!((tube.reach() - 0.92).abs() < 1e-6);
+    let mut wide = rect;
+    wide.light.radius = 10.0;
+    assert_eq!(wide.gpu_light().radius, 10.0);
+}
+
+#[test]
+fn a_degenerate_area_light_is_a_point_light() {
+    let none = [[0.0; 4]; 2];
+    for shape in [
+        AreaShape::Rect {
+            half_u: [0.0; 3],
+            half_v: [1.0, 0.0, 0.0],
+        },
+        // Parallel sides: no area.
+        AreaShape::Rect {
+            half_u: [1.0, 0.0, 0.0],
+            half_v: [2.0, 0.0, 0.0],
+        },
+        AreaShape::Rect {
+            half_u: [f32::NAN, 0.0, 0.0],
+            half_v: [0.0, 1.0, 0.0],
+        },
+        AreaShape::Tube {
+            half_axis: [0.0; 3],
+            radius: 0.1,
+        },
+        AreaShape::Tube {
+            half_axis: [1.0, 0.0, 0.0],
+            radius: f32::INFINITY,
+        },
+    ] {
+        assert_eq!(area(shape).shape_words(), none, "{shape:?}");
+    }
+    assert_eq!(
+        area(AreaShape::Tube {
+            half_axis: [f32::INFINITY, 0.0, 0.0],
+            radius: 0.1,
+        })
+        .reach(),
+        0.0
+    );
+}

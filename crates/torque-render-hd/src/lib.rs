@@ -29,6 +29,24 @@
 //!   keeps the fixed-function gamma-space response (`ImageSettings::linear_light`): its diffuse is not split with the specular
 //!   and a metal keeps its key light; only the specular terms are shared. A new lobe term goes in `brdf.wgsl` and must keep the
 //!   furnace.
+//! - The area lights (`HdScene::area_lights`, rectangles and tubes) share the point lights' buffer (`area_a` and `area_b` of
+//!   `common.wgsl`'s `Light`, [`LIGHT_BYTES`] a light), clusters and shadow cubes. They sit at the buffer's end, from
+//!   [`FrameLights::area_start`] (the frame uniform's `limits.z`), and the forward pass shades them in a loop of its own after
+//!   the point lights' loop, which stops there: a branch inside the point lights' loop changed the compiled shader enough to
+//!   move a few pixels of the point and spot lights' pictures by a level, and they must stay byte-identical (`shots-diff`
+//!   against main's pictures). Every other reader (the clusters, the froxel fog, the lit particles) sees a point light at its
+//!   center, its radius past the shape ([`torque_render_scene::hd::HdAreaLight::gpu_light`]). The shading
+//!   is `shaders/area.wgsl`: the diffuse is Lambert's edge sum over the shape's outline clipped to the horizon (a tube's
+//!   outline is the strip of its side the point sees with one corner for each end's arc, and an end it sees a square of the
+//!   end's area), within 3 % of a 64 x 64 sum over
+//!   the shape at 8 points each for rectangles and tubes; the specular is the outline turned by the GGX lobe's fitted inverse
+//!   matrix (`torque_render_scene::hd::ltc`'s table, group 0's binding 21, two `Rgba16Float` layers), within 20 % of the
+//!   lobe's own sum (`tests/area_lights.rs`). The table is generated, not hand-written: the `ltc-fit` example of
+//!   `torque-render-scene` writes `ltc_ggx.bin` again, and `ltc_tests.rs` checks a refit's cells, the moments against a
+//!   quadrature and the fit's coverage of each lobe. An area light that casts shadows takes a point light's cube at its center
+//!   (a hard-edged shadow from there, not the shape's soft one). Low and Medium upload them without their shapes, as point
+//!   lights ([`torque_render_scene::hd::Quality::area_lights`]). Point and spot lights shade as before: main's pictures are
+//!   `shots-diff`'s baseline for a change here.
 //! - The light capture's and the sky cube's levels are the GGX lobe of each level's roughness over the whole cube
 //!   ([`capture::PrefilterPipe`]), read at `sqrt(roughness) x (levels - 1)`; the faces drawn in a frame are all drawn before
 //!   their levels are filtered, a level of every face before the next (each reads its neighbors' level above). A face's

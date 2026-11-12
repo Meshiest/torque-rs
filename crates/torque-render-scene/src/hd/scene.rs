@@ -80,6 +80,93 @@ pub fn cone_share(cone: [f32; 4], at: [f32; 3], p: [f32; 3]) -> f32 {
     x * x * (3.0 - 2.0 * x)
 }
 
+/// An area light's shape, about the light's position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AreaShape {
+    /// A rectangle of sides `2 half_u` and `2 half_v` (a ceiling panel, a window), lit on the side `half_u x half_v` points to.
+    Rect { half_u: [f32; 3], half_v: [f32; 3] },
+    /// A cylinder along `half_axis` (its half length and direction) of `radius` (a fluorescent tube, a strip light): its side
+    /// shines all around, and its ends as its side does.
+    Tube { half_axis: [f32; 3], radius: f32 },
+}
+
+/// An area light: a rectangle or a tube shaded with linearly transformed cosines (`hd::ltc`), its highlights the shape of
+/// the light. `light.color` is the brightness a point light of that color has: at a distance straight in front of a rectangle
+/// (or beside a tube) the light falls as the point light's does, so its radiance is the color over the shape's area seen from
+/// there. The light is windowed to `light.radius` about its center as a point light's (the clusters bound it by that sphere;
+/// [`HdAreaLight::gpu_light`] keeps it past the shape). One that casts shadows takes a point light's shadow cube at its
+/// center: the shadow is a point light's (hard-edged from the center), not the shape's softer one. Low and Medium draw it as
+/// a point light at its center.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdAreaLight {
+    pub light: HdLight,
+    pub shape: AreaShape,
+    pub shadows: bool,
+}
+
+/// The kinds of an area light's first GPU word's w (`common.wgsl`'s `Light::area_a`; 0 a point or spot light).
+pub const AREA_RECT: f32 = 1.0;
+pub const AREA_TUBE: f32 = 2.0;
+/// The smallest side, length or radius an area light keeps (below it the shape is a point).
+pub const AREA_MIN_SIZE: f32 = 1e-3;
+
+fn length(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+impl HdAreaLight {
+    /// The farthest point of the shape from its center.
+    #[must_use]
+    pub fn reach(&self) -> f32 {
+        let r = match self.shape {
+            AreaShape::Rect { half_u, half_v } => {
+                length([0, 1, 2].map(|k| half_u[k].abs() + half_v[k].abs()))
+            }
+            AreaShape::Tube { half_axis, radius } => length(half_axis) + radius.abs(),
+        };
+        if r.is_finite() { r } else { 0.0 }
+    }
+
+    /// The light as the GPU's buffer takes it: its radius at least a little past the shape, so no part of the shape lights
+    /// past the window.
+    #[must_use]
+    pub fn gpu_light(&self) -> HdLight {
+        HdLight {
+            radius: self.light.radius.max(self.reach() * 1.25),
+            ..self.light
+        }
+    }
+
+    /// The shape's two GPU words (`common.wgsl`'s `Light::area_a` and `area_b`): a rectangle's half sides with [`AREA_RECT`],
+    /// a tube's half axis with [`AREA_TUBE`] and its radius; all zeros (a point light) for a shape smaller than
+    /// [`AREA_MIN_SIZE`] or not finite.
+    #[must_use]
+    pub fn shape_words(&self) -> [[f32; 4]; 2] {
+        let fine = |v: [f32; 3]| v.iter().all(|c| c.is_finite()) && length(v) >= AREA_MIN_SIZE;
+        match self.shape {
+            AreaShape::Rect { half_u, half_v } if fine(half_u) && fine(half_v) => {
+                let n = [
+                    half_u[1] * half_v[2] - half_u[2] * half_v[1],
+                    half_u[2] * half_v[0] - half_u[0] * half_v[2],
+                    half_u[0] * half_v[1] - half_u[1] * half_v[0],
+                ];
+                if length(n) < AREA_MIN_SIZE * AREA_MIN_SIZE {
+                    return [[0.0; 4]; 2];
+                }
+                [
+                    [half_u[0], half_u[1], half_u[2], AREA_RECT],
+                    [half_v[0], half_v[1], half_v[2], 0.0],
+                ]
+            }
+            AreaShape::Tube { half_axis, radius } if fine(half_axis) && radius.is_finite() => [
+                [half_axis[0], half_axis[1], half_axis[2], AREA_TUBE],
+                [0.0, 0.0, 0.0, radius.abs().max(AREA_MIN_SIZE)],
+            ],
+            _ => [[0.0; 4]; 2],
+        }
+    }
+}
+
 /// The sun as the fixed-function frame lights with it (the sun light's colours, gamma-space 0..1), and the Sun's shadow colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HdSun {
@@ -206,6 +293,8 @@ pub struct HdScene<G> {
     pub lights: Vec<HdLight>,
     /// The spot lights (their changes counted by `lights_generation` too).
     pub spots: Vec<HdSpot>,
+    /// The area lights (their changes counted by `lights_generation` too).
+    pub area_lights: Vec<HdAreaLight>,
     /// How many of `lights`, at its end, cast no shadows (glowing surfaces' and shaded lamps' lights).
     pub glow_lights: usize,
     /// Counts the changes of `lights` (a control sync moves a light attached to the control object; the GPU uploads them again
@@ -289,6 +378,7 @@ impl<G> HdScene<G> {
             lightmap_generation: 0,
             lights: Vec::new(),
             spots: Vec::new(),
+            area_lights: Vec::new(),
             glow_lights: 0,
             lights_generation: 0,
             textures: TextureTable::default(),

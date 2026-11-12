@@ -247,3 +247,61 @@ fn a_small_shape_that_holds_the_capture_eye_is_left_out_and_a_room_is_not() {
         "a shape of radius 4 or more stays"
     );
 }
+
+#[test]
+fn frame_lights_put_the_area_lights_last_with_their_shapes_only_where_asked() {
+    use torque_render_scene::hd::AreaShape;
+    let light = |x: f32| HdLight {
+        position: [x, 0.0, 0.0],
+        color: [1.0; 3],
+        radius: 4.0,
+        carrier: None,
+    };
+    let spot = |x: f32, shadows: bool| HdSpot {
+        light: light(x),
+        direction: [0.0, 0.0, -1.0],
+        inner: 0.3,
+        outer: 0.5,
+        shadows,
+    };
+    let area = |x: f32, shadows: bool| HdAreaLight {
+        light: light(x),
+        shape: AreaShape::Rect {
+            half_u: [0.0, 0.5, 0.0],
+            half_v: [0.5, 0.0, 0.0],
+        },
+        shadows,
+    };
+    // Two point lights, the second a glowing surface's; spots and area lights with and without shadows.
+    let lights = [light(1.0), light(2.0)];
+    let spots = [spot(3.0, true), spot(4.0, false)];
+    let areas = [area(5.0, false), area(6.0, true)];
+    let f = frame_lights(
+        &lights,
+        1,
+        &spots,
+        &areas,
+        LightKinds {
+            glow: true,
+            area: true,
+        },
+    );
+    let order: Vec<f32> = f.lights.iter().map(|l| l.position[0]).collect();
+    // The area lights at the end, those that cast shadows first; the shadowed lights the first two and the shadowed area light.
+    assert_eq!(order, [1.0, 3.0, 4.0, 2.0, 6.0, 5.0]);
+    assert_eq!(f.area_start, 4);
+    assert_eq!(f.shadowed, [0, 1, 4]);
+    assert_eq!(f.cones[1], spots[0].cone());
+    assert_eq!(f.cones[4], [0.0; 4]);
+    assert_eq!(f.shapes[4], areas[1].shape_words());
+    assert_eq!(f.shapes[5], areas[0].shape_words());
+    assert!(f.shapes[..4].iter().all(|s| *s == [[0.0; 4]; 2]));
+    // Without the shapes (Low and Medium) the area lights are point lights among the point lights.
+    let points = frame_lights(&lights, 1, &spots, &areas, LightKinds::default());
+    let order: Vec<f32> = points.lights.iter().map(|l| l.position[0]).collect();
+    assert_eq!(order, [1.0, 3.0, 6.0, 4.0, 5.0]);
+    assert_eq!(points.shadowed, [0, 1, 2]);
+    assert_eq!(points.area_start, 5);
+    assert!(points.shapes.iter().all(|s| *s == [[0.0; 4]; 2]));
+    assert_eq!(points.lights[2].radius, areas[1].gpu_light().radius);
+}

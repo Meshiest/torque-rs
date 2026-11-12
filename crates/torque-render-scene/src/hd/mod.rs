@@ -20,6 +20,7 @@ pub mod clusters;
 pub mod environment;
 pub mod grade;
 pub mod kit;
+pub mod ltc;
 pub mod lut;
 pub mod objects;
 pub mod origin;
@@ -39,7 +40,7 @@ pub mod view_scene;
 
 pub use camera::HdCamera;
 pub use origin::{RenderOrigin, Shift};
-pub use scene::{HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
+pub use scene::{AreaShape, HdAreaLight, HdFog, HdLight, HdScene, HdSpot, HdSun, WaterZone};
 pub use settings::{HdMode, ImageSettings};
 pub use view_scene::ViewScene;
 
@@ -147,6 +148,13 @@ pub enum Quality {
 
 impl Quality {
     pub const ALL: [Quality; 4] = [Quality::Low, Quality::Medium, Quality::High, Quality::Ultra];
+
+    /// Whether the area lights are shaded as their shapes (High and Ultra); Low and Medium draw each as a point light at its
+    /// center ([`HdAreaLight`]).
+    #[must_use]
+    pub fn area_lights(self) -> bool {
+        matches!(self, Quality::High | Quality::Ultra)
+    }
 
     pub fn name(self) -> &'static str {
         match self {

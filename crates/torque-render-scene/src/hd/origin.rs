@@ -20,7 +20,9 @@ use std::collections::BTreeMap;
 
 use crate::hd::cells::{CELL_SIZE, Cell, StaticCells};
 use crate::hd::sprites::GpuSprites;
-use crate::hd::{DynamicObject, HdDraw, HdLight, HdScene, HdSpot, NodePlace, WaterZone, material};
+use crate::hd::{
+    DynamicObject, HdAreaLight, HdDraw, HdLight, HdScene, HdSpot, NodePlace, WaterZone, material,
+};
 use crate::math::Mat;
 use crate::source::Eye;
 
@@ -228,6 +230,17 @@ impl Shift for HdSpot {
     }
 }
 
+impl Shift for HdAreaLight {
+    fn shift(&mut self, by: [f32; 3]) {
+        let HdAreaLight {
+            light,
+            shape: _,
+            shadows: _,
+        } = self;
+        light.shift(by);
+    }
+}
+
 impl Shift for WaterZone {
     fn shift(&mut self, by: [f32; 3]) {
         let WaterZone { min, max, tint: _ } = self;
@@ -340,6 +353,7 @@ impl<G: Shift> Shift for HdScene<G> {
             textures_pending: _,
             lights,
             spots,
+            area_lights,
             glow_lights: _,
             lights_generation: _,
             textures: _,
@@ -368,6 +382,7 @@ impl<G: Shift> Shift for HdScene<G> {
         sprites.shift(by);
         lights.shift(by);
         spots.shift(by);
+        area_lights.shift(by);
     }
 }
 

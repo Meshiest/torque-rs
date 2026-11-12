@@ -14,6 +14,8 @@
 // - Point lights: Lambert plus the specular, an inverse-square falloff with a 2-unit core, windowed to the fxLight's radius
 //   ((1 - (d/r)^4)^2, as Karis 2013), a spot's cut to its cone with a smooth edge, found through the cluster masks (forward+,
 //   Olsson et al. 2012) or, in the brute-force permutation, all of them in order (the gate compares the two).
+// - Area lights (area.wgsl): rectangles and tubes by linearly transformed cosines, past the point lights in the buffer and the
+//   cluster masks (from `frame.limits.z`), shaded in a loop of their own after the point lights' loop.
 // - Fog: from the Sky's fog distance to the visible distance (1 - ((end - d) / (end - start))^2), the horizon ban's colour.
 // - Unlit and glow surfaces are their colour.
 // - Textures: GL_DECAL mixes in gamma space, as the fixed-function pipeline does; MODULATE and REPLACE in linear.
@@ -109,6 +111,9 @@ struct Irradiance {
     sh: array<vec4<f32>, 18>,
 };
 @group(0) @binding(20) var<uniform> irradiance: Irradiance;
+// The area lights' fitted table (torque_render_scene::hd::ltc, area.wgsl): layer 0 the lobe's inverse matrix (a, b, c, d),
+// layer 1 its albedo and Schlick part; x the roughness, y sqrt(1 - N.V). Sampled with trans_samp (linear, clamped).
+@group(0) @binding(21) var ltc_table: texture_2d_array<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 // The prepass's motion slots: the matrix taking a shape's current world point to where it was (the identity for everything else, and
@@ -562,6 +567,43 @@ fn point_light(i: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f3
     return out;
 }
 
+// An area light (area.wgsl): the diffuse from its outline's form factor, the specular from the outline turned by the lobe's fitted
+// inverse matrix, windowed to the light's radius about its center as a point light's; a shadowed one through its cube at the
+// center (a point light's shadow).
+fn area_light(light: Light, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>, albedo: vec3<f32>, f0: vec3<f32>, rough: f32, frag: vec2<f32>) -> Lit {
+    var out: Lit;
+    out.diffuse = vec3<f32>(0.0);
+    out.spec = vec3<f32>(0.0);
+    let center = light.pos_radius.xyz;
+    let d = distance(center, p);
+    let x = d / max(light.pos_radius.w, 1e-4);
+    let w = clamp(1.0 - x * x * x * x, 0.0, 1.0);
+    if w <= 0.0 {
+        return out;
+    }
+    let nv = max(dot(n, v), 1e-4);
+    let uv = area_table_uv(rough, nv);
+    let minv = textureSampleLevel(ltc_table, trans_samp, uv, 0, 0.0);
+    let moments = textureSampleLevel(ltc_table, trans_samp, uv, 1, 0.0).xy;
+    let frame_m = area_frame(n, v);
+    let shares = area_shares(light.area_a, light.area_b, center, p, frame_m, area_minv(minv) * frame_m);
+    if shares.z <= 0.0 {
+        return out;
+    }
+    // The irradiance pi L F (L the radiance, the color over the area shown) in the point lights' units.
+    var e = light.color.rgb * (PI * shares.z * w * w);
+    let shadowed = (light.shadow.x >= 0.0 && light.shadow.y > 0.0) || (light.shadow.z >= 0.0 && light.shadow.w > 0.0);
+    if shadowed && shadows.point.z > 0.0 && d < light.pos_radius.w {
+        e = e * light_shadow(light, p, n, frag);
+    }
+    out.diffuse = albedo * (e * shares.x);
+    // The specular in `specular`'s pi convention (brdf.wgsl: pi x the BRDF times the irradiance): pi L x the lobe's integral
+    // over the outline, with F0 and F90 as `specular` takes them.
+    let f90 = max(vec3<f32>(1.0 - rough), f0);
+    out.spec = e * (shares.y * (f0 * (moments.x - moments.y) + f90 * moments.y));
+    return out;
+}
+
 fn cluster_of(frag: vec2<f32>, p: vec3<f32>) -> u32 {
     let tiles = frame.clusters.xyz;
     let tx = min(u32(frag.x * frame.screen.z * f32(tiles.x)), tiles.x - 1u);
@@ -748,7 +790,8 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
         let rim = pow(1.0 - nv, 3.0) * s.rim;
         out.spec = out.spec + rim * env_radiance(n, 0.7) * occl;
     }
-    let count = min(frame.clusters.w, MAX_LIGHTS);
+    // The point and spot lights (the area lights follow them in the buffer).
+    let count = min(frame.limits.z, MAX_LIGHTS);
     // A hollow underside's share of a light, as of the sky.
     let hollow_light = mix(1.0, s.occlusion, s.hollow);
     if CLUSTERED {
@@ -776,6 +819,41 @@ fn shade_surf(frag: vec2<f32>, p: vec3<f32>, rest: vec3<f32>, s: Surf, material:
             let l = point_light(i, p, n, v, diffuse, f0, rough, frag);
             out.diffuse = out.diffuse + l.diffuse * hollow_light;
             out.spec = out.spec + l.spec * spec_scale;
+        }
+    }
+    // The area lights, past the point lights in the buffer (from `frame.limits.z` to the end): a loop of their own.
+    let total = min(frame.clusters.w, MAX_LIGHTS);
+    if count < total {
+        if CLUSTERED {
+            let base = cluster_of(frag, p) * CLUSTER_WORDS;
+            var shaded = 0u;
+            for (var w = count / 32u; w < CLUSTER_WORDS; w = w + 1u) {
+                var bits = masks[base + w];
+                if w == count / 32u {
+                    // The point lights' bits in the first word.
+                    bits = bits & ~((1u << (count % 32u)) - 1u);
+                }
+                loop {
+                    if bits == 0u || shaded >= frame.limits.x {
+                        break;
+                    }
+                    let b = firstTrailingBit(bits);
+                    bits = bits & (bits - 1u);
+                    let i = w * 32u + b;
+                    if i < total {
+                        let l = area_light(lights[i], p, n, v, diffuse, f0, rough, frag);
+                        out.diffuse = out.diffuse + l.diffuse * hollow_light;
+                        out.spec = out.spec + l.spec * spec_scale;
+                        shaded = shaded + 1u;
+                    }
+                }
+            }
+        } else {
+            for (var i = count; i < total; i = i + 1u) {
+                let l = area_light(lights[i], p, n, v, diffuse, f0, rough, frag);
+                out.diffuse = out.diffuse + l.diffuse * hollow_light;
+                out.spec = out.spec + l.spec * spec_scale;
+            }
         }
     }
     // Nothing shines in a hollow.

@@ -176,6 +176,10 @@ struct Light {
     // Its shadow cubes: x its cube's slot (negative: none) and y how much of the shadow it gives; z, w the cube it is leaving
     // (fading out, or crossfading to x's tier) and that one's share.
     shadow: vec4<f32>,
+    // An area light's shape (area.wgsl; w 0: a point or spot light): a rectangle's half sides (a.xyz, b.xyz; a.w 1), lit on the
+    // side a x b points to, or a tube's half axis (a.xyz; a.w 2) and its radius (b.w).
+    area_a: vec4<f32>,
+    area_b: vec4<f32>,
 };
 
 // A light's share at the direction `l` toward it: 1 for a point light, a spot's cone with a smooth edge.

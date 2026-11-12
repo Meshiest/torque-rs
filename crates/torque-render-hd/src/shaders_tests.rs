@@ -97,6 +97,14 @@ fn the_grading_tables_side_is_the_scenes() {
 }
 
 #[test]
+fn the_area_lights_table_side_is_the_scenes() {
+    assert_eq!(
+        constant("area.wgsl", "LTC_SIZE") as usize,
+        torque_render_scene::hd::ltc::LTC_SIZE
+    );
+}
+
+#[test]
 fn the_sky_and_tonemap_constants_are_the_scenes() {
     use torque_render_scene::hd::{atmosphere as a, grade as g};
     for (name, value) in [
