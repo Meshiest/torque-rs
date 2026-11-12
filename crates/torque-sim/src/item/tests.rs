@@ -569,7 +569,7 @@ fn hostile_input_never_panics() {
         });
         let mut h = host_with(objs);
         if case % 9 == 0 {
-            h.budget = 40 + u64::from(case % 50);
+            h.world.budget = 40 + u64::from(case % 50);
         }
         h.coverage = rng.mix(1.0, den);
         for tick in 0..40 {

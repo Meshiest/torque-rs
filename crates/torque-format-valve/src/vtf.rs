@@ -549,6 +549,7 @@ pub fn decode_image(format: Format, src: &[u8], w: u32, h: u32) -> Result<Vec<u8
 }
 
 /// A VTF file of `w` x `h` with the given levels' bytes (the largest first, one image each), for tests and fuzz seeds.
+#[cfg(test)]
 pub fn write(format: i32, w: u16, h: u16, minor: u32, levels: &[Vec<u8>]) -> Vec<u8> {
     let header = if minor >= 3 { 80 + 8 } else { 80 };
     let mut out = vec![0u8; header];

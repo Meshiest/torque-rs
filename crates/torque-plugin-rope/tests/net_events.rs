@@ -4,7 +4,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Peer, Rig, create, off_the_line, rope, two};
+use rig::{Peer, PeerRopes, Rig, create, off_the_line, rope, two};
 
 #[test]
 fn a_reel_crosses_the_network_as_a_target_and_a_time_and_each_client_runs_it() {
@@ -63,7 +63,7 @@ fn a_temporary_rope_fades_and_is_deleted_on_the_server_and_both_clients() {
         assert!(fade > 0.0 && fade < 0.8, "{fade}");
     }
     rig.run(30);
-    assert_eq!(rig.objects("Rope"), 0);
+    assert_eq!(rig.objects_of("Rope"), 0);
     for peer in &rig.peers {
         assert!(peer.rope_ids().is_empty());
     }
@@ -73,7 +73,7 @@ fn a_temporary_rope_fades_and_is_deleted_on_the_server_and_both_clients() {
         "ropeNetSetLifetime({id}, 1, 0); ropeNetSetLifetime({id}, 0, 0);"
     ));
     rig.run(60);
-    assert_eq!(rig.objects("Rope"), 1);
+    assert_eq!(rig.objects_of("Rope"), 1);
     assert!(rig.peers.iter().all(|p| p.rope_ids().len() == 1));
 }
 
@@ -92,7 +92,7 @@ fn a_one_shot_rope_is_an_event_with_no_ghost_and_each_client_shows_it_for_its_ti
         assert_eq!(peer.book(|b| (b.fx_count(), b.ghosted())), (1, 0));
         assert_eq!(peer.ghosts(), ghosts, "no ghost");
     }
-    assert_eq!(rig.objects("Rope"), 0, "nothing on the server");
+    assert_eq!(rig.objects_of("Rope"), 0, "nothing on the server");
     rig.run(40);
     assert!(rig.peers.iter().all(|p| p.rope_ids().is_empty()));
     // One client alone: the connection's object names it.
@@ -188,7 +188,7 @@ fn the_server_refuses_to_send_what_it_could_not_make() {
     for _ in 0..300 {
         rig.eval("ropeNetCreate(\"0 0 3\", \"6 0 3\", Cable);");
     }
-    assert_eq!(rig.objects("Rope"), 256);
+    assert_eq!(rig.objects_of("Rope"), 256);
 }
 
 /// A client makes its own rope of the datablock `block` (an id: a client has no names for datablocks) at once and tags it: its
@@ -214,7 +214,7 @@ fn a_predicted_rope_is_adopted_by_the_servers_ghost_and_there_is_exactly_one() {
         .call("eval", &[&format!("commandToServer('FireBeam', {id});")])
         .unwrap();
     rig.run(30);
-    assert_eq!(rig.objects("Rope"), 1);
+    assert_eq!(rig.objects_of("Rope"), 1);
     // The firing client keeps the rope it made; the other client has the server's own.
     assert_eq!(rig.peers[0].rope_ids(), [local]);
     assert_eq!(rig.peers[0].book(|b| (b.ghosted(), b.waiting())), (1, 0));
@@ -373,7 +373,7 @@ fn a_new_lifetime_takes_the_place_of_the_one_before() {
     assert_eq!(rig.eval(&format!("return isEventPending({last});")), "1");
     rig.run(60);
     assert_eq!(
-        rig.objects("Rope"),
+        rig.objects_of("Rope"),
         1,
         "the first call's end passed and the rope is still here"
     );

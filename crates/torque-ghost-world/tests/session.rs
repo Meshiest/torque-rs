@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap};
 use torque_testkit::{Rng, fuzz};
 
+use ghosts::testing::MapView;
 use ghosts::{
     GhostCodecSet, Link, NetStr, NetWidths, ObjectView, PackCtx, TgeClass, TgeGhosts, Value,
 };
@@ -22,48 +23,21 @@ use torque_ghost_world::tge::{TgeClientSet, TgeCodec, TgeDatablock};
 use torque_ghost_world::threads::ThreadState;
 use torque_ghost_world::world::Pose;
 
-/// An object's fields as the host's getters give them.
-#[derive(Debug, Clone, Default)]
-struct MapView {
-    vals: HashMap<(String, usize), Value>,
-    links: HashMap<String, ObjId>,
-}
-
-impl MapView {
-    fn with(mut self, name: &str, index: usize, v: Value) -> MapView {
-        self.vals.insert((name.to_string(), index), v);
-        self
-    }
-
-    fn floats(mut self, name: &str, xs: &[f32]) -> MapView {
-        for (i, x) in xs.iter().enumerate() {
-            self.vals.insert((name.to_string(), i), Value::F32(*x));
-        }
-        self
-    }
-
-    fn set(&mut self, name: &str, index: usize, v: Value) {
-        self.vals.insert((name.to_string(), index), v);
-    }
-}
-
 /// A view whose links resolve against the connection's ghosts.
 struct Linked<'a> {
     view: &'a MapView,
+    /// The objects its pointer fields name.
+    links: &'a HashMap<String, ObjId>,
     ghost_of: &'a dyn Fn(ObjId) -> Option<u32>,
 }
 
 impl ObjectView for Linked<'_> {
     fn get(&self, field: &str, index: usize) -> Value {
-        self.view
-            .vals
-            .get(&(field.to_string(), index))
-            .cloned()
-            .unwrap_or(Value::Null)
+        self.view.get(field, index)
     }
 
     fn link(&self, field: &str) -> Link {
-        match self.view.links.get(field) {
+        match self.links.get(field) {
             None => Link::Null,
             Some(o) => (self.ghost_of)(*o).map_or(Link::NotGhosted, Link::Ghost),
         }
@@ -77,6 +51,8 @@ impl ObjectView for Linked<'_> {
 struct Obj {
     class: TgeClass,
     view: MapView,
+    /// The objects its pointer fields name.
+    links: HashMap<String, ObjId>,
 }
 
 /// The server's objects.
@@ -119,6 +95,7 @@ impl ObjectSource for Host {
         };
         let view = Linked {
             view: &o.view,
+            links: &o.links,
             ghost_of,
         };
         let ctx = PackCtx::for_writer(w, self.widths, self.now);
@@ -223,7 +200,17 @@ impl Session {
     }
 
     fn add(&mut self, id: ObjId, class: TgeClass, view: MapView) {
-        self.host.objs.insert(id, Obj { class, view });
+        self.add_linked(id, class, view, HashMap::new());
+    }
+
+    fn add_linked(
+        &mut self,
+        id: ObjId,
+        class: TgeClass,
+        view: MapView,
+        links: HashMap<String, ObjId>,
+    ) {
+        self.host.objs.insert(id, Obj { class, view, links });
         self.mgr.object_in_scope_now(&self.host, id);
     }
 
@@ -580,8 +567,8 @@ fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
             match rng.below(4) {
                 0 | 1 => {
                     let class = classes[rng.index(classes.len())];
-                    let view = random_view(&mut rng, next_id);
-                    s.add(next_id, class, view);
+                    let (view, links) = random_view(&mut rng, next_id);
+                    s.add_linked(next_id, class, view, links);
                     next_id += 1;
                 }
                 2 if next_id > 1 => {
@@ -591,7 +578,7 @@ fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
                 _ if next_id > 1 => {
                     let id = 1 + rng.below(u64::from(next_id - 1)) as ObjId;
                     if let Some(o) = s.host.objs.get_mut(&id) {
-                        o.view = random_view(&mut rng, next_id);
+                        (o.view, o.links) = random_view(&mut rng, next_id);
                     }
                 }
                 _ => {}
@@ -691,13 +678,13 @@ fn hostile_ghost_sequences_never_panic_the_client_or_its_world() {
 
 /// An object's fields at random: datablocks (the image's among them), an image with a fire count, a position that may be
 /// huge or NaN, a scale, a thread, and a mount link to a random object of the `past` made so far (itself and gone ones too).
-fn random_view(rng: &mut Rng, past: ObjId) -> MapView {
+fn random_view(rng: &mut Rng, past: ObjId) -> (MapView, HashMap<String, ObjId>) {
     let f = |rng: &mut Rng| match rng.below(6) {
         0 => f32::NAN,
         1 => 1.0e30,
         _ => (rng.below(2_000) as f32) - 1_000.0,
     };
-    let mut view = MapView::default()
+    let view = MapView::default()
         .with("datablock", 0, Value::Id(Some(rng.below(100) as u32)))
         .with(
             "image_datablock",
@@ -714,9 +701,9 @@ fn random_view(rng: &mut Rng, past: ObjId) -> MapView {
         .floats("position", &[f(rng), f(rng), f(rng)])
         .floats("rotation", &[0.0, 0.0, 1.0])
         .floats("scale", &[1.0, f(rng), 1.0]);
+    let mut links = HashMap::new();
     if rng.below(2) == 0 {
-        view.links
-            .insert("mount".into(), 1 + rng.below(u64::from(past)) as ObjId);
+        links.insert("mount".into(), 1 + rng.below(u64::from(past)) as ObjId);
     }
-    view
+    (view, links)
 }

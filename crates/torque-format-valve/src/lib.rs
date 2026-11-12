@@ -33,6 +33,10 @@
 //!   before mutation, with header- and side-information-aware mutations (`sound::tests::the_synthetic_mp3s_decode_in_every_mpeg_version_and_mode`,
 //!   `fuzz::fuzz_every_reader_without_a_panic`). The fuzz reports its slowest case and fails past a bound.
 //! - `normalize_path` keeps device names: use it for table keys, never for a path on the disk.
+//!
+//! **Test support.** The writers that build the files the tests read (`bsp::write_test_map`, `pcf::write_test_file`,
+//! `sound::write_mp3`, `vtf::write` and the like) are compiled for tests only. `sound::write_wav` and `vpk::write_dir` stay public:
+//! the format viewer and `tests/loose_files.rs` call them.
 
 pub mod brushes;
 pub mod bsp;

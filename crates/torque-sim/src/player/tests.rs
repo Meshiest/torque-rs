@@ -3,10 +3,9 @@
 
 use std::rc::Rc;
 
-use torque_collide::convex::ConvexSource;
-use torque_collide::math::{Box3, F3, IDENTITY};
-use torque_collide::mesh::Hull;
-use torque_collide::{Exhausted, ObjectId, ObjectView, World};
+use torque_collide::math::{Box3, F3};
+use torque_collide::testing::BoxWorld;
+use torque_collide::{ObjectId, World};
 
 use super::host::{LiquidStatics, NoSkeleton, PlayerHost, Skeleton};
 use super::*;
@@ -20,10 +19,9 @@ pub(crate) struct Solid {
 }
 
 pub(crate) struct TestHost {
-    solids: Vec<Solid>,
+    pub(crate) world: BoxWorld,
     pub(crate) skel: NoSkeleton,
     pub(crate) statics: LiquidStatics,
-    pub(crate) budget: u64,
     pub(crate) time: u32,
     impacts: u32,
     dismounts: u32,
@@ -31,28 +29,24 @@ pub(crate) struct TestHost {
     class: Option<Rc<dyn PlayerClass>>,
     /// A water zone the container update finds where its box overlaps the query.
     pub(crate) water: Option<super::host::ZoneView>,
-    /// Every solid a query looks at is charged as a client's world charges a candidate ([`work_units_cost`]).
-    charge_scan: bool,
 }
 
 impl TestHost {
     pub(crate) fn new(solids: Vec<Solid>) -> TestHost {
+        let mut world = BoxWorld::new();
+        for b in solids {
+            world.add_box(b.id, b.min, b.max, crate::testworld::SOLID);
+        }
         TestHost {
-            solids,
+            world,
             skel: NoSkeleton,
             statics: LiquidStatics::default(),
-            budget: u64::MAX,
             time: 0,
             impacts: 0,
             dismounts: 0,
             class: None,
             water: None,
-            charge_scan: false,
         }
-    }
-
-    fn solid(&self, id: ObjectId) -> Option<&Solid> {
-        self.solids.iter().find(|b| b.id == id)
     }
 }
 
@@ -65,81 +59,9 @@ pub(crate) fn floor(id: u32) -> Solid {
     }
 }
 
-impl World for TestHost {
-    fn object(&self, id: ObjectId) -> Option<ObjectView> {
-        let b = self.solid(id)?;
-        let c: F3 = std::array::from_fn(|i| (b.min[i] + b.max[i]) * 0.5);
-        let h: F3 = std::array::from_fn(|i| (b.max[i] - b.min[i]) * 0.5);
-        let mut m = IDENTITY;
-        m[3] = c[0];
-        m[7] = c[1];
-        m[11] = c[2];
-        let mut wto = IDENTITY;
-        wto[3] = -c[0];
-        wto[7] = -c[1];
-        wto[11] = -c[2];
-        Some(ObjectView {
-            obj_to_world: m,
-            world_to_obj: wto,
-            scale: [1.0; 3],
-            obj_box: Box3::new([-h[0], -h[1], -h[2]], h),
-            world_box: Box3::new(b.min, b.max),
-            world_radius: 1.0,
-            type_mask: crate::testworld::SOLID,
-            collision_disabled: false,
-        })
-    }
-
-    fn find_objects(
-        &mut self,
-        query: &Box3,
-        mask: u32,
-        exclude: Option<ObjectId>,
-        limit: usize,
-        out: &mut Vec<ObjectId>,
-    ) -> Result<(), Exhausted> {
-        if self.charge_scan {
-            let units = torque_collide::work::CANDIDATE * self.solids.len() as u64;
-            if !World::charge(self, units) {
-                return Err(Exhausted);
-            }
-        }
-        for b in &self.solids {
-            if out.len() >= limit {
-                break;
-            }
-            let v = self.object(b.id).unwrap();
-            if Some(b.id) != exclude && v.type_mask & mask != 0 && v.world_box.overlaps(query) {
-                out.push(b.id);
-            }
-        }
-        Ok(())
-    }
-
-    fn convex_source(&self, id: ObjectId) -> ConvexSource {
-        let Some(b) = self.solid(id) else {
-            return ConvexSource::None;
-        };
-        crate::testworld::TestBox::source(b.min, b.max)
-    }
-
-    fn hull(&self, _id: ObjectId, _slot: u32) -> Option<Rc<Hull>> {
-        None
-    }
-
-    fn charge(&mut self, units: u64) -> bool {
-        if self.budget < units {
-            self.budget = 0;
-            return false;
-        }
-        self.budget -= units;
-        true
-    }
-}
-
 impl PlayerHost for TestHost {
     fn world(&mut self) -> &mut dyn World {
-        self
+        &mut self.world
     }
     fn skeleton(&mut self) -> &mut dyn Skeleton {
         &mut self.skel
@@ -484,7 +406,7 @@ fn hostile_moves_and_states_never_panic_or_run_away() {
                 max: [5.0, 6.0, 0.4],
             },
         ]);
-        h.budget = 50_000_000;
+        h.world.budget = 50_000_000;
         let mut p = player(&db, [0.0, 0.0, 0.0]);
         if case % 2 == 0 {
             p.s.velocity = [rng.float(), rng.float(), rng.float()];
@@ -519,7 +441,7 @@ fn hostile_moves_and_states_never_panic_or_run_away() {
 fn a_spent_budget_stops_the_tick_cleanly() {
     let db = data();
     let mut h = TestHost::new(vec![floor(100)]);
-    h.budget = 3;
+    h.world.budget = 3;
     let mut p = player(&db, [0.0, 0.0, 0.0]);
     assert!(p.process_tick(&db, Some(&fwd(1.0)), &mut h).is_err());
 }
@@ -999,12 +921,12 @@ fn work_units_cost() {
         }
     }
     let mut h = TestHost::new(solids);
-    h.budget = UNITS;
-    h.charge_scan = true;
+    h.world.budget = UNITS;
+    h.world.charge_scan = true;
     let mut p = player(&db, [0.0, 0.0, 0.0]);
     let start = std::time::Instant::now();
     let mut ticks = 0u64;
-    while h.budget > 0 && ticks < 200_000 {
+    while h.world.budget > 0 && ticks < 200_000 {
         let m = Move {
             x: (ticks as f32 * 0.37).sin(),
             y: (ticks as f32 * 0.23).cos(),
@@ -1017,7 +939,7 @@ fn work_units_cost() {
         ticks += 1;
         h.time += 32;
     }
-    let spent = UNITS - h.budget;
+    let spent = UNITS - h.world.budget;
     let elapsed = start.elapsed();
     let ns = elapsed.as_nanos() as f64 / spent.max(1) as f64;
     println!(

@@ -1,9 +1,8 @@
-use std::collections::HashMap;
-
 use torque_engine::ScriptClass;
 use torque_ghosts::codec::{NetWidths, ReadCtx, decode, encode};
 use torque_ghosts::plugin::{GhostRecord, NetRecord};
-use torque_ghosts::{ObjectView, PackCtx, Value, free_charge};
+use torque_ghosts::testing::MapView;
+use torque_ghosts::{PackCtx, Value, free_charge};
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::huffman::Table;
 
@@ -12,23 +11,6 @@ use crate::data::{
     MAX_DRAW_SCALE, MAX_HALF_EXTENT, MAX_SHAPE_BYTES, MIN_HALF_EXTENT, PropData, PropDataRecord,
     PropParams, draw_scale,
 };
-
-/// A server prop as the packer sees it.
-#[derive(Default)]
-struct View(HashMap<String, Value>);
-
-impl View {
-    fn with(mut self, name: &str, value: Value) -> View {
-        self.0.insert(name.to_string(), value);
-        self
-    }
-}
-
-impl ObjectView for View {
-    fn get(&self, field: &str, _index: usize) -> Value {
-        self.0.get(field).cloned().unwrap_or(Value::Null)
-    }
-}
 
 fn widths() -> NetWidths {
     NetWidths::engine_default()
@@ -42,17 +24,17 @@ fn ctx() -> PackCtx {
     }
 }
 
-fn prop(q: Quantized) -> View {
-    let mut v = View::default()
-        .with("dataBlock", Value::Int(7))
-        .with("slot", Value::Int(42))
-        .with("ownerConn", Value::Int(100))
-        .with("predict", Value::Int(9))
-        .with("@connection", Value::Id(Some(100)))
-        .with("asleep", Value::Int(0))
-        .with("frozen", Value::Int(1));
+fn prop(q: Quantized) -> MapView {
+    let mut v = MapView::default()
+        .with("dataBlock", 0, Value::Int(7))
+        .with("slot", 0, Value::Int(42))
+        .with("ownerConn", 0, Value::Int(100))
+        .with("predict", 0, Value::Int(9))
+        .with("@connection", 0, Value::Id(Some(100)))
+        .with("asleep", 0, Value::Int(0))
+        .with("frozen", 0, Value::Int(1));
     for (name, w) in STATE_FIELDS.iter().zip(q.words()) {
-        v = v.with(name, Value::Int(i64::from(w)));
+        v = v.with(name, 0, Value::Int(i64::from(w)));
     }
     v
 }
@@ -112,7 +94,7 @@ fn every_group_round_trips_and_the_state_is_exact() {
     // A moving prop's whole first record, in bits: well under a tenth of a 450-byte packet.
     assert!(bits < 240, "{bits}");
     // Another connection is not its owner and hears no predict id.
-    let other = prop(moving()).with("@connection", Value::Id(Some(101)));
+    let other = prop(moving()).with("@connection", 0, Value::Id(Some(101)));
     let (record, _) = PropGhost::pack(&other, u32::MAX, &ctx());
     assert_eq!(
         record.init,
@@ -235,9 +217,13 @@ fn the_digest_of_a_props_hulls_round_trips_and_a_prop_of_a_box_sends_none() {
         volume: 0x3f80_1234,
     };
     let view = prop(moving())
-        .with("hullCount", Value::Int(32))
-        .with("hullPoints", Value::Int(2_048))
-        .with("hullVolume", Value::Int(i64::from(0x3f80_1234_u32 as i32)));
+        .with("hullCount", 0, Value::Int(32))
+        .with("hullPoints", 0, Value::Int(2_048))
+        .with(
+            "hullVolume",
+            0,
+            Value::Int(i64::from(0x3f80_1234_u32 as i32)),
+        );
     let (record, _) = PropGhost::pack(&view, MASK_INIT, &ctx());
     assert_eq!(record.init.expect("init").hulls, Some(digest));
     let (back, bits) = round(&record);
@@ -246,9 +232,10 @@ fn the_digest_of_a_props_hulls_round_trips_and_a_prop_of_a_box_sends_none() {
     // A box (a count of 0, or no fields) is none, and the volume's sign bit is a bit of it.
     let (record, _) = PropGhost::pack(&prop(moving()), MASK_INIT, &ctx());
     assert_eq!(record.init.expect("init").hulls, None);
-    let negative = prop(moving())
-        .with("hullCount", Value::Int(1))
-        .with("hullVolume", Value::Int(-1));
+    let negative =
+        prop(moving())
+            .with("hullCount", 0, Value::Int(1))
+            .with("hullVolume", 0, Value::Int(-1));
     let (record, _) = PropGhost::pack(&negative, MASK_INIT, &ctx());
     let hulls = record.init.expect("init").hulls.expect("hulls");
     assert_eq!(hulls.volume, u32::MAX);

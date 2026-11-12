@@ -8,7 +8,7 @@ mod rig;
 
 use std::collections::BTreeSet;
 
-use rig::{Link, Rig, clients};
+use rig::{Link, PeerProps, Rig, RigProps, clients};
 use torque_engine::net_classes::PluginStills;
 use torque_plugin_props::client::ClientSource;
 use torque_plugin_props::{ClientJoints, ClientProps};

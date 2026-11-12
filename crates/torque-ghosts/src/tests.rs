@@ -1,8 +1,7 @@
 //! The framework's and the engine layouts' tests: each layout's `(field, width)` list, bit totals, round trips, the dirty-word
 //! rules of AudioEmitter and the motion quantisers.
 
-use std::collections::HashMap;
-
+use crate::testing::MapView;
 use crate::{budget_charge, datagram_budget};
 use std::fmt::Debug;
 
@@ -29,53 +28,6 @@ mod tge_tails;
 mod tge_world;
 
 // Helpers
-
-/// A view backed by maps; anything not in it is `Null`.
-#[derive(Default)]
-struct MapView {
-    vals: HashMap<(String, usize), Value>,
-    links: HashMap<String, Link>,
-    nets: HashMap<(String, usize), NetStr>,
-    meshes: Option<usize>,
-}
-
-impl MapView {
-    fn with(mut self, name: &str, index: usize, v: Value) -> MapView {
-        self.vals.insert((name.to_string(), index), v);
-        self
-    }
-
-    fn floats(mut self, name: &str, xs: &[f32]) -> MapView {
-        for (i, x) in xs.iter().enumerate() {
-            self.vals.insert((name.to_string(), i), Value::F32(*x));
-        }
-        self
-    }
-}
-
-impl ObjectView for MapView {
-    fn get(&self, field: &str, index: usize) -> Value {
-        self.vals
-            .get(&(field.to_string(), index))
-            .cloned()
-            .unwrap_or(Value::Null)
-    }
-
-    fn link(&self, field: &str) -> Link {
-        self.links.get(field).copied().unwrap_or(Link::Null)
-    }
-
-    fn net_string(&self, field: &str, index: usize) -> NetStr {
-        self.nets
-            .get(&(field.to_string(), index))
-            .cloned()
-            .unwrap_or(NetStr::Null)
-    }
-
-    fn mesh_objects(&self) -> Option<usize> {
-        self.meshes
-    }
-}
 
 /// A thousand strings of 255 bytes: in the shared-prefix form each after the first costs a few bits on the wire.
 #[derive(Debug, Clone, Default, PartialEq)]

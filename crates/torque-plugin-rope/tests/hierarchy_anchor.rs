@@ -4,7 +4,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, create, engine, files, rope};
+use rig::{PeerRopes, Rig, RigRopes, create, engine, files, rope};
 use torque_app::GameFiles;
 use torque_collide::math::{Matrix, mul_p, translation};
 use torque_plugin_rope::{Anchor, RopeEnd};
@@ -86,8 +86,8 @@ fn client_places(rig: &Rig, ghost: u32) -> (Matrix, [f32; 3]) {
 /// `FrameAnchors::mount_at`) and the frames the grandchild's own record is more than a centimeter from it.
 fn follow(offset: [f32; 3]) -> (usize, usize) {
     let files = hierarchy_files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine(&files, true), 50_001);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine(&files, true), 50_001, &[]);
     assert!(
         rig.run_until(400, |r| r.peers[0].ghosts() >= 2),
         "{:?}",

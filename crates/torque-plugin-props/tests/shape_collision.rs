@@ -6,7 +6,7 @@ mod rig;
 
 use std::rc::Rc;
 
-use rig::{Rig, files};
+use rig::{PeerProps, Rig, RigProps, files};
 use torque_app::GameFiles;
 use torque_client::predict::FileReader;
 use torque_client::predict::drive::ShapeCache;

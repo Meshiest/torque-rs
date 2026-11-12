@@ -41,5 +41,11 @@ torque-mapcore = { path = "../torque-mapcore" }
 # `testing::vm`: a `Vm` with the game classes' specs installed, for other crates' tests. Never a normal dependency's feature.
 testing = []
 
+[dev-dependencies]
+# The tests' synthetic interiors and terrain (`torque_maps::synth`).
+torque-maps = { path = "../torque-maps", features = ["testing"] }
+# The tests' synthetic shapes (`shapes::synth`).
+shapes = { package = "torque-shapes", path = "../torque-shapes", features = ["testing"] }
+
 [lints]
 workspace = true

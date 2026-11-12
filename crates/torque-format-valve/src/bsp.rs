@@ -1740,15 +1740,18 @@ fn normalize(v: [f32; 3]) -> [f32; 3] {
 
 /// A small map (tests and fuzz seeds): a square floor face, a displacement of power 2 beside it, a brush model, two entities,
 /// a static prop, a lighting lump and a one-file pak lump.
+#[cfg(test)]
 pub fn write_test_map() -> Vec<u8> {
     test_map(false)
 }
 
 /// [`write_test_map`] with a sun (a sky world light) and two ambient samples in its leaf.
+#[cfg(test)]
 pub fn write_lit_test_map() -> Vec<u8> {
     test_map(true)
 }
 
+#[cfg(test)]
 fn test_map(lit: bool) -> Vec<u8> {
     let mut lumps: Vec<Vec<u8>> = vec![Vec::new(); 64];
     let f = |v: &mut Vec<u8>, x: f32| v.extend_from_slice(&x.to_le_bytes());

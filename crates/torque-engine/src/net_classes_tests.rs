@@ -1,11 +1,10 @@
 //! Plugin net classes: what the derives make travels with its widths and caps, the registry sorts the classes into the same
 //! ids on every side, refuses what cannot be ghosted, and every script engine gets the set.
 
-use std::collections::HashMap;
-
 use torque_ghosts::codec::{Enc, Layout, NetWidths, ReadCtx, decode, encode};
 use torque_ghosts::plugin::{NetRecord, PLUGIN_GHOST_ROOM};
-use torque_ghosts::{ObjectView, PackCtx, Value, free_charge};
+use torque_ghosts::testing::MapView;
+use torque_ghosts::{PackCtx, Value, free_charge};
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::classes::Kind;
 use torque_net::huffman::Table;
@@ -47,25 +46,6 @@ struct PropData {
     model: String,
     #[field(name = "partCount")]
     parts: i32,
-}
-
-#[derive(Default)]
-struct MapView(HashMap<(String, usize), Value>);
-
-impl MapView {
-    fn with(mut self, name: &str, index: usize, v: Value) -> MapView {
-        self.0.insert((name.to_string(), index), v);
-        self
-    }
-}
-
-impl ObjectView for MapView {
-    fn get(&self, field: &str, index: usize) -> Value {
-        self.0
-            .get(&(field.to_string(), index))
-            .cloned()
-            .unwrap_or(Value::Null)
-    }
 }
 
 fn widths() -> NetWidths {

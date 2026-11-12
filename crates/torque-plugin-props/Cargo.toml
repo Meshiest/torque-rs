@@ -42,11 +42,13 @@ torque-plugin-rope = { path = "../torque-plugin-rope", optional = true }
 rope = ["dep:torque-plugin-rope"]
 
 [dev-dependencies]
+# `testing::MapView`, the host's object view of the tests.
+torque-ghosts = { path = "../torque-ghosts", features = ["testing"] }
 # A `Vm` with the game classes installed (`torque_game::testing::vm`).
 torque-game = { path = "../torque-game", features = ["testing"] }
 criterion = { workspace = true }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.
-torque-app = { path = "../torque-app", default-features = false, features = ["renderer"] }
+torque-app = { path = "../torque-app", default-features = false, features = ["renderer", "testing"] }
 torque-app-server = { path = "../torque-app-server" }
 # The floor and the figure of the tests' world.
 torque-example-assets = { path = "../../examples/assets" }

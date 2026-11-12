@@ -56,7 +56,7 @@
 //!
 //! **Module map.** `blocks`: sizes and hashes (shared with the mods download). `spec`: [`UploadSpec`] and [`Refusal`] with its
 //! player-facing text. `message`: the two client messages. `staging`: the pool (memory and folder caps), [`UntrustedBytes`].
-//! `server` (and `server/`): [`UploadServer`]; `admit` (offers, resume, evictions, quota), `receive` (messages, delivered bytes, disconnects), `schedule` (expiry, the final hash, requests), `session`, `bucket`. `client`: [`UploadClient`] and [`Source`]. `fuzz`:
+//! `server` (and `server/`): [`UploadServer`]; `admit` (offers, resume, evictions, quota), `receive` (messages, delivered bytes, disconnects), `schedule` (expiry, the final hash, requests), `session`, `bucket`. `client`: [`UploadClient`] and [`Source`]. `fuzz` (feature `testing`, for tests):
 //! the harness every sink's fuzz test uses.
 //!
 //! **Invariants and their tests.**
@@ -94,9 +94,13 @@
 //!
 //! **Checks.** `cargo test -p torque-transfer`; the fuzz as `TORQUE_FUZZ_UPLOAD=100000 cargo test -p torque-transfer --test
 //! hostile`; a sink's own as `TORQUE_FUZZ_UPLOAD_<NAME>=100000`.
+//!
+//! **Test support.** `fuzz` is compiled for this crate's tests and, behind the `testing` feature, for the tests of the sinks in
+//! other crates, whose dev-dependencies turn it on; no release build has it.
 
 mod blocks;
 mod client;
+#[cfg(any(test, feature = "testing"))]
 pub mod fuzz;
 mod message;
 mod server;

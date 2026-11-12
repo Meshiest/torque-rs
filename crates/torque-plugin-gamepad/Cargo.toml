@@ -28,5 +28,13 @@ js-sys = "0.3"
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["Gamepad", "GamepadButton", "Navigator", "Window"] }
 
+[features]
+# `FakePads`, the scripted pads of the tests of crates that plug a pad in. Only dev-dependencies enable it.
+testing = []
+
+[dev-dependencies]
+# This crate's own doc tests use `testing`.
+torque-plugin-gamepad = { path = ".", features = ["testing"] }
+
 [lints]
 workspace = true

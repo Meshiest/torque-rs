@@ -810,11 +810,13 @@ pub fn install<G: ConnGame>(state: &mut ClientState<G>, entries: &[InputSourceEn
 /// let events = sources.poll(&vm, 0);
 /// assert_eq!(events[0].value, 0.5);
 /// ```
+#[cfg(any(test, feature = "testing"))]
 #[derive(Clone, Default)]
 pub struct FakeInput {
     queue: Rc<RefCell<Vec<Said>>>,
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl FakeInput {
     /// Says an event at the next poll.
     pub fn push(&self, event: JoyEvent) {
@@ -882,6 +884,7 @@ impl FakeInput {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl InputSource for FakeInput {
     fn poll(&mut self, cx: &mut InputCx<'_>) {
         for said in self.queue.borrow_mut().drain(..) {

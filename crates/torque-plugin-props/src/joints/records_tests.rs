@@ -1,49 +1,11 @@
-use std::collections::HashMap;
-
 use torque_ghosts::codec::{NetWidths, ReadCtx, decode, encode};
 use torque_ghosts::plugin::GhostRecord;
-use torque_ghosts::{Link, ObjectView, PackCtx, Value, free_charge};
+use torque_ghosts::testing::MapView;
+use torque_ghosts::{Link, PackCtx, Value, free_charge};
 use torque_net::bits::{BitReader, BitWriter};
 use torque_net::huffman::Table;
 
 use super::*;
-
-/// A server joint as the packer sees it: its fields, and the ghosts its objects are for the connection packed for.
-#[derive(Default)]
-struct View {
-    fields: HashMap<String, Value>,
-    links: HashMap<String, Link>,
-}
-
-impl View {
-    fn with(mut self, name: &str, value: Value) -> View {
-        self.fields.insert(name.to_string(), value);
-        self
-    }
-
-    fn linked(mut self, name: &str, link: Link) -> View {
-        self.links.insert(name.to_string(), link);
-        self
-    }
-}
-
-impl ObjectView for View {
-    fn get(&self, field: &str, index: usize) -> Value {
-        match self.fields.get(field) {
-            Some(Value::Str(text)) => String::from_utf8_lossy(text)
-                .split(' ')
-                .nth(index)
-                .and_then(|w| w.parse().ok())
-                .map_or(Value::Null, Value::F32),
-            Some(v) if index == 0 => v.clone(),
-            _ => Value::Null,
-        }
-    }
-
-    fn link(&self, field: &str) -> Link {
-        self.links.get(field).copied().unwrap_or(Link::Null)
-    }
-}
 
 fn widths() -> NetWidths {
     NetWidths::engine_default()
@@ -74,21 +36,21 @@ fn round(record: &JointGhost) -> JointGhost {
 }
 
 /// A grapple from a player (ghost `player`) to a prop the connection has (ghost 9), soft, at its limit.
-fn grapple(player: Link) -> View {
-    View::default()
-        .with("kind", Value::Int(4))
-        .with("aMode", Value::Int(2))
-        .with("aObject", Value::Int(100))
-        .with("aOffset", Value::Str(b"0 0 1.25".to_vec()))
-        .with("bMode", Value::Int(2))
-        .with("bObject", Value::Int(200))
-        .with("bOffset", Value::Str(b"0.5 0 0".to_vec()))
-        .with("length", Value::F32(4.5))
-        .with("minLength", Value::F32(0.0))
-        .with("stiffness", Value::F32(900.0))
-        .with("damping", Value::F32(60.0))
-        .with("atLimit", Value::Int(1))
-        .with("broken", Value::Int(0))
+fn grapple(player: Link) -> MapView {
+    MapView::default()
+        .with("kind", 0, Value::Int(4))
+        .with("aMode", 0, Value::Int(2))
+        .with("aObject", 0, Value::Int(100))
+        .floats("aOffset", &[0.0, 0.0, 1.25])
+        .with("bMode", 0, Value::Int(2))
+        .with("bObject", 0, Value::Int(200))
+        .floats("bOffset", &[0.5, 0.0, 0.0])
+        .with("length", 0, Value::F32(4.5))
+        .with("minLength", 0, Value::F32(0.0))
+        .with("stiffness", 0, Value::F32(900.0))
+        .with("damping", 0, Value::F32(60.0))
+        .with("atLimit", 0, Value::Int(1))
+        .with("broken", 0, Value::Int(0))
         .linked("aObject", player)
         .linked("bObject", Link::Ghost(9))
 }

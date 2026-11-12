@@ -200,6 +200,9 @@
 //! answers through `ClientWorld::world_pose`), never the pose of the ghost's last record: `a_rope_hung_from_a_grandchild_ghost_follows_its_resolved_pose_on_600_of_600_frames`
 //! (`tests/hierarchy_anchor.rs`: the end within a millimeter of the resolved anchor on 600 of 600 frames), and an offset is turned by that pose
 //! (`ClientGhosts::pose`) as the drawn path turns it: `a_rope_hung_at_an_offset_from_a_turning_grandchild_ends_where_the_drawn_path_puts_it`.
+//!
+//! **Test support.** The net tests' server, clients and link are torque-app's `testing::Rig` and `TgeOnlyClient` (its `testing`
+//! feature). `tests/net/rig.rs` holds only this plugin's files, engine and reads; `tests/tge_client.rs` holds the cases.
 
 mod data;
 pub mod driver;

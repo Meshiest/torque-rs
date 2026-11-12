@@ -887,6 +887,7 @@ impl Sheet {
 
 /// A particle file (tests and fuzz seeds): one system emitting continuously, with a lifetime, a radius, a color, movement with
 /// gravity, a fade and a renderer.
+#[cfg(test)]
 pub fn write_test_file() -> Vec<u8> {
     let strings = [
         "DmElement",

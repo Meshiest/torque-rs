@@ -5,7 +5,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, files};
+use rig::{Rig, RigProps, files};
 use torque_game::scene::refresh;
 use torque_physics_rapier::{BodyId, BodyState};
 

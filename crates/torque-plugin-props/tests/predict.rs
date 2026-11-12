@@ -5,7 +5,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Link, Rig, engine, files};
+use rig::{Link, PeerProps, Rig, RigProps, engine, files};
 use torque_app::GameFiles;
 use torque_engine::{Engine, EngineBuilder};
 use torque_plugin_props::hits::ShotPush;

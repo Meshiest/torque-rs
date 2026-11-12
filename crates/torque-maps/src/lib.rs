@@ -14,8 +14,8 @@
 //!   cross-reference check the collision and drawing code relies on.
 //! - [`ter`]: a legacy terrain (versions 1 to 6: 256 by 256 heights, the material map, up to eight names, the alpha maps).
 //! - [`dml`]: a text material list (a sky's `.dml`).
-//! - [`synth`] and [`fuzz`]: small synthetic files made by a writer, their mutation, and the fuzz that holds the readers to the
-//!   rules below.
+//! - `synth` and `fuzz` (feature `testing`, for tests): small synthetic files made by a writer, their mutation, and the fuzz that
+//!   holds the readers to the rules below.
 //! - [`legacy`]: the importer: the files made into the format-neutral map layer ([`torque_mapcore`]), the only form hosting, collision
 //!   and drawing read them in.
 //!
@@ -38,12 +38,17 @@
 //!   `material_names_that_differ_only_in_case_are_named_once_and_keep_their_first_spelling` pins the folding).
 //! - The fuzz (`tests/fuzz.rs`) runs the importer's `named_files` and `surfaces` over each mutant, reports its longest case and
 //!   fails past a bound, with the allocation caps checked as before.
+//!
+//! **Test support.** `synth` (the writers) and `fuzz` are compiled for this crate's tests and, behind the `testing` feature, for
+//! other crates' tests, whose dev-dependencies turn it on; no release build has them.
 
 pub mod dif;
 pub mod dml;
+#[cfg(any(test, feature = "testing"))]
 pub mod fuzz;
 pub mod legacy;
 pub mod png;
+#[cfg(any(test, feature = "testing"))]
 pub mod synth;
 pub mod ter;
 

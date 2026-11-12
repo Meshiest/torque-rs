@@ -47,6 +47,8 @@
 //!   a room) and its start-up lines.
 //! - `web_join` and `web_host` (the `p2p` feature, built for the web): a browser's client joining a server, a room's host
 //!   or the server in its page's worker; and that worker's server (`web_host_exports!`).
+//! - `testing` (feature `testing`, for tests): `Rig`, a server and engine clients over the memory transport, and
+//!   `TgeOnlyClient`, a client that speaks only Torque's protocol; the plugin crates' net tests share them.
 //! - [`shots`]: a [`GameApp`] drawn offscreen, frame by frame, and pictures of it written as PNGs.
 //! - [`cli`]: the command line's flags and their values.
 //! - [`draw_cache`] and [`layout_fonts`]: the GUI's fonts, the system's TrueType faces where there are any.
@@ -189,6 +191,10 @@
 //!   ghost's birth: a datablock changed under it (a shape of the same node count among them) makes the pose again, at most
 //!   `MAX_REFRESHES_PER_FRAME` poses a frame, the rest drawn as they are until a later frame; the preload loads what a changed
 //!   datablock names, keyed on the same generation (`a_players_datablock_change_rebuilds_its_live_pose_within_the_frames_budget`).
+//!
+//! **Test support.** `testing` (feature `testing`; only dev-dependencies turn it on) holds `Rig<P>`, a server and engine clients over
+//! the memory transport stepped by hand, and `TgeOnlyClient`, a client that speaks only Torque's protocol. A plugin's net tests
+//! implement `RigPlugin` for their plugin (its engine and start function) and keep their own files and reads.
 
 // The server half lives in `torque-app-server` (no drawing, GUI, audio or window crates); these are its modules under this
 // crate's paths.
@@ -216,6 +222,8 @@ pub mod run;
 pub mod shots;
 pub mod sounds;
 pub mod terrain;
+#[cfg(feature = "testing")]
+pub mod testing;
 pub mod transports;
 pub mod view;
 #[cfg(all(feature = "p2p", target_arch = "wasm32"))]

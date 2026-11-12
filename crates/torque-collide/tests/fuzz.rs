@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{MockWorld, Rng, TEST_HULL, TestBoxes, TestGround, TestHulls, custom};
+use common::{Rng, TEST_HULL, TestBoxes, TestGround, TestHulls, custom};
 use torque_collide::collision::{CollisionList, MAX_COLLISIONS};
 use torque_collide::convex::{
     Convex, ConvexKind, ConvexSource, HullClass, HullSlot, MAX_WORKING_SET, WorkingSet,
@@ -18,6 +18,7 @@ use torque_collide::poly::{
     ClippedPolyList, EarlyOutPolyList, ExtrudedPolyList, MAX_POLY_VERTS, MAX_POLYS, PolyList,
     Polyhedron,
 };
+use torque_collide::testing::BoxWorld;
 use torque_collide::{ObjectId, World};
 
 fn count() -> u64 {
@@ -207,14 +208,14 @@ fn hostile_convex_pairs_never_panic_and_stay_within_their_caps() {
     let mut gjk_max = 0u32;
     let mut contacts = 0u64;
     for case in 0..n {
-        let mut w = MockWorld::new();
+        let mut w = BoxWorld::new();
         if r.below(8) == 0 {
             w.budget = r.below(200);
         }
         for id in 1..=2u32 {
             let bit = r.below(32);
             let v = view(&mut r, 1 << bit);
-            w.add(id, v, source(&mut r));
+            w.add(ObjectId(id), v, source(&mut r));
             for slot in 0..3 {
                 if r.below(2) == 0 {
                     let parts = (0..r.below(3)).map(|_| mesh(&mut r)).collect();
@@ -223,7 +224,7 @@ fn hostile_convex_pairs_never_panic_and_stay_within_their_caps() {
                     } else {
                         None
                     };
-                    w.add_hull(id, slot, Hull::new(node, parts));
+                    w.add_hull(ObjectId(id), slot, Hull::new(node, parts));
                 }
             }
         }

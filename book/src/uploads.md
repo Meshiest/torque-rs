@@ -83,7 +83,7 @@ whose lock nobody holds when it starts, never one that is alive; it says on the 
 emptied when the server starts and no script or mount may reach it. With no folder (the web), only uploads that fit in memory are taken.
 
 A sink gets `UntrustedBytes`, a read-only view that is never loaded whole unless the sink asks for it with a cap. The engine never
-interprets the bytes. Every sink ships a fuzz test that runs `torque_transfer::fuzz::fuzz_sink` over a valid sample
+interprets the bytes. Every sink ships a fuzz test that runs `torque_transfer::fuzz::fuzz_sink` (behind torque-transfer's `testing` feature, which the sink's dev-dependency turns on) over a valid sample
 (`TORQUE_FUZZ_UPLOAD_<NAME>=100000`), and parses a large upload in steps, not in one tick: the sink's `finish` runs once a tick at most.
 
 The permission a kind asks for is checked again when the content is complete, so an upload that was accepted is not taken from a player

@@ -9,6 +9,8 @@
 #[path = "net/rig.rs"]
 mod rig;
 
+use rig::RigProps as _;
+
 use std::collections::BTreeMap;
 
 use torque_collide::source::{CollisionSource, ShapeKind};

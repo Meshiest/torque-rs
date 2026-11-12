@@ -463,6 +463,9 @@
 //! the fuzzers with `TORQUE_FUZZ_PROPS=100000`; `just trace-hash` (the `props-drop`, `props-joints`, `carry`,
 //! `projectile-props` and `hierarchy-props` lines must be equal native and wasm32, the other lines unchanged); `cargo bench -p torque-plugin-props
 //! --bench step` and the `replay-bench` of torque-trace-hash (native and wasm32) under the bench lock.
+//!
+//! **Test support.** The net tests' server, clients and link are torque-app's `testing::Rig` and `TgeOnlyClient` (its `testing`
+//! feature). `tests/net/rig.rs` holds only this plugin's files, engine and reads; `tests/tge_client.rs` holds the cases.
 
 pub mod client;
 pub mod data;

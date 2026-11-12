@@ -29,6 +29,8 @@ torque-import = { path = "../torque-import", optional = true }
 torque-bytes = { path = "../torque-bytes", optional = true }
 
 [dev-dependencies]
+# The mesh fixtures' base64.
+torque-bytes = { path = "../torque-bytes" }
 criterion = { workspace = true }
 png = "0.18"
 torque-collide = { path = "../torque-collide" }

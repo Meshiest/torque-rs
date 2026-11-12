@@ -28,6 +28,7 @@
 //! - [`map`]: a Torque map's terrain and interiors, their convexes, polygon lists and rays.
 //! - [`source`]: collision a plugin contributes (boxes and convex hulls at a pose, with a type bit of their own) that a host's
 //!   container and a predicting client's world both answer for.
+//! - `testing` (feature `testing`, for tests): a [`World`] of axis-aligned boxes (`BoxWorld`) and its collision class.
 //! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]), and the types the movers, the physics
 //!   and the prediction share: the tick ([`types::TICK_MS`], [`types::TICK_SECONDS`]), [`types::WORLD_REACH`] and [`types::Move`].
 //! - [`gjk`] and [`feature`]: `GjkCollisionState` (distance, closest points, 16-iteration limit), `ConvexFeature`, the state
@@ -58,6 +59,10 @@
 //!   (`a_shape_lets_only_the_mover_it_names_pass`).
 //! - A cache or index changes nothing that is charged or returned: the same [`World::charge`] units at the same points, the same
 //!   results in the same order (the trace-hash lines and torque-vehicle's printed rigid trace must not move).
+//!
+//! **Test support.** `testing` (feature `testing`; only dev-dependencies turn it on) holds `BoxWorld`, the one [`World`] of
+//! axis-aligned boxes that this crate's tests, torque-sim's host tests and torque-vehicle's bench build on, with `BoxConvex` as
+//! the class of its boxes; [`ObjectView::from_box`] is the view of one box. What a [`World`] must answer changes there too.
 
 // Comparisons are written so that a NaN takes a fixed side: a negated comparison is the intended form (`!(a >= b)` is "below,
 // or unordered"), not a slip.
@@ -76,6 +81,8 @@ pub mod poly;
 pub mod rotation_code;
 pub mod sat;
 pub mod source;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod types;
 
 pub use collision::{

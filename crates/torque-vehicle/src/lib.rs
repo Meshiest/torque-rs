@@ -36,6 +36,9 @@
 //! refreshes a vehicle in place saves and puts back the fittings around it. The host's differential tests (torque-server's
 //! `datablock_reload`: a vehicle refreshed in place equals one built fresh, 0 differing words over 100 seeded edits) hold the
 //! split. Check: `cargo test -p torque-vehicle`.
+//!
+//! **Test support.** The tick bench's `Sandbox` is a `torque_collide::testing::BoxWorld` (the floor, the blocks and the pillars with
+//! a hull) and the buggies' hull. The tests' hosts (`tests/common/host.rs`) keep their own small worlds.
 
 // Comparisons are written so that a NaN takes a fixed side: a negated one is the intended form (`!(a >= b)` is "below, or
 // unordered"), as in `collide` and `sim`.

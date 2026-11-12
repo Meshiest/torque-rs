@@ -96,7 +96,17 @@ quic = ["torque-app-server/quic", "dep:torque-net-quic"]
 # feature, the mixer runs on the clock and nothing is heard.
 audio-device = ["torque-audio/device"]
 
+# `testing`: `Rig` and `TgeOnlyClient`, the net tests' server and clients over the memory transport, which the plugin crates'
+# tests share. Only dev-dependencies enable it.
+testing = ["torque-game/testing"]
+
 [dev-dependencies]
+# The scripted input source of the input-source tests (`FakeInput`).
+torque-client = { path = "../torque-client", features = ["testing"] }
+# The tests' synthetic interiors and terrain (`torque_maps::synth`).
+torque-maps = { path = "../torque-maps", features = ["testing"] }
+# The tests' synthetic shapes (`torque_shapes::synth`).
+torque-shapes = { path = "../torque-shapes", features = ["testing"] }
 # The seeded random source and the rounds of the server fuzz.
 torque-testkit = { path = "../torque-testkit" }
 # The script test helpers (`torque_ts_vm::testing`).

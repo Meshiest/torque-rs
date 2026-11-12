@@ -27,6 +27,8 @@ torque-render-scene = { path = "../../crates/torque-render-scene" }
 torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad", optional = true }
 
 [dev-dependencies]
+# The scripted pads of the gamepad test (`FakePads`).
+torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad", features = ["testing"] }
 # The ghost-shots example's second renderer (the reference it measures the frames against).
 torque-render-hd = { path = "../../crates/torque-render-hd" }
 

@@ -3,7 +3,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, create, engine, files, rope, two};
+use rig::{PeerRopes, Rig, RigRopes, create, engine, files, rope, two};
 use torque_plugin_rope::{Anchor, Rope, RopeEnd};
 
 #[test]
@@ -100,7 +100,7 @@ fn deleting_a_rope_removes_it_from_both_clients() {
         assert!(peer.rope_ids().is_empty());
         assert_eq!(peer.book(|b| b.ghosted()), 0);
     }
-    assert_eq!(rig.objects("Rope"), 0);
+    assert_eq!(rig.objects_of("Rope"), 0);
 }
 
 #[test]
@@ -129,8 +129,8 @@ fn a_rope_hung_from_a_moving_ghost_follows_it_on_every_client() {
 #[test]
 fn a_client_without_the_rope_plugin_is_refused_at_the_manifest() {
     let files = files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine(&files, false), 50_001);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine(&files, false), 50_001, &[]);
     rig.run(100);
     let peer = &rig.peers[0];
     assert_eq!(peer.ghosts(), 0);

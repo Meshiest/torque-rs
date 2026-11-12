@@ -559,7 +559,7 @@ pub fn read_soundscapes(text: &[u8]) -> Result<Vec<Soundscape>> {
         .collect())
 }
 
-/// The MPEG version of a synthetic MP3 ([`write_mp3`]).
+/// The MPEG version of a synthetic MP3 (`write_mp3`, in the tests).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mpeg {
     /// MPEG-1 Layer III: 44.1 kHz, 128 kbit/s, 417-byte frames.
@@ -572,6 +572,7 @@ pub enum Mpeg {
 
 /// An MP3 file of `frames` silent Layer III frames (a header, then zeros: no side information, no main data), mono or stereo,
 /// for tests and fuzz seeds.
+#[cfg(test)]
 pub fn write_mp3(version: Mpeg, mono: bool, frames: usize) -> Vec<u8> {
     let (second, third, size) = match version {
         Mpeg::V1 => (0xfb, 0x90, 417),
@@ -616,6 +617,7 @@ pub fn write_wav(rate: u32, channels: u16, samples: &[i16], cue: Option<u32>) ->
 }
 
 /// A mono Microsoft ADPCM wave file of one block (predictor 0, step 16, start samples 0) whose codes are `codes`, for tests.
+#[cfg(test)]
 pub fn write_adpcm(codes: &[u8]) -> Vec<u8> {
     let coefs: [(i16, i16); 7] = [
         (256, 0),

@@ -5,7 +5,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, files};
+use rig::{PeerProps, Rig, RigProps, files};
 use torque_app::GameFiles;
 use torque_app::config::{EngineConfig, GameConfig};
 use torque_app::plugins::DefaultPlugins;

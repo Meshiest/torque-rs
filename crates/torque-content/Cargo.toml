@@ -33,6 +33,9 @@ gltf = ["torque-import/gltf"]
 map-builder = ["dep:torque-interior-builder"]
 
 [dev-dependencies]
+torque-shapes = { path = "../torque-shapes", features = ["testing"] }
+# The tests' synthetic interiors and terrain (`torque_maps::synth`).
+torque-maps = { path = "../torque-maps", features = ["testing"] }
 # The tests' fixtures: a small shape written as a `.glb`, files held in memory.
 torque-shape-builder = { path = "../torque-shape-builder" }
 torque-ts-vm = { path = "../torque-ts-vm" }

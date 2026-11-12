@@ -4,7 +4,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, clients};
+use rig::{PeerProps, Rig, RigProps, clients};
 
 fn spawn(rig: &mut Rig, code: &str) -> i32 {
     rig.eval(code).parse().unwrap_or(0)

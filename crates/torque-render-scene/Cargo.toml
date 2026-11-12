@@ -35,6 +35,10 @@ torque-resource = { path = "../torque-resource" }
 torque-scene = { path = "../torque-scene" }
 
 [dev-dependencies]
+# The tests' synthetic interiors and terrain (`maps::synth`).
+maps = { package = "torque-maps", path = "../torque-maps", features = ["testing"] }
+# The tests' synthetic shapes (`shapes::synth`).
+shapes = { package = "torque-shapes", path = "../torque-shapes", features = ["testing"] }
 criterion = { workspace = true }
 # The CRC-32 of the test PNGs' chunks.
 torque-bytes = { path = "../torque-bytes" }

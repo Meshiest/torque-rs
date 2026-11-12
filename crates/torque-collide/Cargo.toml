@@ -23,9 +23,15 @@ rustc-hash = { workspace = true }
 # the budget error (`Exhausted`).
 torque-scene = { path = "../torque-scene" }
 
+[features]
+# `testing::BoxWorld`, a `World` of axis-aligned boxes for the tests of the movers built on this crate. Only dev-dependencies enable it.
+testing = []
+
 [dev-dependencies]
+# This crate's own integration tests use `testing`.
+torque-collide = { path = ".", features = ["testing"] }
 # The Torque map importer and synthetic files for the map collision's tests.
-torque-maps = { path = "../torque-maps" }
+torque-maps = { path = "../torque-maps", features = ["testing"] }
 
 [lints]
 workspace = true

@@ -67,5 +67,5 @@ browser reports a pad to a page once the player has pressed a button on it.
 
 ## Tests
 
-`FakePads` is a scripted set of pads for tests (`GamepadPlugin::with_backend(move || pads.clone())`): plug pads in and out and
+`FakePads` is a scripted set of pads for tests (behind the `testing` feature, which a dev-dependency turns on; `GamepadPlugin::with_backend(move || pads.clone())`): plug pads in and out and
 move their sticks, and bind a script to them. No test reads a real pad.

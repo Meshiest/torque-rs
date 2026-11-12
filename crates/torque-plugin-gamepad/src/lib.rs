@@ -66,8 +66,8 @@
 //!
 //! # Tests
 //!
-//! A test plugs pads in and out with [`FakePads`] (`GamepadPlugin::with_backend`) and never reads a real one; this crate's
-//! `tests/` bind a script to them.
+//! A test plugs pads in and out with `FakePads` (feature `testing`, which the dev-dependencies of the crates whose tests use it
+//! turn on; `GamepadPlugin::with_backend`) and never reads a real one; this crate's `tests/` bind a script to them.
 
 mod pad;
 mod sampler;
@@ -91,7 +91,9 @@ use torque_engine::{EngineBuilder, Plugin, PluginId};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use gilrs_backend::GilrsBackend;
-pub use pad::{FakePads, PadBackend, PadButton, PadState};
+#[cfg(any(test, feature = "testing"))]
+pub use pad::FakePads;
+pub use pad::{PadBackend, PadButton, PadState};
 pub use sampler::{HARD_MAX_SAMPLES, MAX_SAMPLES, PadSample, PadSamples, Sampler};
 pub use source::{GamepadPrefs, GamepadSource, MAX_PADS, StartReader, apply_dead_zone};
 #[cfg(not(target_arch = "wasm32"))]
@@ -146,7 +148,7 @@ impl Default for GamepadPlugin {
 
 impl GamepadPlugin {
     /// The plugin over pads of another backend, made once for each client and read at each poll on the client's thread: a
-    /// scripted one in a test ([`FakePads`]), or a game's own source of pads.
+    /// scripted one in a test (`FakePads`), or a game's own source of pads.
     pub fn with_backend<B: PadBackend + 'static>(make: impl Fn() -> B + 'static) -> GamepadPlugin {
         GamepadPlugin {
             pads: Pads::Local(Rc::new(move || Box::new(make()))),

@@ -5,7 +5,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Link, Rig, files};
+use rig::{Link, PeerProps, Rig, files};
 use torque_engine::{Engine, EngineBuilder};
 use torque_plugin_props::PropsPlugin;
 use torque_plugin_props::predict::{PredictConfig, PropPredictionPlugin};

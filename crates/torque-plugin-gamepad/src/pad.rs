@@ -1,7 +1,9 @@
 //! What a pad is, whichever backend reads it: a button set, two sticks and two triggers ([`PadState`]), and the scripted pads
-//! tests use ([`FakePads`]).
+//! tests use (`FakePads`, feature `testing`).
 
+#[cfg(any(test, feature = "testing"))]
 use std::collections::BTreeMap;
+#[cfg(any(test, feature = "testing"))]
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// A button of the standard pad, in the order of the joystick numbers the plugin gives them (`button0` to `button10`); the four
@@ -181,11 +183,13 @@ pub trait PadBackend {
 /// pads.unplug(7);
 /// assert!(backend.poll().is_empty());
 /// ```
+#[cfg(any(test, feature = "testing"))]
 #[derive(Clone, Default)]
 pub struct FakePads {
     pads: Arc<Mutex<BTreeMap<u32, PadState>>>,
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl FakePads {
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, PadState>> {
         self.pads.lock().unwrap_or_else(PoisonError::into_inner)
@@ -227,6 +231,7 @@ impl FakePads {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl PadBackend for FakePads {
     fn poll(&mut self) -> Vec<(u32, PadState)> {
         self.lock().iter().map(|(id, s)| (*id, *s)).collect()

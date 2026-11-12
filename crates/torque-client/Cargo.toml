@@ -59,6 +59,10 @@ web-sys = { version = "0.3", features = ["BinaryType", "MessageEvent", "WebSocke
 wasm-bindgen-futures = { version = "0.4", optional = true }
 
 [dev-dependencies]
+# The tests' and the bench's synthetic shapes (`shapes::synth`).
+shapes = { package = "torque-shapes", path = "../torque-shapes", features = ["testing"] }
+# This crate's own doc tests use `testing`.
+torque-client = { path = ".", features = ["testing"] }
 # The fake clock of the input source tests.
 torque-testkit = { path = "../torque-testkit" }
 # A `Vm` with the game classes installed (`torque_game::testing::vm`).
@@ -70,6 +74,8 @@ fonts = { package = "torque-fonts", path = "../torque-fonts" }
 torque-shape-builder = { path = "../torque-shape-builder" }
 
 [features]
+# `input_source::FakeInput`, the scripted input source of the tests of crates that drive a joystick. Only dev-dependencies enable it.
+testing = []
 # The window glue (`platform`): keys, cursor hold, frame cap, URL opener; in a browser the page's focus and pointer lock
 # (`platform::web_input`).
 window = [

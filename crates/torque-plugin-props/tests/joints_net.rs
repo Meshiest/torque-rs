@@ -5,7 +5,7 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, clients};
+use rig::{PeerProps, Rig, RigProps, clients};
 use torque_game::player_tether::TetherSource;
 use torque_plugin_props::ClientJoints;
 use torque_plugin_props::joints::KindId;

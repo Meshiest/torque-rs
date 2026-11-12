@@ -128,6 +128,9 @@
 //!   `ghost_world::world::MAX_RETIRED_DATABLOCKS` retired at once end the connection with
 //!   [`conn::tge::RETIRED_DATABLOCKS_REASON`] (torque-test-app's `server_datablock_remove_wire`; torque-server's
 //!   `tests/datablock_remove_wire.rs` for the wire). Torque's protocol carries no removal: a stock client keeps the datablock.
+//!
+//! **Test support.** `input_source::FakeInput`, the scripted source, is behind the `testing` feature, which the dev-dependencies
+//! of the crates whose tests use it turn on.
 
 pub mod actionmap;
 pub mod conn;

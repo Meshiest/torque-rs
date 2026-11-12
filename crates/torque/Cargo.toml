@@ -117,6 +117,8 @@ p2p = ["webrtc", "torque-server/p2p", "torque-client/p2p", "torque-app?/p2p", "t
 # Desktop players over QUIC: the server's QUIC endpoint and the client's connection to one, the server known by its key's hash.
 # In the engine's protocol it is what UDP means on both ends. Natively only: a browser build compiles none of it.
 quic = ["torque-app?/quic", "torque-app-server?/quic"]
+# Test doubles of the client crate (`torque::client::input_source::FakeInput`); only dev-dependencies enable it.
+testing = ["torque-client?/testing"]
 full = ["default", "audio-device", "system-fonts", "client-window", "shape-builder", "app"]
 
 [[example]]
@@ -134,6 +136,10 @@ required-features = ["collide"]
 [[example]]
 name = "net"
 required-features = ["net"]
+
+[dev-dependencies]
+# The shape example's synthetic shape (`shapes::synth`).
+torque-shapes = { path = "../torque-shapes", features = ["testing"] }
 
 [lints]
 workspace = true

@@ -18,6 +18,10 @@ categories = ["network-programming", "game-development"]
 torque-bytes = { path = "../torque-bytes" }
 torque-net = { path = "../torque-net" }
 
+[features]
+# `testing::MapView`, an `ObjectView` over maps, for the tests of crates that pack or decode records. Only dev-dependencies enable it.
+testing = []
+
 [dev-dependencies]
 # The seeded random source of the hostile-input tests.
 torque-testkit = { path = "../torque-testkit" }

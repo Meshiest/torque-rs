@@ -23,9 +23,9 @@ fn side() -> Eye {
 /// A server and two clients, whose engines draw.
 fn rig() -> Rig {
     let files = files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine(&files, true), 50_001);
-    rig.join(&files, engine(&files, true), 50_002);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine(&files, true), 50_001, &[]);
+    rig.join(&files, engine(&files, true), 50_002, &[]);
     assert!(rig.run_until(400, |r| r.peers.iter().all(|p| p.ghosts() >= 3)));
     rig
 }

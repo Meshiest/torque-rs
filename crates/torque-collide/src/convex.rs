@@ -23,7 +23,9 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use crate::map::MapShape;
-use crate::math::{Box3, F3, IDENTITY, Matrix, affine_inverse, matrix_product, mul_box, sqrt_f32};
+use crate::math::{
+    Box3, F3, IDENTITY, Matrix, affine_inverse, d, matrix_product, mul_box, sqrt_f32,
+};
 use crate::mesh::Hull;
 use crate::poly::PolyList;
 use crate::{Exhausted, ObjectId, work};
@@ -68,6 +70,30 @@ pub struct ObjectView {
 }
 
 impl ObjectView {
+    /// The view of an axis-aligned box `min..max` in the world: no rotation, unit scale, the object box centered on the origin,
+    /// a world radius of 1 and the collision enabled.
+    #[must_use]
+    pub fn from_box(min: F3, max: F3, type_mask: u32) -> ObjectView {
+        let center: F3 = std::array::from_fn(|i| (min[i] + max[i]) * 0.5);
+        let half: F3 = std::array::from_fn(|i| ((d(max[i]) - d(min[i])) * 0.5) as f32);
+        let mut obj_to_world = IDENTITY;
+        let mut world_to_obj = IDENTITY;
+        for (row, c) in center.into_iter().enumerate() {
+            obj_to_world[row * 4 + 3] = c;
+            world_to_obj[row * 4 + 3] = -c;
+        }
+        ObjectView {
+            obj_to_world,
+            world_to_obj,
+            scale: [1.0; 3],
+            obj_box: Box3::new(half.map(|h| -h), half),
+            world_box: Box3::new(min, max),
+            world_radius: 1.0,
+            type_mask,
+            collision_disabled: false,
+        }
+    }
+
     /// The translation (`getPosition`: elements 3, 7, 11 of the transform).
     pub fn position(&self) -> F3 {
         [

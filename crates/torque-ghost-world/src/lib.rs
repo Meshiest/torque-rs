@@ -43,6 +43,9 @@
 //!   to delete its script objects. The retired set is capped at [`world::MAX_RETIRED_DATABLOCKS`] (the 257th is
 //!   [`world::DatablockRetire::OverCap`]: the host ends the connection), an unknown or repeated removal is reported and changes
 //!   nothing, and a ghost reset lets every retired datablock go (`tests/retired_datablocks.rs`).
+//!
+//! **Test support.** `tests/session.rs` packs its objects from `torque_ghosts::testing::MapView` (torque-ghosts' `testing`
+//! feature, which this crate's dev-dependency turns on).
 
 pub mod effects;
 pub mod images;

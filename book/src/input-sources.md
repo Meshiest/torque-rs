@@ -114,7 +114,8 @@ inside a frame the window already polled uses that frame's values, as it did bef
 
 ## Testing
 
-`FakeInput` is a source a test drives: it is `Clone`, and the copy the test keeps says what the devices do at the next poll.
+`FakeInput` (behind `torque-client`'s `testing` feature, which a dev-dependency turns on; the `torque` crate forwards it as its own
+`testing` feature) is a source a test drives: it is `Clone`, and the copy the test keeps says what the devices do at the next poll.
 `torque-app`'s `tests/input_sources.rs` binds `joystick0` and `joystick1` this way and checks what a script's functions get.
 
 ```rust

@@ -19,7 +19,13 @@ categories = ["game-development", "parser-implementations"]
 torque-bytes = { path = "../torque-bytes" }
 torque-mapcore = { path = "../torque-mapcore" }
 
+[features]
+# `testing`: `synth` and `fuzz`, synthetic files and the fuzz that holds the readers to their rules. Only dev-dependencies enable it.
+testing = []
+
 [dev-dependencies]
+# This crate's own integration tests use `testing`.
+torque-maps = { path = ".", features = ["testing"] }
 # Decodes the PNGs the encoder writes.
 torque-images = { path = "../torque-images" }
 

@@ -17,6 +17,8 @@ categories = ["game-development", "simulation"]
 torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
+# `testing::BoxWorld`, the world of the Item, Projectile and Player tests.
+torque-collide = { path = "../torque-collide", features = ["testing"] }
 criterion = { workspace = true }
 stats_alloc = { workspace = true }
 

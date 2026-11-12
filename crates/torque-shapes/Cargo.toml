@@ -18,5 +18,13 @@ categories = ["game-development", "parser-implementations", "rendering::data-for
 torque-bytes = { path = "../torque-bytes" }
 torque-scene = { path = "../torque-scene" }
 
+[features]
+# `testing`: `synth` and `fuzz`, synthetic shapes and the fuzz that holds the reader to its rules. Only dev-dependencies enable it.
+testing = []
+
+[dev-dependencies]
+# This crate's own integration tests use `testing`.
+torque-shapes = { path = ".", features = ["testing"] }
+
 [lints]
 workspace = true

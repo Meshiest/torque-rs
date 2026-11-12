@@ -20,7 +20,13 @@ torque-net = { path = "../torque-net" }
 # The block hashes and the whole-content hash.
 sha2 = "0.10"
 
+[features]
+# `testing`: `fuzz`, the harness every sink's fuzz test uses. Only dev-dependencies enable it.
+testing = []
+
 [dev-dependencies]
+# This crate's own integration tests use `testing`.
+torque-transfer = { path = ".", features = ["testing"] }
 # The counting allocator of the memory test (the workspace forbids the `unsafe` a hand-written one needs).
 peak_alloc = "0.3.0"
 

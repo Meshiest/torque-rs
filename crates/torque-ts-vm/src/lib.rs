@@ -73,7 +73,7 @@
 //!   with a syntax error; [`vm::Vm::trace_new_objects`] lists what a run registered, up to [`vm::MAX_TRACED_OBJECTS`]
 //!   (torque-server's `tests/datablock_watch.rs`).
 //!
-//! **Test helpers.** [`testing`] (feature `testing`, a dev-dependency only: no normal build enables it) holds the script test
+//! **Test helpers.** `testing` (feature `testing`, a dev-dependency only: no normal build enables it) holds the script test
 //! helpers every crate's tests share (`eval`, `try_eval`, `global`, `console`, `log_lines`); each reads bytes lossily. A new
 //! helper goes there only when two crates' tests would write it.
 //!

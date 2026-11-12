@@ -22,6 +22,9 @@
 //! **Speed.** The process list's map hashes an id with one multiply ([`torque_collide::hash::IdMap`]: no order of it is ever
 //! read) and a pass walks the list straight into its temporary one (no copy of the order); a pass allocates nothing once warm.
 //! The bench: `cargo bench -p torque-sim --bench process` (2,000 objects, with the allocations of a pass printed).
+//!
+//! **Test support.** `testworld` (tests only) is the Item and Projectile host: a `torque_collide::testing::BoxWorld` plus the
+//! ray cast and the recorders of every host call. `player::tests::TestHost` is the Player's, on the same `BoxWorld`.
 
 pub mod ai;
 pub mod image;

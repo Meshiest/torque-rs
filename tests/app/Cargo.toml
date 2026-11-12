@@ -39,12 +39,12 @@ torque-net = { path = "../../crates/torque-net" }
 torque-render-core = { path = "../../crates/torque-render-core" }
 torque-render-scene = { path = "../../crates/torque-render-scene" }
 torque-server = { path = "../../crates/torque-server" }
-torque-shapes = { path = "../../crates/torque-shapes" }
+torque-shapes = { path = "../../crates/torque-shapes", features = ["testing"] }
 torque-ts-vm = { path = "../../crates/torque-ts-vm", features = ["testing"] }
 # The hierarchy's network tests' world: the floor, the figure and the cube.
 torque-example-assets = { path = "../../examples/assets" }
 # The plugins under test, and every plugin with natives for the loader's list of them.
-torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad" }
+torque-plugin-gamepad = { path = "../../crates/torque-plugin-gamepad", features = ["testing"] }
 torque-plugin-gui-layout = { path = "../../crates/torque-plugin-gui-layout" }
 torque-plugin-hierarchy = { path = "../../crates/torque-plugin-hierarchy" }
 torque-plugin-loader = { path = "../../crates/torque-plugin-loader" }

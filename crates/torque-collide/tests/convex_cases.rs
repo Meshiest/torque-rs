@@ -5,12 +5,13 @@
 
 mod common;
 
-use common::{MockWorld, TEST_HULL, TestBoxes, TestGround, TestHulls, custom, view_at};
+use common::{TEST_HULL, TestBoxes, TestGround, TestHulls, custom, view_at};
 use torque_collide::convex::{Convex, ConvexKind, ConvexSource, HullSlot, WorkingSet};
 use torque_collide::gjk::GjkState;
 use torque_collide::math::{Box3, IDENTITY, Matrix, Plane, d};
 use torque_collide::mesh::{Hull, MeshPart};
 use torque_collide::poly::{ClippedPolyList, ExtrudedPolyList, Polyhedron};
+use torque_collide::testing::BoxWorld;
 use torque_collide::{ObjectId, World};
 
 /// `StaticObjectType | StaticShapeObjectType`: the type of the test objects.
@@ -26,14 +27,14 @@ fn translation(x: f32, y: f32, z: f32) -> Matrix {
 }
 
 fn box_object(
-    world: &mut MockWorld,
+    world: &mut BoxWorld,
     id: u32,
     pos: [f32; 3],
     obj_box: Box3,
     boxes: Vec<([f32; 3], [f32; 3])>,
 ) {
     world.add(
-        id,
+        ObjectId(id),
         view_at(pos, obj_box, STATIC),
         custom(TestBoxes { boxes }),
     );
@@ -42,7 +43,7 @@ fn box_object(
 /// The Player's sweep as `updatePos` sets it up: the box at the start, extruded along `vector`, the velocity, the list reset,
 /// then every convex of the working set whose box meets the swept box feeds the list.
 fn sweep(
-    world: &mut MockWorld,
+    world: &mut BoxWorld,
     ws: &WorkingSet,
     start: [f32; 3],
     obj_box: &Box3,
@@ -68,7 +69,7 @@ fn sweep(
 
 #[test]
 fn the_player_falling_onto_a_box_object_meets_its_top() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     box_object(
         &mut w,
         1,
@@ -78,7 +79,7 @@ fn the_player_falling_onto_a_box_object_meets_its_top() {
     );
     let player_box = Box3::new([-0.5, -0.5, 0.0], [0.5, 0.5, 2.0]);
     w.add(
-        2,
+        ObjectId(2),
         view_at([0.0, 0.0, 0.5], player_box, PLAYER),
         ConvexSource::Player { has_shape: true },
     );
@@ -126,10 +127,10 @@ fn the_player_falling_onto_a_box_object_meets_its_top() {
 
 #[test]
 fn the_player_falling_onto_a_mesh_object_meets_both_triangles_at_once() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     let bounds = Box3::new([-1.0, -1.0, -0.3], [1.0, 1.0, 0.3]);
     w.add(
-        1,
+        ObjectId(1),
         view_at([0.0; 3], bounds, STATIC),
         custom(TestHulls {
             slots: vec![HullSlot {
@@ -152,10 +153,10 @@ fn the_player_falling_onto_a_mesh_object_meets_both_triangles_at_once() {
         tris: vec![[0, 2, 1], [0, 3, 2]],
         materials: vec![7, 7],
     };
-    w.add_hull(1, 0, Hull::new(Some(IDENTITY), vec![part]));
+    w.add_hull(ObjectId(1), 0, Hull::new(Some(IDENTITY), vec![part]));
     let player_box = Box3::new([-0.5, -0.5, 0.0], [0.5, 0.5, 2.0]);
     w.add(
-        2,
+        ObjectId(2),
         view_at([0.0, 0.0, 0.5], player_box, PLAYER),
         ConvexSource::Player { has_shape: true },
     );
@@ -195,7 +196,7 @@ fn the_player_falling_onto_a_mesh_object_meets_both_triangles_at_once() {
 #[test]
 fn a_contact_search_keeps_the_floor_under_the_feet() {
     // findContact's list: six planes around the feet, then the floor's ortho box fed to it.
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     box_object(
         &mut w,
         1,
@@ -239,23 +240,23 @@ fn a_contact_search_keeps_the_floor_under_the_feet() {
 
 #[test]
 fn the_builders_make_the_expected_boxes() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     // A Player's convex: an ortho box of its object box, centred on it.
     let pbox = Box3::new([-0.6, -0.6, 0.0], [0.6, 0.6, 2.4]);
     w.add(
-        2,
+        ObjectId(2),
         view_at([1.0, 2.0, 3.0], pbox, PLAYER),
         ConvexSource::Player { has_shape: true },
     );
     // A Player with no shape adds nothing.
     w.add(
-        3,
+        ObjectId(3),
         view_at([1.0, 2.0, 3.0], pbox, PLAYER),
         ConvexSource::Player { has_shape: false },
     );
     // An object of one offset box: the centre is the offset plus the object box's centre, the size half the box's.
     w.add(
-        4,
+        ObjectId(4),
         view_at(
             [0.0; 3],
             Box3::new([-2.0, -1.0, 0.0], [2.0, 1.0, 1.2]),
@@ -267,7 +268,7 @@ fn the_builders_make_the_expected_boxes() {
     );
     // A ground: a 5 x 5 box under the query's centre.
     w.add(
-        5,
+        ObjectId(5),
         view_at(
             [0.0; 3],
             Box3::new([-1000.0, -1000.0, -0.5], [1000.0, 1000.0, 0.0]),
@@ -277,7 +278,7 @@ fn the_builders_make_the_expected_boxes() {
     );
     // A zone: a box convex of its object box.
     w.add(
-        6,
+        ObjectId(6),
         view_at(
             [0.0; 3],
             Box3::new([-1.0, -2.0, -3.0], [1.0, 2.0, 3.0]),
@@ -347,7 +348,7 @@ fn the_builders_make_the_expected_boxes() {
 
 #[test]
 fn the_working_set_takes_objects_in_the_containers_order_newest_first() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     let b = Box3::new([-0.5; 3], [0.5; 3]);
     for (id, x) in [(1, 2.0f32), (2, -3.0), (3, 5.0)] {
         box_object(&mut w, id, [x, 0.0, 0.0], b, vec![([0.0; 3], [1.0; 3])]);
@@ -377,14 +378,14 @@ fn the_working_set_takes_objects_in_the_containers_order_newest_first() {
 
 #[test]
 fn gjk_measures_known_pairs() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     w.add(
-        1,
+        ObjectId(1),
         view_at([0.0; 3], Box3::new([-1.0; 3], [1.0; 3]), STATIC),
         ConvexSource::None,
     );
     w.add(
-        2,
+        ObjectId(2),
         view_at([0.0; 3], Box3::new([-1.0; 3], [1.0; 3]), STATIC),
         ConvexSource::None,
     );
@@ -437,15 +438,15 @@ fn gjk_measures_known_pairs() {
 /// when the item has a shape and the query meets its world box; nothing without a shape; one entry across updates.
 #[test]
 fn item_builder_makes_a_box_of_its_object_box() {
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     let ob = Box3::new([-0.25, -0.25, 0.0], [0.25, 0.75, 0.5]);
     w.add(
-        1,
+        ObjectId(1),
         view_at([1.0, 1.0, 0.0], ob, 1 << 8),
         ConvexSource::Item { has_shape: true },
     );
     w.add(
-        2,
+        ObjectId(2),
         view_at([1.0, 1.0, 0.0], ob, 1 << 8),
         ConvexSource::Item { has_shape: false },
     );
@@ -471,22 +472,26 @@ fn item_builder_makes_a_box_of_its_object_box() {
 #[test]
 fn find_closest_state_picks_the_nearest_below_dont_care() {
     use torque_collide::feature::StateList;
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     let cube = Box3::new([-1.0; 3], [1.0; 3]);
-    w.add(1, view_at([0.0; 3], cube, STATIC), ConvexSource::None);
+    w.add(
+        ObjectId(1),
+        view_at([0.0; 3], cube, STATIC),
+        ConvexSource::None,
+    );
     // Object 2 is 0.5 away in y, object 3 is 1 away in x; object 4 is beyond the grown box and gets no state.
     w.add(
-        2,
+        ObjectId(2),
         view_at([0.0, 2.5, 0.0], cube, STATIC),
         ConvexSource::None,
     );
     w.add(
-        3,
+        ObjectId(3),
         view_at([3.0, 0.0, 0.0], cube, STATIC),
         ConvexSource::None,
     );
     w.add(
-        4,
+        ObjectId(4),
         view_at([9.0, 0.0, 0.0], cube, STATIC),
         ConvexSource::None,
     );
@@ -528,11 +533,19 @@ fn find_closest_state_picks_the_nearest_below_dont_care() {
 #[test]
 fn a_state_measures_the_plane_box_where_the_working_set_moved_it() {
     use torque_collide::feature::StateList;
-    let mut w = MockWorld::new();
+    let mut w = BoxWorld::new();
     let cube = Box3::new([-1.0; 3], [1.0; 3]);
     let plane = Box3::new([-1.0e9, -1.0e9, -0.5], [1.0e9, 1.0e9, 0.5]);
-    w.add(1, view_at([0.0, 0.0, 2.0], cube, 0), ConvexSource::None);
-    w.add(2, view_at([0.0, 0.0, -0.5], plane, 1), custom(TestGround));
+    w.add(
+        ObjectId(1),
+        view_at([0.0, 0.0, 2.0], cube, 0),
+        ConvexSource::None,
+    );
+    w.add(
+        ObjectId(2),
+        view_at([0.0, 0.0, -0.5], plane, 1),
+        custom(TestGround),
+    );
     let me = Convex {
         id: 100,
         object: ObjectId(1),

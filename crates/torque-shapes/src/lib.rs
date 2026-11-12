@@ -22,8 +22,8 @@
 //!   blend and scale passes. A `ShapeBase` and the player's arm, look and eye chain run on it.
 //! - [`library`]: the table the arithmetic of [`math`], [`collide`] and [`instance`] and the thread sort go through, which a
 //!   host may replace (as Torque's `mMathFn.h` pointers are).
-//! - [`synth`] and [`fuzz`]: synthetic shapes made by the writer, their mutation, and the fuzz that holds the reader to the rules
-//!   below.
+//! - `synth` and `fuzz` (feature `testing`, for tests): synthetic shapes made by the writer, their mutation, and the fuzz that
+//!   holds the reader to the rules below.
 //!
 //! **Credits.** This crate follows the MIT-licensed Torque3D release of the Torque engine (GarageGames), whose shape code TGE
 //! 1.4 shares; it reads TGE 1.4's version-24 files, and where TGE 1.4 differs it follows TGE and names the TGE routine. The
@@ -47,6 +47,7 @@ pub mod bounds;
 pub mod collide;
 pub mod dsq;
 pub mod dts;
+#[cfg(any(test, feature = "testing"))]
 pub mod fuzz;
 pub mod instance;
 pub mod library;
@@ -55,6 +56,7 @@ pub mod matlist;
 pub mod preload;
 pub mod shape;
 pub mod swing;
+#[cfg(any(test, feature = "testing"))]
 pub mod synth;
 pub mod write;
 

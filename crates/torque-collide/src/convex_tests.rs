@@ -77,3 +77,20 @@ fn the_working_set_builds_the_candidates_in_the_containers_order_unless_the_host
     // A host's own order.
     assert_eq!(built(true), vec![1, 2, 3]);
 }
+
+#[test]
+fn from_box_views_a_world_box_as_an_unrotated_object_at_its_center() {
+    let v = ObjectView::from_box([1.0, 2.0, 3.0], [5.0, 4.0, 9.0], crate::types::STATIC);
+    assert_eq!(v.position(), [3.0, 3.0, 6.0]);
+    assert_eq!(v.obj_box, Box3::new([-2.0, -1.0, -3.0], [2.0, 1.0, 3.0]));
+    assert_eq!(v.world_box, Box3::new([1.0, 2.0, 3.0], [5.0, 4.0, 9.0]));
+    assert_eq!(v.scale, [1.0; 3]);
+    assert_eq!(v.world_radius, 1.0);
+    assert_eq!(v.type_mask, crate::types::STATIC);
+    assert!(!v.collision_disabled);
+    // The inverse moves the center back to the origin.
+    assert_eq!(
+        [v.world_to_obj[3], v.world_to_obj[7], v.world_to_obj[11]],
+        [-3.0, -3.0, -6.0]
+    );
+}

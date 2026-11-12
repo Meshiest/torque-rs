@@ -8,15 +8,15 @@
 #[path = "net/rig.rs"]
 mod rig;
 
-use rig::{Rig, engine, files};
+use rig::{PeerRopes, Rig, RigRopes, engine, files};
 use torque_trace_hash::hash::TraceHasher;
 
 /// Runs the scenario and gives the hash of every tick's points, and how many values it hashed.
 fn run() -> (u64, u64) {
     let files = files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine(&files, true), 50_001);
-    rig.join(&files, engine(&files, true), 50_002);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine(&files, true), 50_001, &[]);
+    rig.join(&files, engine(&files, true), 50_002, &[]);
     assert!(rig.run_until(400, |r| r.peers.iter().all(|p| p.ghosts() >= 3)));
     let mut hasher = TraceHasher::new();
     let id: i32 = rig

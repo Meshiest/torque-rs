@@ -1,5 +1,4 @@
-//! A small world for the tests: objects in a list, `findObjects` in insertion order, and a budget;
-//! and three object classes of a test game, built through the [`ConvexBuilder`] seam.
+//! Three object classes of a test game, built through the [`ConvexBuilder`] seam, and the helpers the cases share.
 
 #![allow(dead_code)]
 
@@ -10,7 +9,6 @@ use torque_collide::convex::{
     WorkingSet, World, query_in_object,
 };
 use torque_collide::math::{Box3, F3, IDENTITY, Matrix, d, inverse, mul_box};
-use torque_collide::mesh::Hull;
 use torque_collide::{Exhausted, ObjectId, work};
 
 /// A test class whose collision is a list of boxes `(offset, size)` around its object box's centre: when the query (in the
@@ -136,44 +134,6 @@ pub fn custom(b: impl ConvexBuilder + 'static) -> ConvexSource {
     ConvexSource::Custom(Rc::new(b))
 }
 
-pub struct Obj {
-    pub id: ObjectId,
-    pub view: ObjectView,
-    pub source: ConvexSource,
-    pub hulls: Vec<(u32, Rc<Hull>)>,
-}
-
-pub struct MockWorld {
-    pub objects: Vec<Obj>,
-    pub budget: u64,
-    pub spent: u64,
-}
-
-impl MockWorld {
-    pub fn new() -> MockWorld {
-        MockWorld {
-            objects: Vec::new(),
-            budget: u64::MAX,
-            spent: 0,
-        }
-    }
-
-    pub fn add(&mut self, id: u32, view: ObjectView, source: ConvexSource) {
-        self.objects.push(Obj {
-            id: ObjectId(id),
-            view,
-            source,
-            hulls: Vec::new(),
-        });
-    }
-
-    pub fn add_hull(&mut self, id: u32, slot: u32, hull: Hull) {
-        if let Some(o) = self.objects.iter_mut().find(|o| o.id == ObjectId(id)) {
-            o.hulls.push((slot, Rc::new(hull)));
-        }
-    }
-}
-
 /// An object at `pos` with no rotation, unit scale and object box `obj_box`.
 pub fn view_at(pos: F3, obj_box: Box3, mask: u32) -> ObjectView {
     let mut m: Matrix = IDENTITY;
@@ -189,59 +149,6 @@ pub fn view_at(pos: F3, obj_box: Box3, mask: u32) -> ObjectView {
         world_radius: 1.0,
         type_mask: mask,
         collision_disabled: false,
-    }
-}
-
-impl World for MockWorld {
-    fn object(&self, id: ObjectId) -> Option<ObjectView> {
-        self.objects.iter().find(|o| o.id == id).map(|o| o.view)
-    }
-
-    fn find_objects(
-        &mut self,
-        query: &Box3,
-        mask: u32,
-        exclude: Option<ObjectId>,
-        limit: usize,
-        out: &mut Vec<ObjectId>,
-    ) -> Result<(), Exhausted> {
-        for o in &self.objects {
-            if out.len() >= limit {
-                break;
-            }
-            if Some(o.id) == exclude || o.view.collision_disabled || o.view.type_mask & mask == 0 {
-                continue;
-            }
-            if o.view.world_box.overlaps(query) {
-                out.push(o.id);
-            }
-        }
-        Ok(())
-    }
-
-    fn convex_source(&self, id: ObjectId) -> ConvexSource {
-        self.objects
-            .iter()
-            .find(|o| o.id == id)
-            .map(|o| o.source.clone())
-            .unwrap_or(ConvexSource::None)
-    }
-
-    fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
-        self.objects.iter().find(|o| o.id == id).and_then(|o| {
-            o.hulls
-                .iter()
-                .find(|(s, _)| *s == slot)
-                .map(|(_, h)| h.clone())
-        })
-    }
-
-    fn charge(&mut self, units: u64) -> bool {
-        if self.spent.saturating_add(units) > self.budget {
-            return false;
-        }
-        self.spent += units;
-        true
     }
 }
 

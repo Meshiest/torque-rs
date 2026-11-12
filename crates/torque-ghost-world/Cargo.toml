@@ -23,6 +23,8 @@ hierarchy = { path = "../torque-hierarchy", package = "torque-hierarchy" }
 collide = { path = "../torque-collide", package = "torque-collide" }
 
 [dev-dependencies]
+# `testing::MapView`, the host's object view of the tests.
+ghosts = { path = "../torque-ghosts", package = "torque-ghosts", features = ["testing"] }
 # The seeded random source of the hostile-input tests.
 torque-testkit = { path = "../torque-testkit" }
 

@@ -34,10 +34,12 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 torque-collide = { path = "../torque-collide" }
 
 [dev-dependencies]
+# `testing::MapView`, the host's object view of the tests.
+torque-ghosts = { path = "../torque-ghosts", features = ["testing"] }
 # A `Vm` with the game classes installed (`torque_game::testing::vm`).
 torque-game = { path = "../torque-game", features = ["testing"] }
 # The engine's renderer, to draw the ropes in the pictures' tests.
-torque-app = { path = "../torque-app", features = ["renderer"] }
+torque-app = { path = "../torque-app", features = ["renderer", "testing"] }
 # The tick the simulation steps by is the server's.
 torque-server = { path = "../torque-server" }
 # The tests' server and clients over the memory transport, and a client that speaks only Torque's protocol.

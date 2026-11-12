@@ -2,7 +2,6 @@
 //! (never a panic, no allocation a wire count asks for past its cap). The records here are written by hand as the derives
 //! write them (the derives' own tests are torque-engine's).
 
-use std::collections::HashMap;
 use torque_testkit::Rng;
 
 use torque_net::NetError;
@@ -15,28 +14,9 @@ use super::*;
 use crate::codec::{Codec, Enc, Layout, NetWidths, R, ReadCtx};
 use crate::datablocks::{DatablockCodecSet, TgeDatablockClass, TgeDatablockRecord, TgeDatablocks};
 use crate::set::GhostCodecSet;
+use crate::testing::MapView;
 use crate::tge::{TgeClass, TgeGhosts, TgeRecord};
 use crate::{ObjectView, PackCtx, Value, free_charge};
-
-/// A view backed by a map; anything not in it is `Null`.
-#[derive(Default)]
-struct MapView(HashMap<(String, usize), Value>);
-
-impl MapView {
-    fn with(mut self, name: &str, index: usize, v: Value) -> MapView {
-        self.0.insert((name.to_string(), index), v);
-        self
-    }
-}
-
-impl ObjectView for MapView {
-    fn get(&self, field: &str, index: usize) -> Value {
-        self.0
-            .get(&(field.to_string(), index))
-            .cloned()
-            .unwrap_or(Value::Null)
-    }
-}
 
 const SPEC_6: FieldSpec = FieldSpec {
     bits: 6,

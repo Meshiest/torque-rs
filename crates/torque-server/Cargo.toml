@@ -78,7 +78,7 @@ tungstenite = { version = "0.30", default-features = false }
 # The web transport's TLS tests: a client's records sealed by hand (key updates and empty records no TLS library sends).
 ring = { version = "0.17", default-features = false }
 # The tests' shapes (a box a Player stands in).
-torque-shapes = { path = "../torque-shapes" }
+torque-shapes = { path = "../torque-shapes", features = ["testing"] }
 # The hitbox tests' figure: bones with a box each.
 torque-shape-builder = { path = "../torque-shape-builder" }
 # The live datablock tests' wheeled vehicle: a buggy with four hub nodes.

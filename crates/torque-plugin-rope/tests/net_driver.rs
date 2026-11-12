@@ -7,7 +7,7 @@ mod rig;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use rig::{Rig, create, engine, engine_with, files, off_the_line, rope};
+use rig::{PeerRopes, Rig, RigRopes, create, engine, engine_with, files, off_the_line, rope};
 use torque_app::GameFiles;
 use torque_engine::{Engine, EngineBuilder, Plugin, PluginId, PluginType};
 use torque_plugin_rope::{
@@ -52,8 +52,8 @@ fn mover(rig: &mut Rig, peer: usize) -> u32 {
 
 /// A server and one client of `engine`, connected and ghosted.
 fn one(files: &GameFiles, engine: Engine) -> Rig {
-    let mut rig = Rig::new(files);
-    rig.join(files, engine, 50_001);
+    let mut rig = Rig::new(files, &[]);
+    rig.join(files, engine, 50_001, &[]);
     assert!(
         rig.run_until(400, |r| r.peers[0].ghosts() >= 2),
         "{:?}",
@@ -69,9 +69,9 @@ fn near(a: [f32; 3], b: [f32; 3], within: f32) -> bool {
 #[test]
 fn an_end_attached_at_an_offset_carries_it_to_every_client_and_a_plain_attach_clears_it() {
     let files = files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine(&files, true), 50_001);
-    rig.join(&files, engine(&files, true), 50_002);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine(&files, true), 50_001, &[]);
+    rig.join(&files, engine(&files, true), 50_002, &[]);
     assert!(rig.run_until(400, |r| r.peers.iter().all(|p| p.ghosts() >= 3)));
     let keys = [mover(&mut rig, 0), mover(&mut rig, 1)];
     let id = create(&mut rig, "Cable");
@@ -212,7 +212,7 @@ fn a_driver_that_has_nothing_to_say_lets_the_rope_go_and_a_missing_one_warns_onc
 #[test]
 fn a_rope_made_to_follow_a_bad_driver_name_or_object_is_refused() {
     let files = files();
-    let mut rig = Rig::new(&files);
+    let mut rig = Rig::new(&files, &[]);
     let id = create(&mut rig, "Cable");
     let rope_obj = u32::try_from(id).unwrap();
     let mover = rig.server.vm().objects().find(b"Mover").expect("the mover");
@@ -249,8 +249,8 @@ impl PluginType for OldRope {
 fn a_client_of_the_older_rope_version_is_refused_at_the_manifest() {
     assert_eq!(NET_VERSION, 2, "the version moved with the wire format");
     let files = files();
-    let mut rig = Rig::new(&files);
-    rig.join(&files, engine_with(&files, OldRope), 50_001);
+    let mut rig = Rig::new(&files, &[]);
+    rig.join(&files, engine_with(&files, OldRope), 50_001, &[]);
     rig.run(100);
     let peer = &rig.peers[0];
     assert_eq!(peer.ghosts(), 0);

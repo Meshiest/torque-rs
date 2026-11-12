@@ -16,6 +16,7 @@
 //! - [`block`]: the per-ghost block the engine's own peers send beside a class record ([`block::GhostBlock`]: the scene
 //!   hierarchy's link and local pose), and the mask bits it owns.
 //! - [`tails`]: the control objects' packet data and their class-directed reader.
+//! - `testing` (feature `testing`, for tests): `MapView`, an [`ObjectView`] over maps.
 //! - [`tge`]: [`TgeGhosts`], the engine's default [`GhostCodecSet`], and TGE's networked class list.
 //! - [`plugin`]: the classes a plugin adds ([`PluginClass`], [`PluginClasses`]), their records ([`GhostRecord`],
 //!   [`DatablockCodec`], carried as a [`Record`]) and the field types the derives build them of; the closed sets carry them
@@ -46,6 +47,8 @@ pub mod shapebase;
 pub mod shapes;
 pub mod sky;
 pub mod tails;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tge;
 pub mod value;
 pub mod vehicle;

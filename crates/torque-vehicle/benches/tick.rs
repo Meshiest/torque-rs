@@ -13,12 +13,11 @@ use std::rc::Rc;
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use torque_collide::convex::{
-    BOX_CONVEX_TYPE, ConvexBuilder, ConvexKind, ConvexSource, HullSlot, WorkingSet, query_in_object,
-};
+use torque_collide::convex::{ConvexSource, HullSlot};
 use torque_collide::math::{Box3, F3, IDENTITY, d};
 use torque_collide::mesh::{Hull, MeshPart};
-use torque_collide::{Exhausted, ObjectId, ObjectView, World, types, work};
+use torque_collide::testing::BoxWorld;
+use torque_collide::{Exhausted, ObjectId, ObjectView, World, types};
 use torque_vehicle::data::{
     ShapeBaseData, SpringData, TireData, VehicleData, WheelRecord, WheeledVehicleData,
 };
@@ -56,55 +55,19 @@ impl Solid {
 }
 
 impl Solid {
-    fn center(&self) -> F3 {
-        std::array::from_fn(|i| (self.min[i] + self.max[i]) * 0.5)
-    }
-
     fn half(&self) -> F3 {
         std::array::from_fn(|i| ((d(self.max[i]) - d(self.min[i])) * 0.5) as f32)
     }
 }
 
-/// The class of the boxes: one ortho box at the object box's centre, made when the query meets the object box.
-#[derive(Debug)]
-struct BoxClass {
-    half: F3,
-}
-
-impl ConvexBuilder for BoxClass {
-    fn build_convex(
-        &self,
-        set: &mut WorkingSet,
-        world: &mut dyn World,
-        id: ObjectId,
-        view: &ObjectView,
-        query: &Box3,
-    ) -> Result<(), Exhausted> {
-        let q = query_in_object(view, query);
-        if !q.overlaps(&view.obj_box) || set.find(BOX_CONVEX_TYPE, id, None).is_some() {
-            return Ok(());
-        }
-        if !world.charge(work::CONVEX) {
-            return Err(Exhausted);
-        }
-        let b = view.obj_box;
-        let kind = ConvexKind::OrthoBox {
-            center: std::array::from_fn(|i| (b.min[i] + b.max[i]) * 0.5),
-            size: self.half,
-        };
-        set.add(id, kind);
-        Ok(())
-    }
-}
-
 /// The world and the host of every vehicle in it.
 struct Sandbox {
+    /// The solids as boxes (their ids are their indexes), pillars carrying a hull.
+    world: BoxWorld,
+    /// The solids again, for the rays.
     solids: Vec<Solid>,
-    sources: Vec<ConvexSource>,
     /// The buggies' collision mesh (every id from [`FIRST_VEHICLE`] on).
     body: Rc<Hull>,
-    /// The pillars' hulls, by solid.
-    pillars: Vec<Option<Rc<Hull>>>,
 }
 
 /// The id of the first buggy; the solids' ids are their indexes below it.
@@ -188,106 +151,61 @@ fn pillar_hull(half: F3) -> Hull {
 
 impl Sandbox {
     fn new(solids: Vec<Solid>) -> Sandbox {
-        let sources = solids
-            .iter()
-            .map(|s| {
+        let mut world = BoxWorld::new();
+        for (i, s) in solids.iter().enumerate() {
+            let id = ObjectId(i as u32);
+            let object = world.add_box(id, s.min, s.max, types::STATIC | types::STATIC_SHAPE);
+            if s.hull {
                 let h = s.half();
-                if s.hull {
-                    ConvexSource::Shape {
-                        has_shape: true,
-                        slots: [HullSlot {
-                            slot: 0,
-                            present: true,
-                            bounds: Box3::new(h.map(|v| -v), h),
-                        }]
-                        .into(),
-                    }
-                } else {
-                    ConvexSource::Custom(Rc::new(BoxClass { half: h }))
-                }
-            })
-            .collect();
-        let pillars = solids
-            .iter()
-            .map(|s| s.hull.then(|| Rc::new(pillar_hull(s.half()))))
-            .collect();
-        let body = Rc::new(body_hull(&BODY_BOX));
-        Sandbox {
-            solids,
-            sources,
-            body,
-            pillars,
+                object.source = ConvexSource::Shape {
+                    has_shape: true,
+                    slots: [HullSlot {
+                        slot: 0,
+                        present: true,
+                        bounds: Box3::new(h.map(|v| -v), h),
+                    }]
+                    .into(),
+                };
+                world.add_hull(id, 0, pillar_hull(h));
+            }
         }
-    }
-
-    fn solid(&self, id: ObjectId) -> Option<&Solid> {
-        self.solids.get(id.0 as usize)
+        Sandbox {
+            world,
+            solids,
+            body: Rc::new(body_hull(&BODY_BOX)),
+        }
     }
 }
 
 impl World for Sandbox {
     fn object(&self, id: ObjectId) -> Option<ObjectView> {
-        let b = self.solid(id)?;
-        let (c, h) = (b.center(), b.half());
-        let mut m = IDENTITY;
-        let mut inv = IDENTITY;
-        for i in 0..3 {
-            m[i * 4 + 3] = c[i];
-            inv[i * 4 + 3] = -c[i];
-        }
-        Some(ObjectView {
-            obj_to_world: m,
-            world_to_obj: inv,
-            scale: [1.0; 3],
-            obj_box: Box3::new(h.map(|v| -v), h),
-            world_box: Box3::new(b.min, b.max),
-            world_radius: 1.0,
-            type_mask: types::STATIC | types::STATIC_SHAPE,
-            collision_disabled: false,
-        })
+        self.world.object(id)
     }
 
     fn find_objects(
         &mut self,
         query: &Box3,
         mask: u32,
-        _exclude: Option<ObjectId>,
+        exclude: Option<ObjectId>,
         limit: usize,
         out: &mut Vec<ObjectId>,
     ) -> Result<(), Exhausted> {
-        if mask & types::STATIC_SHAPE == 0 {
-            return Ok(());
-        }
-        for (i, b) in self.solids.iter().enumerate() {
-            if out.len() >= limit {
-                break;
-            }
-            if Box3::new(b.min, b.max).overlaps(query) {
-                out.push(ObjectId(i as u32));
-            }
-        }
-        Ok(())
+        self.world.find_objects(query, mask, exclude, limit, out)
     }
 
     fn convex_source(&self, id: ObjectId) -> ConvexSource {
-        self.sources
-            .get(id.0 as usize)
-            .cloned()
-            .unwrap_or(ConvexSource::None)
+        self.world.convex_source(id)
     }
 
     fn hull(&self, id: ObjectId, slot: u32) -> Option<Rc<Hull>> {
-        if slot != 0 {
-            return None;
-        }
         if id.0 >= FIRST_VEHICLE {
-            return Some(Rc::clone(&self.body));
+            return (slot == 0).then(|| Rc::clone(&self.body));
         }
-        self.pillars.get(id.0 as usize)?.clone()
+        self.world.hull(id, slot)
     }
 
-    fn charge(&mut self, _units: u64) -> bool {
-        true
+    fn charge(&mut self, units: u64) -> bool {
+        self.world.charge(units)
     }
 }
 
