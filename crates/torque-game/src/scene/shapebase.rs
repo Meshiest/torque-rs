@@ -968,6 +968,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         }
         Native::Void
     });
+    super::dissolve::register(vm);
     register_method(vm, "Player", "setArmThread", set_arm_thread);
     register_method(vm, "Player", "setActionThread", set_action_thread);
 }

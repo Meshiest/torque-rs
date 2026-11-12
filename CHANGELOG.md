@@ -89,6 +89,13 @@ different.
 
 #### Rendering
 
+- A ShapeBase can dissolve away or materialize: `%obj.dissolve(%ms, %out, %edgeColor, %edgeWidth, %emitter, %tint)` on the
+  server (with `setDissolveLook`, `clearDissolve` and `getDissolve`) is sent to clients of the engine's protocol in the
+  object's cloak group (engine framing 4; Torque's protocol is unchanged and carries none). The enhanced renderer clips the
+  object by a noise pattern fixed on the object in the depth prepass, the opaque pass and the shadows, the front glowing in
+  HDR, and the front emits the emitter's particles from the surface it crosses, through the GPU particle pool or the CPU's,
+  optionally in the surface's colors. Objects that do not dissolve draw with the same shaders as before.
+
 - `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
   scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
   identical picture (`has_gpu`, `gpu_geometry_bytes`).

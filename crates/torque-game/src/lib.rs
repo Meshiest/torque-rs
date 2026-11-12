@@ -13,6 +13,13 @@
 //!
 //! # Maintaining
 //!
+//! **Methods beyond TGE's** (ShapeBase's `dissolve`, `setDissolveLook`, `clearDissolve`, `getDissolve`: [`scene::dissolve`])
+//! have their specs in `specs.rs` beside TGE's (the counts a wrong call prints) and their state in the object's ext; every value
+//! a script gives is held to what the wire carries as it is set (`a_script_starts_a_dissolve_and_its_values_are_held_to_the_wire`),
+//! and torque-server's view reads it as the `dissolve*` fields torque-ghosts' cloak group packs. A new one is added to the spec
+//! table and registered in its module; `just script-reference` writes the reference again and torque-app's natives snapshots
+//! are blessed under both protocols.
+//!
 //! **Fields beyond TGE's** (`ParticleData`'s `turbulence`, `turbulenceScale`, `collide`, `bounceElasticity`, `bounceFriction`,
 //! `lit`, `softDistance`, `flipbookBlend`, `sizeByVelocity`; `ParticleEmitterData`'s `trail`, `budget`) are script fields in
 //! `specs.rs` like the others, their defaults in the class's `defaults` (what a datablock a script made reads for a field it

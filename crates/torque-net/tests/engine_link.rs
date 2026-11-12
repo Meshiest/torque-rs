@@ -126,11 +126,11 @@ fn the_server_refuses_another_game_or_version_with_one_line() {
         ),
         (
             Connect {
-                versions: Versions { min: 4, max: 5 },
+                versions: Versions { min: 5, max: 6 },
                 ..connect()
             },
             RejectCode::Version,
-            "server speaks network version 3, you have 5",
+            "server speaks network version 4, you have 6",
         ),
         // A peer of framing 2, which wrote datablock records without the particle block, is refused at the connect.
         (
@@ -139,7 +139,16 @@ fn the_server_refuses_another_game_or_version_with_one_line() {
                 ..connect()
             },
             RejectCode::Version,
-            "server speaks network version 3, you have 2",
+            "server speaks network version 4, you have 2",
+        ),
+        // So is a peer of framing 3, which wrote a ShapeBase's cloak group without the dissolve's flag.
+        (
+            Connect {
+                versions: Versions { min: 3, max: 3 },
+                ..connect()
+            },
+            RejectCode::Version,
+            "server speaks network version 4, you have 3",
         ),
     ];
     for facts in [LinkFacts::MEMORY, LinkFacts::PLAIN] {

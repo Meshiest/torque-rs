@@ -134,7 +134,9 @@ impl TestClient {
                     },
                     |b| b as u8,
                 );
-                self.widths = NetWidths::new(ghost_bits, DEFAULT_DATABLOCK_BITS);
+                // The engine protocol's records carry its extensions (the client's rule: its event table has the datablock removal).
+                self.widths = NetWidths::new(ghost_bits, DEFAULT_DATABLOCK_BITS)
+                    .with_extensions(self.ids.datablock_remove().is_some());
                 let names = self
                     .classes
                     .classes(Kind::Object)

@@ -18,6 +18,7 @@ pub mod camera;
 pub mod cells;
 pub mod clouds;
 pub mod clusters;
+pub mod dissolve;
 pub mod environment;
 pub mod grade;
 pub mod kit;

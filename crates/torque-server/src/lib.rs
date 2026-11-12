@@ -5,6 +5,11 @@
 //!
 //! # Maintaining
 //!
+//! **A ghost record's engine extensions follow the peer as the datablocks' do**: `TgeSource` packs with
+//! `NetWidths::extensions` for a `PeerKind::Engine` peer alone, so a ShapeBase's cloak group carries its dissolve
+//! (`torque_ghosts::shapebase::DissolveField`, from `torque_game::scene::dissolve` through the view's `dissolve*` fields) to
+//! the engine's protocol only (torque-app's `tests/dissolve_wire.rs`, both protocols).
+//!
 //! **A datablock record's extension blocks follow the peer.** `ConnDatablocks::set_extensions` is true for a peer of
 //! `PeerKind::Engine` only (every peer of a server that speaks the engine's protocol), so `NetCodecs::datablock_record` packs
 //! `ParticleData` and `ParticleEmitterData` with the engine's block after TGE's bits for that peer alone, and Torque's protocol

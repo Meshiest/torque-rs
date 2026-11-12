@@ -275,9 +275,16 @@ change in the engine's protocol later with a new framing version, never in Torqu
 
 A datablock record is Torque's `packData` bit for bit, and in the engine's protocol a class may end it with a block TGE's lacks,
 behind a presence flag: `ParticleData` and `ParticleEmitterData` carry the fields Torque has no name for (`turbulence`,
-`collide`, `lit`, `softDistance`, `sizeByVelocity`, `trail`, `budget` and the rest). The block is why the engine framing is
-version 3: a peer of framing 2 reads those records without it, so the connect refuses it ("server speaks network version 3")
+`collide`, `lit`, `softDistance`, `sizeByVelocity`, `trail`, `budget` and the rest). The block made the engine framing
+version 3: a peer of framing 2 reads those records without it, so the connect refuses it
 instead of letting its stream drift. A reader holds every value of a block to its range as it reads it.
+
+## Ghost records in the engine's protocol
+
+A ghost record is Torque's `packUpdate` bit for bit, and in the engine's protocol a class may end a group with a block TGE's
+lacks, behind a presence flag, by the same rule as the datablocks' blocks: a ShapeBase's cloak group ends with its dissolve (a
+serial, the way, the time and how far the server was into it, the edge's color, glow and width, the emitter, the look). The
+flag is why the engine framing is version 4: a peer of framing 3 refuses the connect ("server speaks network version 4").
 
 ## Determinism
 

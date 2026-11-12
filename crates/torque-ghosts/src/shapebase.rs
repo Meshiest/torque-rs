@@ -13,6 +13,7 @@
 //!   flag(Name|Shield|Cloak|Invincible|Skin):
 //!     flag(Cloak): flag cloaked, flag controlled (any controlling client), flag(fading && elapsed >= delay):
 //!                  flag fadeOut, F32 fadeTime; else flag(fadeVal == 1)
+//!                  [engine protocol only] flag(dissolve): the dissolve block ([`DissolveField`])
 //!     flag(Name): net string;  flag(Shield): normal vector (8), int(5) energy;  flag(Invincible): F32 time, F32 speed
 //!     flag(Skin): net string
 //!   Mounted and mounted on a ghosted object: flag 1, flag 1, int(GB) index, int(5) node
@@ -32,12 +33,22 @@
 //! `fade_delay`, `fade_out`, `fade_time`, `fade_value`; the net string `shape_name`; `shield_normal` 0..3, `energy_value`
 //! (energy over its maximum); `invincible_time`, `invincible_speed`; the net string `skin`; the link `mount` and `mount_node`.
 //!
+//! **The engine protocol's dissolve** ([`DissolveField`]) ends the cloak group on a connection whose [`NetWidths::extensions`]
+//! is set (the engine's own protocol): `int(8)` serial, flag out, `int(20)` duration ms, `int(20)` elapsed ms, three `int(8)`
+//! edge color bytes, `int(8)` glow (eighths), `int(8)` edge share (255ths), flag(emitter) + its datablock id, flag tint,
+//! `int(10)` cell (64ths of a unit), `int(8)` sweep (127 is none), `int(16)` density. Torque's protocol never writes it (its
+//! bits stay TGE's); every value is whole in its bits, and a reader holds the elapsed time and the sweep to their ranges
+//! ([`DissolveField::held`]). The view fields: `dissolve` (one runs), `dissolve_serial`, `dissolve_out`, `dissolve_ms`,
+//! `dissolve_start` (the Sim ms it started: the elapsed time is the pack's clock less it), `dissolve_color` 0..3,
+//! `dissolve_glow`, `dissolve_edge`, `dissolve_emitter`, `dissolve_tint`, `dissolve_cell`, `dissolve_sweep`,
+//! `dissolve_density`.
+//!
 //! Credit: this follows TGE 1.4's `game/shapeBase.cc` (`ShapeBase::packUpdate` / `unpackUpdate`; Copyright (C)
 //! GarageGames.com, Inc.), whose MIT-licensed successor is Torque3D's `T3D/shapeBase.cpp` (Copyright (c) 2012 GarageGames, LLC;
 //! Copyright (C) 2015 Faust Logic, Inc.). Torque3D dropped the shield and invincible groups and moved the mount out of this
 //! part; the layout here is TGE's. The code is this crate's own.
 
-use crate::codec::{Codec, F32, NetStr, R, datablock_id, mask_bits, opt};
+use crate::codec::{Codec, F32, NetStr, NetWidths, R, datablock_id, mask_bits, opt};
 use crate::motion::{Normal, float_bits};
 use crate::parts::{GameBase, ShapeBasePart, pack_gamebase};
 use crate::{Link, ObjectView, PackCtx, boolean, fld, id, int, raw, raws};
@@ -129,6 +140,121 @@ pub struct Cloak {
     pub fading: Option<Fading>,
     /// With no fade: `mFadeVal == 1`. Not sent (false) during a fade.
     pub visible: bool,
+    /// The engine protocol's dissolve (None on Torque's protocol, or none running).
+    pub dissolve: Option<DissolveField>,
+}
+
+/// The bits of the dissolve block's fields.
+pub mod dissolve_bits {
+    pub const SERIAL: u8 = 8;
+    pub const MS: u8 = 20;
+    pub const BYTE: u8 = 8;
+    pub const CELL: u8 = 10;
+    pub const DENSITY: u8 = 16;
+}
+
+/// A dissolve as the cloak group carries it (module docs): whole numbers in their wire widths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DissolveField {
+    /// Counts the dissolves the server started on the object (mod 256): a new one starts the client's clock again.
+    pub serial: u32,
+    /// Away (true) or materializing.
+    pub out: bool,
+    pub duration_ms: u32,
+    /// How far into it the server was when it packed the record.
+    pub elapsed_ms: u32,
+    /// The edge's color bytes, its glow in eighths and its share of the surface in 255ths.
+    pub edge: [u32; 3],
+    pub glow: u32,
+    pub edge_share: u32,
+    /// The `ParticleEmitterData` the front emits (its wire id).
+    pub emitter: Option<u32>,
+    /// The particles take the surface's color.
+    pub tint: bool,
+    /// The noise cell in 64ths of a unit (0 is the smallest the client takes).
+    pub cell: u32,
+    /// The sweep, 0..254 for -1..1 (127: none).
+    pub sweep: u32,
+    /// The particles a square unit makes.
+    pub density: u32,
+}
+
+impl DissolveField {
+    /// The field with the elapsed time no longer than the dissolve and the sweep in its range.
+    #[must_use]
+    pub fn held(self) -> DissolveField {
+        DissolveField {
+            elapsed_ms: self.elapsed_ms.min(self.duration_ms),
+            sweep: self.sweep.min(254),
+            ..self
+        }
+    }
+
+    /// The largest value of a field `bits` wide.
+    #[must_use]
+    pub const fn max_of(bits: u8) -> u32 {
+        (1u32 << bits) - 1
+    }
+}
+
+fn layout_dissolve<C: Codec>(c: &mut C, d: &mut DissolveField) -> R {
+    use dissolve_bits as b;
+    c.int("sb.dissolve.serial", &mut d.serial, b::SERIAL)?;
+    c.flag("sb.dissolve.out", &mut d.out)?;
+    c.int("sb.dissolve.ms", &mut d.duration_ms, b::MS)?;
+    c.int("sb.dissolve.elapsed", &mut d.elapsed_ms, b::MS)?;
+    for e in &mut d.edge {
+        c.int("sb.dissolve.edge", e, b::BYTE)?;
+    }
+    c.int("sb.dissolve.glow", &mut d.glow, b::BYTE)?;
+    c.int("sb.dissolve.share", &mut d.edge_share, b::BYTE)?;
+    opt(c, "sb.dissolve.emitter?", &mut d.emitter, |c, id| {
+        datablock_id(c, "sb.dissolve.emitter", id)
+    })?;
+    c.flag("sb.dissolve.tint", &mut d.tint)?;
+    c.int("sb.dissolve.cell", &mut d.cell, b::CELL)?;
+    c.int("sb.dissolve.sweep", &mut d.sweep, b::BYTE)?;
+    c.int("sb.dissolve.density", &mut d.density, b::DENSITY)?;
+    if c.decoding() {
+        *d = d.held();
+    }
+    Ok(())
+}
+
+/// The dissolve `view` runs, packed for a connection of `widths` at Sim time `now_ms` (None: none, or Torque's protocol).
+fn pack_dissolve(view: &dyn ObjectView, widths: NetWidths, now_ms: u32) -> Option<DissolveField> {
+    use dissolve_bits as b;
+    if !widths.extensions || !boolean(view, "dissolve", 0) {
+        return None;
+    }
+    let ms = |v: f32| (v.max(0.0) as u32).min(DissolveField::max_of(b::MS));
+    let scaled = |v: f32, scale: f32, bits: u8| {
+        (v * scale)
+            .round()
+            .clamp(0.0, DissolveField::max_of(bits) as f32) as u32
+    };
+    let duration_ms = ms(fld(view, "dissolve_ms", 0));
+    let start = int(view, "dissolve_start", 0);
+    let elapsed = (i64::from(now_ms) - start).clamp(0, i64::from(duration_ms));
+    let emitter = id(view, "dissolve_emitter", 0);
+    Some(DissolveField {
+        serial: mask_bits(int(view, "dissolve_serial", 0) as u32, b::SERIAL),
+        out: boolean(view, "dissolve_out", 0),
+        duration_ms,
+        elapsed_ms: elapsed as u32,
+        edge: [0, 1, 2].map(|k| scaled(fld(view, "dissolve_color", k), 255.0, b::BYTE)),
+        glow: scaled(fld(view, "dissolve_glow", 0), 8.0, b::BYTE),
+        edge_share: scaled(fld(view, "dissolve_edge", 0), 255.0, b::BYTE),
+        emitter: emitter.map(|d| widths.wire_datablock(Some(d))),
+        tint: boolean(view, "dissolve_tint", 0),
+        cell: scaled(fld(view, "dissolve_cell", 0), 64.0, b::CELL),
+        sweep: scaled(
+            fld(view, "dissolve_sweep", 0).clamp(-1.0, 1.0) + 1.0,
+            127.0,
+            b::BYTE,
+        ),
+        density: scaled(fld(view, "dissolve_density", 0), 1.0, b::DENSITY),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -208,9 +334,14 @@ fn layout_rare<C: Codec>(c: &mut C, rare: &mut Rare) -> R {
             c.raw32("sb.fadeTime", &mut f.time.0)
         })?;
         if k.fading.is_none() {
-            c.flag("sb.visible", &mut k.visible)
+            c.flag("sb.visible", &mut k.visible)?;
         } else {
             k.visible = false;
+        }
+        if c.widths().extensions {
+            opt(c, "sb.dissolve?", &mut k.dissolve, layout_dissolve)
+        } else {
+            k.dissolve = None;
             Ok(())
         }
     })?;
@@ -363,6 +494,7 @@ pub fn pack_shapebase(view: &dyn ObjectView, mask: u32, ctx: &PackCtx) -> (TgeSh
                     time: raw(view, "fade_time", 0),
                 }),
                 visible: !fading && fld(view, "fade_value", 0) == 1.0,
+                dissolve: pack_dissolve(view, ctx.widths, ctx.now_ms),
             }
         }),
         name: (mask & mask::NAME != 0).then(|| net_string(view, "shape_name", 0)),

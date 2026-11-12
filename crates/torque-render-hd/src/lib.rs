@@ -81,6 +81,12 @@
 //!   finite adds nothing. A uniform sky gives pi L at every normal within 1 % and a two-tone sky each hemisphere's irradiance
 //!   within 2 % (`irradiance_tests.rs`, with the ratio's horizontal normals, the ground, the capture's geometry beside its sky
 //!   and a closed room); the furnace holds with it on.
+//! - A dissolving object ([`HdScene::dissolves`](torque_render_scene::hd::HdScene::dissolves); the world's `dissolve` module)
+//!   is clipped by its object-space field in the prepass, the opaque pass and the shadow casters alike, with modules of its own
+//!   (`Permutation::Dissolve`, `ShadowDissolve`): every other draw's modules and pipelines are as without it
+//!   (`only_the_dissolve_permutations_take_its_chunks_and_their_entries_are_plain_functions_there`), and a frame with no
+//!   dissolve or one eating nothing is byte for byte the same (`tests/dissolve.rs`, which also holds the drawn share to the
+//!   share left, the prepass's coverage to the colour's and the shadow to the faces left).
 //! - A loose shape of radius 4 or more that holds the capture's eye stays in the capture (`reflect::CAPTURE_SHAPE_HELD`): a
 //!   room built of shapes would otherwise show the capture the sky through its walls, and the ambient would bounce it. Smaller
 //!   ones (the client's own player and held item) are left out

@@ -33,6 +33,7 @@ use glam::Vec3;
 
 use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
+use torque_render_scene::dissolve::Dissolves;
 use torque_render_scene::emitter_nodes::EmitterNodes;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::images::{HeldMotion, ImageClock};
@@ -921,6 +922,9 @@ pub struct GhostScene<S = Plain> {
     pub dust: VehicleDust,
     /// The particles of the `ParticleEmitterNode`s the server ghosts ([`EmitterNodes`]).
     nodes: EmitterNodes,
+    /// The ghosts dissolving ([`Dissolves`], from their records' cloak groups), and the time they have not run yet (s).
+    dissolves: Dissolves,
+    dissolve_dt: f32,
     /// The air's velocity the Sky gives the particles (units a second), as the last frame found it.
     wind: [f32; 3],
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
@@ -978,6 +982,8 @@ impl<S: GhostStyle> GhostScene<S> {
             eye_pose: EyePose::default(),
             dust: VehicleDust::default(),
             nodes: EmitterNodes::default(),
+            dissolves: Dissolves::default(),
+            dissolve_dt: 0.0,
             wind: [0.0; 3],
             tracks: None,
             preloaded: BTreeMap::new(),
@@ -1031,6 +1037,8 @@ impl<S: GhostStyle> GhostScene<S> {
             eye_pose: self.eye_pose,
             dust: _,
             nodes: self.nodes,
+            dissolves: self.dissolves,
+            dissolve_dt: self.dissolve_dt,
             wind: self.wind,
             tracks: _,
             preloaded: self.preloaded,
@@ -1164,6 +1172,8 @@ impl<S: GhostStyle> GhostScene<S> {
         self.forget_reborn(&world.records.birth_order);
         self.apply_wind(&world.records);
         self.nodes.update(&world.records, dt);
+        self.dissolves.sync_world(&world.records);
+        self.dissolve_dt += dt;
         self.player_inputs(world, input.ghosts);
         self.place_players(assets, world, input.fov, dt);
         self.update_images(assets, &world.records, dt);
@@ -1284,6 +1294,7 @@ impl<S: GhostStyle> GhostScene<S> {
         self.wind = wind;
         self.dust.set_wind(wind);
         self.nodes.set_wind(wind);
+        self.dissolves.set_wind(wind);
         let images = self
             .held
             .values_mut()
@@ -1313,6 +1324,9 @@ impl<S: GhostStyle> GhostScene<S> {
         }
         if let Ok(mut clocks) = self.hooks.clocks.lock() {
             clocks.retain(|(g, _), _| !reborn.contains(g));
+        }
+        for &g in &reborn {
+            self.dissolves.forget(g);
         }
         let held: Vec<(u32, usize)> = (self.held.keys())
             .filter(|(g, _)| reborn.contains(g))
@@ -2019,6 +2033,13 @@ impl<S: GhostStyle> GhostScene<S> {
             self.nodes.hand_over(&mut sprites, &mut set);
         } else {
             draws.extend(self.nodes.draws(eye.position, right, up, &mut set));
+        }
+        // The dissolving ghosts: their clips by the view's objects, their fronts' particles.
+        view.run_dissolves(&mut self.dissolves, std::mem::take(&mut self.dissolve_dt));
+        if pool {
+            self.dissolves.hand_over(&mut sprites, &mut set);
+        } else {
+            draws.extend(self.dissolves.draws(eye.position, right, up, &mut set));
         }
         // The plugins' emitter kinds beside TGE's emitters.
         view.emitter_draws(

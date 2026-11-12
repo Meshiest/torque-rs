@@ -56,6 +56,11 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - A [`ghosts::GhostScene`] runs the ghosts' dissolves ([`torque_render_scene::dissolve::Dissolves`]): synced from the
+//!   records' cloak groups each update, run over the view's objects in [`ghosts::GhostScene::effects`]
+//!   ([`view::WorldView::run_dissolves`]: the scene's `dissolves`), their fronts' particles handed to the pool or drawn with the
+//!   others (`tests/dissolve_wire.rs`: a server's dissolve reaches an engine client with its look and clock and clears; Torque's
+//!   protocol carries none).
 //! - A [`ghosts::GhostScene`] gives the Sky's wind ([`torque_render_scene::sky::wind`]) to every emitter it runs at the start
 //!   of a frame (an emitter made in a frame has it from the next) and to the pool's frame, and runs the ghosted
 //!   `ParticleEmitterNode`s ([`torque_render_scene::emitter_nodes::EmitterNodes`]) beside the trails and the dust, handing their

@@ -343,6 +343,7 @@ impl<G: Shift> Shift for HdScene<G> {
             planes_generation: _,
             cells,
             objects,
+            dissolves: _,
             drawn_objects,
             coronas,
             flare,

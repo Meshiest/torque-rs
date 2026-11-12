@@ -1,9 +1,9 @@
-//! Engine framing 3, pinned: the bytes of every datagram kind and control message, a packet with a section in every lane, and
+//! Engine framing 4, pinned: the bytes of every datagram kind and control message, a packet with a section in every lane, and
 //! the SHA-256 of every datagram of two scripted sessions (a validated link and a plain one through the gate), lossless.
 //!
 //! These bytes never change within a framing version: a change to engine wire bytes is a new framing version (`ENGINE_FRAMING`)
 //! with a test and golden file named for it. The file was written once with `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-net
-//! --test engine_golden_v3`; blessing it again under the same version means the framing changed, which it must not.
+//! --test engine_golden_v4`; blessing it again under the same version means the framing changed, which it must not.
 
 mod engine_common;
 
@@ -18,8 +18,8 @@ use torque_net::engine::{
 };
 use torque_net::engine::{Delivery, LinkFacts, RejectCode, StreamLane};
 
-const GOLDEN_FILE: &str = "tests/golden/engine_v3.txt";
-const GOLDEN: &str = include_str!("golden/engine_v3.txt");
+const GOLDEN_FILE: &str = "tests/golden/engine_v4.txt";
+const GOLDEN: &str = include_str!("golden/engine_v4.txt");
 
 fn messages() -> Vec<(&'static str, Vec<u8>)> {
     let cookie = CookieValue(*b"0123456789abcdef");
@@ -146,7 +146,7 @@ fn messages() -> Vec<(&'static str, Vec<u8>)> {
             Reject::new(
                 0x0102_0304_0506_0708,
                 RejectCode::Version,
-                "server speaks network version 3, you have 2",
+                "server speaks network version 4, you have 3",
             )
             .encode()
             .expect("a reject"),

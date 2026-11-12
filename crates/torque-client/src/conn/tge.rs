@@ -1023,7 +1023,10 @@ impl TgeFeed {
     }
 
     fn accepted(&mut self, ghost_bits: u8) {
-        self.widths = NetWidths::new(ghost_bits, DEFAULT_DATABLOCK_BITS);
+        // The engine protocol's records carry its extensions (the event table with the datablock removal is its: the rule
+        // `read_datablock` reads datablocks by).
+        self.widths = NetWidths::new(ghost_bits, DEFAULT_DATABLOCK_BITS)
+            .with_extensions(self.tables.ids.datablock_remove().is_some());
         let names = self
             .tables
             .classes

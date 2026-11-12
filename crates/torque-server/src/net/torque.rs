@@ -161,6 +161,7 @@ impl GhostGame for TgeGhostGame {
                 .sees_engine_classes()
                 .then(|| super::blocks::of(env.vm))
                 .flatten(),
+            extensions: peer == PeerKind::Engine,
         };
         f(&mut src, &mut hub.conns)
     }
@@ -214,6 +215,9 @@ pub struct TgeSource<'a> {
     /// What fills the per-ghost block after each record, for a peer of the engine's own on a server that has one
     /// ([`super::blocks`]).
     blocks: Option<Rc<dyn super::blocks::GhostBlocks>>,
+    /// The records carry the engine protocol's extensions (`NetWidths::extensions`: a ShapeBase's dissolve), as its datablock
+    /// records do: a server of the engine's protocol.
+    extensions: bool,
 }
 
 /// A connection's ghosts known by their indices alone: it holds what it acknowledged.
@@ -523,6 +527,38 @@ impl GameView<'_> {
         }))
     }
 
+    /// A ShapeBase's dissolve field (`torque_ghosts::shapebase`'s `dissolve*` view fields) from its state, for a field of that
+    /// name (an object with none runs none).
+    fn dissolve_field(&self, field: &str, index: usize) -> Option<Value> {
+        let rest = field.strip_prefix("dissolve")?;
+        let d = torque_game::scene::dissolve::dissolve_of(self.fields.vm, self.fields.obj);
+        let Some(d) = d.filter(|d| d.running) else {
+            return Some(match rest {
+                "" => Value::Bool(false),
+                _ => Value::Null,
+            });
+        };
+        Some(match rest {
+            "" => Value::Bool(true),
+            "_serial" => Value::Int(i64::from(d.serial)),
+            "_out" => Value::Bool(d.out),
+            "_ms" => Value::F32(d.duration_ms as f32),
+            "_start" => Value::Int(i64::from(d.start_ms)),
+            "_color" => d
+                .edge_color
+                .get(index)
+                .map_or(Value::Null, |c| Value::F32(*c)),
+            "_glow" => Value::F32(d.glow),
+            "_edge" => Value::F32(d.edge),
+            "_emitter" => Value::Id(torque_game::scene::dissolve::emitter_of(self.fields.vm, &d)),
+            "_tint" => Value::Bool(d.tint),
+            "_cell" => Value::F32(d.cell),
+            "_sweep" => Value::F32(d.sweep),
+            "_density" => Value::F32(d.density),
+            _ => Value::Null,
+        })
+    }
+
     /// A simulated vehicle's field from its state, if the object is one (the record's and the packet data's view fields,
     /// `torque_ghosts::vehicle` and `torque_ghosts::tails`).
     fn vehicle(&self, field: &str, index: usize) -> Option<Value> {
@@ -739,6 +775,9 @@ impl ObjectView for GameView<'_> {
         if let Some(v) = self.item_field(field, index) {
             return v;
         }
+        if let Some(v) = self.dissolve_field(field, index) {
+            return v;
+        }
         match field {
             "datablock" => Value::Id(self.datablock()),
             "transform" => match self.matrix() {
@@ -897,7 +936,8 @@ impl ObjectSource for TgeSource<'_> {
         let (Some(class), Some(table)) = (class, self.table) else {
             return 0;
         };
-        let widths = NetWidths::new(self.ghost_bits, torque_net::profile::DEFAULT_DATABLOCK_BITS);
+        let widths = NetWidths::new(self.ghost_bits, torque_net::profile::DEFAULT_DATABLOCK_BITS)
+            .with_extensions(self.extensions);
         let ctx = PackCtx::for_writer(w, widths, self.vm.sim_time());
         let view = GameView {
             fields: FieldView { vm: self.vm, obj },

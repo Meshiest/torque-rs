@@ -483,3 +483,111 @@ fn flying_vehicle_fields_follow_the_readers_control_object_and_hover_always_send
     assert_eq!((h.thrust, bit_total(&h, &table())), (2, 648 + 3));
     canonical(&h, &initial_ctx());
 }
+
+/// A ShapeBase dissolving away, 500 ms into a 2 s dissolve at Sim time 1500.
+fn dissolving_view() -> MapView {
+    shape_view()
+        .with("dissolve", 0, Value::Bool(true))
+        .with("dissolve_serial", 0, Value::Int(259))
+        .with("dissolve_out", 0, Value::Bool(true))
+        .with("dissolve_ms", 0, Value::F32(2000.0))
+        .with("dissolve_start", 0, Value::Int(1000))
+        .with("dissolve_color", 0, Value::F32(1.0))
+        .with("dissolve_color", 1, Value::F32(0.5))
+        .with("dissolve_glow", 0, Value::F32(6.0))
+        .with("dissolve_edge", 0, Value::F32(0.04))
+        .with("dissolve_emitter", 0, Value::Id(Some(60)))
+        .with("dissolve_tint", 0, Value::Bool(true))
+        .with("dissolve_cell", 0, Value::F32(0.25))
+        .with("dissolve_sweep", 0, Value::F32(-0.5))
+        .with("dissolve_density", 0, Value::F32(64.0))
+}
+
+fn cloak_of(part: &TgeShapeBase) -> crate::shapebase::Cloak {
+    part.body
+        .as_ref()
+        .and_then(|b| b.rare.as_ref())
+        .and_then(|r| r.cloak)
+        .expect("the cloak group")
+}
+
+#[test]
+fn a_dissolve_rides_the_cloak_group_on_the_engines_protocol_alone() {
+    let ext = widths().with_extensions(true);
+    let at = |widths| PackCtx {
+        widths,
+        now_ms: 1500,
+        ..PackCtx::new(widths)
+    };
+    let (part, _) = pack_shapebase(&dissolving_view(), sb::CLOAK, &at(ext));
+    let d = cloak_of(&part).dissolve.expect("the dissolve");
+    assert_eq!(
+        (d.serial, d.out, d.duration_ms, d.elapsed_ms),
+        (3, true, 2000, 500)
+    );
+    assert_eq!((d.edge, d.glow, d.edge_share), ([255, 128, 0], 48, 10));
+    assert_eq!(
+        (d.emitter, d.tint, d.cell, d.sweep, d.density),
+        (Some(60), true, 16, 64, 64)
+    );
+    // The engine's protocol: written and read back as it was, at every prefix an error.
+    canonical(&MarkerPart(part.clone()), &ReadCtx::new(ext, false));
+    // Torque's protocol: packed without it, and its bits are a ShapeBase's that runs none.
+    let (plain, _) = pack_shapebase(&dissolving_view(), sb::CLOAK, &at(widths()));
+    assert_eq!(cloak_of(&plain).dissolve, None);
+    let (none, _) = pack_shapebase(&shape_view(), sb::CLOAK, &at(widths()));
+    assert_eq!(plain, none);
+    let bytes = |rec: &MarkerPart, w: NetWidths| {
+        let mut out = writer();
+        encode(rec, &mut out, &table(), w).unwrap();
+        (out.bits(), out.into_bytes())
+    };
+    // A record holding one is written for Torque's protocol without it, bit for bit.
+    assert_eq!(
+        bytes(&MarkerPart(part.clone()), widths()),
+        bytes(&MarkerPart(none.clone()), widths())
+    );
+    // The engine's protocol gives a ShapeBase without one a flag more.
+    let (engine_none, _) = pack_shapebase(&shape_view(), sb::CLOAK, &at(ext));
+    assert_eq!(
+        bytes(&MarkerPart(engine_none), ext).0,
+        bytes(&MarkerPart(none), widths()).0 + 1
+    );
+}
+
+#[test]
+fn a_hostile_dissolve_is_held_to_its_ranges_as_it_is_read() {
+    let ext = widths().with_extensions(true);
+    let ctx = PackCtx {
+        now_ms: 1500,
+        ..PackCtx::new(ext)
+    };
+    let (mut part, _) = pack_shapebase(&dissolving_view(), sb::CLOAK, &ctx);
+    // An elapsed time past the dissolve and a sweep past its last code, as a server could write them.
+    if let Some(c) = part
+        .body
+        .as_mut()
+        .and_then(|b| b.rare.as_mut())
+        .and_then(|r| r.cloak.as_mut())
+    {
+        c.dissolve = c.dissolve.map(|d| crate::shapebase::DissolveField {
+            elapsed_ms: 900_000,
+            sweep: 255,
+            ..d
+        });
+    }
+    let mut w = writer();
+    encode(&MarkerPart(part), &mut w, &table(), ext).unwrap();
+    let bits = w.bits();
+    let bytes = w.into_bytes();
+    let mut r = reader(&bytes, bits);
+    let back: MarkerPart = decode(
+        &mut r,
+        &table(),
+        &mut free_charge(),
+        &ReadCtx::new(ext, false),
+    )
+    .unwrap();
+    let d = cloak_of(&back.0).dissolve.expect("the dissolve");
+    assert_eq!((d.elapsed_ms, d.sweep), (d.duration_ms, 254));
+}

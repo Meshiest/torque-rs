@@ -1836,6 +1836,23 @@ const SHAPE_BASE_METHODS: &[MethodSpec] = &[
         "(int fadeTimeMS, int fadeDelayMS, bool fadeOut)",
         Returns::Void,
     ),
+    // The engine's own (`scene::dissolve`).
+    method(
+        "dissolve",
+        3,
+        8,
+        "(int timeMS, bool out=true, string edgeColor=\"1 0.45 0.1 6\", float edgeWidth=0.04, ParticleEmitterData emitter=0, bool tint=false)",
+        Returns::Void,
+    ),
+    method(
+        "setDissolveLook",
+        5,
+        5,
+        "(float cellSize, float sweep, float density)",
+        Returns::Void,
+    ),
+    method("clearDissolve", 2, 2, "()", Returns::Void),
+    method("getDissolve", 2, 2, "()", Returns::Float),
     method("setHidden", 3, 3, "(bool show)", Returns::Void),
     method("isHidden", 2, 2, "()", Returns::Bool),
     method("getSlotTransform", 3, 3, "(int slot)", Returns::String),

@@ -4,7 +4,7 @@
 
 Methods called on an object (`%obj.name(..)`), by the class whose namespace has them. A method is found up the class's parents, so `SimObject`'s are on every object.
 
-327 entries in 38 classes.
+331 entries in 38 classes.
 
 | Class | Entries |
 |---|---|
@@ -38,7 +38,7 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 | [Player](#player) | 8 |
 | [ScatterSky](#scattersky) | 1 |
 | [SceneObject](#sceneobject) | 23 |
-| [ShapeBase](#shapebase) | 78 |
+| [ShapeBase](#shapebase) | 82 |
 | [SimDataBlock](#simdatablock) | 3 |
 | [SimObject](#simobject) | 12 |
 | [SimSet](#simset) | 10 |
@@ -578,6 +578,10 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 1; server and client*
 - `obj.canCloak()`
   *arguments: none; server and client*
+- `obj.clearDissolve()`
+  *arguments: none; server and client*
+- `obj.dissolve(int timeMS, bool out=true, string edgeColor="1 0.45 0.1 6", float edgeWidth=0.04, ParticleEmitterData emitter=0, bool tint=false)`
+  *arguments: 1 to 6; server and client*
 - `obj.getAIRepairPoint()`
   *arguments: none; server and client*
 - `obj.getCameraFov()`
@@ -593,6 +597,8 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
 - `obj.getDamagePercent()`
   *arguments: none; server and client*
 - `obj.getDamageState()`
+  *arguments: none; server and client*
+- `obj.getDissolve()`
   *arguments: none; server and client*
 - `obj.getEnergyLevel()`
   *arguments: none; server and client*
@@ -688,6 +694,8 @@ Methods called on an object (`%obj.name(..)`), by the class whose namespace has 
   *arguments: 1; server and client*
 - `obj.setDamageVector(Vector3F origin)`
   *arguments: 1; server and client*
+- `obj.setDissolveLook(float cellSize, float sweep, float density)`
+  *arguments: 3; server and client*
 - `obj.setEnergyLevel(float level)`
   *arguments: 1; server and client*
 - `obj.setHidden(bool show)`

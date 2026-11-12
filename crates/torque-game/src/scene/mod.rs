@@ -22,6 +22,7 @@ pub mod camera_tick;
 pub mod classes;
 pub mod container;
 pub mod container_world;
+pub mod dissolve;
 pub mod ext;
 pub mod ghost;
 pub mod hitboxes;

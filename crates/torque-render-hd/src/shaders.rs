@@ -5,7 +5,7 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 41] = [
+pub const FILES: [(&str, &str); 44] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("area.wgsl", include_str!("../shaders/area.wgsl")),
@@ -76,6 +76,15 @@ pub const FILES: [(&str, &str); 41] = [
     (
         "fullscreen.wgsl",
         include_str!("../shaders/fullscreen.wgsl"),
+    ),
+    (
+        "dissolve_common.wgsl",
+        include_str!("../shaders/dissolve_common.wgsl"),
+    ),
+    ("dissolve.wgsl", include_str!("../shaders/dissolve.wgsl")),
+    (
+        "dissolve_shadow.wgsl",
+        include_str!("../shaders/dissolve_shadow.wgsl"),
     ),
 ];
 
@@ -181,11 +190,27 @@ pub enum Permutation {
     },
     /// The GPU particle pool's frame: its step, spawns and lists (compute).
     Particles,
+    /// The forward module of the opaque pass (`front_layer` false) with a dissolving object's entries (`dissolve.wgsl`:
+    /// `vs_dissolve`, `fs_dissolve`, `vs_depth_dissolve`, `fs_depth_dissolve`); its `vs_main` and `fs_depth` are plain
+    /// functions there (`vs_main_of`, `fs_depth_of`) for them to call.
+    Dissolve {
+        clustered: bool,
+    },
+    /// The shadow module with a dissolving object's casters (`dissolve_shadow.wgsl`).
+    ShadowDissolve {
+        unclipped: bool,
+    },
 }
+
+/// What [`Permutation::Dissolve`] turns into plain functions in the forward pass's text, and what it calls them.
+pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
+    ("@vertex\nfn vs_main(", "fn vs_main_of("),
+    ("@fragment\nfn fs_depth(", "fn fs_depth_of("),
+];
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 36] = [
+    pub const ALL: [Permutation; 40] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -246,6 +271,10 @@ impl Permutation {
             front_layer: true,
         },
         Permutation::Particles,
+        Permutation::Dissolve { clustered: true },
+        Permutation::Dissolve { clustered: false },
+        Permutation::ShadowDissolve { unclipped: true },
+        Permutation::ShadowDissolve { unclipped: false },
     ];
 
     pub fn name(self) -> String {
@@ -288,6 +317,12 @@ impl Permutation {
                 "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer})"
             ),
             Permutation::Particles => "gpu_particles.wgsl".to_string(),
+            Permutation::Dissolve { clustered } => {
+                format!("forward.wgsl with dissolve.wgsl (CLUSTERED = {clustered})")
+            }
+            Permutation::ShadowDissolve { unclipped } => {
+                format!("shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = {unclipped})")
+            }
         }
     }
 
@@ -373,6 +408,28 @@ impl Permutation {
                 "{}\n{}",
                 file("gpu_particle_types.wgsl"),
                 file("gpu_particles.wgsl")
+            ),
+            Permutation::Dissolve { clustered } => {
+                let mut forward = Permutation::Forward {
+                    clustered,
+                    front_layer: false,
+                }
+                .source();
+                for (entry, plain) in DISSOLVE_RENAMES {
+                    forward = forward.replacen(entry, plain, 1);
+                }
+                format!(
+                    "{}\n{}\n{}",
+                    forward,
+                    file("dissolve_common.wgsl"),
+                    file("dissolve.wgsl")
+                )
+            }
+            Permutation::ShadowDissolve { unclipped } => format!(
+                "{}\n{}\n{}",
+                Permutation::Shadow { unclipped }.source(),
+                file("dissolve_common.wgsl"),
+                file("dissolve_shadow.wgsl")
             ),
             Permutation::Hiz => file("hiz.wgsl").to_string(),
             Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),

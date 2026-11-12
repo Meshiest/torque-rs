@@ -211,3 +211,55 @@ fn the_cloud_cubes_uniform_places_and_mips_are_the_shaders() {
         );
     }
 }
+
+#[test]
+fn only_the_dissolve_permutations_take_its_chunks_and_their_entries_are_plain_functions_there() {
+    for p in Permutation::ALL {
+        let src = p.source();
+        let own = matches!(
+            p,
+            Permutation::Dissolve { .. } | Permutation::ShadowDissolve { .. }
+        );
+        assert_eq!(src.contains("DissolveSlot"), own, "{}", p.name());
+        if let Permutation::Dissolve { clustered } = p {
+            for (entry, plain) in DISSOLVE_RENAMES {
+                assert!(!src.contains(entry) && src.contains(plain), "{entry}");
+            }
+            // Everything else is the opaque pass's module as it is.
+            let mut forward = Permutation::Forward {
+                clustered,
+                front_layer: false,
+            }
+            .source();
+            for (entry, plain) in DISSOLVE_RENAMES {
+                forward = forward.replacen(entry, plain, 1);
+            }
+            assert!(src.starts_with(&forward));
+        }
+    }
+}
+
+/// The CPU's field ([`torque_render_scene::hd::dissolve::field`]) is the shader's: the same constants in the same order.
+#[test]
+fn the_cpu_field_is_the_shaders() {
+    let wgsl = FILES
+        .iter()
+        .find(|(n, _)| *n == "dissolve_common.wgsl")
+        .map(|(_, t)| *t)
+        .expect("the file");
+    for c in [
+        "0x8da6b343u",
+        "0xd8163841u",
+        "0xcb1ab31fu",
+        "0x7feb352du",
+        "0x846ca68bu",
+        "16777216.0",
+        "q * 2.03 + vec3<f32>(17.1)",
+        "q * 4.01 + vec3<f32>(31.7)",
+        "* 0.5 +",
+        ") * 0.3",
+        ") * 0.2",
+    ] {
+        assert!(wgsl.contains(c), "{c}");
+    }
+}

@@ -38,6 +38,8 @@
 //! - A datablock record is read with the engine protocol's extension blocks ([`ghosts::codec::NetWidths::extensions`]) exactly when
 //!   the connection's event table is the engine's (the one with the datablock removal event), so Torque's protocol reads TGE's
 //!   bits and no more (`read_datablock` in `conn/tge.rs`; torque-server's `ConnDatablocks::set_extensions` is the writer's half).
+//!   The ghost records follow the same rule (the widths `accepted` gives the ghost codec): a ShapeBase's cloak group carries
+//!   its dissolve on the engine's protocol alone (torque-app's `tests/dissolve_wire.rs`).
 //! - The connection's natives that take over a server's (registered after it on one script engine) answer for the
 //!   server's objects as the server does: the methods fall back through `prev`, and `commandToServer` gives a remote
 //!   party's command ([`ts_vm::vm::Vm::command_source`] other than the client's connection) to the server's own, so a

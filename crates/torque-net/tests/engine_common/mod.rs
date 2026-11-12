@@ -12,7 +12,7 @@ use torque_net::engine::{
     Session, SessionConfig, State, StreamLane, StreamSource, TableDigests, Widths,
 };
 
-/// The seeded generator the engine tests draw from: `Rng::star`, whose bits `engine_golden_v3` is pinned to.
+/// The seeded generator the engine tests draw from: `Rng::star`, whose bits `engine_golden_v4` is pinned to.
 pub use torque_testkit::Rng;
 
 pub const GAME: &str = "fixture";

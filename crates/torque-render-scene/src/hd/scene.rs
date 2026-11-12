@@ -270,6 +270,9 @@ pub struct HdScene<G> {
     pub planes_generation: u64,
     pub cells: G,
     pub objects: Vec<DynamicObject>,
+    /// The objects dissolving this frame ([`dissolve`](super::dissolve)), by their ghost: set every frame (none: every object
+    /// whole).
+    pub dissolves: Vec<super::dissolve::HdDissolve>,
     /// The objects as the last frame drew them, kept by a whole sync for the control sync of the same frame (the shapes it makes
     /// again move from where that frame had them, not from where the sync just put them).
     pub drawn_objects: Option<Vec<DynamicObject>>,
@@ -373,6 +376,7 @@ impl<G> HdScene<G> {
             particles_generation: 0,
             particle_light: None,
             sprites: GpuSprites::default(),
+            dissolves: Vec::new(),
             textures_pending: false,
             lightmap: None,
             lightmap_generation: 0,

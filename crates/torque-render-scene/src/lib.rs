@@ -62,6 +62,14 @@
 //!   rule lets a crate built on this one implement [`hd::ViewScene`] (the scene a world view fills, mode, time and the cells
 //!   static batches go in) for its types, and torque-render-hd re-exports it as `ext::ViewScene`
 //!   (`hd::view_scene::tests::a_scene_without_batch_cells_takes_the_modes_and_time_and_offers_no_cells` implements it from here).
+//! - A dissolve ([`dissolve::Dissolves`], [`hd::dissolve`]) clips by the share eaten's quantile of its object's sampled field, so
+//!   the surface drawn is `1 - eaten` of its area whatever the noise's spread
+//!   (`the_drawn_share_of_the_samples_is_one_less_the_eaten_share`), and its front emits the samples it crossed since the last
+//!   frame: the count tracks the area swept, at most [`dissolve::MAX_SPAWNS_PER_OBJECT`] an object and
+//!   [`dissolve::MAX_SPAWNS_PER_FRAME`] in all (`the_fronts_particles_track_the_area_it_swept_and_its_caps`); a look read from a
+//!   record is held to its ranges (`hostile_looks_are_held_to_their_ranges`). The field ([`hd::dissolve::field`]) is the
+//!   renderer's `dissolve_common.wgsl`'s; a change goes in both (torque-render-hd's `the_cpu_field_is_the_shaders`). Its
+//!   particles go through [`particles::Emitter::emit_at`] and the emitters' own hand-over or draws: the pool's public way in.
 //! - [`particles::Emitter::hand_over`] (the GPU particle pool's way) leaves the emission as the CPU path has it: the same random
 //!   numbers drawn, the same particles made, each handed over in the state the CPU path draws it in
 //!   (`handing_over_keeps_the_emission_and_the_particles_state`). The pool's record table ([`hd::sprites`]) only grows, so a record
@@ -78,6 +86,7 @@
 
 pub mod camera;
 pub mod decals;
+pub mod dissolve;
 pub mod emitter_nodes;
 pub mod env;
 pub mod first_person;

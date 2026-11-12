@@ -116,6 +116,8 @@ pub struct ObjectExt {
     pub process: Option<crate::sim::ProcessHandle>,
     /// A `ShapeBase`'s shape instance and script threads, made by `onNewDataBlock`.
     pub shape: Option<Box<super::shapebase::ShapeBaseState>>,
+    /// A `ShapeBase`'s dissolve ([`super::dissolve`]), once a script set one.
+    pub dissolve: Option<Box<super::dissolve::Dissolve>>,
     /// A `ShapeBaseData`'s shape resource, the one its preload loaded: what an object's `onNewDataBlock` builds its instance
     /// from.
     pub shape_resource: Option<crate::shapes::ShapeResource>,

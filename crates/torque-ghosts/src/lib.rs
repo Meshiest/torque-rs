@@ -27,6 +27,21 @@
 //! **Every decoder reads hostile input.** It takes a `torque_net::bits::BitReader` and a [`ChargeFn`], and returns a value or a
 //! `torque_net::NetError`; it never panics, and it never allocates from a wire count without checking it against the bits left AND a
 //! named cap through `torque_net::cap`.
+//!
+//! # Maintaining
+//!
+//! - Module map: above. A record's layout is its one function in wire order; the encoder, decoder and logging encoder run it.
+//! - **The engine protocol's extensions** are read and written only on a connection whose [`NetWidths::extensions`] is set
+//!   (the engine's own protocol): the particle datablocks' blocks ([`datablocks::effects`]) and a ShapeBase's dissolve at the
+//!   end of its cloak group ([`shapebase::DissolveField`]). With it off a record's bits are TGE's, whatever the record holds
+//!   (`a_dissolve_rides_the_cloak_group_on_the_engines_protocol_alone`; the TGE layouts' `(field, width)` lists pin the rest),
+//!   and a reader holds every value to its range (`a_hostile_dissolve_is_held_to_its_ranges_as_it_is_read`). A new extension
+//!   goes behind its own presence flag at the end of a group, with a hostile-value test, and is a new engine framing
+//!   (torque-net's `ENGINE_FRAMING`).
+//! - Extension points: a class record of the engine's own ([`light`]), a plugin's ([`plugin`]), the per-ghost block's sections
+//!   ([`block`]).
+//! - Checks: `cargo test -p torque-ghosts`; torque-net's engine goldens and torque-trace-hash's `wire_golden` and
+//!   `conn_game` for the bytes of whole sessions.
 
 pub mod audio;
 pub mod block;

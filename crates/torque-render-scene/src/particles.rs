@@ -676,6 +676,32 @@ impl Emitter {
         self.last = Some((center, z.to_array(), [0.0; 3]));
     }
 
+    /// One particle at `pos`, ejected about `axis` (up when it has none) by the emitter's rules (its velocity, cone, offset and
+    /// the particle datablock's life and spin), as a burst's particles are: a dissolving surface's front emits from where it
+    /// crosses ([`crate::dissolve`]). False when none was made (the emitter is dead, or the particles are at their cap).
+    pub fn emit_at(
+        &mut self,
+        pos: [f32; 3],
+        axis: [f32; 3],
+        rng: &mut Rng,
+        live: &mut usize,
+    ) -> bool {
+        if self.dead || !pos.iter().all(|c| c.is_finite()) {
+            return false;
+        }
+        let mut z = unit_dir(axis.into());
+        if z == Vec3::ZERO || !z.is_finite() {
+            z = Vec3::Z;
+        }
+        let x = unit_dir(z.cross(if z.z.abs() >= 0.9 {
+            self.near_z_cross.into()
+        } else {
+            Vec3::Z
+        }));
+        self.add_particle(pos.into(), z, Vec3::ZERO, x, rng, live)
+            .is_some()
+    }
+
     /// A frame of `ms` (`ParticleEmitter::advanceTime`): the particles aged, the dead ones removed, the others stepped.
     pub fn advance(&mut self, ms: u32, live: &mut usize) {
         let ms = ms.min(MAX_CALL_MS) as i32;

@@ -20,7 +20,7 @@
 //! **Versioned.** Byte 0 of every datagram is [`ENGINE_TAG`]: the engine family in the high nibble, the framing version in the
 //! low one. Any change to the bytes a session writes, the framing's or the payload's (the event class table of
 //! `torque_net::events::EventRegistry::engine` among them), is a new [`ENGINE_FRAMING`], and the current version's bytes are
-//! pinned (`tests/engine_golden_v3.rs`, blessed once per version: a build speaks one version only, so an older version's
+//! pinned (`tests/engine_golden_v4.rs`, blessed once per version: a build speaks one version only, so an older version's
 //! goldens cannot be kept green). No TGE datagram starts with the engine family, and it lies in QUIC's long-header range, so
 //! plain engine UDP never shares a port with QUIC.
 //!
@@ -60,7 +60,7 @@ pub use session::{
 pub use table::{Arrival, Peer, SessionTable, Stage, TableLimits, canonical};
 
 /// The engine framing version this build speaks.
-pub const ENGINE_FRAMING: u8 = 3;
+pub const ENGINE_FRAMING: u8 = 4;
 
 /// The high nibble of byte 0 of every engine datagram.
 pub const ENGINE_FAMILY: u8 = 0xe0;

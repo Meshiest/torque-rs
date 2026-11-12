@@ -577,6 +577,10 @@ impl<E: HdExtension> HdWorld<E> {
             sources.extend(self.loose.planes.iter().map(loose));
             let planes = camera.planes();
             for o in &self.loose.objects {
+                // A dissolving object: whole under half eaten, left out over half (a view draws no clip: `hidden_unclipped`).
+                if o.eaten > 0.5 {
+                    continue;
+                }
                 let seen = crate::sphere_seen(&planes, o.centre, o.radius);
                 // The objects the extension keeps stay (a floor the eye stands over holds the eye in its sphere).
                 let near = !E::kept_near_capture(o.ghost)

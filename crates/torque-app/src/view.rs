@@ -29,6 +29,7 @@ use torque_gui::GuiDraws;
 use torque_render_core::{Gpu, GuiPass, wgpu};
 use torque_render_hd::ext::{HdExtension, NoExtension, PlainScene, ViewScene};
 use torque_render_hd::{HdSettings, HdWorld, ParticlePool};
+use torque_render_scene::dissolve::Dissolves;
 use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
@@ -1472,6 +1473,14 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     pub fn set_objects(&mut self, mut objects: Vec<DynamicObject>) {
         carry_motion(&mut objects, &self.scene.objects);
         self.scene.objects = objects;
+    }
+
+    /// The frame's dissolving objects ([`HdScene::dissolves`]): `dissolves` run `dt` seconds on over the objects the view holds
+    /// (each dissolve finds its object by its ghost; a host that runs it before [`WorldView::set_objects`] samples and emits
+    /// from the last frame's objects, a frame behind its clip).
+    pub fn run_dissolves(&mut self, dissolves: &mut Dissolves, dt: f32) {
+        let s = &mut *self.scene;
+        s.dissolves = dissolves.frame(&s.objects, &s.textures.textures, dt);
     }
 
     /// The frame's particles: each draw at its eye distance, its texture an index into `textures` (the set the emitters drew

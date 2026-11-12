@@ -118,8 +118,11 @@ pub(crate) struct ObjectCaster {
     pub centre: [f32; 3],
     pub radius: f32,
     pub draws: Vec<(u32, u32, i32)>,
+    /// Its draws clipped by its dissolve (first index, count, base vertex, slot: [`crate::dissolve`]), cast by
+    /// [`ShadowClip`]'s pipelines after the rest.
+    pub clipped: Vec<(u32, u32, i32, u32)>,
     /// What its shadow depends on besides the caster and `draws`: its vertices and its meshes' places (the renderer's object
-    /// content).
+    /// content; with its dissolve's slot bytes).
     pub content: u64,
 }
 
@@ -142,6 +145,8 @@ pub(crate) struct ShadowInput<'a> {
     /// its buffers changed when it changes (a kept overlay is drawn again).
     pub ext_generation: u64,
     pub nodes: &'a wgpu::Buffer,
+    /// The dissolve slots the clipped draws read (binding 3 of their group 3), when a frame clips any.
+    pub dissolve: Option<&'a wgpu::Buffer>,
     /// Each map's casters culled for it: on the GPU into the scratch lists before its pass when the frame's lists are the
     /// GPU's, else by the CPU (the same test, the same order).
     pub gpu: ShadowLists<'a>,
@@ -631,6 +636,101 @@ pub(crate) struct Shadows {
     cascades_hold_extras: bool,
     /// The moving shapes' overlay draws of the frame (indirect arguments, grown as needed).
     overlay_args: Option<wgpu::Buffer>,
+    /// The casters' group 0 layout, whether the device clamps depth, and the dissolving casters' pipelines (made the first
+    /// frame one casts).
+    caster_layout: wgpu::BindGroupLayout,
+    unclipped: bool,
+    clip: Option<ShadowClip>,
+}
+
+/// The casters of dissolving objects ([`crate::dissolve`]): their group 3 (the extension's buffers, the meshes' places and the
+/// dissolve slots), its group over the buffers last bound, and the sun's and the point faces' pipelines.
+struct ShadowClip {
+    layout: wgpu::BindGroupLayout,
+    group: Option<([wgpu::Buffer; 4], wgpu::BindGroup)>,
+    sun: wgpu::RenderPipeline,
+    point: wgpu::RenderPipeline,
+}
+
+impl ShadowClip {
+    fn new(device: &wgpu::Device, caster: &wgpu::BindGroupLayout, unclipped: bool) -> ShadowClip {
+        let mut entries: Vec<wgpu::BindGroupLayoutEntry> = [0, 1, 2]
+            .map(|b| crate::storage(b, true, wgpu::ShaderStages::VERTEX))
+            .to_vec();
+        entries.push(crate::storage(3, true, wgpu::ShaderStages::FRAGMENT));
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hd dissolve caster"),
+            entries: &entries,
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hd dissolve caster"),
+            bind_group_layouts: &[Some(caster), None, None, Some(&layout)],
+            immediate_size: 0,
+        });
+        let module = crate::module(device, Permutation::ShadowDissolve { unclipped });
+        use wgpu::CompareFunction as C;
+        let pipe = |label, vs, fs, unclipped, compare, slope_bias| {
+            depth_pipeline(
+                device,
+                None,
+                &pipeline_layout,
+                &module,
+                DepthPipe {
+                    label,
+                    vs,
+                    fs: Some(fs),
+                    with_vertices: true,
+                    unclipped,
+                    compare,
+                    slope_bias,
+                },
+            )
+        };
+        ShadowClip {
+            sun: pipe(
+                "hd dissolve sun caster",
+                "vs_sun_dissolve",
+                "fs_sun_dissolve",
+                unclipped,
+                C::LessEqual,
+                1.0,
+            ),
+            point: pipe(
+                "hd dissolve point caster",
+                "vs_point_dissolve",
+                "fs_point_dissolve",
+                false,
+                C::Less,
+                0.0,
+            ),
+            layout,
+            group: None,
+        }
+    }
+
+    /// The group over `buffers` (the extension's two, the meshes' places, the slots), made again when one is another buffer.
+    fn group(&mut self, device: &wgpu::Device, buffers: [wgpu::Buffer; 4]) -> wgpu::BindGroup {
+        if let Some((b, g)) = &self.group
+            && *b == buffers
+        {
+            return g.clone();
+        }
+        let entries: Vec<wgpu::BindGroupEntry<'_>> = buffers
+            .iter()
+            .enumerate()
+            .map(|(k, b)| wgpu::BindGroupEntry {
+                binding: k as u32,
+                resource: b.as_entire_binding(),
+            })
+            .collect();
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hd dissolve caster"),
+            layout: &self.layout,
+            entries: &entries,
+        });
+        self.group = Some((buffers, group.clone()));
+        group
+    }
 }
 
 /// The cascades' transmittance maps: half a cascade's side, a layer a cascade.
@@ -1271,6 +1371,9 @@ impl Shadows {
             extra_pipeline,
             cascades_hold_extras: false,
             overlay_args: None,
+            caster_layout,
+            unclipped,
+            clip: None,
             trans_dummy,
             trans_layout,
             trans_pipeline,
@@ -1905,6 +2008,25 @@ impl Shadows {
                 group
             }
         };
+        // The dissolving casters' group, when the frame has any.
+        let clip_group = match input.dissolve {
+            Some(slots) if input.objects.iter().any(|o| !o.clipped.is_empty()) => {
+                let (caster, unclipped) = (&self.caster_layout, self.unclipped);
+                let clip = self
+                    .clip
+                    .get_or_insert_with(|| ShadowClip::new(input.gpu.device, caster, unclipped));
+                Some(clip.group(
+                    input.gpu.device,
+                    [
+                        input.ext[0].clone(),
+                        input.ext[1].clone(),
+                        input.nodes.clone(),
+                        slots.clone(),
+                    ],
+                ))
+            }
+            _ => None,
+        };
         // Each map's casters' view (the jobs that draw cells: a cascade, a face, a transmittance map).
         let views: Vec<Option<crate::cull::ViewPlanes>> = jobs
             .iter()
@@ -2143,6 +2265,7 @@ impl Shadows {
                     pass.set_pipeline(&self.sun_pipeline);
                     pass.set_bind_group(3, &ext_group, &[]);
                     self.draw_overlay(&mut pass, input, objects, indirect, overlay_at[run.start]);
+                    self.draw_clipped(&mut pass, input, objects, clip_group.as_ref(), true);
                     pass_no += 1;
                 }
                 Job::Face { slot, face, .. } => {
@@ -2215,6 +2338,7 @@ impl Shadows {
                     pass.set_pipeline(&self.point_pipeline);
                     pass.set_bind_group(3, &ext_group, &[]);
                     self.draw_overlay(&mut pass, input, objects, indirect, overlay_at[run.start]);
+                    self.draw_clipped(&mut pass, input, objects, clip_group.as_ref(), false);
                     pass_no += 1;
                 }
             }
@@ -2313,6 +2437,38 @@ impl Shadows {
                     continue;
                 }
                 x.casters.cast(pass, *k);
+                crate::count_draws(1);
+            }
+        }
+    }
+
+    /// The clipped draws of `objects` into an overlay (a cascade's when `sun`, else a point face's), with the dissolving casters'
+    /// pipeline and `group` (none: nothing clipped this frame). The caster's group 0 stays as the overlay bound it.
+    fn draw_clipped(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        input: &ShadowInput<'_>,
+        objects: &[usize],
+        group: Option<&wgpu::BindGroup>,
+        sun: bool,
+    ) {
+        let (Some(clip), Some(group), Some((v, i))) = (&self.clip, group, input.loose) else {
+            return;
+        };
+        let mut bound = false;
+        for &k in objects {
+            for &(first, count, base, slot) in &input.objects[k].clipped {
+                if count == 0 {
+                    continue;
+                }
+                if !bound {
+                    pass.set_pipeline(if sun { &clip.sun } else { &clip.point });
+                    pass.set_bind_group(3, group, &[]);
+                    pass.set_vertex_buffer(0, v.slice(..));
+                    pass.set_index_buffer(i.slice(..), wgpu::IndexFormat::Uint32);
+                    bound = true;
+                }
+                pass.draw_indexed(first..first + count, base, slot..slot + 1);
                 crate::count_draws(1);
             }
         }

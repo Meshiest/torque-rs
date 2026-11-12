@@ -119,6 +119,9 @@ pub(crate) mod reflect;
 mod gpu_particles;
 pub use gpu_particles::{FillCounts, ParticlePool, SpriteCounts, fill_budget, sprite_capacity};
 
+#[path = "dissolve.rs"]
+mod dissolve;
+
 /// The most bytes of the levels' block meshes a live window's upload puts in (at least one block).
 pub const LOD_BYTES_A_FRAME: u64 = 4 << 20;
 /// The most static cell bytes a live window's upload writes ([`HdWorld::upload_budget`]).
@@ -507,6 +510,10 @@ struct GpuObject {
     /// each upload, so the upload's generation) and its meshes' places' bytes. A shadow overlay drawn with the same content and
     /// the same caster is the same picture ([`crate::shadows`] keeps it).
     content: u64,
+    /// This frame's share of it dissolved ([`dissolve`]: 0 for an object whole), and whether it is wholly gone (left out of
+    /// every pass).
+    eaten: f32,
+    gone: bool,
 }
 
 /// The eye-dependent draws of one sync, in two shared buffers.
@@ -1204,6 +1211,14 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     /// device runs it.
     sprites: Option<gpu_particles::GpuParticles>,
     sprites_supported: bool,
+    /// The dissolving draws' slots and pipelines ([`dissolve`]), made the first frame one is drawn; whether the device has room for
+    /// them, and whether this frame clips any.
+    dissolve: Option<dissolve::GpuDissolve>,
+    dissolve_supported: bool,
+    dissolving: bool,
+    /// Per motion slot, whether its draw is clipped this frame (a loose draw's slot is its own; the particles' and the cells'
+    /// are 0, never clipped).
+    clipped: Vec<bool>,
     /// The most particles the pool holds ([`HdWorld::set_gpu_particle_cap`]).
     sprite_cap: u32,
     /// The quality of the scene last prepared (what [`HdWorld::gpu_particles_on`] answers for).
@@ -1542,6 +1557,106 @@ pub fn f32_to_f16(v: f32) -> u16 {
 
 /// The forward pass's pipeline for `key`: of `module` (the forward module of its `clustered` and `front_layer`), the stage's
 /// fragment entry.
+/// A depth prepass pipeline of `module`'s `entries` (vertex, fragment) culled by `cull`: the vertices and their previous
+/// positions in, depth tested and written (reversed: nearer is greater), the motion and normal targets out.
+fn prepass_pipeline(
+    device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    cull: Cull,
+    entries: (&str, &str),
+) -> wgpu::RenderPipeline {
+    let (cull_mode, front_face) = match cull {
+        Cull::None => (None, wgpu::FrontFace::Cw),
+        Cull::BackCw => (Some(wgpu::Face::Back), wgpu::FrontFace::Cw),
+        Cull::BackCcw => (Some(wgpu::Face::Back), wgpu::FrontFace::Ccw),
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("hd prepass"),
+        layout: Some(layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some(entries.0),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: HD_VERTEX_BYTES as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x3,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Snorm16x2,
+                            offset: 12,
+                            shader_location: 1,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 28,
+                            shader_location: 4,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Uint32,
+                            offset: 32,
+                            shader_location: 5,
+                        },
+                    ],
+                }),
+                // The previous positions (location 6 of vs_depth), in the same layout.
+                Some(wgpu::VertexBufferLayout {
+                    array_stride: HD_VERTEX_BYTES as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &[wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x3,
+                        offset: 0,
+                        shader_location: 6,
+                    }],
+                }),
+            ],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face,
+            cull_mode,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(entries.1),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: MOTION_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: NORMAL_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
+        }),
+        multiview_mask: None,
+        cache,
+    })
+}
+
 fn make_pipeline(
     device: &wgpu::Device,
     cache: Option<&wgpu::PipelineCache>,
@@ -1565,6 +1680,8 @@ fn make_pipeline(
 pub(crate) enum Vertices {
     Mesh,
     Sprites,
+    /// The vertex buffers through a dissolving draw's entry (`vs_dissolve`, [`dissolve`]).
+    Dissolve,
 }
 
 /// The vertex buffer layout of an [`HdVertex`].
@@ -1583,6 +1700,7 @@ fn vertex_state(module: &wgpu::ShaderModule, vertices: Vertices) -> wgpu::Vertex
     let (entry, buffers): (&str, &[Option<wgpu::VertexBufferLayout<'static>>]) = match vertices {
         Vertices::Mesh => ("vs_main", &MESH_BUFFERS),
         Vertices::Sprites => ("vs_gpu_sprite", &[]),
+        Vertices::Dissolve => ("vs_dissolve", &MESH_BUFFERS),
     };
     wgpu::VertexState {
         module,
@@ -2344,6 +2462,7 @@ impl<E: HdExtension> HdWorld<E> {
         );
         let timestamps = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let sprites_supported = gpu_particles::sprites_supported(&device);
+        let dissolve_supported = dissolve::dissolve_supported(&device);
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd frame"),
             entries: &frame_entries(),
@@ -2892,6 +3011,10 @@ impl<E: HdExtension> HdWorld<E> {
             particles: Particles::default(),
             sprites: None,
             sprites_supported,
+            dissolve: None,
+            dissolve_supported,
+            dissolving: false,
+            clipped: Vec::new(),
             sprite_cap: torque_render_scene::particles::MAX_PARTICLES as u32,
             pool_quality: Quality::High,
             node_bytes: Vec::new(),
@@ -2968,97 +3091,15 @@ impl<E: HdExtension> HdWorld<E> {
         if self.prepass.contains_key(&(cull, still)) {
             return;
         }
-        let (cull_mode, front_face) = match cull {
-            Cull::None => (None, wgpu::FrontFace::Cw),
-            Cull::BackCw => (Some(wgpu::Face::Back), wgpu::FrontFace::Cw),
-            Cull::BackCcw => (Some(wgpu::Face::Back), wgpu::FrontFace::Ccw),
-        };
-        let module = &self.forward[&(true, false)];
-        let pipeline = self
-            .device
-            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("hd prepass"),
-                layout: Some(&self.prepass_layout),
-                vertex: wgpu::VertexState {
-                    module,
-                    entry_point: Some(if still { "vs_depth_still" } else { "vs_depth" }),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: HD_VERTEX_BYTES as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &[
-                                wgpu::VertexAttribute {
-                                    format: wgpu::VertexFormat::Float32x3,
-                                    offset: 0,
-                                    shader_location: 0,
-                                },
-                                wgpu::VertexAttribute {
-                                    format: wgpu::VertexFormat::Snorm16x2,
-                                    offset: 12,
-                                    shader_location: 1,
-                                },
-                                wgpu::VertexAttribute {
-                                    format: wgpu::VertexFormat::Uint32,
-                                    offset: 28,
-                                    shader_location: 4,
-                                },
-                                wgpu::VertexAttribute {
-                                    format: wgpu::VertexFormat::Uint32,
-                                    offset: 32,
-                                    shader_location: 5,
-                                },
-                            ],
-                        }),
-                        // The previous positions (location 6 of vs_depth), in the same layout.
-                        Some(wgpu::VertexBufferLayout {
-                            array_stride: HD_VERTEX_BYTES as u64,
-                            step_mode: wgpu::VertexStepMode::Vertex,
-                            attributes: &[wgpu::VertexAttribute {
-                                format: wgpu::VertexFormat::Float32x3,
-                                offset: 0,
-                                shader_location: 6,
-                            }],
-                        }),
-                    ],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face,
-                    cull_mode,
-                    unclipped_depth: false,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
-                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module,
-                    entry_point: Some("fs_depth"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[
-                        Some(wgpu::ColorTargetState {
-                            format: MOTION_FORMAT,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        }),
-                        Some(wgpu::ColorTargetState {
-                            format: NORMAL_FORMAT,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        }),
-                    ],
-                }),
-                multiview_mask: None,
-                cache: self.pipeline_cache.as_ref(),
-            });
+        let vs = if still { "vs_depth_still" } else { "vs_depth" };
+        let pipeline = prepass_pipeline(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            &self.prepass_layout,
+            &self.forward[&(true, false)],
+            cull,
+            (vs, "fs_depth"),
+        );
         self.prepass.insert((cull, still), pipeline);
         self.pipelines_made += 1;
     }
@@ -4948,6 +4989,8 @@ impl<E: HdExtension> HdWorld<E> {
                 ids,
                 node_base,
                 content: stamp.unwrap_or_else(|| unstamped_content(scene.generation, &o.draws)),
+                eaten: 0.0,
+                gone: false,
             });
         }
         for (d, c) in &scene.coronas {
@@ -5931,6 +5974,7 @@ impl<E: HdExtension> HdWorld<E> {
             })
             .collect();
         self.post.write_motion(&self.device, &self.queue, &motions);
+        self.prepare_dissolves(scene);
         cpu_mark!("begin: motion");
         let mut post_bytes = Vec::with_capacity(256);
         push_f32(
@@ -6125,7 +6169,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         items.extend(self.loose.planes.iter().map(|d| Item::Loose(*d)));
         for o in &self.loose.objects {
-            if !o.translucent && sees_sphere(o.centre, o.radius) {
+            if !o.translucent && !o.gone && sees_sphere(o.centre, o.radius) {
                 items.extend(
                     o.draws
                         .iter()
@@ -6147,7 +6191,7 @@ impl<E: HdExtension> HdWorld<E> {
             .loose
             .objects
             .iter()
-            .filter(|o| o.translucent && sees_sphere(o.centre, o.radius))
+            .filter(|o| o.translucent && !o.gone && sees_sphere(o.centre, o.radius))
             .filter(|o| !(taa && o.late))
             .flat_map(|o| {
                 let d = dist(o.centre);
@@ -6195,7 +6239,7 @@ impl<E: HdExtension> HdWorld<E> {
                 self.loose
                     .objects
                     .iter()
-                    .filter(|o| o.late && sees_sphere(o.centre, o.radius))
+                    .filter(|o| o.late && !o.gone && sees_sphere(o.centre, o.radius))
                     .flat_map(|o| {
                         let d = dist(o.centre);
                         o.draws
@@ -6337,6 +6381,11 @@ impl<E: HdExtension> HdWorld<E> {
                 });
             }
             self.ensure_group(tex, s);
+            if let Item::Loose(d) = it
+                && self.clipped(d)
+            {
+                self.ensure_dissolve(key, tex, s);
+            }
             prepared.push((key, (tex, s)));
         }
         cpu_mark!("begin: pipelines");
@@ -6538,22 +6587,34 @@ impl<E: HdExtension> HdWorld<E> {
             .loose
             .objects
             .iter()
-            .map(|o| ObjectCaster {
-                ghost: o.ghost,
-                own: o.draws.iter().any(|d| d.shadow_only),
-                centre: o.centre,
-                radius: o.radius,
-                content: o.content,
-                draws: o
-                    .draws
-                    .iter()
-                    .filter(|d| {
-                        d.blend == Blend::Opaque && d.depth_write && !d.view_only && !d.cutout
-                    })
-                    .map(|d| (d.first, d.count, d.base_vertex))
-                    .collect(),
+            .filter(|o| !o.gone)
+            .map(|o| {
+                let casts = |d: &&DrawRef| {
+                    d.blend == Blend::Opaque && d.depth_write && !d.view_only && !d.cutout
+                };
+                ObjectCaster {
+                    ghost: o.ghost,
+                    own: o.draws.iter().any(|d| d.shadow_only),
+                    centre: o.centre,
+                    radius: o.radius,
+                    content: self.clip_content(o),
+                    draws: o
+                        .draws
+                        .iter()
+                        .filter(casts)
+                        .filter(|d| !self.clipped(d))
+                        .map(|d| (d.first, d.count, d.base_vertex))
+                        .collect(),
+                    clipped: o
+                        .draws
+                        .iter()
+                        .filter(casts)
+                        .filter(|d| self.clipped(d))
+                        .map(|d| (d.first, d.count, d.base_vertex, d.motion))
+                        .collect(),
+                }
             })
-            .filter(|o| !o.draws.is_empty())
+            .filter(|o| !o.draws.is_empty() || !o.clipped.is_empty())
             .collect();
         let input = ShadowInput {
             camera: &icam,
@@ -6566,6 +6627,11 @@ impl<E: HdExtension> HdWorld<E> {
             ext: &self.ext_slots.shadow,
             ext_generation: self.ext.shadow_generation(),
             nodes: &self.nodes,
+            dissolve: self
+                .dissolve
+                .as_ref()
+                .filter(|_| self.dissolving)
+                .map(|d| &d.slots),
             gpu: shadows::ShadowLists {
                 device: &self.device,
                 cull: self.cull.as_ref().filter(|_| self.lists_on_gpu),
@@ -6791,6 +6857,17 @@ impl<E: HdExtension> HdWorld<E> {
                 for &n in &prepass {
                     let group = matches!(items[n], Item::Group(_));
                     if (group && !$groups) || (!group && !$rest) {
+                        continue;
+                    }
+                    // A dissolving object's clipped draw: its own pipeline and groups (the next draw binds its own again).
+                    if let Item::Loose(d) = &items[n]
+                        && self.clipped(d)
+                    {
+                        let previous = self.loose.previous.as_ref().filter(|_| moved);
+                        self.draw_dissolve_depth(pass, prepared[n].0.cull, prepared[n].1, d, previous);
+                        bound = None;
+                        buffers = None;
+                        slot = None;
                         continue;
                     }
                     let still = !matches!(items[n], Item::Loose(_));
@@ -7230,6 +7307,16 @@ impl<E: HdExtension> HdWorld<E> {
                 {
                     *draw_calls += self.draw_sprites(pass, key, group, bucket);
                     bound = None;
+                    continue;
+                }
+                // A dissolving object's clipped draw: its own pipeline, group and buffers.
+                if let Item::Loose(d) = it
+                    && self.clipped(d)
+                {
+                    *draw_calls += self.draw_dissolve(pass, key, group, d);
+                    bound = None;
+                    loose_bound = None;
+                    arena_bound = false;
                     continue;
                 }
                 if bound.is_none_or(|(k, _)| k != key) {

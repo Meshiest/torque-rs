@@ -630,6 +630,8 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:applyImpulse(Point3F pos, Point3F vel)` *2; server and client*
 - `obj:applyRepair(float amt)` *1; server and client*
 - `obj:canCloak()` *none; server and client*
+- `obj:clearDissolve()` *none; server and client*
+- `obj:dissolve(int timeMS, bool out=true, string edgeColor="1 0.45 0.1 6", float edgeWidth=0.04, ParticleEmitterData emitter=0, bool tint=false)` *1 to 6; server and client*
 - `obj:getAIRepairPoint()` *none; server and client*
 - `obj:getCameraFov()` *none; server and client*
 - `obj:getControllingClient()` *none; server and client*
@@ -638,6 +640,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:getDamageLevel()` *none; server and client*
 - `obj:getDamagePercent()` *none; server and client*
 - `obj:getDamageState()` *none; server and client*
+- `obj:getDissolve()` *none; server and client*
 - `obj:getEnergyLevel()` *none; server and client*
 - `obj:getEnergyPercent()` *none; server and client*
 - `obj:getEyePoint()` *none; server and client*
@@ -685,6 +688,7 @@ The same functions and methods as the other pages, as a script of the Lua extens
 - `obj:setDamageLevel(float level)` *1; server and client*
 - `obj:setDamageState(string state)` *1; server and client*
 - `obj:setDamageVector(Vector3F origin)` *1; server and client*
+- `obj:setDissolveLook(float cellSize, float sweep, float density)` *3; server and client*
 - `obj:setEnergyLevel(float level)` *1; server and client*
 - `obj:setHidden(bool show)` *1; server and client*
 - `obj:setImageAmmo(int slot, bool hasAmmo)` *2; server and client*
