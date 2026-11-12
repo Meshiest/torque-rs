@@ -326,11 +326,7 @@ impl LevelDemo {
             lan_bind_address(options.net, options.host_address)
         };
         // A harness never takes a fixed port.
-        let port = if options.net == NetMode::Loopback {
-            0
-        } else {
-            options.port
-        };
+        let port = options.net.host_port(options.port);
         let name = format!("{}'s office", self.client.global("$Pref::Player::Name"));
         let start = OfficeStart {
             name: &name,

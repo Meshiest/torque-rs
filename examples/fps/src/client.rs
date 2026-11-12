@@ -270,11 +270,7 @@ impl ArenaGame {
                 .ok_or("no map in the game folder's missions")?,
         };
         let name = format!("{}'s game", self.global("$Pref::Player::Name"));
-        let port = if self.options.net == NetMode::Loopback {
-            0
-        } else {
-            self.options.port
-        };
+        let port = self.options.net.host_port(self.options.port);
         // A harness ([`NetMode::Loopback`]) never opens a socket beyond the loopback address, whoever may join.
         let address = if public && self.options.net == NetMode::Lan {
             Ipv4Addr::UNSPECIFIED

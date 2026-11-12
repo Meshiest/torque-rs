@@ -251,11 +251,7 @@ impl SoccerGame {
         let options = ServerOptions {
             address,
             // A harness never takes a fixed port.
-            port: if self.options.net == NetMode::Loopback {
-                0
-            } else {
-                self.options.port
-            },
+            port: self.options.net.host_port(self.options.port),
             name: format!("{}'s match", self.client.global("$Pref::Player::Name")),
             public,
             dedicated: false,

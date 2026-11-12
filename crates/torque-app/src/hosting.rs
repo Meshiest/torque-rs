@@ -42,6 +42,17 @@ impl NetMode {
             NetMode::Lan => ClientNet::Lan,
         }
     }
+
+    /// The UDP port number a game hosted under this mode binds when its options ask for `wanted`: `wanted` for
+    /// [`NetMode::Lan`] (other players find the game by it), and 0 (the system's free port) for [`NetMode::Loopback`], whatever
+    /// `wanted` is. A harness's game therefore never depends on which ports are free, and nothing it runs sees a port number
+    /// before the socket gives it: read the bound one back from the server's address ([`join_address`]).
+    pub fn host_port(self, wanted: u16) -> u16 {
+        match self {
+            NetMode::Loopback => 0,
+            NetMode::Lan => wanted,
+        }
+    }
 }
 
 /// The addresses other players on this computer's network join a hosted game by: `named` when it is not the loopback address,
@@ -564,6 +575,14 @@ impl Plugin for HostingPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_loopback_game_takes_any_free_port_whatever_is_asked() {
+        for wanted in [0, 1, 28_000, u16::MAX] {
+            assert_eq!(NetMode::Loopback.host_port(wanted), 0);
+            assert_eq!(NetMode::Lan.host_port(wanted), wanted);
+        }
+    }
 
     fn resolver(
         answer: impl Fn() -> io::Result<Vec<SocketAddr>> + Send + Sync + 'static,

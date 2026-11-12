@@ -347,6 +347,7 @@ different.
   declared is held to default limits there (32 a second, burst 64, at most 20 arguments of 255 bytes, one bucket for the
   connection), and `commandDrops(%client, "*")` counts what was refused. Torque's protocol has no limit on such a command and
   its bytes are unchanged. `RpcBuilder::outside_connection_rate` leaves an RPC out of the connection's bucket for all RPCs.
+- `NetMode::host_port`: a game hosted under `NetMode::Loopback` (every harness) binds the system's free port whatever the options ask, and its client reads the bound port back from the server's address, so a harness game never depends on which ports are free. The examples use it.
 
 #### Gameplay
 

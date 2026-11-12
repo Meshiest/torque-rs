@@ -410,13 +410,12 @@ impl VehicleDemo {
     /// port), named after the player, and the client joins it.
     pub fn host_game(&mut self) -> Result<(), String> {
         self.stop_hosting();
-        let loopback = self.options.net == NetMode::Loopback;
         let server = WorldServer::start(
             &self.engine,
             &self.files,
             &ServerOptions {
                 address: lan_bind_address(self.options.net, self.options.host_address),
-                port: if loopback { 0 } else { self.options.port },
+                port: self.options.net.host_port(self.options.port),
                 name: format!("{}'s game", self.global("$Pref::Player::Name")),
             },
         )?;
