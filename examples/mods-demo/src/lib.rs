@@ -22,11 +22,12 @@
 //!
 //! # Maintaining
 //!
-//! The demo approves only the libraries it put in `plugins/` itself, by hash (a packaged game's are the hashes
-//! `torque-bundle` built into the executable, `TORQUE_BUNDLE_PLUGINS`), and asks about any other on the terminal; a
-//! packaged game keeps its approvals in the per-user folder (`a_bundle_ships_the_hashes_it_built_in`,
-//! `only_a_shipped_library_is_approved_without_asking`, and with the built extension
-//! `a_library_added_to_the_plugins_folder_is_not_approved_while_the_shipped_one_loads`).
+//! The demo approves only the libraries it put in `plugins/` itself, by hash (a packaged game's are the hashes `torque-bundle`
+//! compiled into the executable, `TORQUE_BUNDLE_PLUGINS`; nothing in the game's folder vouches for a library, the manifest
+//! included), and asks about any other on the terminal; a packaged game keeps its approvals in the per-user folder. The loader's
+//! `tests/bundle_trust.rs` holds the rules, and with the built extension
+//! `a_library_added_to_the_plugins_folder_is_not_approved_while_the_shipped_one_loads` checks the demo. At start a packaged game
+//! also reports which files of its `manifest.toml` changed (advisory).
 
 pub mod assets;
 #[cfg(not(target_arch = "wasm32"))]

@@ -52,6 +52,17 @@
 //! escapes. The loaders are the engine's own and are fuzzed, so a hostile file is an error value, not a panic. The errors of
 //! this crate stay `String`s, as the rest of it, rather than an enum: nothing matches on them.
 //!
+//! **Trust at run time.** A game approves its own extension libraries without a question only by [`PLUGINS_ENV`], the hashes the
+//! tool compiles into the game's executable (the libraries are built first so their hashes are known; the game reads them with
+//! `option_env!` and gives them to `torque_plugin_loader::NativeExtensionsPlugin::shipped`). `manifest.toml` is not part of that:
+//! a game can also hand its folder to `NativeExtensionsPlugin::bundle`, which only reports at start the listed files that changed
+//! or are missing, and it is advisory (whoever can write the folder can edit the manifest to hide a change). The loader parses the
+//! manifest's format itself, so a change to `manifest`'s format must change `torque_plugin_loader::BundleManifest` too;
+//! `crates/torque-plugin-loader/tests/bundle_trust.rs` writes the manifest with `manifest::write` and compares its verdict with
+//! `manifest::verify`. A game must not write into its own folder, or it reports itself changed at the next start. **Check
+//! commands:** `cargo test -p torque-plugin-loader --test bundle_trust`, `just bundle examples/mods-demo` (its headless round
+//! loads the Lua extension by the hash compiled into it).
+//!
 //! **Reproducible from any folder.** Two checkouts of one commit in different folders give byte-identical archives
 //! (`just bundle-repro-check`, which bundles from both and runs `torque-bundle --compare <out> <out>`: the archives' SHA-256, and
 //! when they differ the files whose manifest entries differ). What had to be held equal, and where:

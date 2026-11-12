@@ -44,6 +44,11 @@
 //!   the folder rule above: only this user can write the private cache. Its dependencies are found by their install names
 //!   (`@loader_path` is the private cache) and the game's own `DYLD_` variables.
 //!
+//! A packaged game's own extensions are approved as part of the game, by hashes compiled into its executable
+//! ([`NativeExtensionsPlugin::shipped`]): a library whose loaded bytes have one of those hashes loads without asking, and
+//! anything else asks as above. The bundle's `manifest.toml` ([`NativeExtensionsPlugin::bundle`], [`BundleManifest`]) is
+//! only a start-up report of changed or missing files and approves nothing.
+//!
 //! A server may require an extension by id and version, as any networked plugin (an extension with a network version
 //! is in the handshake manifest), but it can never send one.
 //!
@@ -96,6 +101,29 @@
 //!   (`a_copy_replaced_after_its_check_is_never_the_one_opened`; the Unix tests run in CI).
 //! - The allowlist is replaced whole and never over a file it cannot read, and a manifest's version holds no `#`
 //!   (`the_allowlist_is_replaced_whole_and_never_over_a_file_it_cannot_read`, `a_version_with_a_comment_mark_is_refused`).
+//! - A library is approved without a question only when the SHA-256 of the exact bytes the loader read is in the set the game
+//!   compiled into its executable (`shipped`). Nothing in the game's folder can approve: the bundle's `manifest.toml` sits in
+//!   a folder whoever can replace a library can also write to, so a manifest listing a replaced library's hash, or a new
+//!   library with its entry, still asks (`tests/bundle_trust.rs`: `a_library_swapped_in_with_a_manifest_rewritten_to_match_still_asks`,
+//!   `an_added_library_with_a_manifest_entry_still_asks`, `a_manifest_alone_approves_nothing`), and the real library loads
+//!   without asking (`the_shipped_library_loads_without_asking`, `a_shipped_library_whose_bytes_changed_goes_to_the_ask_path`).
+//! - The manifest's reports are advisory: an attacker who can write the folder can edit the manifest to hide a change, so a
+//!   clean report proves nothing and the hashes in the executable are the only gate. A changed or missing listed file is a
+//!   warning naming it and an entry of `LoadReport::bundle_problems`
+//!   (`a_changed_or_missing_bundled_file_is_reported_at_start_by_name`). Checking reads every listed file once at start
+//!   (bounded by `MAX_BUNDLE_BYTES`, 16 GiB, and by each file's listed size; measured on the 43 MB mods-demo bundle: about 0.2 s);
+//!   a game with a very large folder should leave `bundle` out.
+//! - The manifest is untrusted input to that report: an entry with `..`, an absolute or drive path, a backslash or a device
+//!   name, a bad hash or size, or a path listed twice is refused and never read, and a file count or byte total past the
+//!   caps refuses the manifest (`bundle::tests`, `a_manifest_entry_that_escapes_the_folder_is_refused_and_reported`). Each
+//!   listed file is read without following a link, in a folder on the way or as the file
+//!   (`a_listed_file_replaced_by_a_link_is_a_change_and_is_never_read_through`, Unix only).
+//! - The manifest's text is the bundler's: `tests/bundle_trust.rs` writes it with `torque_bundle::manifest::write` and compares
+//!   the changed-file verdict with `torque_bundle::manifest::verify`, so a format change there fails here. Module map:
+//!   `bundle` (read, parse, verify), `approve` (the question, the allowlist), this file (`Shipped` wraps the decider,
+//!   `check_bundle` warns). Not covered: the library file itself is read by `std::fs::File::open` as before (a link in
+//!   `plugins/` is followed; its bytes are still hashed before they are trusted), and the extension's own `<name>.toml` is
+//!   not tied to the library's hash (the library must still report the manifest's id and version).
 //! - A script engine dropped inside a call into an extension is told to its languages when the outermost call returns
 //!   (`a_script_engine_dropped_inside_a_call_is_heard_when_the_call_returns`).
 //!
@@ -113,6 +141,7 @@
 #![warn(missing_docs)]
 
 mod approve;
+mod bundle;
 pub mod call_policy;
 mod extension;
 mod ffi;
@@ -131,6 +160,10 @@ use std::rc::Rc;
 use torque_engine::{EngineBuilder, Plugin, PluginGroup, PluginGroupBuilder, PluginId};
 
 pub use approve::{ALLOWLIST_FILE, Allowlist, ApprovalRequest, Approve, Approved, TerminalPrompt};
+pub use bundle::{
+    BUNDLE_MANIFEST_FILE, BundleManifest, MAX_BUNDLE_BYTES, MAX_BUNDLE_FILES,
+    MAX_BUNDLE_MANIFEST_BYTES,
+};
 pub use extension::{Extension, ExtensionPlugin};
 pub use manifest::{MAX_MANIFEST_BYTES, Manifest};
 pub use stage::{MAX_LIBRARY_BYTES, abi_version_at, exported_abi_version, sha256_hex};
@@ -144,6 +177,9 @@ pub const DEFAULT_FOLDER: &str = "plugins";
 
 /// The most manifests a folder is read for (the rest are skipped with a warning).
 pub const MAX_EXTENSIONS: usize = 256;
+
+/// The most bundled-file problems warned about by name at start (all are in [`LoadReport::bundle_problems`]).
+const MAX_BUNDLE_WARNINGS: usize = 20;
 
 /// The per-user folder that keeps the approvals ([`ALLOWLIST_FILE`]) and the loaded copies (`cache`): the platform's
 /// per-user cache folder (`%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or `~/.cache`
@@ -191,6 +227,8 @@ pub struct NativeExtensionsPlugin {
     folder: PathBuf,
     user: Option<PathBuf>,
     decider: Decider,
+    bundle: Option<PathBuf>,
+    shipped: HashSet<String>,
 }
 
 impl NativeExtensionsPlugin {
@@ -200,6 +238,8 @@ impl NativeExtensionsPlugin {
             folder: folder.into(),
             user: user_folder(),
             decider: Decider::Allowlist { ask: true },
+            bundle: None,
+            shipped: HashSet::new(),
         }
     }
 
@@ -220,6 +260,29 @@ impl NativeExtensionsPlugin {
     /// Decides with `approver` instead.
     pub fn approver(mut self, approver: impl Approve + 'static) -> NativeExtensionsPlugin {
         self.decider = Decider::Custom(Rc::new(approver));
+        self
+    }
+
+    /// Approves, without a question, a library whose SHA-256 (lower-case hex of the exact bytes the loader reads) is one of
+    /// `hashes`: the hashes of the libraries a packaged game ships, which the game must have compiled into its executable
+    /// (see [`shipped_hashes`]). They must never be read from a file in the game's folder: whoever can write there could
+    /// approve a library of their own. Any other library goes to the decider as usual. Entries that are not 64 hex digits
+    /// are ignored.
+    pub fn shipped<S: AsRef<str>>(
+        mut self,
+        hashes: impl IntoIterator<Item = S>,
+    ) -> NativeExtensionsPlugin {
+        self.shipped
+            .extend(hashes.into_iter().filter_map(|h| hash_text(h.as_ref())));
+        self
+    }
+
+    /// Treats `dir` as a packaged game's folder for a start-up report: its `manifest.toml` is read and the files it lists
+    /// are checked, and a changed or missing one is a warning naming it (also in [`LoadReport::bundle_problems`]). This
+    /// is advisory only: the manifest is in a folder an attacker may be able to write, so it approves nothing (see
+    /// [`shipped`](Self::shipped)) and a clean report proves nothing. See [`BundleManifest`].
+    pub fn bundle(mut self, dir: impl Into<PathBuf>) -> NativeExtensionsPlugin {
+        self.bundle = Some(dir.into());
         self
     }
 
@@ -251,39 +314,57 @@ impl NativeExtensionsPlugin {
         private::check(&user)?;
         Ok(user)
     }
-}
 
-impl Default for NativeExtensionsPlugin {
-    /// Loads from [`DEFAULT_FOLDER`].
-    fn default() -> NativeExtensionsPlugin {
-        NativeExtensionsPlugin::new(DEFAULT_FOLDER)
+    /// Reads and checks the bundle's manifest ([`bundle`](Self::bundle)), warning about each problem (the first
+    /// [`MAX_BUNDLE_WARNINGS`] by name, then a count): every problem found.
+    fn check_bundle(&self, engine: &mut EngineBuilder) -> Vec<String> {
+        let Some(dir) = &self.bundle else {
+            return Vec::new();
+        };
+        let manifest = match BundleManifest::read(dir) {
+            Ok(manifest) => manifest,
+            Err(reason) => {
+                engine.warn(format!(
+                    "bundle: its manifest cannot be used, so its files are not checked: {reason}"
+                ));
+                return vec![reason];
+            }
+        };
+        let mut problems: Vec<String> = manifest
+            .refused()
+            .iter()
+            .map(|reason| format!("manifest entry refused: {reason}"))
+            .collect();
+        problems.extend(manifest.verify());
+        for problem in problems.iter().take(MAX_BUNDLE_WARNINGS) {
+            engine.warn(format!("bundle: {problem}"));
+        }
+        if problems.len() > MAX_BUNDLE_WARNINGS {
+            engine.warn(format!(
+                "bundle: and {} more",
+                problems.len() - MAX_BUNDLE_WARNINGS
+            ));
+        }
+        problems
     }
-}
 
-impl Plugin for NativeExtensionsPlugin {
-    fn build(&self, engine: &mut EngineBuilder) {
-        if cfg!(target_arch = "wasm32") {
-            engine.warn("native extensions do not load in a browser build: none was looked for");
-            engine.insert_resource(LoadReport::default());
-            return;
-        }
+    /// Finds and loads the extensions, adding their plugins and warning about each refusal: what happened to each manifest.
+    fn load(&self, engine: &mut EngineBuilder) -> Vec<ReportEntry> {
         if !self.folder.is_dir() {
-            engine.insert_resource(LoadReport::default());
-            return;
+            return Vec::new();
         }
-        let shipped = self.folder.join(ALLOWLIST_FILE);
-        if shipped.exists() {
+        let ignored = self.folder.join(ALLOWLIST_FILE);
+        if ignored.exists() {
             engine.warn(format!(
                 "native extensions: {} is ignored: approvals are kept per user, never in the plugins folder",
-                shipped.display()
+                ignored.display()
             ));
         }
         let user = match self.checked_user() {
             Ok(user) => user,
             Err(reason) => {
                 engine.warn(format!("native extensions: none is loaded: {reason}"));
-                engine.insert_resource(LoadReport::default());
-                return;
+                return Vec::new();
             }
         };
         let approver: Rc<dyn Approve> = match &self.decider {
@@ -292,6 +373,15 @@ impl Plugin for NativeExtensionsPlugin {
             }
             Decider::Allowlist { ask: false } => Rc::new(Allowlist::new(user.join(ALLOWLIST_FILE))),
             Decider::Custom(approver) => Rc::clone(approver),
+        };
+        // The game's own libraries first, by the hashes compiled into it; everything else is the decider's.
+        let approver: Rc<dyn Approve> = if self.shipped.is_empty() {
+            approver
+        } else {
+            Rc::new(Shipped {
+                hashes: self.shipped.clone(),
+                inner: approver,
+            })
         };
         let cache = user.join(stage::CACHE_FOLDER);
         let report = load_folder(&self.folder, &cache, &*approver, &|id| {
@@ -325,7 +415,54 @@ impl Plugin for NativeExtensionsPlugin {
             }
             entries.push(entry);
         }
-        engine.insert_resource(LoadReport { entries });
+        entries
+    }
+}
+
+/// `text` as a lower-case SHA-256 hex hash, when it is 64 hex digits.
+fn hash_text(text: &str) -> Option<String> {
+    (text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| text.to_ascii_lowercase())
+}
+
+/// The hashes in `list`, separated by white space (the form `torque-bundle` hands a game's build in an environment variable,
+/// read with `option_env!`): only 64 hex digits count, lower-cased. For [`NativeExtensionsPlugin::shipped`].
+pub fn shipped_hashes(list: &str) -> Vec<String> {
+    list.split_whitespace().filter_map(hash_text).collect()
+}
+
+/// Approves a library whose hash the game shipped, and asks `inner` about the rest.
+struct Shipped {
+    hashes: HashSet<String>,
+    inner: Rc<dyn Approve>,
+}
+
+impl Approve for Shipped {
+    fn approve(&self, request: &ApprovalRequest) -> bool {
+        self.hashes.contains(&request.sha256) || self.inner.approve(request)
+    }
+}
+
+impl Default for NativeExtensionsPlugin {
+    /// Loads from [`DEFAULT_FOLDER`].
+    fn default() -> NativeExtensionsPlugin {
+        NativeExtensionsPlugin::new(DEFAULT_FOLDER)
+    }
+}
+
+impl Plugin for NativeExtensionsPlugin {
+    fn build(&self, engine: &mut EngineBuilder) {
+        if cfg!(target_arch = "wasm32") {
+            engine.warn("native extensions do not load in a browser build: none was looked for");
+            engine.insert_resource(LoadReport::default());
+            return;
+        }
+        let bundle_problems = self.check_bundle(engine);
+        let entries = self.load(engine);
+        engine.insert_resource(LoadReport {
+            entries,
+            bundle_problems,
+        });
     }
 }
 
@@ -359,6 +496,9 @@ pub fn enable_by_flag<S: AsRef<str>>(
 pub struct LoadReport {
     /// One entry per manifest.
     pub entries: Vec<ReportEntry>,
+    /// The bundled files that changed or are missing, and the manifest entries refused, as messages naming the file
+    /// (empty when no [`bundle`](NativeExtensionsPlugin::bundle) was set, or all agree).
+    pub bundle_problems: Vec<String>,
 }
 
 impl LoadReport {

@@ -27,9 +27,14 @@ pub(crate) struct Read1 {
 
 /// The SHA-256 of `bytes`, lower-case hex: how approvals name a file.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
+    hex(&Sha256::digest(bytes))
+}
+
+/// `bytes` as lower-case hex.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes
         .iter()
-        .fold(String::with_capacity(64), |mut s, b| {
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
             let _ = write!(s, "{b:02x}");
             s
         })

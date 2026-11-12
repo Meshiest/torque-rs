@@ -21,6 +21,8 @@ torque-engine = { path = "../torque-engine" }
 torque-ts-vm = { path = "../torque-ts-vm" }
 # The file hash the player approves.
 sha2 = "0.10"
+# A packaged game's manifest is read, and the files it lists opened, without following a link (`bundle`).
+torque-resource = { path = "../torque-resource" }
 # A library's exported ABI version, read from its file before it is loaded.
 object = { version = "0.37", default-features = false, features = ["read_core", "coff", "elf", "macho", "pe", "std"] }
 # Each library's manifest (`plugins/<name>.toml`).
@@ -51,6 +53,8 @@ render = ["dep:torque-app", "dep:torque-render-core", "dep:torque-render-hd"]
 torque-plugin-sdk = { path = "../torque-plugin-sdk" }
 # game.toml turning the plugin on.
 torque-app-server = { path = "../torque-app-server" }
+# The manifest the bundler writes, which `bundle` must read.
+torque-bundle = { path = "../torque-bundle" }
 
 [lints.rust]
 # `deny`, not the workspace's `forbid`: the `ffi` module allows it, for the calls across the C ABI and the library loading.

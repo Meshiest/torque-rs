@@ -4863,11 +4863,13 @@ dependencies = [
  "toml",
  "torque-app",
  "torque-app-server",
+ "torque-bundle",
  "torque-engine",
  "torque-plugin-abi",
  "torque-plugin-sdk",
  "torque-render-core",
  "torque-render-hd",
+ "torque-resource",
  "torque-ts-vm",
  "wasm-bindgen",
 ]

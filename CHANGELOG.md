@@ -530,7 +530,10 @@ different.
   `--web` packages the browser build as a folder a static host serves: its pack's files opened by their loaders, `files.json` checked against the folder and the manifest, then a headless check.
   Two checkouts of one commit in different folders give byte-identical archives (`just bundle-repro-check`), and `--compare` names the
   files that differ between two bundles' archives. The builds run under the tool as cargo's rustc wrapper, so a `RUSTC_WRAPPER` of the
-  user's is not used by bundle builds.
+  user's is not used by bundle builds. A game's own extension libraries load without a question when their hashes, compiled into
+  its executable by the bundler, match (`NativeExtensionsPlugin::shipped`); any other library asks as usual. A packaged game can
+  also read its `manifest.toml` when it starts (`NativeExtensionsPlugin::bundle`) and warn about a listed file that changed or is
+  missing; that report is advisory and approves nothing.
 - Continuous integration on Linux (formatting, clippy, tests, rustdoc, the guide, the MSRV and cargo-deny),
   and `unsafe` code only in the pipeline cache and the native extensions' C ABI (one `ffi` module each in
   `torque-plugin-sdk` and `torque-plugin-loader`).

@@ -8,6 +8,7 @@
 
 use std::path::PathBuf;
 
+use torque::extensions::LoadReport;
 use torque_example_mods_demo::viewer::write_shots;
 use torque_example_mods_demo::{Lua, Session, lua_library};
 
@@ -63,6 +64,12 @@ fn main() -> Result<(), String> {
     let downloads = options.work.join("downloads");
     let _ = std::fs::remove_dir_all(&downloads);
     let mut session = Session::new(Some(lua), false, downloads)?;
+    // A packaged game says at start which of its own files changed since it was packaged.
+    if let Some(report) = session.engines[0].resource::<LoadReport>() {
+        for problem in &report.bundle_problems {
+            eprintln!("mods-demo: warning: bundle: {problem}");
+        }
+    }
     for client in 0..2 {
         session.add_client()?;
         session.connect(client)?;

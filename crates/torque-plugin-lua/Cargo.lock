@@ -1014,6 +1014,7 @@ dependencies = [
  "toml",
  "torque-engine",
  "torque-plugin-abi",
+ "torque-resource",
  "torque-ts-vm",
  "wasm-bindgen",
 ]

@@ -23,6 +23,16 @@ So the engine is careful about which extensions it loads:
 - **You approve each file.** The first time an extension loads, the engine shows its id, its version and the SHA-256
   hash of its file, and asks you. It remembers the hash you approved, in a folder of your own (not in `plugins/`, so a
   download cannot approve itself). If the file changes in any way, it asks again.
+- **A game's own extensions are part of the game.** A packaged game (made with `torque-bundle`) has the SHA-256 of each
+  extension it ships compiled into its executable, the way the executable itself is trusted, and gives them to
+  `NativeExtensionsPlugin::shipped`. A library whose bytes have one of those hashes loads without a question. Any other
+  library (one dropped into `plugins/` later, or a shipped one that changed) asks like before. Nothing in the game's folder
+  can approve a library: a file there is as writable as the library itself.
+- **Changed files are reported, not trusted.** A packaged game also ships a `manifest.toml` listing every file with its
+  SHA-256. A game that sets `NativeExtensionsPlugin::bundle(folder)` reads it at start and warns about each listed file that
+  changed or is missing. This is advisory: someone who can write the game's folder can edit the manifest to hide a change, so
+  a clean report proves nothing, and the manifest approves no library. It reads every listed file once at start (at most
+  the sizes the manifest lists, within 16 GiB), so a game with a very large folder may leave it out.
 - **It loads exactly what you approved.** The engine reads the file once, hashes those bytes, and loads a private,
   read-only copy of them. Changing or swapping the file in `plugins/` afterwards changes nothing that runs.
 - **The wrong version never runs.** The engine reads the ABI version from the file's export table without loading it,
@@ -111,6 +121,13 @@ library reads or loads later is checked. So an extension must be linked statical
 dependencies only among the system's libraries (Windows' System32, the system library paths elsewhere), never in
 `plugins/`, the game's folder, the working folder or `PATH`. A library that needs another DLL or `.so` of its own does
 not load. (Rust's `cdylib` and a C library that uses only the C runtime are fine.)
+
+A game that set `.shipped(hashes)` treats a library whose hash is in that list as approved in step 2, and writes nothing to
+`approved.txt` for it. The hash that counts is the one of the bytes that are then loaded, and the list must be compiled into
+the executable, never read from a file in the game's folder. A game that set `.bundle(folder)` also reads
+`<folder>/manifest.toml` first, only to warn about listed files that changed or are missing. The manifest is untrusted input:
+it is read within a cap, a path that is absolute, holds `..` or a drive, or is listed twice is refused and never read, and
+files are read without following a link.
 
 Every step that fails is a warning on the engine (`engine.warnings()`), and the `LoadReport` resource says what happened
 to each manifest. The question goes to the terminal when there is one. With none (a launcher, a service, a test) it is
