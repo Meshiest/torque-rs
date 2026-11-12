@@ -132,6 +132,8 @@ different.
   `flipbookBlend`; a lit particle finds the sun's visibility once at its center; `softDistance`, `lit` and `sizeByVelocity` are
   honored, and fast thin blended particles (`sizeByVelocity`) are drawn after the TAA. A fill governor holds the summed area the
   sprites cover to a budget of the screen (2, 4, 8 and 16 frames from Low to Ultra), shrinking and thinning them past it.
+- `torque-render-hd`: an additive decal is an emitter, as an additive particle is, so the bloom picks it up (a glowing mark
+  on a surface).
 - `torque-render-hd`: physically based materials for shapes: a `.mat.toml` sidecar beside a texture (one material) or a
   shape (one a material name) names base color, normal (OpenGL convention, a flag for DirectX maps), ORM or separate
   occlusion, roughness and metalness maps, height and emissive maps with their factors, alpha mode and UV scale

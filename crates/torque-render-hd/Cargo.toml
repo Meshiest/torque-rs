@@ -32,6 +32,9 @@ criterion = { workspace = true }
 torque-modelcore = { path = "../torque-modelcore" }
 # The gallery reads a library's files without following links.
 torque-resource = { path = "../torque-resource" }
+# The particles-showcase example: its window, and the GUI pass's draw list for its tabs.
+winit = { version = "0.30", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+torque-gui = { path = "../torque-gui" }
 
 [[bench]]
 name = "upload"

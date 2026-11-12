@@ -4984,12 +4984,14 @@ dependencies = [
  "naga",
  "png",
  "pollster",
+ "torque-gui",
  "torque-modelcore",
  "torque-render-core",
  "torque-render-scene",
  "torque-resource",
  "torque-scene",
  "web-time",
+ "winit",
 ]
 
 [[package]]

@@ -100,6 +100,51 @@ fn a_frames_particles_are_unlit_sprites_and_the_additive_ones_glow() {
 }
 
 #[test]
+fn an_additive_decal_is_an_emitter_as_an_additive_particle_is() {
+    use crate::{Assets, Cull, TexEnv, Vertex};
+    struct None_;
+    impl Assets for None_ {
+        fn read(&self, _path: &str) -> Option<Vec<u8>> {
+            None
+        }
+    }
+    let mark = |blend: Blend| Draw {
+        label: "mark".to_string(),
+        vertices: vec![
+            Vertex {
+                position: [0.0; 3],
+                normal: [0.0, 0.0, 1.0],
+                color: [255; 4],
+                uv: [0.0; 2],
+            };
+            6
+        ],
+        lighting: false,
+        tex_env: TexEnv::None,
+        texture: None,
+        blend,
+        cull: Cull::None,
+        depth_test: true,
+        depth_write: false,
+        fog: true,
+        lights: Vec::new(),
+        vertex_key: None,
+    };
+    let mut scene = HdScene::new(StaticCells::<()>::default());
+    let decals = [(2.0, mark(Blend::Additive)), (3.0, mark(Blend::Alpha))];
+    scene.set_particles_and_decals(&[], &decals, TextureSet::new(&None_));
+    assert_eq!(scene.particles.len(), 2);
+    let glow = scene.particles[0].1.vertices[0].material;
+    assert_ne!(glow & material::PARTICLE, 0);
+    assert_ne!(glow & material::DECAL, 0);
+    assert_ne!(glow & material::EMITTER, 0, "an additive decal glows");
+    let plain = scene.particles[1].1.vertices[0].material;
+    assert_ne!(plain & material::PARTICLE, 0);
+    assert_ne!(plain & material::DECAL, 0);
+    assert_eq!(plain & material::EMITTER, 0, "an alpha decal does not");
+}
+
+#[test]
 fn a_spot_lights_its_cone_with_a_soft_edge() {
     let spot = HdSpot {
         light: HdLight {

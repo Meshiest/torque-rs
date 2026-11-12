@@ -439,7 +439,8 @@ impl<G> HdScene<G> {
 
     /// [`HdScene::set_particles`] with the frame's decals ([`decals`](crate::decals)' draws, each at its eye distance, their
     /// textures indices into the same `textures`): unlit translucent squares on the surfaces, drawn as the particles are but
-    /// not faded into the surface they lie on ([`material::DECAL`]); a [`Blend::Modulate2x`] one in its own pass over the
+    /// not faded into the surface they lie on ([`material::DECAL`]), an additive one an emitter as an additive particle is
+    /// (a glowing mark, into the range the bloom picks up); a [`Blend::Modulate2x`] one in its own pass over the
     /// opaque frame instead.
     pub fn set_particles_and_decals(
         &mut self,
@@ -499,7 +500,17 @@ impl<G> HdScene<G> {
             out.push((dist, hd));
         }
         for (dist, d) in decals {
-            out.push(made(*dist, d, material::PARTICLE | material::DECAL));
+            // A glowing mark: an additive decal is an emitter too, as an additive particle is.
+            let emitter = if d.blend == Blend::Additive {
+                material::EMITTER
+            } else {
+                0
+            };
+            out.push(made(
+                *dist,
+                d,
+                material::PARTICLE | material::DECAL | emitter,
+            ));
         }
         self.particles = out;
         self.particles_generation = self.particles_generation.wrapping_add(1);
