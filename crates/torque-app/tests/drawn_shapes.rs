@@ -550,3 +550,40 @@ fn a_resting_plugin_ghost_is_a_still_copy_that_looks_as_the_moving_one() {
     assert_eq!((short.len(), scene.resting_count()), (1, 0));
     assert_eq!(view.static_batch_triangles(), 0);
 }
+
+/// A StaticShape whose datablock bends (the server's `distortion*` fields) reaches the client as a distorter of its draws, and
+/// one drawn as the bend alone is not among the frame's objects.
+#[test]
+fn a_shape_whose_datablock_bends_is_a_distorter_of_the_frame() {
+    let Some(gpu) = gpu() else { return };
+    let files = files();
+    let mut session = Session::new(&files, None);
+    session.eval(&format!(
+        "makeStatic({AT}, CrateHaze); return makeStatic(\"-3 0 1 0 0 1 0\");"
+    ));
+    assert!(session.run_until(200, |s| s.client.with_world(|w| {
+        w.records
+            .ghosts
+            .values()
+            .filter(|g| g.class.is_some_and(|c| c.name() == "StaticShape"))
+            .count()
+            == 2
+    }) == Some(true)));
+    session.run(8);
+    let mut view = view(&gpu, &session.engine);
+    let mut scene = scene();
+    let drawn = objects(&session, &mut scene, &mut view);
+    let shapes = drawn
+        .iter()
+        .filter(|o| !o.draws.is_empty() && o.radius > 1.0)
+        .count();
+    assert_eq!(shapes, 1, "the haze is not drawn as a shape");
+    let bends = &view.scene().distorters;
+    assert!(!bends.is_empty(), "the haze's draws bend");
+    for d in bends {
+        assert_eq!(d.look.strength, 0.25);
+        assert_eq!(d.look.edge, 2.0);
+        assert_eq!(d.look.tint, [0.9, 0.95, 1.0, 0.5]);
+        assert!((d.centre[0] - 3.0).abs() < 0.01, "{:?}", d.centre);
+    }
+}

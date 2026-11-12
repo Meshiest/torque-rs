@@ -663,3 +663,150 @@ fn the_scripts_defaults_are_the_records_defaults() {
     );
     assert!(!d.collide && !d.flipbook_blend);
 }
+
+// The distortion block (`DecalData`, `ShapeBaseData` and the classes built on it).
+
+use crate::datablocks::distortion::{
+    DistortionExt, MAP_SCALE_RANGE, MAX_EDGE, MAX_SCROLL, MAX_STRENGTH,
+};
+use crate::datablocks::effects::DecalData;
+use crate::datablocks::shapes::{ShapeBaseData, pack_shapebase_data};
+
+/// A view whose distortion fields bend, tint and split.
+fn distortion_view() -> MapView {
+    floats(&[
+        ("distortion", 0.5),
+        ("distortionEdge", 3.0),
+        ("distortionMapScale", 2.0),
+        ("distortionChroma", 0.25),
+    ])
+    .floats("distortionScroll", &[0.1, -0.7])
+    .floats("distortionTint", &[0.8, 0.9, 1.0, 0.3])
+    .with("distortionMap", 0, Value::str("haze.png"))
+    .with("distortionOnly", 0, Value::Bool(true))
+}
+
+#[test]
+fn a_distortion_block_rides_the_engines_records_only() {
+    let decal = pack_decal_data(&distortion_view().with("textureName", 0, Value::str("d.png")));
+    let ext = decal.distortion.clone().expect("the block");
+    assert_eq!(ext.map, b"haze.png".to_vec());
+    assert_eq!(ext.tint.map(F32::get), [0.8, 0.9, 1.0, 0.3]);
+    assert!(ext.only);
+    let plain = DecalData {
+        distortion: None,
+        ..decal.clone()
+    };
+    // Torque's widths: TGE's bits.
+    assert_eq!(written(&decal, widths()), written(&plain, widths()));
+    // The engine's: TGE's bits and the block's flag, then ten floats, the map's name and a flag.
+    let (bytes, bits) = written(&decal, with_extensions());
+    assert_eq!(
+        bits,
+        written(&plain, with_extensions()).1 + 10 * 32 + string_bits(b"haze.png") + 1
+    );
+    assert_eq!(
+        read::<DecalData>(&bytes, bits, with_extensions()).unwrap(),
+        decal
+    );
+    // A decal that does not bend sends the flag alone, whatever its other fields (a tint alone, a class's unset `ColorF`: an
+    // opaque black, is no bend).
+    let none = pack_decal_data(
+        &floats(&[("distortionMapScale", 3.0), ("distortionEdge", 2.0)])
+            .floats("distortionTint", &[0.0, 0.0, 0.0, 1.0]),
+    );
+    assert_eq!(none.distortion, None);
+    assert_eq!(
+        written(&none, with_extensions()).1,
+        bit_total(&none, &table()) + 1
+    );
+    // A shape's: the packer leaves the block out on Torque's widths, and it round-trips on the engine's.
+    let shape = pack_shapebase_data(&distortion_view(), with_extensions());
+    assert_eq!(shape.distortion, Some(ext));
+    assert_eq!(
+        pack_shapebase_data(&distortion_view(), widths()).distortion,
+        None
+    );
+    let (bytes, bits) = written(&shape, with_extensions());
+    assert_eq!(
+        read::<ShapeBaseData>(&bytes, bits, with_extensions()).unwrap(),
+        shape
+    );
+    let bare = ShapeBaseData {
+        distortion: None,
+        ..shape.clone()
+    };
+    assert_eq!(written(&shape, widths()), written(&bare, widths()));
+    // A scale never set (0) reads as 1.
+    let unset = pack_decal_data(&floats(&[("distortion", 0.2)]));
+    assert_eq!(unset.distortion.expect("a bend").map_scale.get(), 1.0);
+}
+
+/// The bits a string takes on the wire (the codec's own count).
+fn string_bits(s: &[u8]) -> usize {
+    let mut w = writer();
+    let t = table();
+    let mut c = Enc::logging(&mut w, &t, widths());
+    c.string("s", &mut s.to_vec()).unwrap();
+    c.into_log().iter().map(|(_, b)| b).sum()
+}
+
+#[test]
+fn a_hostile_value_of_each_distortion_field_is_held_to_its_range() {
+    let rec = pack_decal_data(&distortion_view());
+    let ext = |name: &str, bits: u32| hostile(&rec, name, bits).distortion.expect("the block");
+    let (nan, inf) = (f32::NAN.to_bits(), f32::INFINITY.to_bits());
+    let huge = 1.0e30f32.to_bits();
+    let neg_huge = (-1.0e30f32).to_bits();
+    let d = DistortionExt::default();
+    assert_eq!(ext("distortion", nan).strength, d.strength);
+    assert_eq!(ext("distortion", huge).strength.get(), MAX_STRENGTH);
+    assert_eq!(ext("distortion", neg_huge).strength.get(), -MAX_STRENGTH);
+    assert_eq!(ext("distortionEdge", inf).edge, d.edge);
+    assert_eq!(ext("distortionEdge", huge).edge.get(), MAX_EDGE);
+    assert_eq!(ext("distortionEdge", neg_huge).edge.get(), 0.0);
+    assert_eq!(ext("distortionMapScale", nan).map_scale, d.map_scale);
+    assert_eq!(
+        ext("distortionMapScale", 0).map_scale.get(),
+        MAP_SCALE_RANGE.0
+    );
+    assert_eq!(
+        ext("distortionMapScale", huge).map_scale.get(),
+        MAP_SCALE_RANGE.1
+    );
+    // The vectors (more than one word: the reader's sanitize, which the layout runs on what it read).
+    let vectors = DistortionExt {
+        scroll: [F32::new(1.0e30), F32::new(f32::NAN)],
+        tint: [
+            F32::new(1.0e30),
+            F32::new(-1.0e30),
+            F32::new(f32::NAN),
+            F32::new(0.5),
+        ],
+        ..DistortionExt::default()
+    }
+    .sanitize();
+    assert_eq!(vectors.scroll.map(F32::get), [MAX_SCROLL, 0.0]);
+    assert_eq!(vectors.tint.map(F32::get), [1.0, 0.0, 1.0, 0.5]);
+    assert_eq!(ext("distortionChroma", huge).chroma.get(), 1.0);
+    assert_eq!(ext("distortionChroma", nan).chroma, d.chroma);
+    // The rest of the record is as sent.
+    let other = ext("distortion", huge);
+    assert_eq!(other.edge.get(), 3.0);
+    assert!(other.only);
+    // A record built by hand out of range is written in range.
+    let wild = DecalData {
+        distortion: Some(DistortionExt {
+            strength: F32::new(f32::NAN),
+            chroma: F32::new(9.0),
+            ..DistortionExt::default()
+        }),
+        ..DecalData::default()
+    };
+    let (bytes, bits) = written(&wild, with_extensions());
+    let back: DecalData = read(&bytes, bits, with_extensions()).unwrap();
+    assert_eq!(
+        back.distortion.map(|e| (e.strength.get(), e.chroma.get())),
+        Some((0.0, 1.0))
+    );
+}

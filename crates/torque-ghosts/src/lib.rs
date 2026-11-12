@@ -32,7 +32,10 @@
 //!
 //! - Module map: above. A record's layout is its one function in wire order; the encoder, decoder and logging encoder run it.
 //! - **The engine protocol's extensions** are read and written only on a connection whose [`NetWidths::extensions`] is set
-//!   (the engine's own protocol): the particle datablocks' blocks ([`datablocks::effects`]) and a ShapeBase's dissolve at the
+//!   (the engine's own protocol): the particle datablocks' blocks ([`datablocks::effects`]), the screen-space distortion's block
+//!   of `ShapeBaseData` and `DecalData` ([`datablocks::distortion`]: `a_distortion_block_rides_the_engines_records_only`,
+//!   `a_hostile_value_of_each_distortion_field_is_held_to_its_range`; its presence flag `Absent` in
+//!   `TgeDatablockClass::script_field`) and a ShapeBase's dissolve at the
 //!   end of its cloak group ([`shapebase::DissolveField`]). With it off a record's bits are TGE's, whatever the record holds
 //!   (`a_dissolve_rides_the_cloak_group_on_the_engines_protocol_alone`; the TGE layouts' `(field, width)` lists pin the rest),
 //!   and a reader holds every value to its range (`a_hostile_dissolve_is_held_to_its_ranges_as_it_is_read`). A new extension

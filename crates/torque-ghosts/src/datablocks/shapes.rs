@@ -6,7 +6,8 @@
 //!                  per float of mass, drag, density, maxEnergy, cameraMaxDist, cameraMinDist, cameraDefaultFov, cameraMinFov,
 //!                  cameraMaxFov: flag(!= its default 1, 0, 1, 0, 0, 0.2, 90, 5, 120): F32;
 //!                  string debrisShapeName; flag observeThroughObject; db debris; flag emap, isInvincible, renderWhenDestroyed;
-//!                  db explosion, underwaterExplosion; flag inheritEnergyFromMount, firstPersonOnly, useEyePoint
+//!                  db explosion, underwaterExplosion; flag inheritEnergyFromMount, firstPersonOnly, useEyePoint;
+//!                  the engine protocol's distortion block ([`super::distortion`])
 //! StaticShapeData: ShapeBaseData; flag noIndividualDamage; S32 dynamicTypeField
 //! ItemData:        ShapeBaseData; float(10) friction, elasticity; flag sticky; flag(gravityMod != 1): signed float(11);
 //!                  flag(maxVelocity != -1): F32; flag(lightType != NoLight): int(2) type, float(7) x4 colour, S32 lightTime,
@@ -26,6 +27,7 @@
 //! 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.) and `T3D/item.cpp`, `T3D/camera.cpp`, `T3D/pathCamera.cpp`
 //! and `T3D/missionMarker.cpp` (each Copyright (c) 2012 GarageGames, LLC). The lists are TGE's; the code is this crate's own.
 
+use super::distortion::DistortionExt;
 use super::{
     clamp_f, db, db_ref, db_refs, dbs, float, float_ints, float_ints_of, opt_float, unless,
 };
@@ -66,6 +68,8 @@ pub struct ShapeBaseData {
     pub inherit_energy_from_mount: bool,
     pub first_person_only: bool,
     pub use_eye_point: bool,
+    /// The engine protocol's distortion block (none: every field at its default, or not on this connection).
+    pub distortion: Option<DistortionExt>,
 }
 
 impl Layout for ShapeBaseData {
@@ -95,7 +99,13 @@ impl Layout for ShapeBaseData {
             &mut self.inherit_energy_from_mount,
         )?;
         c.flag("firstPersonOnly", &mut self.first_person_only)?;
-        c.flag("useEyePoint", &mut self.use_eye_point)
+        c.flag("useEyePoint", &mut self.use_eye_point)?;
+        if c.widths().extensions {
+            opt(c, "distortionExt", &mut self.distortion, |c, e| e.layout(c))
+        } else {
+            self.distortion = None;
+            Ok(())
+        }
     }
 }
 
@@ -128,6 +138,7 @@ pub fn pack_shapebase_data(v: &dyn ObjectView, w: NetWidths) -> ShapeBaseData {
         inherit_energy_from_mount: boolean(v, "inheritEnergyFromMount", 0),
         first_person_only: boolean(v, "firstPersonOnly", 0),
         use_eye_point: boolean(v, "useEyePoint", 0),
+        distortion: DistortionExt::pack(v).filter(|_| w.extensions),
     }
 }
 

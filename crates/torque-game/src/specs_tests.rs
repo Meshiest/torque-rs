@@ -219,3 +219,61 @@ fn the_particle_datablocks_read_defaults_that_leave_tges_particles_as_they_are()
     assert_eq!(initial("ParticleEmitterData", "budget"), Value::Int(0));
     assert_eq!(initial("ParticleEmitterData", "trail"), Value::Bool(false));
 }
+
+/// The distortion's script defaults are the wire block's: a ShapeBaseData or a DecalData a script made reads a map scale of 1
+/// and no tint, and every class built on ShapeBaseData has the fields.
+#[test]
+fn the_distortion_defaults_are_the_wires() {
+    use torque_ghosts::datablocks::distortion::{DISTORTION_DEFAULTS, DistortionExt};
+    use ts_vm::fields::Value;
+    let mut vm = Vm::new();
+    assert_eq!(install(&mut vm), CLASSES.len());
+    let classes = &vm.objects().classes;
+    let initial = |class: &str, name: &str, k: usize| {
+        let def = classes
+            .get(classes.find(class.as_bytes()).unwrap())
+            .unwrap();
+        let (_, slots) = def
+            .layout
+            .field(name.as_bytes())
+            .unwrap_or_else(|| panic!("{class} has no {name}"));
+        def.layout.initial[slots[k]].clone()
+    };
+    let d = DistortionExt::default();
+    for class in ["ShapeBaseData", "DecalData"] {
+        assert_eq!(
+            initial(class, "distortionMapScale", 0),
+            Value::Float(d.map_scale.get()),
+            "{class}"
+        );
+        assert_eq!(
+            initial(class, "distortion", 0),
+            Value::Float(0.0),
+            "{class}"
+        );
+    }
+    for class in [
+        "StaticShapeData",
+        "PlayerData",
+        "ItemData",
+        "WheeledVehicleData",
+    ] {
+        // Every class built on ShapeBaseData reads the defaults (one with its own list too).
+        assert_eq!(
+            initial(class, "distortionMapScale", 0),
+            Value::Float(d.map_scale.get()),
+            "{class}"
+        );
+        assert_eq!(
+            initial(class, "distortionOnly", 0),
+            Value::Bool(false),
+            "{class}"
+        );
+    }
+    for (name, text) in DISTORTION_DEFAULTS {
+        assert!(
+            SHAPE_BASE_DATA_DEFAULTS.contains(&(*name, *text)),
+            "ShapeBaseData's defaults lack {name} = {text}"
+        );
+    }
+}

@@ -59,6 +59,17 @@
 //!   (`GpuSprites::wind`, a frame's) carries its particles by their `windCoefficient` as the CPU path's does, and a look that
 //!   orients its particles turns them along their ejection direction or velocity (`tests/gpu_particles.rs`: the wind's picture
 //!   is the CPU path's, an oriented square's box is a turned one's, one at rest draws nothing).
+//! - The screen-space distortion ([`distortion`], `shaders/distortion.wgsl`) runs after the TAA resolve into the shown copy and
+//!   never into the TAA's history, so a moving bend leaves no trail; a frame with no distorter in the main camera's frustum
+//!   makes no target and records no pass (byte for byte the frame without it); FXAA frames (Low, or the TAA off) skip it. At
+//!   most `MAX_DISTORTERS` draw, the nearest, within `MAX_VERTICES` and `MAX_INDICES` (`torque_render_scene::hd::distortion`;
+//!   `more_distorters_than_the_cap_draw_the_nearest_within_the_caps`), and bytes past the device's largest buffer draw nothing. A
+//!   known offset moves the picture behind by the pixels the look gives, what is in front of a distorter is neither bent nor
+//!   pulled into the bend, and a distorter out of sight leaves the frame as it was (`tests/distortion.rs`). The look's bytes are
+//!   the shader's `Look` (`a_looks_bytes_are_the_shaders_order`); the shader is validated with naga by its own test, outside
+//!   the permutation registry. Its GPU time is the `distortion` mark (and `distortion-clip --bench`, under the bench lock).
+//!   The GPU particle pool plugs in through [`distortion::Distortion::encode`]'s `extra` callback and
+//!   [`distortion::Distortion::look_slot`]: a bending look's bucket draws its quads with `fs_distort` into the same targets.
 //! - The AO pass runs at half the internal frame's resolution at every quality (`ImageSettings::ao_full_res` asks for the whole;
 //!   `ImageSettings::ao_scale` is the one place that says which): an AO texel stands for the internal pixel at its top left block
 //!   (`ao.wgsl`, `ao_filter.wgsl`), and the forward pass upsamples the four texels about a pixel by their bilinear weights times
@@ -152,6 +163,7 @@ pub mod bloom;
 pub mod capture;
 pub mod clouds;
 pub mod cull;
+pub mod distortion;
 pub mod exposure;
 pub mod ext;
 pub mod froxels;

@@ -323,6 +323,9 @@ pub struct HdScene<G> {
     /// `lightmap_generation` changes.
     pub lightmap: Option<super::Lightmap>,
     pub lightmap_generation: u64,
+    /// The surfaces that bend the picture behind them this frame ([`distortion`](super::distortion)); set every frame, as the
+    /// particles are. None in sight: the frame is drawn as without them.
+    pub distorters: Vec<super::distortion::HdDistorter>,
 }
 
 impl<G> HdScene<G> {
@@ -392,7 +395,35 @@ impl<G> HdScene<G> {
             clouds: None,
             cloud_look: None,
             size: (1, 1),
+            distorters: Vec::new(),
         }
+    }
+
+    /// The frame's distorters (their maps' indices into `textures`), in place of the last frame's.
+    pub fn set_distorters(
+        &mut self,
+        distorters: Vec<super::distortion::HdDistorter>,
+        textures: TextureSet,
+    ) {
+        self.distorters.clear();
+        self.add_distorters(distorters, textures);
+    }
+
+    /// More distorters this frame (their maps' indices into `textures`), after those set.
+    pub fn add_distorters(
+        &mut self,
+        distorters: Vec<super::distortion::HdDistorter>,
+        textures: TextureSet,
+    ) {
+        let local: Vec<usize> = textures
+            .into_textures()
+            .into_iter()
+            .map(|t| self.textures.intern(t))
+            .collect();
+        self.distorters.extend(distorters.into_iter().map(|mut d| {
+            d.look.map = d.look.map.and_then(|(t, s)| local.get(t).map(|&g| (g, s)));
+            d
+        }));
     }
 
     /// The frame's particles ([`particles`](crate::particles)' draws, each at its eye distance, their textures indices into

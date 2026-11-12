@@ -51,9 +51,10 @@
 //! # Maintaining
 //!
 //! **A change to what an engine session's payload writes is a new [`engine::ENGINE_FRAMING`]**, as a change to the framing is:
-//! framing 4 is the ShapeBase cloak group's dissolve flag (torque-ghosts), 3 the particle datablocks' block, 2 the datablock
+//! framing 5 is the distortion block of `ShapeBaseData` and `DecalData` records, 4 the ShapeBase cloak group's dissolve
+//! flag (torque-ghosts), 3 the particle datablocks' block, 2 the datablock
 //! removal; `tests/engine_link.rs` holds that a peer of every older framing is refused at the connect, and
-//! `tests/engine_golden_v4.rs` pins this one's bytes.
+//! `tests/engine_golden_v5.rs` pins this one's bytes.
 //!
 //! **A stranger's budget is shared out through [`fair`], never by its own count.** A per-second budget is a
 //! [`fair::FairLimiter`] (per address, per network, and with a total one network takes at most an eighth of), and a
@@ -127,7 +128,7 @@
 //!
 //! **The engine protocol's event table is Torque's plus its own classes** ([`events::EventRegistry::engine`]:
 //! `DataBlockRemoveEvent`, server to client), derived on both sides by the one sort rule, so the ids of the classes after a new
-//! one move and any change to it is a new [`engine::ENGINE_FRAMING`] (the goldens of `tests/engine_golden_v4.rs` and
+//! one move and any change to it is a new [`engine::ENGINE_FRAMING`] (the goldens of `tests/engine_golden_v5.rs` and
 //! torque-trace-hash's `wire_golden` pin the current version's bytes). Torque's table ([`events::EventRegistry::torque`]) never
 //! changes: a stock peer has no class for the engine's events. A Torque class the engine codes keeps a field of
 //! [`events::EventIds`]; an engine class is answered by an `Option` the table may lack ([`events::EventIds::datablock_remove`]).

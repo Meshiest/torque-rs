@@ -10,6 +10,15 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - A frame's distorters ([`hd::distortion`]) are plain data: world-space triangles with a look held to the wire block's ranges
+//!   ([`hd::distortion::DistortionLook::sanitize`], the constants torque-ghosts' `datablocks::distortion` defines), moved with
+//!   the render origin (`a_distorter_moves_with_the_render_origin`), their maps' indices remapped into the scene's texture table
+//!   ([`hd::HdScene::set_distorters`]). The datablock fields reach them through [`distorters`]: read and held again, none when
+//!   they change nothing, a shape drawn as the bend alone taken out of the objects, a decal's fading with it
+//!   (`a_datablocks_distortion_is_read_in_range_and_none_when_it_changes_nothing`,
+//!   `a_bending_decal_is_a_distorter_that_fades_with_it_and_one_that_only_bends_draws_no_texture`; torque-app's
+//!   `a_shape_whose_datablock_bends_is_a_distorter_of_the_frame`). A new look field goes in torque-ghosts' block first, then
+//!   [`hd::distortion::DistortionLook`], [`distorters::DistortionData::read`] and the shader's `Look`.
 //! - The engine protocol's particle fields ([`particles::ParticleExtras`], [`particles::EmitterExtras`]) are read from the client's
 //!   datablock as torque-ghosts' extension block made it and held to its ranges again (`hostile_engine_fields_are_held_to_their_ranges_as_they_are_read`);
 //!   a datablock that sent none reads the defaults that leave TGE's look and motion. A new field is added in torque-ghosts'
@@ -87,6 +96,7 @@
 pub mod camera;
 pub mod decals;
 pub mod dissolve;
+pub mod distorters;
 pub mod emitter_nodes;
 pub mod env;
 pub mod first_person;

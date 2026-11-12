@@ -15,7 +15,7 @@ Console classes, with the fields each adds to its parent's. 119 classes.
 | [CameraData](#cameradata) | [ShapeBaseData](#shapebasedata) | 0 |
 | [Debris](#debris) | [GameBase](#gamebase) | 1 |
 | [DebrisData](#debrisdata) | [GameBaseData](#gamebasedata) | 24 |
-| [DecalData](#decaldata) | [SimDataBlock](#simdatablock) | 3 |
+| [DecalData](#decaldata) | [SimDataBlock](#simdatablock) | 11 |
 | [Explosion](#explosion) | [GameBase](#gamebase) | 0 |
 | [ExplosionData](#explosiondata) | [GameBaseData](#gamebasedata) | 36 |
 | [FlyingVehicle](#flyingvehicle) | [Vehicle](#vehicle) | 0 |
@@ -98,7 +98,7 @@ Console classes, with the fields each adds to its parent's. 119 classes.
 | [ScriptGroup](#scriptgroup) | [SimGroup](#simgroup) | 2 |
 | [ScriptObject](#scriptobject) | [SimObject](#simobject) | 2 |
 | [ShapeBase](#shapebase) | [GameBase](#gamebase) | 0 |
-| [ShapeBaseData](#shapebasedata) | [GameBaseData](#gamebasedata) | 36 |
+| [ShapeBaseData](#shapebasedata) | [GameBaseData](#gamebasedata) | 44 |
 | [ShapeBaseImageData](#shapebaseimagedata) | [GameBaseData](#gamebasedata) | 54 |
 | [SimDataBlock](#simdatablock) | [SimObject](#simobject) | 0 |
 | [SimGroup](#simgroup) | [SimSet](#simset) | 0 |
@@ -257,6 +257,14 @@ No fields of its own.
 | `sizeX` | float |  |  |
 | `sizeY` | float |  |  |
 | `textureName` | filename |  |  |
+| `distortion` | float |  |  |
+| `distortionEdge` | float |  |  |
+| `distortionMap` | filename |  |  |
+| `distortionMapScale` | float |  |  |
+| `distortionScroll` | Point2F |  |  |
+| `distortionTint` | ColorF |  |  |
+| `distortionChroma` | float |  |  |
+| `distortionOnly` | bool |  |  |
 
 ## Explosion
 
@@ -1447,6 +1455,14 @@ No fields of its own.
 | `hudRenderName[8]` | bool |  |  |
 | `aiAvoidThis` | bool |  |  |
 | `computeCRC` | bool |  |  |
+| `distortion` | float |  |  |
+| `distortionEdge` | float |  |  |
+| `distortionMap` | filename |  |  |
+| `distortionMapScale` | float |  |  |
+| `distortionScroll` | Point2F |  |  |
+| `distortionTint` | ColorF |  |  |
+| `distortionChroma` | float |  |  |
+| `distortionOnly` | bool |  |  |
 
 ## ShapeBaseImageData
 

@@ -148,7 +148,7 @@ datablock_classes! {
     AudioSampleEnvironment = "AudioSampleEnvironment" (AudioSampleEnvironment, |v, _| pack_audio_sample_environment(v)),
     CameraData = "CameraData" (ShapeBaseData, pack_shapebase_data),
     DebrisData = "DebrisData" (DebrisData, pack_debris_data),
-    DecalData = "DecalData" (DecalData, |v, _| pack_decal_data(v)),
+    DecalData = "DecalData" (DecalData, |v, w| pack_decal_data(v).for_widths(w)),
     ExplosionData = "ExplosionData" (ExplosionData, pack_explosion_data),
     FireballAtmosphereData = "FireballAtmosphereData" (FireballAtmosphereData, pack_fireball_atmosphere_data),
     FlyingVehicleData = "FlyingVehicleData" (FlyingVehicleData, pack_flying_vehicle_data),
@@ -344,6 +344,7 @@ impl TgeDatablockClass {
             (LightningData, "strikeTextureNames") => field("strikeTextures"),
             (ParticleData, "textureNameList") => field("animTexName"),
             (ParticleData | ParticleEmitterData, "ext") => Absent,
+            (_, "distortionExt") => Absent,
             (ItemData | StaticShapeData, "dynamicTypeField") => field("dynamicType"),
             (DebrisData | ShapeBaseImageData | WheeledVehicleTire, "shapeName") => {
                 field("shapeFile")

@@ -25,7 +25,11 @@
 //! `specs.rs` like the others, their defaults in the class's `defaults` (what a datablock a script made reads for a field it
 //! did not set; they are the defaults that leave TGE's look and motion), and they reach a client on the engine's protocol only
 //! (torque-ghosts' extension blocks). A new one is added in `specs.rs`, in torque-ghosts' `effects.rs` (the block, its range, its
-//! packer) and in torque-render-scene's `particles_extras.rs`; `just script-reference` writes the reference again.
+//! packer) and in torque-render-scene's `particles_extras.rs`; `just script-reference` writes the reference again. The
+//! screen-space distortion's fields (`distortion`, `distortionEdge`, `distortionMap`, `distortionMapScale`, `distortionScroll`,
+//! `distortionTint`, `distortionChroma`, `distortionOnly`) are `ShapeBaseData`'s (so every class built on it has them) and
+//! `DecalData`'s, their defaults torque-ghosts' `DISTORTION_DEFAULTS` (`the_distortion_defaults_are_the_wires`); the block is
+//! torque-ghosts' `datablocks/distortion.rs`, its reader torque-render-scene's `distorters.rs`.
 //!
 //! **Speed.** A server tick builds a collision phase for every Player, Item and vehicle. Rules a change must keep; the bench
 //! that shows them is torque-trace-hash's `server` (64 AIPlayers standing among and walking beside 1,024 props, with the

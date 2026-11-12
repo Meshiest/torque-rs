@@ -96,6 +96,11 @@ different.
   HDR, and the front emits the emitter's particles from the surface it crosses, through the GPU particle pool or the CPU's,
   optionally in the surface's colors. Objects that do not dissolve draw with the same shaders as before.
 
+- Screen-space distortion in the enhanced renderer: a shape or a decal whose datablock sets `distortion` (with
+  `distortionEdge`, `distortionMap`, `distortionMapScale`, `distortionScroll`, `distortionTint`, `distortionChroma` and
+  `distortionOnly`) bends what is behind it, for glass, water, heat haze, force fields and shockwaves; what is in front is not
+  bent. Applied after the TAA, skipped at Low, and free in a frame with no distorter in sight. The fields travel in the engine
+  protocol only (framing 5); `HdScene::distorters` takes them from code.
 - `torque-app`: `WorldView::release_gpu` drops the enhanced renderer's GPU world and `restore_gpu` makes it again with the
   scene, the settings and the slot's passes as they were, so a game can draw another look for a while and come back to an
   identical picture (`has_gpu`, `gpu_geometry_bytes`).

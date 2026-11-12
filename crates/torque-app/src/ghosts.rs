@@ -34,8 +34,9 @@ use glam::Vec3;
 use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
 use torque_render_scene::dissolve::Dissolves;
+use torque_render_scene::distorters::shape_distorters;
 use torque_render_scene::emitter_nodes::EmitterNodes;
-use torque_render_scene::hd::DynamicObject;
+use torque_render_scene::hd::{DynamicObject, HdCamera};
 use torque_render_scene::images::{HeldMotion, ImageClock};
 use torque_render_scene::math::Mat;
 use torque_render_scene::mounts::render_pose;
@@ -1925,6 +1926,34 @@ impl<S: GhostStyle> GhostScene<S> {
                     && !world.mounted_images(o.0).is_empty()
             })
             .count();
+        // The shapes whose datablocks bend are the frame's distorters (the decals' join them in `effects`), those in the view of
+        // the eye about to be drawn (the world's camera without one; no cull without either); those drawn as the bend alone
+        // leave the objects.
+        let mut maps = TextureSet::new(assets);
+        let at = eye.copied().or_else(|| world.eye());
+        let frame = view.scene();
+        let camera = at.map(|e| {
+            HdCamera::new(
+                e,
+                frame.fov,
+                frame.visible_distance,
+                frame.size.0,
+                frame.size.1,
+            )
+        });
+        let sees = |c: [f32; 3], r: f32| {
+            camera
+                .as_ref()
+                .is_none_or(|cam| cam.sees_box(c.map(|v| v - r), c.map(|v| v + r)))
+        };
+        let distorters = shape_distorters(
+            world,
+            &mut out,
+            at.map_or([0.0; 3], |e| e.position),
+            sees,
+            &mut maps,
+        );
+        view.set_distorters(distorters, maps);
         let style = &mut self.style;
         out.extend(
             self.interiors
@@ -2054,6 +2083,11 @@ impl<S: GhostStyle> GhostScene<S> {
         let mut decals = self.decals.draws(eye.position, &mut set);
         if let Some(tracks) = &self.tracks {
             decals.extend(tracks.draws(eye.position, &mut set));
+        }
+        let mut maps = TextureSet::new(assets);
+        let bends = self.decals.distorters(eye.position, &mut maps);
+        if !bends.is_empty() {
+            view.add_distorters(bends, maps);
         }
         view.set_particles_decals_and_sprites(&draws, &decals, pool.then_some(&sprites), set);
     }

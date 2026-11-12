@@ -367,6 +367,7 @@ impl<G: Shift> Shift for HdScene<G> {
             gpu_nodes: _,
             lightmap: _,
             lightmap_generation: _,
+            distorters,
         } = self;
         eye.shift(by);
         sky.shift(by);
@@ -384,6 +385,7 @@ impl<G: Shift> Shift for HdScene<G> {
         lights.shift(by);
         spots.shift(by);
         area_lights.shift(by);
+        distorters.shift(by);
     }
 }
 

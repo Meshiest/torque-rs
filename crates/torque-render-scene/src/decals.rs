@@ -22,6 +22,9 @@
 //!   way but multiplying the surface under it by twice its texture (0.5 gray leaves it as it is), so it takes the surface's
 //!   color, light and shadow; it fades toward 0.5 gray.
 //!
+//! - **Bending** ([`DecalData::distortion`], the engine protocol's block): a decal whose datablock bends is also a distorter of its
+//!   triangles, fading with it ([`DecalManager::distorters`]); one drawn as the bend alone (`distortionOnly`) draws no texture.
+//!
 //! **Approximations**: no wrapping onto a neighboring face; the bias, the fade and the multiplied blend are this crate's.
 //!
 //! Credit: follows TGE 1.4's `sim/decalManager.cc` and `game/projectile.cc` (Copyright (C) GarageGames.com, Inc.), as Torque3D
@@ -37,6 +40,9 @@ use ghosts::Value;
 
 use glam::Vec3;
 
+use crate::distorters::DistortionData;
+use crate::hd::distortion::HdDistorter;
+use crate::hd::{HdDraw, HdVertex, oct_encode};
 use crate::math::unit_over;
 use crate::particles::Rng;
 use crate::textures::TextureSet;
@@ -63,6 +69,8 @@ pub struct DecalData {
     pub texture: Option<String>,
     /// How it is drawn over its surface: [`Blend::Alpha`] (TGE's; the default) or [`Blend::Modulate2x`].
     pub blend: Blend,
+    /// How it bends the picture behind it (none: not at all).
+    pub distortion: Option<DistortionData>,
 }
 
 /// The `DecalData` `id` of `world` (`DecalData::unpackData`): a size the server did not send is the constructor's 1.
@@ -83,6 +91,7 @@ pub fn decal_data(world: &ClientWorld<TgeClientSet>, id: u32) -> Option<DecalDat
         size: [size("sizeX"), size("sizeY")],
         texture,
         blend: Blend::Alpha,
+        distortion: DistortionData::read(|name, i| db.get(name, i)),
     })
 }
 
@@ -125,6 +134,8 @@ pub struct Decal {
     pub texture: Option<String>,
     /// [`DecalData::blend`].
     pub blend: Blend,
+    /// [`DecalData::distortion`].
+    pub distortion: Option<DistortionData>,
     /// Seconds since it was laid.
     pub age: f32,
     /// Its mesh: triangles on the surface.
@@ -310,6 +321,7 @@ impl DecalManager {
             half_y: (y * data.size[1] * 0.5).to_array(),
             texture: data.texture.clone(),
             blend: data.blend,
+            distortion: data.distortion.clone(),
             age: 0.0,
             triangles: Vec::new(),
         })
@@ -337,7 +349,11 @@ impl DecalManager {
     /// The decals as draws, each at its distance from `eye` (see the module docs).
     pub fn draws(&self, eye: [f32; 3], textures: &mut TextureSet<'_>) -> Vec<(f32, Draw)> {
         let mut out = Vec::new();
-        for d in &self.decals {
+        for d in self
+            .decals
+            .iter()
+            .filter(|d| !d.distortion.as_ref().is_some_and(|x| x.only))
+        {
             let Some(texture) = d.texture.as_deref().and_then(|t| textures.get_modulated(t)) else {
                 continue;
             };
@@ -390,6 +406,37 @@ impl DecalManager {
                     vertex_key: None,
                 },
             ));
+        }
+        out
+    }
+
+    /// The decals that bend as distorters: each its triangles at its opacity (the bend's share), both sides, drawn nearer `eye`
+    /// as the draws are ([`DEPTH_BIAS`]), its map's index into `textures`.
+    pub fn distorters(&self, eye: [f32; 3], textures: &mut TextureSet<'_>) -> Vec<HdDistorter> {
+        let mut out = Vec::new();
+        for d in &self.decals {
+            let Some(data) = &d.distortion else {
+                continue;
+            };
+            let alpha = (self.opacity(d) * 255.0).round() as u8;
+            if alpha == 0 || d.triangles.is_empty() {
+                continue;
+            }
+            let mut draw = HdDraw::empty();
+            draw.label = "decal distortion".to_string();
+            draw.depth_write = false;
+            let normal = oct_encode(d.normal);
+            draw.vertices
+                .extend(d.triangles.iter().flatten().map(|&(p, uv)| HdVertex {
+                    position: [0, 1, 2].map(|k| p[k] + (eye[k] - p[k]) * DEPTH_BIAS),
+                    normal,
+                    uv,
+                    color: [255, 255, 255, alpha],
+                    material: 0,
+                    extra: 0,
+                }));
+            draw.indices = (0..draw.vertices.len() as u32).collect();
+            out.push(HdDistorter::new(draw, data.look(textures)));
         }
         out
     }

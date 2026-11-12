@@ -61,6 +61,10 @@
 //!   ([`view::WorldView::run_dissolves`]: the scene's `dissolves`), their fronts' particles handed to the pool or drawn with the
 //!   others (`tests/dissolve_wire.rs`: a server's dissolve reaches an engine client with its look and clock and clears; Torque's
 //!   protocol carries none).
+//! - A [`ghosts::GhostScene`]'s `objects` sets the frame's distorters from the shapes whose datablocks bend (taking out those
+//!   drawn as the bend alone) and its `effects` adds the decals' ([`view::WorldView::set_distorters`],
+//!   [`view::WorldView::add_distorters`]): call `objects` first in a frame (`a_shape_whose_datablock_bends_is_a_distorter_of_the_frame`,
+//!   in `tests/drawn_shapes.rs`).
 //! - A [`ghosts::GhostScene`] gives the Sky's wind ([`torque_render_scene::sky::wind`]) to every emitter it runs at the start
 //!   of a frame (an emitter made in a frame has it from the next) and to the pool's frame, and runs the ghosted
 //!   `ParticleEmitterNode`s ([`torque_render_scene::emitter_nodes::EmitterNodes`]) beside the trails and the dust, handing their

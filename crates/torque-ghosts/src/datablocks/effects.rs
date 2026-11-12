@@ -45,6 +45,7 @@
 //! ParticleData:        flag(extension != defaults): F32 turbulence, turbulenceScale; flag collide; F32 bounceElasticity,
 //!                      bounceFriction; int(2) lit; F32 softDistance; flag flipbookBlend; F32 sizeByVelocity
 //! ParticleEmitterData: flag(extension != defaults): flag trail; int(18) budget
+//! DecalData:           the distortion block ([`super::distortion`])
 //! ```
 //!
 //! A reader sanitizes every value of a block as it reads it ([`ParticleExt::sanitize`], [`EmitterExt::sanitize`]): a float that
@@ -65,6 +66,7 @@
 //! `T3D/fx/particleEmitterNode.cpp`, `T3D/fx/splash.cpp` and `T3D/decal/decalData.cpp` (each Copyright (c) 2012 GarageGames,
 //! LLC). The lists are TGE's; the code is this crate's own.
 
+use super::distortion::DistortionExt;
 use super::{
     MAX_EMITTER_PARTICLES, MAX_EXPLOSION_KEYS, MAX_PARTICLE_TEXTURES, byte, cast, color_bytes,
     color_i, db, db_ref, db_refs, dbs, float, float_ints, float_ints_of, opt_float, present, texts,
@@ -1007,13 +1009,32 @@ pub struct DecalData {
     pub size_x: F32,
     pub size_y: F32,
     pub texture_name: Vec<u8>,
+    /// The engine protocol's distortion block (none: every field at its default, or not on this connection).
+    pub distortion: Option<DistortionExt>,
+}
+
+impl DecalData {
+    /// The record as a connection of `widths` carries it: without its distortion block unless the connection has extensions.
+    #[must_use]
+    pub fn for_widths(mut self, widths: NetWidths) -> DecalData {
+        if !widths.extensions {
+            self.distortion = None;
+        }
+        self
+    }
 }
 
 impl Layout for DecalData {
     fn layout<C: Codec>(&mut self, c: &mut C) -> R {
         float(c, "sizeX", &mut self.size_x)?;
         float(c, "sizeY", &mut self.size_y)?;
-        c.string("textureName", &mut self.texture_name)
+        c.string("textureName", &mut self.texture_name)?;
+        if c.widths().extensions {
+            opt(c, "distortionExt", &mut self.distortion, |c, e| e.layout(c))
+        } else {
+            self.distortion = None;
+            Ok(())
+        }
     }
 }
 
@@ -1022,5 +1043,6 @@ pub fn pack_decal_data(v: &dyn ObjectView) -> DecalData {
         size_x: raw(v, "sizeX", 0),
         size_y: raw(v, "sizeY", 0),
         texture_name: text(v, "textureName", 0),
+        distortion: DistortionExt::pack(v),
     }
 }

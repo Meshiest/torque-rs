@@ -33,6 +33,7 @@ use torque_render_scene::dissolve::Dissolves;
 use torque_render_scene::hd::cells::{Batch, Cell, SlotTexture};
 use torque_render_scene::hd::clouds::CloudLook;
 use torque_render_scene::hd::clusters::{Cluster, MAX_CELL_CLUSTERS};
+use torque_render_scene::hd::distortion::HdDistorter;
 use torque_render_scene::hd::environment::ClientDay;
 use torque_render_scene::hd::objects::{KeptObject, carry_motion, objects_of};
 use torque_render_scene::hd::particle_light::ParticleLight;
@@ -1481,6 +1482,17 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
     pub fn run_dissolves(&mut self, dissolves: &mut Dissolves, dt: f32) {
         let s = &mut *self.scene;
         s.dissolves = dissolves.frame(&s.objects, &s.textures.textures, dt);
+    }
+
+    /// The frame's distorters (surfaces that bend the picture behind them, [`torque_render_scene::hd::distortion`]), their maps'
+    /// indices into `textures`, in place of the last frame's. Every frame hands its own (none: an empty list).
+    pub fn set_distorters(&mut self, distorters: Vec<HdDistorter>, textures: TextureSet) {
+        self.scene.set_distorters(distorters, textures);
+    }
+
+    /// More distorters this frame, after those set ([`WorldView::set_distorters`]).
+    pub fn add_distorters(&mut self, distorters: Vec<HdDistorter>, textures: TextureSet) {
+        self.scene.add_distorters(distorters, textures);
     }
 
     /// The frame's particles: each draw at its eye distance, its texture an index into `textures` (the set the emitters drew

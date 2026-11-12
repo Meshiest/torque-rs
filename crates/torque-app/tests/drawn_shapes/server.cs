@@ -10,6 +10,16 @@ datablock StaticShapeData(CrateStatic)
    shapeFile = "art/crate.dts";
 };
 
+// The crate as a heat haze: drawn as the bend alone (the engine protocol's distortion fields).
+datablock StaticShapeData(CrateHaze)
+{
+   shapeFile = "art/crate.dts";
+   distortion = 0.25;
+   distortionEdge = 2;
+   distortionTint = "0.9 0.95 1 0.5";
+   distortionOnly = true;
+};
+
 datablock PropData(CrateProp)
 {
    model = "art/crate.dts";
@@ -47,9 +57,11 @@ function GameConnection::onDrop(%client, %reason)
       %client.camera.delete();
 }
 
-function makeStatic(%xf)
+function makeStatic(%xf, %data)
 {
-   %o = new StaticShape() { dataBlock = CrateStatic; };
+   if (%data $= "")
+      %data = CrateStatic;
+   %o = new StaticShape() { dataBlock = %data; };
    %o.setTransform(%xf);
    MissionCleanup.add(%o);
    return %o;

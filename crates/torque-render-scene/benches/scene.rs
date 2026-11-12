@@ -129,6 +129,7 @@ fn decals(c: &mut Criterion) {
         size: [1.5, 1.5],
         texture: None,
         blend: Blend::Alpha,
+        distortion: None,
     };
     c.bench_function("decal clip 1k triangles", |b| {
         b.iter(|| {

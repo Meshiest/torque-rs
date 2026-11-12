@@ -92,6 +92,7 @@ use torque_render_scene::hd::lut::{CubeLut, LUT_SIZE};
 use torque_render_scene::hd::post::{AntiAliasing, AoMethod, RenderScale, internal_size, jitter};
 use torque_render_scene::hd::settings::ImageSettings;
 
+use crate::distortion::{self, DistortFrame, Distortion};
 use crate::ext::{
     ExtCell, ExtSlots, ExtraDrawn, ExtraPrepare, HdExtension, NoExtension, ShadowExtras,
 };
@@ -1286,6 +1287,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     volumetric: volumetric::Volumetric,
     /// The froxel volumetrics (in the march's place where the quality has them), made when a frame first needs them.
     froxels: Option<froxels::Froxels>,
+    /// The screen-space distortion, made when a frame first has a distorter in sight.
+    distortion: Option<Distortion>,
+    /// The texture groups of the frame's distorters' maps, in the order they are drawn.
+    distortion_groups: Vec<(TexRef, SamplerKey)>,
     /// The volumetric clouds.
     clouds: clouds::Clouds,
     /// The seconds a frame stands for (the automatic exposure's adaptation): 1/60 unless the caller measures its frames.
@@ -2920,6 +2925,8 @@ impl<E: HdExtension> HdWorld<E> {
             exposure,
             volumetric,
             froxels: None,
+            distortion: None,
+            distortion_groups: Vec::new(),
             clouds,
             frame_seconds: 1.0 / 60.0,
             auto_exposure: false,
@@ -5703,6 +5710,39 @@ impl<E: HdExtension> HdWorld<E> {
         Some((params, faces))
     }
 
+    /// Whether the frame has a distorter in sight from `camera` (the unjittered internal camera): then the pass is made (the first
+    /// time), the maps' textures uploaded and grouped ([`HdWorld::distortion_groups`]), and the distorters' bytes prepared.
+    fn prepare_distortion(&mut self, scene: &E::Scene, camera: &HdCamera) -> bool {
+        let seen = distortion::seen(&scene.distorters, &camera.planes(), camera.eye);
+        if seen.is_empty() {
+            return false;
+        }
+        while self.textures.len() < scene.textures.textures.len() {
+            let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
+            self.textures.push(view);
+        }
+        let mut keys = std::mem::take(&mut self.distortion_groups);
+        keys.clear();
+        for &i in &seen {
+            let key = match scene.distorters[i].look.map {
+                Some((t, s)) => (TexRef::Table(t), SamplerKey::of(&s)),
+                None => (TexRef::White, SamplerKey::PLAIN),
+            };
+            self.ensure_group(key.0, key.1);
+            keys.push(key);
+        }
+        self.distortion_groups = keys;
+        let d = self.distortion.get_or_insert_with(|| {
+            Distortion::new(
+                &self.device,
+                self.pipeline_cache.as_ref(),
+                &self.texture_layout,
+            )
+        });
+        d.prepare(&scene.distorters, &seen);
+        true
+    }
+
     /// The frame uniform for the (jittered, internal) `camera`; `post` turns on `common.wgsl`'s `prev_view_proj`; `main` the main
     /// view's (a secondary view, the water's mirrored camera or a capture face, is never under water: its eye is not the camera's).
     fn frame_bytes(&self, scene: &E::Scene, camera: &HdCamera, post: &[u8], main: bool) -> Vec<u8> {
@@ -6444,6 +6484,8 @@ impl<E: HdExtension> HdWorld<E> {
             self.ext.prepare_extras(scene, None);
         }
         cpu_mark!("begin: extras");
+        // The distorters in sight (on the TAA's frame only: the pass writes its shown copy) and their maps' groups.
+        let distorting = taa && self.prepare_distortion(scene, &icam);
         let has_extras = self.ext.has_extras();
         let coloured = self.features.coloured_shadows && quality.coloured_shadows();
         // The whole frame is one command buffer and one submit: a submit costs the CPU about a tenth of a millisecond, and a frame
@@ -7776,8 +7818,9 @@ impl<E: HdExtension> HdWorld<E> {
         // The late sprites added to a copy of the shown colour (the TAA reads the shown colour back next frame); the copy also
         // what the passes after the anti-aliasing draw into.
         let late_drawn = taa && (!late_sprites.is_empty() || !over.is_empty());
-        let present =
-            late_drawn || (taa && (passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post)));
+        let present = late_drawn
+            || distorting
+            || (taa && (passes.has(PassStage::AfterTaa) || passes.has(PassStage::Post)));
         if present {
             encoder.copy_texture_to_texture(
                 targets.shown[p].as_image_copy(),
@@ -7788,6 +7831,26 @@ impl<E: HdExtension> HdWorld<E> {
                     depth_or_array_layers: 1,
                 },
             );
+        }
+        // The distortion over the shown copy, read from the shown colour (the TAA's history holds no bent pixel).
+        if distorting && let Some(d) = self.distortion.as_mut() {
+            mark!("anti-aliasing");
+            d.encode(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &DistortFrame {
+                    camera: &icam,
+                    time: E::time(scene),
+                    depth: &targets.depth_view,
+                    source: &targets.shown_views[p],
+                    target: &targets.present_view,
+                    output: [targets.width, targets.height],
+                },
+                |k| &self.groups[&self.distortion_groups[k]],
+                |_| {},
+            );
+            mark!("distortion");
         }
         if late_drawn {
             crate::count_pass();

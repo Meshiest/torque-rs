@@ -15,6 +15,7 @@ fn hole() -> DecalData {
         size: [0.2, 0.1],
         texture: Some("kit/hole".to_string()),
         blend: Blend::Alpha,
+        distortion: None,
     }
 }
 
@@ -105,6 +106,7 @@ fn a_multiplied_decal_draws_as_modulate2x_with_its_fade_as_the_alpha() {
     let mut m = DecalManager::new(8, 10.0, 2.0);
     let data = DecalData {
         blend: Blend::Modulate2x,
+        distortion: None,
         ..hole()
     };
     m.add(&data, [0.0, 5.0, 1.0], [0.0, -1.0, 0.0], 0.0);
@@ -142,6 +144,7 @@ fn a_projectiles_decal_is_one_of_those_it_names() {
             size: [0.15, 1.0],
             texture: Some("kit/hole".to_string()),
             blend: Blend::Alpha,
+            distortion: None,
         })
     );
     assert_eq!(projectile_decal(&w, 8, &mut rng), None);
@@ -205,6 +208,7 @@ fn a_clipped_decal_at_an_edge_is_cut_off_there_and_none_lies_off_the_surface() {
         size: [0.2, 0.2],
         texture: Some("kit/hole".to_string()),
         blend: Blend::Alpha,
+        distortion: None,
     };
     let mut m = DecalManager::default();
     m.add_clipped(&data, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], 0.3, &cube);

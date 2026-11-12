@@ -25,6 +25,7 @@
 //! [`install`]: it would make them exist everywhere. One that registers the world classes only while it runs a mission calls
 //! [`install_map_classes`] then, with its own fields on them ([`ClassExtra`]).
 
+use torque_ghosts::datablocks::distortion::DISTORTION_DEFAULTS;
 use torque_ghosts::datablocks::effects::PARTICLE_EXT_DEFAULTS;
 use ts_vm::classes::{
     ClassExtra, ClassSpec, FieldSpec, MethodSpec, Returns, install_spec, install_spec_with,
@@ -189,6 +190,14 @@ pub static CLASSES: &[ClassSpec] = &[
             field("hudRenderName", FieldType::Bool, 8),
             field("aiAvoidThis", FieldType::Bool, 1),
             field("computeCRC", FieldType::Bool, 1),
+            field("distortion", FieldType::F32, 1),
+            field("distortionEdge", FieldType::F32, 1),
+            field("distortionMap", FieldType::Filename, 1),
+            field("distortionMapScale", FieldType::F32, 1),
+            field("distortionScroll", FieldType::Point2F, 1),
+            field("distortionTint", FieldType::ColorF, 1),
+            field("distortionChroma", FieldType::F32, 1),
+            field("distortionOnly", FieldType::Bool, 1),
         ],
         methods: &[],
         defaults: Some(SHAPE_BASE_DATA_DEFAULTS),
@@ -670,9 +679,18 @@ pub static CLASSES: &[ClassSpec] = &[
             field("sizeX", FieldType::F32, 1),
             field("sizeY", FieldType::F32, 1),
             field("textureName", FieldType::Filename, 1),
+            field("distortion", FieldType::F32, 1),
+            field("distortionEdge", FieldType::F32, 1),
+            field("distortionMap", FieldType::Filename, 1),
+            field("distortionMapScale", FieldType::F32, 1),
+            field("distortionScroll", FieldType::Point2F, 1),
+            field("distortionTint", FieldType::ColorF, 1),
+            field("distortionChroma", FieldType::F32, 1),
+            field("distortionOnly", FieldType::Bool, 1),
         ],
         methods: &[],
-        defaults: None,
+        // The distortion's fields that do not read their type's zero.
+        defaults: Some(DISTORTION_DEFAULTS),
     },
     ClassSpec {
         name: "ParticleData",
@@ -1690,6 +1708,9 @@ const SHAPE_BASE_DATA_DEFAULTS: &[(&str, &str)] = &[
     ("cameraMinFov", "5"),
     ("cameraMaxFov", "120"),
     ("renderWhenDestroyed", "1"),
+    // `DISTORTION_DEFAULTS` (`the_distortion_defaults_are_the_wires`).
+    ("distortionMapScale", "1"),
+    ("distortionTint", "1 1 1 0"),
 ];
 
 const PLAYER_DATA_DEFAULTS: &[(&str, &str)] = &[
@@ -1735,6 +1756,9 @@ const PLAYER_DATA_DEFAULTS: &[(&str, &str)] = &[
     ("upResistSpeed", "38"),
     ("upResistFactor", "1"),
     ("groundImpactMinSpeed", "10"),
+    // `DISTORTION_DEFAULTS` (a class with its own list takes none of ShapeBaseData's).
+    ("distortionMapScale", "1"),
+    ("distortionTint", "1 1 1 0"),
 ];
 
 // The console methods of the scene and shape classes, with TGE 1.4's argument counts (the method name and `%this` counted).
