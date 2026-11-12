@@ -183,22 +183,10 @@ pub fn challenge_digest(key: &[u8; 16], from: SocketAddr, seq: u32) -> [u32; 4] 
 pub fn challenge_digest_at(key: &[u8; 16], from: SocketAddr, seq: u32, epoch: u64) -> [u32; 4] {
     let mut data = Vec::with_capacity(32);
     data.push(0);
-    match from.ip() {
-        IpAddr::V4(ip) => {
-            data.push(4);
-            data.extend_from_slice(&ip.octets());
-        }
-        IpAddr::V6(ip) => {
-            data.push(6);
-            data.extend_from_slice(&ip.octets());
-        }
-    }
-    data.extend_from_slice(&from.port().to_le_bytes());
+    crate::fair::put_addr(&mut data, from);
     data.extend_from_slice(&seq.to_le_bytes());
     data.extend_from_slice(&epoch.to_le_bytes());
-    let a = siphash24(key, &data);
-    data[0] = 1;
-    let b = siphash24(key, &data);
+    let [a, b] = crate::fair::keyed128(key, &mut data, 0);
     [a as u32, (a >> 32) as u32, b as u32, (b >> 32) as u32]
 }
 

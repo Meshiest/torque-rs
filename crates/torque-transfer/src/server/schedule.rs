@@ -1,6 +1,6 @@
 //! What the server does each poll: ends uploads that ran out of time or went quiet, hashes finished ones, and asks for runs.
 
-use super::bucket::Bucket;
+use super::bucket::bucket;
 use super::session::{Attachment, Phase, Room, Session, Slot};
 use super::{Ending, Millis, Out, UploadServer, millis};
 use crate::blocks::{BLOCK_BYTES, Hash, MAX_OUTSTANDING_RUNS};
@@ -151,7 +151,7 @@ impl UploadServer {
         let conn_bucket = self
             .conn_buckets
             .entry((conn, session.kind))
-            .or_insert_with(|| Bucket::new(rate, now));
+            .or_insert_with(|| bucket(rate, now));
         if !conn_bucket.has(cost) || !kind.bucket.has(cost) {
             return None;
         }
@@ -161,8 +161,8 @@ impl UploadServer {
             session.alive_before_request = Some(session.alive_until);
             session.alive_until = now.saturating_add(millis(kind.spec.idle));
         }
-        conn_bucket.take(cost);
-        kind.bucket.take(cost);
+        conn_bucket.spend(cost);
+        kind.bucket.spend(cost);
         for slot in &mut session.slots[start as usize..(start + count) as usize] {
             *slot = Slot::Requested;
         }

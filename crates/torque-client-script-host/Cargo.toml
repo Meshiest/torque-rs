@@ -69,6 +69,8 @@ wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 torque-mods = { path = "../torque-mods" }
+# The script test helpers (`torque_ts_vm::testing`) the Lua extension's shared cases call, in the `realm-gate` example.
+torque-ts-vm = { path = "../torque-ts-vm", features = ["testing"] }
 # The import-free looping module of the epoch check, written as text.
 wat = "1"
 

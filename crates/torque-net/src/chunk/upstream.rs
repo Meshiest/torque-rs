@@ -22,6 +22,7 @@ use std::sync::Arc;
 use super::{ChannelLimits, ChunkReceiver, Delivered, SharedHold};
 use crate::NetError;
 use crate::bits::BitReader;
+use crate::fair::TokenBucket;
 
 /// The most a connection may be allowed to hold for half-received messages, whatever a server configures.
 pub const MAX_UPSTREAM_HOLD: usize = 16 << 20;
@@ -92,44 +93,8 @@ impl UpstreamCaps {
     }
 }
 
-/// A token bucket in thousandths of a token, so a rate below one a millisecond still refills.
-#[derive(Debug, Clone, Copy)]
-struct Bucket {
-    milli: u64,
-    last: Option<u32>,
-    rate: u64,
-    burst: u64,
-}
-
-impl Bucket {
-    fn new(rate: usize, burst: usize) -> Bucket {
-        let burst = (burst as u64).max(1);
-        Bucket {
-            milli: burst.saturating_mul(1_000),
-            last: None,
-            rate: rate as u64,
-            burst,
-        }
-    }
-
-    /// Takes `n` tokens at time `now` (milliseconds); `false`, taking nothing, when they are not there.
-    fn take(&mut self, now: u32, n: u64) -> bool {
-        if let Some(last) = self.last {
-            let elapsed = u64::from(now.wrapping_sub(last));
-            self.milli = self
-                .milli
-                .saturating_add(self.rate.saturating_mul(elapsed))
-                .min(self.burst.saturating_mul(1_000));
-        }
-        self.last = Some(now);
-        let cost = n.saturating_mul(1_000);
-        if cost > self.milli {
-            return false;
-        }
-        self.milli -= cost;
-        true
-    }
-}
+/// A connection's token bucket, on the server's wrapping millisecond clock.
+type Bucket = TokenBucket<u32>;
 
 /// The server-wide state of the upstream channels: the caps and the budget all connections draw on.
 #[derive(Debug, Clone)]
@@ -178,8 +143,8 @@ impl UpstreamServer {
         }
         UpstreamReader {
             receiver,
-            bytes: Bucket::new(caps.bytes_per_second, caps.byte_burst),
-            messages: Bucket::new(caps.messages_per_second, caps.message_burst),
+            bytes: Bucket::new(caps.bytes_per_second as u64, caps.byte_burst as u64),
+            messages: Bucket::new(caps.messages_per_second as u64, caps.message_burst as u64),
         }
     }
 }
@@ -211,7 +176,7 @@ impl UpstreamReader {
                 return Err(NetError::Cap {
                     what: "upstream channel bytes a second",
                     count: bytes,
-                    cap: self.bytes.burst,
+                    cap: self.bytes.burst(),
                 });
             }
             let done = (out.len() - start) as u64;
@@ -219,7 +184,7 @@ impl UpstreamReader {
                 return Err(NetError::Cap {
                     what: "upstream channel messages a second",
                     count: done,
-                    cap: self.messages.burst,
+                    cap: self.messages.burst(),
                 });
             }
             Ok(())

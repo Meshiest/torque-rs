@@ -139,7 +139,8 @@
 //!
 //! - `log`: the guest has already made the line plain: every character [`is_hidden`] names replaced by a space,
 //!   at most [`MAX_LOG_LINE`] bytes, at most [`LOG_LINES_PER_SECOND`] lines a second (then one warning, then nothing until
-//!   the next second). The host tags it with the server before it shows it; it is never parsed.
+//!   the second has passed: a second from its first line, [`rate::LineWindow`]). The host tags it with the server before
+//!   it shows it; it is never parsed.
 //! - `limit`: a callback ran out of steps or memory and was stopped (its log line follows). The host's strike rule counts
 //!   these.
 //! - `root`: the mod's sub-root, a panel covering the server area, made by a mod's first `ui.root()` (one per mod).
@@ -151,8 +152,9 @@
 //! - `call`: ids count up from 1 and are never reused; the host answers each with one `net.reply`. The name follows
 //!   [`net::check_rpc_name`]; the host refuses (with a `refused` reply) an RPC its server did not mark for the realm.
 //! - `send` and `call`: at most [`net::MAX_SEND_BYTES`] / [`net::MAX_CALL_BYTES`] of value; the guest also keeps
-//!   [`net::SENDS_PER_SECOND`] (burst [`net::SEND_BURST`]) and [`net::SEND_BYTES_PER_SECOND`] together, past which
-//!   `net.send` and `net.call` return `false` and emit nothing, and at most [`net::MAX_OUTSTANDING`] calls of one name.
+//!   [`net::SENDS_PER_SECOND`] (burst [`net::SEND_BURST`]) and [`net::SEND_BYTES_PER_SECOND`] together
+//!   ([`rate::SendBucket`]), past which `net.send` and `net.call` return `false` and emit nothing, and at most
+//!   [`net::MAX_OUTSTANDING`] calls of one name.
 //!
 //! **Props** (in `create` and `set`): a `u8` count, then count pairs of a `u8` prop id ([`ui::Prop`]) and its payload, ids
 //! strictly ascending. A prop the kind does not have, a payload of the wrong type and a value out of its range are
@@ -246,9 +248,10 @@
 //!
 //! **Map.** `abi` the guest's config and the caps of script files; `codec` the records, the reader and the writer; `value` the
 //! free-form values; `ui` the control kinds, props (ids, types, ranges, defaults), the text, markup and path rules and the caps;
-//! `net` the RPC names. Three places read these bytes: the guest (`torque-plugin-lua`, `client_script`), the host's flush check
-//! (`torque-client-script-host`) and the GUI's applier (`torque-gui`, `client_script::apply`); the first and the last each check
-//! everything again, because neither trusts the other.
+//! `net` the RPC names; `rate` the send bucket and log window both sides count with. Three places read these bytes: the guest
+//! (`torque-plugin-lua`, `client_script`), the host's flush check (`torque-client-script-host`) and the GUI's applier
+//! (`torque-gui`, `client_script::apply`); the first and the last each check everything again, because neither trusts the
+//! other.
 //!
 //! **Extending.** A kind or a prop is a row of `ui::KINDS` or `ui::PROPS` (ids only ever appended); a new prop type is an arm in
 //! `check_value`, `write_value`, `read_value`, `field_text` and, in the guest, `to_prop`, `prop_to_lua`. Both appliers then need
@@ -266,6 +269,7 @@
 pub mod abi;
 mod codec;
 pub mod net;
+pub mod rate;
 pub mod ui;
 mod value;
 

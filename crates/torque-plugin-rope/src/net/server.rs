@@ -3,11 +3,12 @@
 //! server keeps what a rope was told, and each client simulates and draws it.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use torque_engine::args::{obj_id, vec3, vec3_text};
 use torque_engine::predict_ids::wire_id;
 use torque_engine::{EngineClass, Res, ScriptClass, ScriptError, VmMut, function};
+use torque_net::fair::{KeyedWindows, Overflow};
 use torque_ts_text::atof;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -29,17 +30,28 @@ pub const MAX_FX_SECONDS: f32 = 30.0;
 /// The most one-shot ropes the server sends one client in a second; past it a call drops them for that client.
 pub const FX_PER_SECOND: u32 = 32;
 
-/// One client's second of one-shot ropes.
-struct FxWindow {
-    start: u32,
-    count: u32,
-    warned: bool,
-}
+/// The most clients whose second of one-shot ropes is counted at once. Past it a new client's are dropped until a second
+/// passes ([`Overflow::Refuse`]): a held count is never forgotten, so no flood of targets resets one.
+pub const FX_TRACKED: usize = 4_096;
 
 /// What each client has been sent in the second just now: a script that calls `ropeNetFx` in a loop sends each client at most
 /// [`FX_PER_SECOND`] a second (the client shows at most 32 at once, and every one is a message on its connection).
-#[derive(Default)]
-pub struct FxBudget(RefCell<HashMap<ObjId, FxWindow>>);
+pub struct FxBudget(RefCell<FxCounts>);
+
+struct FxCounts {
+    windows: KeyedWindows<ObjId>,
+    /// The clients the console has been told about.
+    warned: HashSet<ObjId>,
+}
+
+impl Default for FxBudget {
+    fn default() -> FxBudget {
+        FxBudget(RefCell::new(FxCounts {
+            windows: KeyedWindows::bounded(FX_TRACKED, 1_000, Overflow::Refuse),
+            warned: HashSet::new(),
+        }))
+    }
+}
 
 /// What [`FxBudget::spend`] decided.
 enum Spend {
@@ -51,24 +63,16 @@ enum Spend {
 impl FxBudget {
     fn spend(&self, vm: &Vm, client: ObjId) -> Spend {
         let now = vm.sim_time();
-        let mut windows = self.0.borrow_mut();
-        if windows.len() > MAX_NET_ROPES {
-            windows.retain(|c, _| vm.objects().contains(*c));
+        let mut counts = self.0.borrow_mut();
+        let FxCounts { windows, warned } = &mut *counts;
+        if windows.len() > MAX_NET_ROPES || warned.len() > MAX_NET_ROPES {
+            windows.retain(|c| vm.objects().contains(*c));
+            warned.retain(|c| vm.objects().contains(*c));
         }
-        let window = windows.entry(client).or_insert(FxWindow {
-            start: now,
-            count: 0,
-            warned: false,
-        });
-        if now.wrapping_sub(window.start) >= 1000 {
-            window.start = now;
-            window.count = 0;
-        }
-        if window.count < FX_PER_SECOND {
-            window.count += 1;
+        if windows.allow(client, now, FX_PER_SECOND) {
             return Spend::Send;
         }
-        Spend::Drop(!std::mem::replace(&mut window.warned, true))
+        Spend::Drop(warned.insert(client))
     }
 }
 
@@ -681,3 +685,7 @@ pub(crate) fn declared() -> Vec<torque_engine::script::NativeDecl> {
         net_fx
     ]
 }
+
+#[cfg(test)]
+#[path = "server_tests.rs"]
+mod tests;

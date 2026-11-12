@@ -250,7 +250,7 @@ impl UploadServer {
             }
             spec.validate().map_err(|e| format!("upload {name}: {e}"))?;
             made.push(Kind {
-                bucket: Bucket::new(spec.server_rate, 0),
+                bucket: bucket::bucket(spec.server_rate, 0),
                 in_flight: 0,
                 name,
                 spec,

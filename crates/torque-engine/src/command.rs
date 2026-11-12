@@ -11,6 +11,7 @@
 
 use std::fmt;
 
+use torque_net::fair;
 use torque_ts_vm::convert::ArgKind;
 use torque_ts_vm::text::until_nul;
 
@@ -26,7 +27,8 @@ pub const MAX_COMMAND_ARGS: usize = 20;
 /// How long a server tick is in milliseconds: the unit a [`TokenBucket`] counts in.
 const TICK_MS: u64 = 32;
 
-/// A token bucket counted in server ticks, so its answers depend on the tick count and nothing else (no wall clock).
+/// A token bucket counted in server ticks, so its answers depend on the tick count and nothing else (no wall clock): a
+/// [`torque_net::fair::TokenBucket`] on a clock of ticks of 32 ms.
 ///
 /// It holds up to `burst` tokens and gains `rate` tokens a second (`rate * 32 / 1000` a tick, kept exactly in thousandths).
 /// [`take`](Self::take) spends one. A bucket starts full.
@@ -41,54 +43,32 @@ const TICK_MS: u64 = 32;
 /// assert_eq!((0..1000).filter(|_| bucket.take(600)).count(), 3);
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct TokenBucket {
-    /// Tokens held, in thousandths.
-    milli: u64,
-    /// The tick the tokens are counted at.
-    tick: u64,
-    rate: u32,
-    burst: u32,
-}
+pub struct TokenBucket(fair::TokenBucket<u64>);
 
 impl TokenBucket {
     /// A full bucket at `tick`, of at most `burst` tokens (at least one) gaining `rate` a second.
     pub fn new(rate: u32, burst: u32, tick: u64) -> TokenBucket {
-        let burst = burst.max(1);
-        TokenBucket {
-            milli: u64::from(burst) * 1000,
-            tick,
-            rate,
-            burst,
-        }
+        TokenBucket(fair::TokenBucket::starting_at(
+            rate.into(),
+            burst.into(),
+            tick.saturating_mul(TICK_MS),
+        ))
     }
 
-    /// Tokens a second.
+    /// Tokens a second (made from a `u32`, so the clamp never applies).
     pub fn rate(&self) -> u32 {
-        self.rate
+        u32::try_from(self.0.rate()).unwrap_or(u32::MAX)
     }
 
-    /// The most tokens it holds.
+    /// The most tokens it holds (made from a `u32`, so the clamp never applies).
     pub fn burst(&self) -> u32 {
-        self.burst
+        u32::try_from(self.0.burst()).unwrap_or(u32::MAX)
     }
 
     /// Refills the bucket up to `tick` (a tick before the last one adds nothing) and spends a token: false, and nothing
     /// spent, when it holds less than one.
     pub fn take(&mut self, tick: u64) -> bool {
-        let elapsed = tick.saturating_sub(self.tick);
-        self.tick = self.tick.max(tick);
-        let gained = elapsed
-            .saturating_mul(u64::from(self.rate))
-            .saturating_mul(TICK_MS);
-        self.milli = self
-            .milli
-            .saturating_add(gained)
-            .min(u64::from(self.burst) * 1000);
-        if self.milli < 1000 {
-            return false;
-        }
-        self.milli -= 1000;
-        true
+        self.0.take(tick.saturating_mul(TICK_MS), 1)
     }
 }
 

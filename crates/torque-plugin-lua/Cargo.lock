@@ -815,6 +815,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "009dbb7700f11c55ef83aebbe4c0e9cf1f1ac0844bd8d6f00dc38f302026e13a"
 
 [[package]]
+name = "torque-bytes"
+version = "0.1.0"
+
+[[package]]
 name = "torque-client-script-format"
 version = "0.1.0"
 
@@ -824,6 +828,7 @@ version = "0.1.0"
 dependencies = [
  "rustc-hash",
  "torque-mapcore",
+ "torque-scene",
 ]
 
 [[package]]
@@ -874,6 +879,7 @@ dependencies = [
 name = "torque-ghosts"
 version = "0.1.0"
 dependencies = [
+ "torque-bytes",
  "torque-net",
 ]
 
@@ -894,6 +900,7 @@ name = "torque-images"
 version = "0.1.0"
 dependencies = [
  "png",
+ "torque-bytes",
 ]
 
 [[package]]
@@ -903,6 +910,7 @@ dependencies = [
  "glam",
  "gltf",
  "serde_json",
+ "torque-bytes",
  "torque-modelcore",
  "torque-resource",
  "torque-shape-builder",
@@ -929,11 +937,15 @@ dependencies = [
 [[package]]
 name = "torque-mapcore"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-maps"
 version = "0.1.0"
 dependencies = [
+ "torque-bytes",
  "torque-mapcore",
 ]
 
@@ -952,6 +964,7 @@ dependencies = [
  "serde",
  "sha2",
  "toml",
+ "torque-bytes",
  "torque-engine",
  "torque-net",
  "torque-resource",
@@ -966,6 +979,9 @@ dependencies = [
 [[package]]
 name = "torque-net"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-permissions"
@@ -1041,11 +1057,15 @@ dependencies = [
 [[package]]
 name = "torque-scene"
 version = "0.1.0"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "torque-server"
 version = "0.1.0"
 dependencies = [
+ "torque-bytes",
  "torque-collide",
  "torque-engine",
  "torque-game",
@@ -1069,6 +1089,10 @@ dependencies = [
 [[package]]
 name = "torque-shapes"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+ "torque-scene",
+]
 
 [[package]]
 name = "torque-sim"
@@ -1100,12 +1124,16 @@ dependencies = [
 [[package]]
 name = "torque-ts-text"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-ts-vm"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
+ "torque-bytes",
  "torque-ts-bytecode",
  "torque-ts-compiler",
  "torque-ts-text",

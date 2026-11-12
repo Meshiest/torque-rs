@@ -72,6 +72,16 @@ fn a_full_table_forgets_its_least_recently_used_key() {
     assert_eq!(windows.len(), 3);
     assert!(!windows.allow(ips[0], 0, 1), "still counted");
     assert!(windows.allow(ips[1], 0, 1), "forgotten, so fresh");
+    // Fresh keys only: each goes in the order it came, the first first.
+    let mut windows = KeyedWindows::new(2);
+    for ip in &ips[..3] {
+        assert!(windows.allow(*ip, 0, 1));
+    }
+    assert_eq!(
+        [ips[0], ips[1], ips[2]].map(|ip| windows.used(ip, 0)),
+        [0, 1, 1],
+        "the first is forgotten, the others held"
+    );
 }
 
 #[test]
@@ -219,4 +229,157 @@ fn the_caps_count_pending_and_all_connections_per_ip_and_per_network() {
         SourceCaps::unlimited().admits(&SourceCount::of(ip, established)),
         Ok(())
     );
+}
+
+/// A held key over its limit, then `fresh` other keys in the same window, the held key asking again every `every` of them:
+/// how many of the held key's asks were allowed.
+fn held_allowed_under_a_flood<T: Clock>(
+    windows: &mut KeyedWindows<IpAddr, T>,
+    now: T,
+    fresh: u32,
+    every: u32,
+) -> usize {
+    let held = v4(192, 0, 2, 1);
+    for _ in 0..4 {
+        assert!(windows.allow(held, now, 4));
+    }
+    let mut allowed = 0;
+    for i in 0..fresh {
+        let _ = windows.allow(IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i)), now, 4);
+        if i % every == 0 && windows.allow(held, now, 4) {
+            allowed += 1;
+        }
+    }
+    allowed
+}
+
+#[test]
+fn a_flood_of_fresh_keys_cannot_reset_a_held_key_when_the_table_evicts() {
+    let mut windows = KeyedWindows::new(64);
+    assert_eq!(
+        held_allowed_under_a_flood(&mut windows, 0u32, 10_000, 32),
+        0
+    );
+    assert!(windows.len() <= 64);
+    let mut windows: KeyedWindows<IpAddr, u64> = KeyedWindows::bounded(64, 60_000, Overflow::Evict);
+    assert_eq!(
+        held_allowed_under_a_flood(&mut windows, 5_000u64, 10_000, 32),
+        0
+    );
+    assert!(windows.len() <= 64);
+}
+
+#[test]
+fn a_flood_of_fresh_keys_cannot_reset_a_held_key_when_the_table_refuses() {
+    let mut windows: KeyedWindows<IpAddr, u64> =
+        KeyedWindows::bounded(64, 60_000, Overflow::Refuse);
+    // The held key asks only as the flood begins: a refusing table forgets no live count however long it goes unused.
+    assert_eq!(
+        held_allowed_under_a_flood(&mut windows, 0u64, 10_000, u32::MAX),
+        0
+    );
+    assert_eq!(windows.len(), 64);
+    let held = v4(192, 0, 2, 1);
+    assert!(!windows.allow(held, 59_999, 4), "still counted");
+    // A newcomer is refused while every count is live, and counted nowhere.
+    let newcomer = v4(198, 51, 100, 1);
+    assert!(!windows.can_hold(newcomer, 59_999));
+    assert!(!windows.allow(newcomer, 59_999, 4));
+    assert_eq!(windows.used(newcomer, 59_999), 0);
+    // Once the windows have passed the table makes room, and the held key's window has rolled too.
+    assert!(windows.allow(newcomer, 60_000, 4));
+    assert!(windows.allow(held, 60_000, 4));
+    let mut windows = KeyedWindows::bounded(64, 1_000, Overflow::Refuse);
+    assert_eq!(
+        held_allowed_under_a_flood(&mut windows, 7u32, 10_000, 32),
+        0
+    );
+    // A refusing table of no keys refuses every one.
+    let mut none: KeyedWindows<IpAddr> = KeyedWindows::bounded(0, 1_000, Overflow::Refuse);
+    assert!(!none.allow(held, 0, 4));
+    assert!(none.is_empty());
+}
+
+#[test]
+fn a_window_of_its_own_span_counts_until_it_passes_and_fills_on_demand() {
+    let mut w: RateWindow<u64> = RateWindow::span(60_000);
+    assert!(w.allow(100, 2));
+    assert!(w.allow(59_000, 2));
+    assert!(!w.allow(60_099, 2));
+    assert_eq!(w.used(60_099), 2);
+    assert_eq!(w.used(60_100), 0);
+    assert!(w.allow(60_100, 2));
+    w.fill(60_100, 2);
+    assert!(!w.allow(60_100, 2));
+    // A growing clock: a time before the window's start is no time passed.
+    assert!(!w.allow(10, 2));
+    // A wrapping clock rolls across the wrap.
+    let mut w: RateWindow = RateWindow::default();
+    assert!(w.allow(u32::MAX - 100, 1));
+    assert!(!w.allow(u32::MAX, 1));
+    assert!(w.allow(900, 1));
+}
+
+#[test]
+fn a_bucket_refills_with_its_clock_and_never_past_its_burst() {
+    let mut b: TokenBucket<u64> = TokenBucket::starting_at(10, 3, 1_000);
+    assert_eq!((0..10).filter(|_| b.take(1_000, 1)).count(), 3);
+    // 0.25 s at 10 a second: two and a half tokens, the half kept.
+    assert!(b.take(1_250, 2));
+    assert!(!b.take(1_250, 1));
+    assert!(b.take(1_300, 1));
+    // A time before the last adds nothing and leaves the clock where it was.
+    assert!(!b.take(0, 1));
+    assert!(!b.take(1_399, 1));
+    assert!(b.take(1_400, 1));
+    b.refund(100);
+    assert!(b.has(3) && !b.has(4));
+    b.spend(10);
+    assert!(!b.has(1));
+    let mut b: TokenBucket<u32> = TokenBucket::new(1_000, 10);
+    assert!(b.take(u32::MAX - 5, 10));
+    assert!(b.take(4, 10), "10 ms across the wrap");
+}
+
+#[test]
+fn an_address_text_is_its_canonical_ip_and_digests_take_the_address_as_given() {
+    let ip = |t: &str| parse_address_text(t);
+    assert_eq!(ip("IP:1.2.3.4:28000"), Some(v4(1, 2, 3, 4)));
+    assert_eq!(ip("IP6:[::ffff:1.2.3.4]:28000"), Some(v4(1, 2, 3, 4)));
+    assert_eq!(ip("IP6:[fe80::1%3]:9"), "fe80::1".parse().ok());
+    assert_eq!(ip("local"), None);
+    let mut a = Vec::new();
+    put_addr(&mut a, SocketAddr::new(v4(1, 2, 3, 4), 0x1234));
+    assert_eq!(a, [4, 1, 2, 3, 4, 0x34, 0x12]);
+    let key = [7u8; 16];
+    let mut data = vec![9, 0, 5];
+    let [x, y] = keyed128(&key, &mut data, 1);
+    assert_eq!(data, [9, 1, 5]);
+    assert_eq!(x, siphash24(&key, &[9, 0, 5]));
+    assert_eq!(y, siphash24(&key, &[9, 1, 5]));
+}
+
+#[test]
+fn a_full_refusing_table_frees_a_slot_as_soon_as_a_window_passes() {
+    let mut windows: KeyedWindows<u32, u64> = KeyedWindows::bounded(2, 1_000, Overflow::Refuse);
+    assert!(windows.allow(1, 0, 4));
+    assert!(windows.allow(2, 500, 4));
+    // Many newcomers while both windows are live: all refused, none counted.
+    for (n, now) in (100..1_000).step_by(3).enumerate() {
+        assert!(!windows.allow(1_000 + n as u32, now, 4), "{now}");
+    }
+    assert_eq!(windows.len(), 2);
+    // The first window passes at 1,000: the next newcomer takes its slot, and the table is full again.
+    assert!(windows.allow(10, 1_000, 4));
+    for now in 1_000..1_500 {
+        assert!(!windows.allow(20, now, 4), "{now}");
+    }
+    // The second passes at 1,500.
+    assert!(windows.allow(30, 1_500, 4));
+    assert!(windows.used(2, 1_500) == 0 && windows.used(10, 1_500) == 1);
+    // On a wrapping clock too, across the wrap.
+    let mut windows: KeyedWindows<u32> = KeyedWindows::bounded(1, 1_000, Overflow::Refuse);
+    assert!(windows.allow(1, u32::MAX - 200, 4));
+    assert!(!windows.allow(2, 798, 4));
+    assert!(windows.allow(2, 799, 4));
 }

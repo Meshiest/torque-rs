@@ -26,7 +26,7 @@
 //! (another address, another challenge), and a sniffed ticket fails on any other connection.
 
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::NetError;
@@ -350,17 +350,7 @@ impl AuthContext {
     /// contexts share them.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(40);
-        match self.server.ip() {
-            IpAddr::V4(ip) => {
-                out.push(4);
-                out.extend_from_slice(&ip.octets());
-            }
-            IpAddr::V6(ip) => {
-                out.push(6);
-                out.extend_from_slice(&ip.octets());
-            }
-        }
-        out.extend_from_slice(&self.server.port().to_le_bytes());
+        crate::fair::put_addr(&mut out, self.server);
         out.extend_from_slice(&self.sequence.to_le_bytes());
         for word in self.challenge {
             out.extend_from_slice(&word.to_le_bytes());

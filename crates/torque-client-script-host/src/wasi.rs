@@ -5,9 +5,10 @@
 
 use std::hash::{BuildHasher, RandomState};
 use std::ops::Range;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use torque_client_script_format::is_hidden;
+use torque_client_script_format::rate::LineWindow;
 use wasmtime::{AsContext, AsContextMut, Caller, Linker, Memory, format_err};
 
 /// WASI's error numbers the imports answer with.
@@ -341,9 +342,10 @@ pub(crate) struct Printer {
     name: &'static str,
     /// What was written since the last full line.
     pub(crate) partial: Vec<u8>,
-    /// When the current second started, and the lines printed and dropped in it.
-    second: Option<Instant>,
-    lines: u32,
+    /// When the printer was made: the clock its seconds count on.
+    origin: Instant,
+    /// The lines of the current second, and those dropped in it.
+    second: LineWindow,
     pub(crate) dropped: u64,
     /// Lines printed in all.
     pub(crate) printed: u64,
@@ -354,8 +356,8 @@ impl Printer {
         Printer {
             name,
             partial: Vec::new(),
-            second: None,
-            lines: 0,
+            origin: Instant::now(),
+            second: LineWindow::new(),
             dropped: 0,
             printed: 0,
         }
@@ -380,23 +382,17 @@ impl Printer {
     /// Prints one line, its hidden characters (escapes, direction controls) as spaces, unless this second's lines are
     /// spent.
     pub(crate) fn line(&mut self, text: &[u8]) {
-        let now = Instant::now();
-        if self
-            .second
-            .is_none_or(|start| now.duration_since(start) >= Duration::from_secs(1))
-        {
+        let now_us = u64::try_from(self.origin.elapsed().as_micros()).unwrap_or(u64::MAX);
+        if self.second.roll(now_us) {
             if self.dropped > 0 {
                 eprintln!("{}: ({} lines dropped)", self.name, self.dropped);
             }
-            self.second = Some(now);
-            self.lines = 0;
             self.dropped = 0;
         }
-        if self.lines >= LINES_PER_SECOND {
+        if self.second.count(now_us) > LINES_PER_SECOND {
             self.dropped += 1;
             return;
         }
-        self.lines += 1;
         self.printed += 1;
         let plain: String = String::from_utf8_lossy(text)
             .chars()

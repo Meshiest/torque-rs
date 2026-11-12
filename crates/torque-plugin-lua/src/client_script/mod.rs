@@ -36,6 +36,7 @@ use mlua::{
 };
 
 use format::abi::{self, Config};
+use format::rate::{LineWindow, LogLine};
 use format::{Grants, Malformed, NodeBudget, Reader, Records, Tier, Writer, event, op};
 
 use crate::realm;
@@ -179,9 +180,8 @@ impl Fuel {
 struct Flush {
     ops: Writer,
     count: usize,
-    /// The second the log lines are counted in, and how many it had.
-    log_second: u64,
-    log_lines: u32,
+    /// The log lines of the current second (a second from its first line, as the host counts them).
+    log_lines: LineWindow,
 }
 
 /// The script files handed in, by mod and path, shared with the chunks loading them.
@@ -277,22 +277,13 @@ impl State {
     /// Appends a log line, made plain ([`plain`]) and at most [`format::LOG_LINES_PER_SECOND`] a second, then one
     /// warning.
     pub(crate) fn log(&mut self, level: u8, text: &str) {
-        let second = self.now / 1_000_000;
-        if second != self.out.log_second {
-            self.out.log_second = second;
-            self.out.log_lines = 0;
-        }
-        self.out.log_lines = self.out.log_lines.saturating_add(1);
-        let limit = format::LOG_LINES_PER_SECOND;
-        let (level, line) = if self.out.log_lines <= limit {
-            (level, plain(text))
-        } else if self.out.log_lines == limit + 1 {
-            (
+        let (level, line) = match self.out.log_lines.log_line(self.now) {
+            LogLine::Shown => (level, plain(text)),
+            LogLine::Warning => (
                 op::realm::LEVEL_WARNING,
                 "more log lines this second were dropped".to_string(),
-            )
-        } else {
-            return;
+            ),
+            LogLine::Dropped => return,
         };
         let _ = self.emit(Tier::Realm, op::realm::LOG, |w| {
             w.u8(level);

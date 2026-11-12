@@ -15,6 +15,7 @@ use torque_client_script_format::{Tier, Value};
 
 use crate::abilities::ABILITIES;
 use torque_engine::NetMessage;
+use torque_net::fair::TokenBucket;
 
 /// A realm's free-form message to its server.
 pub const UP: &str = "torque.script.up";
@@ -339,12 +340,10 @@ impl ScriptOffer {
     }
 }
 
-/// A byte allowance that refills with the server's ticks: the cap on how many bytes a second one connection's messages total.
+/// A byte allowance that refills with the server's ticks: the cap on how many bytes a second one connection's messages total
+/// ([`UP_BYTES_PER_SECOND`], a second's worth in the burst), a [`TokenBucket`] on a clock of ticks.
 #[derive(Clone, Copy, Debug)]
-pub struct ByteBucket {
-    tokens: u64,
-    at: u64,
-}
+pub struct ByteBucket(TokenBucket<u64>);
 
 /// The server's tick, in milliseconds: the engine's.
 const TICK_MS: u64 = torque_engine::TickInfo::MS;
@@ -352,33 +351,21 @@ const TICK_MS: u64 = torque_engine::TickInfo::MS;
 impl ByteBucket {
     /// A full bucket at `tick`.
     pub fn new(tick: u64) -> ByteBucket {
-        ByteBucket {
-            tokens: UP_BYTES_PER_SECOND,
-            at: tick,
-        }
+        ByteBucket(TokenBucket::starting_at(
+            UP_BYTES_PER_SECOND,
+            UP_BYTES_PER_SECOND,
+            tick.saturating_mul(TICK_MS),
+        ))
     }
 
     /// The tick of the last spend or refill.
     pub fn last_tick(&self) -> u64 {
-        self.at
+        self.0.last().map_or(0, |ms| ms / TICK_MS)
     }
 
     /// Spends `bytes` at `tick`: whether the allowance had them.
     pub fn take(&mut self, tick: u64, bytes: usize) -> bool {
-        let elapsed = tick.saturating_sub(self.at);
-        self.at = self.at.max(tick);
-        let refill = elapsed.saturating_mul(UP_BYTES_PER_SECOND * TICK_MS) / 1000;
-        self.tokens = self.tokens.saturating_add(refill).min(UP_BYTES_PER_SECOND);
-        let Ok(bytes) = u64::try_from(bytes) else {
-            return false;
-        };
-        match self.tokens.checked_sub(bytes) {
-            Some(left) => {
-                self.tokens = left;
-                true
-            }
-            None => false,
-        }
+        u64::try_from(bytes).is_ok_and(|bytes| self.0.take(tick.saturating_mul(TICK_MS), bytes))
     }
 }
 

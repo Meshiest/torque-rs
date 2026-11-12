@@ -21,9 +21,10 @@
 //! only through the content rules above.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use sha2::{Digest, Sha256};
+use torque_net::fair::canonical;
 
 use crate::content::{ContentCaps, Hash, decode_content, from_hex, hex, summarize_files};
 
@@ -78,10 +79,8 @@ pub struct CacheOwner([u8; 8]);
 impl CacheOwner {
     /// The key of the server dialed at `addr` (an IPv4 address in IPv6 form is the IPv4 address).
     pub fn of_server(addr: SocketAddr) -> CacheOwner {
-        let ip = match addr.ip() {
-            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-            ip => ip,
-        };
+        let addr = canonical(addr);
+        let ip = addr.ip();
         let mut hasher = Sha256::new();
         hasher.update(b"mod cache server\0");
         hasher.update(format!("{ip}:{}", addr.port()).as_bytes());

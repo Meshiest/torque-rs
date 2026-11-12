@@ -53,6 +53,7 @@ use net::events::{
     ConnectionMessage, EventCtx, EventIds, EventQueue, EventReceiver, EventRegistry, EventUnpacker,
     NetEvent, SectionParams,
 };
+use net::fair::TokenBucket;
 use net::ghost::GhostClient;
 use net::handshake::ConnectFields;
 use net::huffman::Table;
@@ -136,10 +137,7 @@ pub fn max_datablocks(vm: &Vm, engine: bool, widths: NetWidths) -> usize {
 /// the bucket filling back to a second's worth are a flood.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveBucket {
-    tokens: u32,
-    /// Milliseconds of refill not yet worth a token.
-    credit_ms: u64,
-    last: u32,
+    tokens: TokenBucket<u32>,
     /// When the refusals started, until the bucket fills back.
     excess_since: Option<u32>,
 }
@@ -147,29 +145,26 @@ pub struct LiveBucket {
 impl LiveBucket {
     pub fn new(now: u32) -> LiveBucket {
         LiveBucket {
-            tokens: LIVE_DATABLOCK_BURST,
-            credit_ms: 0,
-            last: now,
+            tokens: TokenBucket::starting_at(
+                LIVE_DATABLOCKS_PER_S.into(),
+                LIVE_DATABLOCK_BURST.into(),
+                now,
+            ),
             excess_since: None,
         }
     }
 
     /// Takes a token at `now`: false when there is none.
     pub fn take(&mut self, now: u32) -> bool {
-        let elapsed = u64::from(now.wrapping_sub(self.last));
-        self.last = now;
-        let credit = self.credit_ms + elapsed * u64::from(LIVE_DATABLOCKS_PER_S);
-        let refill = u32::try_from(credit / 1000).unwrap_or(u32::MAX);
-        self.credit_ms = credit % 1000;
-        self.tokens = self.tokens.saturating_add(refill).min(LIVE_DATABLOCK_BURST);
-        if self.tokens >= LIVE_DATABLOCKS_PER_S {
+        self.tokens.refill(now);
+        if self.tokens.has(LIVE_DATABLOCKS_PER_S.into()) {
             self.excess_since = None;
         }
-        if self.tokens == 0 {
+        if !self.tokens.has(1) {
             self.excess_since.get_or_insert(now);
             return false;
         }
-        self.tokens -= 1;
+        self.tokens.spend(1);
         true
     }
 

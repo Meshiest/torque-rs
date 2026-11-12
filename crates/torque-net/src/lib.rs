@@ -16,7 +16,8 @@
 //! - [`cap`]: the ONE helper every decoder allocates through (a wire count against the bits left AND a named cap).
 //! - [`fair`]: the ONE place a stranger's budget is shared out: the source network ([`fair::NetworkKey`]), per-second budgets
 //!   charged per address, per network and in all ([`fair::FairLimiter`]), and the connections one source may hold
-//!   ([`fair::SourceCaps`]).
+//!   ([`fair::SourceCaps`]); with the windows, keyed windows and token buckets every limiter above counts with
+//!   ([`fair::RateWindow`], [`fair::KeyedWindows`], [`fair::TokenBucket`]).
 //! - [`stand_in`]: the reserved-range addresses a transport names its connections by toward the host (the web transport's
 //!   `240.0.0.0/5`, the QUIC link's `248.0.0.0/5`): one IP per peer address, a port per connection.
 //! - [`crc`]: CRC-32 (the standard one and the raw running state the camera checksum uses).
@@ -56,6 +57,14 @@
 //! `a_steady_source_stays_limited_under_a_flood_of_rotating_sources`,
 //! `the_caps_count_pending_and_all_connections_per_ip_and_per_network`). No total may refuse what a spoofed flood can spend:
 //! challenge and cookie answers have none.
+//!
+//! **A limiter counts with [`fair`]'s windows and buckets, not a copy of its own.** A table of windows per key
+//! ([`fair::KeyedWindows`]) is bounded, and a flood of fresh keys never resets a held key's count under either
+//! [`fair::Overflow`] (`fair::tests::a_flood_of_fresh_keys_cannot_reset_a_held_key_when_the_table_evicts`,
+//! `a_flood_of_fresh_keys_cannot_reset_a_held_key_when_the_table_refuses`); an evicting table must be sized above the keys
+//! that can come between two of a held key's events, else it refuses. An event charged to its own window or bucket and a
+//! shared one reaches the shared one only once its own admits it, so one refused by its own cap spends none of a shared
+//! budget.
 //!
 //! **A full pending table follows one rule, [`fair::choose_eviction`]**, in the TGE handshake, the engine gate and the
 //! session table alike: a network over its fair share (at least one) pays, else a slot past the evict age, else the newcomer

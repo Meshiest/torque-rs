@@ -5,9 +5,13 @@
 //!   [`canonical`]): for the connections one source may hold an IPv4 /24 or an IPv6 /64 ([`NetworkKey::of`]), for its share
 //!   of a budget in all an IPv4 /24 or an IPv6 /48 ([`NetworkKey::sharing`]: one site's prefix, of which a party holds
 //!   65,536 /64s).
-//! - [`RateWindow`] and [`KeyedWindows`]: a count in a one-second window, and such windows per key in a bounded table that
-//!   forgets the least recently used key first (a key that keeps sending stays known, so a flood of other keys cannot reset
-//!   its count).
+//! - [`RateWindow`] and [`KeyedWindows`]: a count in a window of time (a second, or a span of its own), and such windows per
+//!   key in a bounded table that, when full, forgets the least recently used key or refuses the new one ([`Overflow`]); under
+//!   either a flood of other keys cannot reset a held key's count. Both count on a [`Clock`] clock (`u32` wrapping, `u64`
+//!   growing).
+//! - [`TokenBucket`]: tokens (messages, bytes) a second with a burst, in thousandths so no remainder is lost.
+//! - [`put_addr`], [`keyed128`] and [`parse_address_text`]: an address into a digest, a 128-bit keyed digest, the IP of an
+//!   address as the console writes it.
 //! - [`FairLimiter`]: a per-second budget charged per IP, per network and in all; with a total, one network takes at most
 //!   [`NET_NETWORK_SHARE`]'s fraction of it ([`FairLimits::shared`]). A refused event charges nothing.
 //! - [`SourceCaps`] and [`SourceCount`]: how many connections one IP and one network may hold, pending and in all, and the
@@ -26,11 +30,59 @@ use crate::cap::{
     NET_CONNS_PER_ADDR, NET_CONNS_PER_NETWORK, NET_LIMITER_ENTRIES, NET_NETWORK_SHARE,
     NET_PENDING_PER_ADDR, NET_PENDING_PER_NETWORK,
 };
+use crate::handshake::siphash24;
 
 /// `addr` with an IPv4-mapped IPv6 address taken as the IPv4 address it maps.
 #[must_use]
 pub fn canonical(addr: SocketAddr) -> SocketAddr {
     SocketAddr::new(addr.ip().to_canonical(), addr.port())
+}
+
+/// Appends `addr` as a digest's input: 4 or 6, the IP's bytes, then its port little-endian. The address goes in as given: a caller
+/// whose IPv4-mapped form must digest as the IPv4 one takes it [`canonical`] first.
+pub fn put_addr(out: &mut Vec<u8>, addr: SocketAddr) {
+    match addr.ip() {
+        IpAddr::V4(ip) => {
+            out.push(4);
+            out.extend_from_slice(&ip.octets());
+        }
+        IpAddr::V6(ip) => {
+            out.push(6);
+            out.extend_from_slice(&ip.octets());
+        }
+    }
+    out.extend_from_slice(&addr.port().to_le_bytes());
+}
+
+/// A 128-bit keyed digest of `data`: [`siphash24`] of it with `data[at]` set to 0, then with it set to 1 (as it is left).
+///
+/// # Panics
+///
+/// When `at` is not inside `data`.
+pub fn keyed128(key: &[u8; 16], data: &mut [u8], at: usize) -> [u64; 2] {
+    data[at] = 0;
+    let a = siphash24(key, data);
+    data[at] = 1;
+    [a, siphash24(key, data)]
+}
+
+/// The IP of an address as text (`"IP:1.2.3.4:28000"`, `"IP6:[fe80::1%3]:28000"`, a bare IP with or without a port), with its
+/// tag, brackets, port and zone taken off, [`canonical`]. `None` for text that is no address (`"local"`, junk).
+#[must_use]
+pub fn parse_address_text(text: &str) -> Option<IpAddr> {
+    let text = text.trim();
+    let text = text
+        .strip_prefix("IP6:")
+        .or_else(|| text.strip_prefix("IP:"))
+        .unwrap_or(text);
+    let host = match text.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or(rest),
+        // A bare IPv6 address has colons of its own: only a single colon is a port.
+        None if text.matches(':').count() == 1 => text.split(':').next().unwrap_or(text),
+        None => text,
+    };
+    let host = host.split('%').next().unwrap_or(host);
+    host.parse::<IpAddr>().ok().map(|ip| ip.to_canonical())
 }
 
 /// A source network, the unit one party is assumed to hold many addresses of.
@@ -74,21 +126,78 @@ impl NetworkKey {
     }
 }
 
-/// A count of events (or of units, such as bytes) in a one-second window.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RateWindow {
-    start: u32,
-    count: u32,
+/// A time in milliseconds that [`RateWindow`], [`KeyedWindows`] and [`TokenBucket`] count by, one of two clocks:
+/// - `u32`: a clock that wraps every 2^32 ms (49.7 days), compared by wrapping difference;
+/// - `u64`: a clock that only grows: a time before the last one seen counts as no time passing.
+pub trait Clock: Copy + Default + Eq + Hash + std::fmt::Debug + sealed::Sealed {
+    /// The milliseconds from `earlier` to `self`.
+    fn since(self, earlier: Self) -> u64;
+
+    /// What a bucket keeps as its last time after one at `self` (`last` the one before).
+    fn latest(self, last: Self) -> Self;
 }
 
-impl RateWindow {
-    /// Counts one event at `now`; false when `limit` were already counted in the current second.
-    pub fn allow(&mut self, now: u32, limit: u32) -> bool {
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for u32 {}
+    impl Sealed for u64 {}
+}
+
+impl Clock for u32 {
+    fn since(self, earlier: u32) -> u64 {
+        u64::from(self.wrapping_sub(earlier))
+    }
+
+    fn latest(self, _last: u32) -> u32 {
+        self
+    }
+}
+
+impl Clock for u64 {
+    fn since(self, earlier: u64) -> u64 {
+        self.saturating_sub(earlier)
+    }
+
+    fn latest(self, last: u64) -> u64 {
+        self.max(last)
+    }
+}
+
+/// A count of events (or of units, such as bytes) in a window of time: one second ([`RateWindow::default`]) or a span of
+/// its own ([`RateWindow::span`]). The window opens at the first event counted and closes `span` later; a refused event is
+/// counted nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateWindow<T: Clock = u32> {
+    start: T,
+    count: u32,
+    span: u32,
+}
+
+impl<T: Clock> Default for RateWindow<T> {
+    /// A one-second window.
+    fn default() -> RateWindow<T> {
+        RateWindow::span(1_000)
+    }
+}
+
+impl<T: Clock> RateWindow<T> {
+    /// A window of `ms` milliseconds (at least 1).
+    #[must_use]
+    pub fn span(ms: u32) -> RateWindow<T> {
+        RateWindow {
+            start: T::default(),
+            count: 0,
+            span: ms.max(1),
+        }
+    }
+
+    /// Counts one event at `now`; false when `limit` were already counted in the current window.
+    pub fn allow(&mut self, now: T, limit: u32) -> bool {
         self.allow_n(now, 1, limit)
     }
 
-    /// Counts `n` units at `now`; false (and nothing counted) when they would take the second's count past `limit`.
-    pub fn allow_n(&mut self, now: u32, n: u32, limit: u32) -> bool {
+    /// Counts `n` units at `now`; false (and nothing counted) when they would take the window's count past `limit`.
+    pub fn allow_n(&mut self, now: T, n: u32, limit: u32) -> bool {
         if !self.has_room(now, n, limit) {
             return false;
         }
@@ -96,29 +205,79 @@ impl RateWindow {
         true
     }
 
-    /// Whether `n` more units fit in the second at `now` (the window rolls first), counting nothing.
-    pub fn has_room(&mut self, now: u32, n: u32, limit: u32) -> bool {
+    /// Whether `n` more units fit in the window at `now` (the window rolls first), counting nothing.
+    pub fn has_room(&mut self, now: T, n: u32, limit: u32) -> bool {
         self.roll(now);
         self.count.checked_add(n).is_some_and(|c| c <= limit)
     }
 
-    fn roll(&mut self, now: u32) {
-        if self.count == 0 || now.wrapping_sub(self.start) >= 1_000 {
+    /// What the window has counted at `now` (0 once it has passed), counting nothing.
+    #[must_use]
+    pub fn used(&self, now: T) -> u32 {
+        if self.is_live(now) { self.count } else { 0 }
+    }
+
+    /// Counts up to `limit` at once, so the rest of the window refuses every event (a count past it stays).
+    pub fn fill(&mut self, now: T, limit: u32) {
+        self.roll(now);
+        self.count = self.count.max(limit);
+    }
+
+    /// Whether the window holds a count at `now`: something was counted and the span has not passed.
+    #[must_use]
+    pub fn is_live(&self, now: T) -> bool {
+        self.count > 0 && now.since(self.start) < u64::from(self.span)
+    }
+
+    /// The milliseconds until the window passes (0 once it has).
+    fn left(&self, now: T) -> u64 {
+        if self.is_live(now) {
+            u64::from(self.span) - now.since(self.start)
+        } else {
+            0
+        }
+    }
+
+    fn roll(&mut self, now: T) {
+        if !self.is_live(now) {
             self.start = now;
             self.count = 0;
         }
     }
 }
 
-/// [`RateWindow`]s per key, in a table of at most `capacity` keys. A new key in a full table makes the table forget its least
-/// recently used key: a key that keeps sending is always recent, so it is forgotten only after `capacity` other keys came
-/// between two of its events, and a flood of fresh keys cannot reset its count.
+/// What a full [`KeyedWindows`] does for a key it does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Overflow {
+    /// It forgets its least recently used key. A key that keeps sending is always recent, so it is forgotten only after
+    /// `capacity` other keys came between two of its events: the table must be sized above the keys that can arrive in that
+    /// time.
+    Evict,
+    /// It forgets the keys whose windows have passed; if it is still full, the new key is refused (and counted nowhere). No
+    /// live count is ever forgotten, so a table of live keys refuses newcomers until their windows pass.
+    Refuse,
+}
+
+/// [`RateWindow`]s per key, in a table of at most `capacity` keys that does what its [`Overflow`] says when it is full. Under
+/// either policy a flood of fresh keys cannot reset a held key's count: [`Overflow::Evict`] forgets only a key that has not
+/// been seen while `capacity` others were, [`Overflow::Refuse`] forgets only counts whose windows have passed.
 #[derive(Debug)]
-pub struct KeyedWindows<K> {
-    windows: HashMap<K, (RateWindow, u64)>,
-    by_use: BTreeMap<u64, K>,
-    next: u64,
+pub struct KeyedWindows<K, T: Clock = u32> {
+    /// Each key's window, and when it was last used (an evicting table's order).
+    windows: HashMap<K, (RateWindow<T>, u64)>,
     capacity: usize,
+    fresh: RateWindow<T>,
+    full: Full<K, T>,
+}
+
+/// What a full table keeps to do its [`Overflow`].
+#[derive(Debug)]
+enum Full<K, T> {
+    /// The keys by last use, and the next use's stamp.
+    Evict { by_use: BTreeMap<u64, K>, next: u64 },
+    /// When the passed windows were last forgotten, and how long after that no window can pass: a full table refusing
+    /// newcomers looks for passed windows again only then, so a flood of them costs no scan each.
+    Refuse { checked: T, wait: u64 },
 }
 
 impl<K: Copy + Eq + Hash> Default for KeyedWindows<K> {
@@ -128,13 +287,40 @@ impl<K: Copy + Eq + Hash> Default for KeyedWindows<K> {
 }
 
 impl<K: Copy + Eq + Hash> KeyedWindows<K> {
+    /// One-second windows in a table of `capacity` keys (at least 1) that forgets the least recently used one
+    /// ([`Overflow::Evict`]).
     #[must_use]
     pub fn new(capacity: usize) -> KeyedWindows<K> {
+        KeyedWindows::bounded(capacity, 1_000, Overflow::Evict)
+    }
+}
+
+impl<K: Copy + Eq + Hash, T: Clock> KeyedWindows<K, T> {
+    /// A table of `capacity` keys, each counted in a window of `span` milliseconds ([`RateWindow::span`]), that does what
+    /// `overflow` says when full. An evicting table holds at least one key; a refusing table of 0 refuses every key.
+    #[must_use]
+    pub fn bounded(capacity: usize, span: u32, overflow: Overflow) -> KeyedWindows<K, T> {
+        let (capacity, full) = match overflow {
+            Overflow::Evict => (
+                capacity.max(1),
+                Full::Evict {
+                    by_use: BTreeMap::new(),
+                    next: 0,
+                },
+            ),
+            Overflow::Refuse => (
+                capacity,
+                Full::Refuse {
+                    checked: T::default(),
+                    wait: 0,
+                },
+            ),
+        };
         KeyedWindows {
             windows: HashMap::new(),
-            by_use: BTreeMap::new(),
-            next: 0,
-            capacity: capacity.max(1),
+            capacity,
+            fresh: RateWindow::span(span),
+            full,
         }
     }
 
@@ -149,36 +335,206 @@ impl<K: Copy + Eq + Hash> KeyedWindows<K> {
         self.windows.is_empty()
     }
 
-    /// `key`'s window, entered (or moved to most recent) now.
-    fn touch(&mut self, key: K) -> &mut RateWindow {
-        let stamp = self.next;
-        self.next += 1;
-        if let Some((_, used)) = self.windows.get_mut(&key) {
-            self.by_use.remove(used);
-            *used = stamp;
-        } else {
-            while self.windows.len() >= self.capacity
-                && let Some((_, oldest)) = self.by_use.pop_first()
-            {
-                self.windows.remove(&oldest);
-            }
-            self.windows.insert(key, (RateWindow::default(), stamp));
+    /// Whether `key` could be counted at `now`: it is held, or the table has (or, refusing, can make) room for it.
+    pub fn can_hold(&mut self, key: K, now: T) -> bool {
+        self.windows.contains_key(&key)
+            || matches!(self.full, Full::Evict { .. })
+            || self.make_room(now)
+    }
+
+    /// Whether a new key fits at `now`, after an evicting table forgets its least recently used keys or a refusing one its
+    /// passed windows.
+    fn make_room(&mut self, now: T) -> bool {
+        if self.windows.len() < self.capacity {
+            return true;
         }
-        self.by_use.insert(stamp, key);
-        &mut self.windows.get_mut(&key).expect("entered just now").0
+        match &mut self.full {
+            Full::Evict { by_use, .. } => {
+                while self.windows.len() >= self.capacity
+                    && let Some((_, oldest)) = by_use.pop_first()
+                {
+                    self.windows.remove(&oldest);
+                }
+                true
+            }
+            Full::Refuse { checked, wait } => {
+                if now.since(*checked) >= *wait {
+                    self.windows.retain(|_, (window, _)| window.is_live(now));
+                    *checked = now;
+                    *wait = self
+                        .windows
+                        .values()
+                        .map(|(window, _)| window.left(now))
+                        .min()
+                        .unwrap_or(0);
+                }
+                self.windows.len() < self.capacity
+            }
+        }
     }
 
-    /// Whether `key` may have one more event this second, at most `limit` (counted when it may).
-    pub fn allow(&mut self, key: K, now: u32, limit: u32) -> bool {
-        self.touch(key).allow(now, limit)
+    /// `key`'s window, entered (or moved to most recent) now; `None` when a refusing table has no room for it.
+    fn touch(&mut self, key: K, now: T) -> Option<&mut RateWindow<T>> {
+        let held = self.windows.contains_key(&key);
+        if !held {
+            if !self.make_room(now) {
+                return None;
+            }
+            self.windows.insert(key, (self.fresh, 0));
+        }
+        let (window, used) = self.windows.get_mut(&key)?;
+        if let Full::Evict { by_use, next } = &mut self.full {
+            if held {
+                by_use.remove(used);
+            }
+            *used = *next;
+            by_use.insert(*next, key);
+            *next += 1;
+        }
+        Some(window)
     }
 
-    fn has_room(&mut self, key: K, now: u32, n: u32, limit: u32) -> bool {
-        self.touch(key).has_room(now, n, limit)
+    /// Whether `key` may have one more event in its window, at most `limit` (counted when it may). False, counting nothing,
+    /// when a refusing table has no room for a new key.
+    pub fn allow(&mut self, key: K, now: T, limit: u32) -> bool {
+        let refusing = matches!(self.full, Full::Refuse { .. });
+        let Some(window) = self.touch(key, now) else {
+            return false;
+        };
+        let allowed = window.allow(now, limit);
+        // A window that counted nothing holds nothing: a refusing table, which forgets only passed windows on its own
+        // schedule, lets it go now rather than keep its place.
+        if refusing && !window.is_live(now) {
+            self.windows.remove(&key);
+        }
+        allowed
     }
 
-    fn charge(&mut self, key: K, now: u32, n: u32, limit: u32) {
-        let _ = self.touch(key).allow_n(now, n, limit);
+    /// What `key` has counted in its window at `now`, counting nothing (0 for a key not held).
+    #[must_use]
+    pub fn used(&self, key: K, now: T) -> u32 {
+        self.windows.get(&key).map_or(0, |(w, _)| w.used(now))
+    }
+
+    /// Counts a held `key` up to `limit` at once ([`RateWindow::fill`]); a key not held has no window and is left so.
+    pub fn fill(&mut self, key: K, now: T, limit: u32) {
+        if let Some((window, _)) = self.windows.get_mut(&key) {
+            window.fill(now, limit);
+        }
+    }
+
+    /// Keeps only the keys `keep` says to (for keys that stand for something that can go away, such as an object).
+    pub fn retain(&mut self, mut keep: impl FnMut(&K) -> bool) {
+        self.windows.retain(|key, _| keep(key));
+        if let Full::Evict { by_use, .. } = &mut self.full {
+            let windows = &self.windows;
+            by_use.retain(|_, key| windows.contains_key(key));
+        }
+    }
+
+    fn has_room(&mut self, key: K, now: T, n: u32, limit: u32) -> bool {
+        self.touch(key, now)
+            .is_some_and(|w| w.has_room(now, n, limit))
+    }
+
+    fn charge(&mut self, key: K, now: T, n: u32, limit: u32) {
+        if let Some(window) = self.touch(key, now) {
+            let _ = window.allow_n(now, n, limit);
+        }
+    }
+}
+
+/// A token bucket: up to `burst` tokens, gaining `rate` a second, kept in thousandths of a token so a rate below one a
+/// millisecond still refills and no remainder is lost. A bucket starts full. Taking is all or nothing ([`TokenBucket::take`]);
+/// a caller that charges several buckets for one event checks them all ([`TokenBucket::has`]) before it spends from any
+/// ([`TokenBucket::spend`]), so what one refuses costs the others nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenBucket<T: Clock = u64> {
+    milli: u64,
+    last: Option<T>,
+    rate: u64,
+    burst: u64,
+}
+
+impl<T: Clock> TokenBucket<T> {
+    /// A full bucket of at most `burst` tokens (at least 1) gaining `rate` a second, that starts counting time at its first
+    /// refill.
+    #[must_use]
+    pub fn new(rate: u64, burst: u64) -> TokenBucket<T> {
+        let burst = burst.max(1);
+        TokenBucket {
+            milli: burst.saturating_mul(1_000),
+            last: None,
+            rate,
+            burst,
+        }
+    }
+
+    /// [`TokenBucket::new`], counting time from `now`.
+    #[must_use]
+    pub fn starting_at(rate: u64, burst: u64, now: T) -> TokenBucket<T> {
+        TokenBucket {
+            last: Some(now),
+            ..TokenBucket::new(rate, burst)
+        }
+    }
+
+    /// Tokens a second.
+    #[must_use]
+    pub fn rate(&self) -> u64 {
+        self.rate
+    }
+
+    /// The most tokens it holds.
+    #[must_use]
+    pub fn burst(&self) -> u64 {
+        self.burst
+    }
+
+    /// The time it last counted to, if any.
+    #[must_use]
+    pub fn last(&self) -> Option<T> {
+        self.last
+    }
+
+    /// Adds what the time since the last refill gained, up to the burst.
+    pub fn refill(&mut self, now: T) {
+        if let Some(last) = self.last {
+            self.milli = self
+                .milli
+                .saturating_add(self.rate.saturating_mul(now.since(last)))
+                .min(self.burst.saturating_mul(1_000));
+        }
+        self.last = Some(self.last.map_or(now, |last| now.latest(last)));
+    }
+
+    /// Whether it holds `n` tokens.
+    #[must_use]
+    pub fn has(&self, n: u64) -> bool {
+        self.milli >= n.saturating_mul(1_000)
+    }
+
+    /// Spends `n` tokens, or all it holds when that is less.
+    pub fn spend(&mut self, n: u64) {
+        self.milli = self.milli.saturating_sub(n.saturating_mul(1_000));
+    }
+
+    /// Refills to `now` and spends `n` tokens: false, and nothing spent, when it does not hold them.
+    pub fn take(&mut self, now: T, n: u64) -> bool {
+        self.refill(now);
+        if !self.has(n) {
+            return false;
+        }
+        self.spend(n);
+        true
+    }
+
+    /// Gives back `n` tokens (spent for something that never went out), up to the burst.
+    pub fn refund(&mut self, n: u64) {
+        self.milli = self
+            .milli
+            .saturating_add(n.saturating_mul(1_000))
+            .min(self.burst.saturating_mul(1_000));
     }
 }
 

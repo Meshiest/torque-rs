@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use mlua::{Error, Function, Lua, LuaString, MultiValue, Table, Value};
 
 use super::format::net as fnet;
+use super::format::rate::SendBucket;
 use super::format::{self, Malformed, NodeBudget, Reader, Tier, event, op};
 use super::{
     CallbackId, add_handler, function, granted, invoke_kept, keep, name_of, release, state,
@@ -14,16 +15,10 @@ use crate::realm::table_slots;
 /// The most slots a table sent may have (its 256 entries, and room to spare for how Luau sizes tables).
 const MAX_SENT_SLOTS: u64 = 4 * format::MAX_TABLE_ENTRIES as u64;
 
-/// One message (or one byte) in the buckets' units.
-const UNIT: u64 = 1_000_000;
-
 /// The realm's messages and calls.
 pub(crate) struct NetState {
-    /// Messages left in the bucket, in millionths.
-    messages: u64,
-    /// Bytes left in the bucket, in millionths.
-    bytes: u64,
-    refilled: Option<u64>,
+    /// The rate of sends and calls together, as the host counts it.
+    bucket: SendBucket,
     /// The second a refusal was last logged in.
     noticed: Option<u64>,
     next_call: u32,
@@ -37,9 +32,7 @@ pub(crate) struct NetState {
 impl Default for NetState {
     fn default() -> NetState {
         NetState {
-            messages: u64::from(fnet::SEND_BURST) * UNIT,
-            bytes: u64::from(fnet::SEND_BYTES_PER_SECOND) * UNIT,
-            refilled: None,
+            bucket: SendBucket::new(),
             noticed: None,
             next_call: 0,
             calls: HashMap::new(),
@@ -52,33 +45,6 @@ impl Default for NetState {
 }
 
 impl NetState {
-    /// Takes one message of `len` bytes from the buckets at `now`, or `false` when they are empty.
-    fn take(&mut self, now: u64, len: usize) -> bool {
-        let elapsed = self.refilled.map_or(0, |at| now.saturating_sub(at));
-        self.refilled = Some(now);
-        let refill = |left: u64, per_second: u32, cap: u64| {
-            left.saturating_add(elapsed.saturating_mul(u64::from(per_second)))
-                .min(cap)
-        };
-        self.messages = refill(
-            self.messages,
-            fnet::SENDS_PER_SECOND,
-            u64::from(fnet::SEND_BURST) * UNIT,
-        );
-        self.bytes = refill(
-            self.bytes,
-            fnet::SEND_BYTES_PER_SECOND,
-            u64::from(fnet::SEND_BYTES_PER_SECOND) * UNIT,
-        );
-        let cost = (len as u64).saturating_mul(UNIT);
-        if self.messages < UNIT || self.bytes < cost {
-            return false;
-        }
-        self.messages -= UNIT;
-        self.bytes -= cost;
-        true
-    }
-
     /// Forgets every handler and call, for a revocation: the kept functions to let go.
     pub(crate) fn revoke(&mut self) -> Vec<CallbackId> {
         let mut released: Vec<CallbackId> = self.calls.drain().map(|(_, (_, f))| f).collect();
@@ -190,7 +156,7 @@ fn revoked(lua: &Lua) -> mlua::Result<bool> {
 fn admit(lua: &Lua, len: usize) -> mlua::Result<bool> {
     let mut st = state(lua)?;
     let now = st.now;
-    if st.net.take(now, len) {
+    if st.net.bucket.take(now, len) {
         return Ok(true);
     }
     let second = now / 1_000_000;

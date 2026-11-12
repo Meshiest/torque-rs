@@ -6,8 +6,9 @@
 use std::collections::HashMap;
 
 use torque_client_script_format::{
-    Grants, LOG_LINES_PER_SECOND, MAX_FLUSH_BYTES, MAX_LOG_LINE, MAX_OPS, NodeBudget, Record,
-    Records, Tier, Value, Writer, is_hidden, net, op,
+    Grants, MAX_FLUSH_BYTES, MAX_LOG_LINE, MAX_OPS, NodeBudget, Record, Records, Tier, Value,
+    Writer, is_hidden, net, op,
+    rate::{LineWindow, LogLine, SendBucket},
 };
 
 use crate::effects::{Effects, LogLevel, Violation};
@@ -52,7 +53,9 @@ pub(crate) struct NetCheck {
     calls: HashMap<u32, String>,
     /// Calls waiting, by name.
     outstanding: HashMap<String, usize>,
-    bucket: Bucket,
+    /// The guest's rate of `net.send` and `net.call` together. The host takes only what the guest emitted, at the entry's
+    /// time, so it never has less left than the guest.
+    bucket: SendBucket,
 }
 
 impl Default for NetCheck {
@@ -61,7 +64,7 @@ impl Default for NetCheck {
             last_call: 0,
             calls: HashMap::new(),
             outstanding: HashMap::new(),
-            bucket: Bucket::new(),
+            bucket: SendBucket::new(),
         }
     }
 }
@@ -120,74 +123,15 @@ impl NetCheck {
     }
 }
 
-/// One message (or one byte) in the bucket's units.
-const UNIT: u64 = 1_000_000;
-
-/// The guest's rate of `net.send` and `net.call` together: [`net::SENDS_PER_SECOND`] (burst [`net::SEND_BURST`]) and
-/// [`net::SEND_BYTES_PER_SECOND`]. The host takes only what the guest emitted, at the entry's time, so it never has less
-/// left than the guest.
-#[derive(Debug)]
-struct Bucket {
-    messages: u64,
-    bytes: u64,
-    refilled: Option<u64>,
-}
-
-impl Bucket {
-    fn new() -> Bucket {
-        Bucket {
-            messages: u64::from(net::SEND_BURST) * UNIT,
-            bytes: u64::from(net::SEND_BYTES_PER_SECOND) * UNIT,
-            refilled: None,
-        }
-    }
-
-    fn take(&mut self, now_us: u64, len: usize) -> bool {
-        let elapsed = self.refilled.map_or(0, |at| now_us.saturating_sub(at));
-        self.refilled = Some(now_us);
-        let refill = |left: u64, per_second: u32, cap: u64| {
-            left.saturating_add(elapsed.saturating_mul(u64::from(per_second)))
-                .min(cap)
-        };
-        self.messages = refill(
-            self.messages,
-            net::SENDS_PER_SECOND,
-            u64::from(net::SEND_BURST) * UNIT,
-        );
-        self.bytes = refill(
-            self.bytes,
-            net::SEND_BYTES_PER_SECOND,
-            u64::from(net::SEND_BYTES_PER_SECOND) * UNIT,
-        );
-        let cost = (len as u64).saturating_mul(UNIT);
-        if self.messages < UNIT || self.bytes < cost {
-            return false;
-        }
-        self.messages -= UNIT;
-        self.bytes -= cost;
-        true
-    }
-}
-
-/// The host's own cap on log lines: [`LOG_LINES_PER_SECOND`] and the guest's one warning, per second from the first
-/// line; past it lines are dropped (the guest keeps the cap too, so only a dishonest one loses lines).
+/// The host's own cap on log lines: [`LOG_LINES_PER_SECOND`](torque_client_script_format::LOG_LINES_PER_SECOND) and the
+/// guest's one warning, per second from the first line; past it lines are dropped (the guest counts with the same
+/// [`LineWindow`], so only a dishonest one loses lines).
 #[derive(Debug, Default)]
-pub(crate) struct LogRate {
-    second: Option<u64>,
-    lines: u32,
-}
+pub(crate) struct LogRate(LineWindow);
 
 impl LogRate {
     fn admit(&mut self, now_us: u64) -> bool {
-        if self
-            .second
-            .is_none_or(|start| now_us.saturating_sub(start) >= 1_000_000)
-        {
-            self.second = Some(now_us);
-            self.lines = 0;
-        }
-        self.lines += 1;
-        self.lines <= LOG_LINES_PER_SECOND + 1
+        self.0.log_line(now_us) != LogLine::Dropped
     }
 }
 

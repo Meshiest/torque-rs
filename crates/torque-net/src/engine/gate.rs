@@ -31,7 +31,7 @@
 //! is the host's to cap (it owns the session table); see the module docs of [`super`].
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use super::framing::{self, COOKIE_BYTES, Cookie, CookieValue, Datagram, Reject, RejectCode};
 use super::session::{CONNECT_TIMEOUT_MS, Session, SessionConfig};
@@ -42,9 +42,8 @@ use crate::cap::{
 pub use crate::fair::canonical;
 use crate::fair::{
     Eviction, FairLimiter, FairLimits, NetworkKey, PendingSlot, SourceCaps, SourceCount, Stage,
-    choose_eviction,
+    choose_eviction, keyed128, put_addr,
 };
-use crate::handshake::siphash24;
 
 /// How long a cookie stays in one epoch: one verifies in its epoch and the next, so it lives between one and two periods.
 pub const COOKIE_PERIOD_MS: u32 = 30_000;
@@ -63,22 +62,10 @@ pub fn cookie(key: &[u8; 16], from: SocketAddr, nonce: u64, epoch: u64) -> Cooki
     let mut data = Vec::with_capacity(48);
     data.extend_from_slice(COOKIE_DOMAIN);
     data.push(0);
-    match from.ip() {
-        IpAddr::V4(ip) => {
-            data.push(4);
-            data.extend_from_slice(&ip.octets());
-        }
-        IpAddr::V6(ip) => {
-            data.push(6);
-            data.extend_from_slice(&ip.octets());
-        }
-    }
-    data.extend_from_slice(&from.port().to_le_bytes());
+    put_addr(&mut data, from);
     data.extend_from_slice(&nonce.to_le_bytes());
     data.extend_from_slice(&epoch.to_le_bytes());
-    let a = siphash24(key, &data);
-    data[half] = 1;
-    let b = siphash24(key, &data);
+    let [a, b] = keyed128(key, &mut data, half);
     let mut out = [0; COOKIE_BYTES];
     out[..8].copy_from_slice(&a.to_le_bytes());
     out[8..].copy_from_slice(&b.to_le_bytes());

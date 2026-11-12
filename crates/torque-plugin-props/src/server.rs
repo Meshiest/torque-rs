@@ -13,6 +13,7 @@ use torque_collide::types::STATIC_SHAPE;
 use torque_engine::args::obj_id;
 use torque_engine::permissions::{ConnectionSubjects, SubjectKey};
 use torque_engine::{EngineClass, Prefs, ScriptClass, ScriptError, VmPrefs};
+use torque_net::fair::parse_address_text;
 use torque_ts_vm::fields::Value as Field;
 use torque_ts_vm::geometry;
 use torque_ts_vm::sim::ObjId;
@@ -295,24 +296,7 @@ pub fn owner_key(vm: &Vm, conn: ObjId) -> OwnerKey {
 /// one); an IPv4 address is its own key, an IPv6 one its /64 (one network's addresses share a quota). None for text that is no
 /// address (`"local"`, junk).
 pub fn address_key(text: &str) -> Option<Rc<str>> {
-    let text = text.trim();
-    let text = text
-        .strip_prefix("IP6:")
-        .or_else(|| text.strip_prefix("IP:"))
-        .unwrap_or(text);
-    let host = match text.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or(rest),
-        // A bare IPv6 address has colons of its own: only a single colon is a port.
-        None if text.matches(':').count() == 1 => text.split(':').next().unwrap_or(text),
-        None => text,
-    };
-    let host = host.split('%').next().unwrap_or(host);
-    let ip: IpAddr = host.parse().ok()?;
-    let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-        v4 => v4,
-    };
-    Some(Rc::from(match ip {
+    Some(Rc::from(match parse_address_text(text)? {
         IpAddr::V4(v4) => v4.to_string(),
         IpAddr::V6(v6) => {
             let s = v6.segments();

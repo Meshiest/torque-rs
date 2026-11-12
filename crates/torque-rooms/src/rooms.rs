@@ -32,7 +32,7 @@ use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
-use torque_net::fair::NetworkKey;
+use torque_net::fair::{KeyedWindows, NetworkKey, Overflow};
 
 use torque_server::net::room::{
     CODE_LEN, FromService, MAX_MESSAGE, ToService, code_from, read_code,
@@ -160,70 +160,14 @@ struct Room {
     joiners: HashMap<u32, Joiner>,
 }
 
-/// Counts per key (an address, a network) in a window of time.
-#[derive(Debug)]
-struct Window<K> {
-    span: Ms,
-    counts: HashMap<K, (Ms, u32)>,
-}
+/// Counts per key (an address, a network) in a window of time, in a table of at most
+/// [`RoomLimits::tracked_addresses`] keys that refuses a new key while every count it holds is live.
+type Window<K> = KeyedWindows<K, Ms>;
 
-impl<K: Copy + Eq + Hash> Window<K> {
-    fn new(span: Duration) -> Window<K> {
-        Window {
-            span: span.as_millis() as Ms,
-            counts: HashMap::new(),
-        }
-    }
-
-    /// Counts one for `ip`; false when that passes `cap` (or no room is left to count a new key).
-    fn take(&mut self, ip: K, cap: u32, now: Ms, tracked: usize) -> bool {
-        if !self.counts.contains_key(&ip) && self.counts.len() >= tracked {
-            let span = self.span;
-            self.counts
-                .retain(|_, (start, _)| now.saturating_sub(*start) < span);
-            if self.counts.len() >= tracked {
-                return false;
-            }
-        }
-        let (start, count) = self.counts.entry(ip).or_insert((now, 0));
-        if now.saturating_sub(*start) >= self.span {
-            *start = now;
-            *count = 0;
-        }
-        *count += 1;
-        *count <= cap
-    }
-
-    /// Counts `key` up to `cap` at once (only a key counted already: a new one has no window yet).
-    fn fill(&mut self, key: K, cap: u32, now: Ms) {
-        let span = self.span;
-        if let Some((start, count)) = self.counts.get_mut(&key) {
-            if now.saturating_sub(*start) >= span {
-                *start = now;
-                *count = 0;
-            }
-            *count = (*count).max(cap);
-        }
-    }
-
-    /// Whether a count for `key` could be kept at `now`: it is counted already, or there is room for it.
-    fn can_take(&mut self, key: K, now: Ms, tracked: usize) -> bool {
-        if self.counts.contains_key(&key) || self.counts.len() < tracked {
-            return true;
-        }
-        let span = self.span;
-        self.counts
-            .retain(|_, (start, _)| now.saturating_sub(*start) < span);
-        self.counts.len() < tracked
-    }
-
-    /// What `key` has counted in its window at `now`, counting nothing.
-    fn used(&self, key: K, now: Ms) -> u32 {
-        self.counts
-            .get(&key)
-            .filter(|(start, _)| now.saturating_sub(*start) < self.span)
-            .map_or(0, |(_, count)| *count)
-    }
+/// A [`Window`] of `span` under `limits`.
+fn window<K: Copy + Eq + Hash>(limits: &RoomLimits, span: Duration) -> Window<K> {
+    let span = u32::try_from(span.as_millis()).unwrap_or(u32::MAX);
+    KeyedWindows::bounded(limits.tracked_addresses, span, Overflow::Refuse)
 }
 
 /// The rooms (module docs).
@@ -270,16 +214,16 @@ impl Rooms {
     /// Rooms whose codes come from `random` (a test's).
     pub fn with_random(limits: RoomLimits, ice: Ice, random: Random) -> Rooms {
         Rooms {
-            new_rooms: Window::new(Duration::from_secs(60)),
-            joins: Window::new(Duration::from_secs(60)),
-            network_joins: Window::new(Duration::from_secs(60)),
+            new_rooms: window(&limits, Duration::from_secs(60)),
+            joins: window(&limits, Duration::from_secs(60)),
+            network_joins: window(&limits, Duration::from_secs(60)),
+            failed_of: window(&limits, Duration::from_secs(1)),
             limits,
             ice,
             rooms: HashMap::new(),
             sockets: HashMap::new(),
             rooms_of: HashMap::new(),
             failed: (0, 0),
-            failed_of: Window::new(Duration::from_secs(1)),
             counters: RoomCounters::default(),
             random,
         }
@@ -360,12 +304,10 @@ impl Rooms {
         if self.rooms_of.get(&network).copied().unwrap_or(0) >= limits.rooms_per_network {
             return self.refuse(socket, "rate", out);
         }
-        if !self.new_rooms.take(
-            network,
-            limits.new_rooms_per_network_per_min,
-            now,
-            limits.tracked_addresses,
-        ) {
+        if !self
+            .new_rooms
+            .allow(network, now, limits.new_rooms_per_network_per_min)
+        {
             return self.refuse(socket, "rate", out);
         }
         let mut code = None;
@@ -428,11 +370,7 @@ impl Rooms {
             return self.refuse(socket, "bad", out);
         };
         let limits = &self.limits;
-        let tracked = limits.tracked_addresses;
-        if !self
-            .joins
-            .take(ip, limits.joins_per_ip_per_min, now, tracked)
-        {
+        if !self.joins.allow(ip, now, limits.joins_per_ip_per_min) {
             return self.refuse(socket, "rate", out);
         }
         // Every attempt, hit or miss, counts for its network a minute: guesses spread over a network's addresses stay
@@ -440,7 +378,7 @@ impl Rooms {
         let network = NetworkKey::sharing(ip);
         if !self
             .network_joins
-            .take(network, limits.joins_per_network_per_min, now, tracked)
+            .allow(network, now, limits.joins_per_network_per_min)
         {
             return self.refuse(socket, "busy", out);
         }
@@ -452,7 +390,7 @@ impl Rooms {
         }
         let per_network = limits.failed_joins_per_network_per_s;
         if self.failed_of.used(network, now) >= per_network
-            || !self.failed_of.can_take(network, now, tracked)
+            || !self.failed_of.can_hold(network, now)
         {
             return self.refuse(socket, "busy", out);
         }
@@ -462,11 +400,11 @@ impl Rooms {
         if !self.rooms.contains_key(&code) {
             self.failed.1 = self.failed.1.saturating_add(1);
             let missed_before = self.failed_of.used(network, now) > 0;
-            if !self.failed_of.take(network, per_network, now, tracked) {
+            if !self.failed_of.allow(network, now, per_network) {
                 return self.refuse(socket, "busy", out);
             }
             if missed_before && self.failed.1 > limits.failed_joins_per_s {
-                self.failed_of.fill(network, per_network, now);
+                self.failed_of.fill(network, now, per_network);
             }
             return self.refuse(socket, "no-room", out);
         }
@@ -1196,6 +1134,76 @@ mod tests {
         assert!(closed(&out, 1));
         assert_eq!((r.rooms(), r.sockets()), (0, 0));
         assert_eq!(r.counters().expired, 1);
+    }
+
+    #[test]
+    fn a_flood_of_fresh_addresses_cannot_reset_a_held_addresses_count() {
+        let limits = RoomLimits {
+            tracked_addresses: 64,
+            ..RoomLimits::default()
+        };
+        let per_ip = limits.joins_per_ip_per_min;
+        let mut r = rooms(limits);
+        let held = IpAddr::from([10, 0, 0, 1]);
+        let join = |r: &mut Rooms, socket: u16, from: IpAddr, now: Ms| {
+            said(r, socket, from, "join ZZZZZZZZZZZZZZZZ", now)
+        };
+        for n in 0..per_ip {
+            assert_eq!(
+                join(&mut r, 1, held, u64::from(n) * 1_000),
+                ["refused no-room"]
+            );
+        }
+        assert_eq!(join(&mut r, 1, held, 21_000), ["refused rate"]);
+        // Ten tables' worth of fresh addresses in the same minute: the 63 the table has room for are counted, every one
+        // past them is refused (the table refuses newcomers rather than forget a live count).
+        let answers: Vec<Vec<String>> = (0..640u16)
+            .map(|n| {
+                join(
+                    &mut r,
+                    100 + n,
+                    IpAddr::from([11, (n >> 8) as u8, n as u8, 1]),
+                    22_000,
+                )
+            })
+            .collect();
+        assert!(answers[..63].iter().all(|a| a == &["refused no-room"]));
+        assert!(answers[63..].iter().all(|a| a == &["refused rate"]));
+        // The held address, not heard from during the flood, is still refused.
+        assert_eq!(join(&mut r, 1, held, 22_000), ["refused rate"]);
+        // Once its minute has passed it is counted afresh.
+        assert_eq!(join(&mut r, 1, held, 60_000), ["refused no-room"]);
+    }
+
+    #[test]
+    fn a_join_refused_by_its_addresss_cap_spends_none_of_its_networks() {
+        let limits = RoomLimits::default();
+        let (per_ip, per_network) = (
+            limits.joins_per_ip_per_min,
+            limits.joins_per_network_per_min,
+        );
+        let mut r = rooms(limits);
+        let host = |h: u8| IpAddr::from([10, 0, 0, h]);
+        let mut now = 0;
+        let mut join = |r: &mut Rooms, from: IpAddr| {
+            now += 200;
+            said(r, 1, from, "join ZZZZZZZZZZZZZZZZ", now)
+        };
+        for _ in 0..per_ip {
+            assert_eq!(join(&mut r, host(1)), ["refused no-room"]);
+        }
+        for _ in 0..100 {
+            assert_eq!(join(&mut r, host(1)), ["refused rate"]);
+        }
+        // The hundred refused took nothing from the network: its other addresses get the rest of its minute.
+        for n in 0..per_network - per_ip {
+            assert_eq!(
+                join(&mut r, host(2 + (n / per_ip) as u8)),
+                ["refused no-room"],
+                "{n}"
+            );
+        }
+        assert_eq!(join(&mut r, host(9)), ["refused busy"]);
     }
 
     #[test]

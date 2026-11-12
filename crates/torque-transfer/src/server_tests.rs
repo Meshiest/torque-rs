@@ -528,6 +528,30 @@ fn the_server_rate_is_shared_by_every_connection() {
 }
 
 #[test]
+fn a_run_refused_by_its_connections_rate_spends_none_of_the_servers() {
+    // A connection's bucket holds two runs, the kind's four.
+    let mut cfg = spec();
+    cfg.rate = 256 << 10;
+    cfg.server_rate = 1 << 20;
+    cfg.server_in_flight = 8 << 20;
+    let mut s = server(cfg);
+    let a = Subject::Identity(b"a".to_vec());
+    let first = accept_with_list(&mut s, 1, &a, &data(2 << 20, 1));
+    let second = accept_with_list(&mut s, 1, &a, &data(2 << 20, 2));
+    let other = accept_with_list(
+        &mut s,
+        2,
+        &Subject::Identity(b"b".to_vec()),
+        &data(2 << 20, 3),
+    );
+    let granted = requests(&s.poll(0));
+    let of = |id: u32| granted.iter().filter(|g| g.0 == id).count();
+    // Connection 1 gets its two runs; the runs its own bucket refused leave the other connection the kind's other two.
+    assert_eq!(of(first) + of(second), 2);
+    assert_eq!(of(other), 2);
+}
+
+#[test]
 fn an_upload_that_goes_quiet_is_ended_with_a_reason_and_its_data_on_the_way_is_not_a_violation() {
     let mut s = server(spec());
     let content = data(BLOCK_BYTES, 3);
