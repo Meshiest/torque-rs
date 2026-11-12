@@ -226,6 +226,7 @@ pub fn run(c: &Content, args: &[String]) -> Result<(), String> {
                 cull: Cull::None,
                 depth_test: true,
                 depth_write: false,
+                pbr: None,
             };
             let mut word =
                 (material::KIND_SKY << material::KIND_SHIFT) | material::PARTICLE | material::UNLIT;

@@ -305,3 +305,17 @@ fn frame_lights_put_the_area_lights_last_with_their_shapes_only_where_asked() {
     assert!(points.shapes.iter().all(|s| *s == [[0.0; 4]; 2]));
     assert_eq!(points.lights[2].radius, areas[1].gpu_light().radius);
 }
+
+#[test]
+fn a_texture_past_the_devices_side_drops_its_top_levels_and_never_has_too_many() {
+    // Fits: as it is.
+    assert_eq!(texture_fit(256, 128, 9, 8192), (0, 256, 128, 9));
+    // Twice the side: its first level is dropped.
+    assert_eq!(texture_fit(16384, 4096, 15, 8192), (1, 8192, 2048, 14));
+    // More levels than its chain: as many as the chain has.
+    assert_eq!(texture_fit(4, 4, 20, 8192), (0, 4, 4, 3));
+    // No levels at all, an empty size: one level of 1 x 1.
+    assert_eq!(texture_fit(0, 0, 0, 8192), (0, 1, 1, 1));
+    // A single level over the side: clamped (left unwritten), still a valid texture.
+    assert_eq!(texture_fit(20000, 10, 1, 8192), (0, 8192, 10, 1));
+}

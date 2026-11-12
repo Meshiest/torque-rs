@@ -188,6 +188,11 @@ pub fn write_glb(model: &Model) -> Result<Vec<u8>, ImportError> {
             }
             if let Some(t) = m.normal_texture {
                 v["normalTexture"] = texture(t, m);
+                v["normalTexture"]["scale"] = json!(m.normal_scale);
+            }
+            if let Some(t) = m.occlusion_texture {
+                v["occlusionTexture"] = texture(t, m);
+                v["occlusionTexture"]["strength"] = json!(m.occlusion_strength);
             }
             if let Some(t) = m.emissive_texture {
                 v["emissiveTexture"] = texture(t, m);

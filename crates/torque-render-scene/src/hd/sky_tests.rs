@@ -11,6 +11,7 @@ fn draw(label: &str) -> HdDraw {
         cull: Cull::None,
         depth_test: false,
         depth_write: false,
+        pbr: None,
     }
 }
 

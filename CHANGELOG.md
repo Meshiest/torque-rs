@@ -132,6 +132,14 @@ different.
   `flipbookBlend`; a lit particle finds the sun's visibility once at its center; `softDistance`, `lit` and `sizeByVelocity` are
   honored, and fast thin blended particles (`sizeByVelocity`) are drawn after the TAA. A fill governor holds the summed area the
   sprites cover to a budget of the screen (2, 4, 8 and 16 frames from Low to Ultra), shrinking and thinning them past it.
+- `torque-render-hd`: physically based materials for shapes: a `.mat.toml` sidecar beside a texture (one material) or a
+  shape (one a material name) names base color, normal (OpenGL convention, a flag for DirectX maps), ORM or separate
+  occlusion, roughness and metalness maps, height and emissive maps with their factors, alpha mode and UV scale
+  (`torque_modelcore::pbr`). Normal mapping on MikkTSpace tangents, roughness and metalness per texel, the occlusion map
+  on the ambient, emission, cutout and blended materials, and parallax occlusion mapping from the height map at Ultra.
+  Mips filtered in linear light, with normal maps' lost detail kept as roughness. Draws without a material draw as
+  before.
+- `torque-render-scene`: `HdDraw` has a new `pbr` field (its material and tangents; `None` for a plain draw).
 - `torque::app`: interiors as static meshes kept on the GPU and culled there, with their shadows cached, so interiors
   that stay put cost nothing on the CPU each frame.
 - `torque-render-core::pipeline_cache`: compiled pipelines kept in a per-user wgpu pipeline cache on Vulkan, keyed by
@@ -446,6 +454,7 @@ different.
 - `torque-import`: glTF 2.0 (read and write), Wavefront OBJ and Blockbench (`.bbmodel`) readers, the model layer
   (`torque-modelcore`) into `.dts` and back. A datablock's `shapeFile` may name a `.glb` directly. Shape materials can
   be nearest-sampled (a material flag bit TGE leaves unused), as Blockbench models and glTF `NEAREST` samplers ask.
+  glTF materials keep their normal map's scale and their occlusion map and strength.
 - `torque-interior-builder`: `.dif` interiors built from convex brushes in code, Quake or Valve 220 `.map` files, or
   glTF, OBJ and Blockbench meshes, with hulls made or authored and a `.map`'s water, triggers and spawn points as
   mission objects. Interior materials can be nearest-sampled or see-through glass.

@@ -296,6 +296,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bevy_mikktspace"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bff34eb29ff4b8a8688bc7299f14fb6b597461ca80fec03ed7d22939ab33e48f"
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4711,7 +4717,11 @@ dependencies = [
 name = "torque-modelcore"
 version = "0.1.0"
 dependencies = [
+ "bevy_mikktspace",
  "glam 0.34.2",
+ "serde",
+ "thiserror 2.0.21",
+ "toml",
 ]
 
 [[package]]
@@ -4974,8 +4984,10 @@ dependencies = [
  "naga",
  "png",
  "pollster",
+ "torque-modelcore",
  "torque-render-core",
  "torque-render-scene",
+ "torque-resource",
  "torque-scene",
  "web-time",
 ]
@@ -4987,6 +4999,8 @@ dependencies = [
  "criterion",
  "glam 0.34.2",
  "rayon",
+ "stats_alloc",
+ "thiserror 2.0.21",
  "torque-bytes",
  "torque-collide",
  "torque-ghost-world",
@@ -4997,6 +5011,7 @@ dependencies = [
  "torque-interior-builder",
  "torque-mapcore",
  "torque-maps",
+ "torque-modelcore",
  "torque-resource",
  "torque-scene",
  "torque-shape-builder",

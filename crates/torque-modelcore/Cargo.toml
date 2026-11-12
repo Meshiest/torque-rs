@@ -16,6 +16,12 @@ categories = ["game-development", "data-structures"]
 
 [dependencies]
 glam = { workspace = true }
+# The `.mat.toml` material sidecar.
+serde = { version = "1.0.219", features = ["derive"] }
+toml = { version = "1", default-features = false, features = ["std", "serde", "parse", "display"] }
+thiserror = { workspace = true }
+# MikkTSpace tangents (a safe Rust translation of the reference implementation; no dependencies of its own).
+bevy_mikktspace = "1.0.0"
 
 [lints]
 workspace = true

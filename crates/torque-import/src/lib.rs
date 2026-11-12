@@ -33,6 +33,10 @@
 //! then opens it through `torque_resource::plain::open_plain` (no link followed, the handle checked) and reads at most the length
 //! the reader asked for. A new resolver of files beside a model does the same (`tests/side_files.rs`).
 //!
+//! **Materials.** The glTF reader fills a material's physically based inputs: base color, normal texture and scale,
+//! metal-roughness, occlusion texture and strength, emissive (`a_gltf_materials_maps_and_factors_are_read`). A format with
+//! none leaves the defaults; a `.mat.toml` sidecar (`torque_modelcore::pbr`) supplies them for any format.
+//!
 //! **Normals.** A reader gives every mesh its normals: the writer ([`dts::to_dts`]) puts straight up where a mesh has none,
 //! and a shape is lit by them. A Blockbench face's corners are its own and carry its outward normal (flat shading):
 //! `a_cube_is_twelve_triangles_clockwise_from_outside_a_block_a_meter`.

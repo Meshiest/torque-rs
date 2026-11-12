@@ -12,9 +12,33 @@
 //!
 //! **Checked, not trusted.** [`Model::check`] is what every consumer runs first: every index in range, every array the
 //! length its count says, the node tree without a cycle. A reader's output passes it; a model built by hand may not.
+//!
+//! **Materials.** A [`Material`] carries glTF's physically based inputs (base, normal with its scale, metal-roughness,
+//! occlusion with its strength, emissive); [`pbr`] holds the format-neutral [`pbr::PbrMaterial`] and its `.mat.toml` sidecar,
+//! the way any material's maps reach the renderer. [`tangents`] makes MikkTSpace tangents.
+//!
+//! # Maintaining
+//!
+//! - Modules: [`math`] (quaternions and matrices), [`naming`] (what a node's name means), [`pbr`] (the sidecar: parse, check,
+//!   write), [`tangents`] (MikkTSpace through `bevy_mikktspace`).
+//! - A sidecar is hostile text: [`pbr::Sidecar::parse`] returns a value or an error, never panics, and checks the text's
+//!   length, the number of materials, every map path (relative, inside its folder) and every factor's range
+//!   (`sidecars_outside_the_limits_are_refused_not_read`, `sidecar_fuzz_300000_mutations_never_panic`). A new field gets a
+//!   default, a range in [`pbr::PbrMaterial::check`] and a place in the round trip's generator
+//!   (`forty_synthetic_material_sidecars_round_trip_with_no_difference`).
+//! - Tangents take hostile meshes: NaN and infinite inputs read as finite (`nan_and_infinite_inputs_give_finite_frames`), and a
+//!   mesh with more than [`tangents::MAX_VALENCE`] triangles at a vertex skips MikkTSpace (whose grouping recurses a level a
+//!   triangle) for [`tangents::face_frames`] (`a_fan_past_the_valence_cap_gets_face_frames_not_a_stack_overflow`). A path
+//!   part that is a Windows device name or ends in a dot or space is refused (`sidecars_outside_the_limits_are_refused_not_read`).
+//! - Tangents are MikkTSpace's, with the handedness taken from the bitangent so this crate's clockwise fronts do not flip it;
+//!   flat faces of any UV map (turned, sheared, mirrored) give the analytic tangent within 1e-4
+//!   (`mikktspace_tangents_are_the_reference_within_1e_4_on_twenty_meshes`).
+//! - Checks: `cargo clippy -p torque-modelcore --all-targets -- -D warnings`, `cargo test -p torque-modelcore`.
 
 pub mod math;
 pub mod naming;
+pub mod pbr;
+pub mod tangents;
 
 use math::{Mat4, Quat, Vec3};
 
@@ -149,8 +173,14 @@ pub struct Material {
     pub two_sided: bool,
     /// Whether the texture repeats across u and across v.
     pub wrap: [bool; 2],
+    /// A tangent-space normal map (OpenGL convention, +Y up) and the scale of its X and Y.
     pub normal_texture: Option<usize>,
+    pub normal_scale: f32,
+    /// Roughness in G and metalness in B (glTF's packing; an ORM map with occlusion in R is the same image).
     pub metal_rough_texture: Option<usize>,
+    /// Ambient occlusion in R and how much of it applies (0 none, 1 all).
+    pub occlusion_texture: Option<usize>,
+    pub occlusion_strength: f32,
     pub emissive_texture: Option<usize>,
     pub emissive: Vec3,
     pub metallic: f32,
@@ -173,7 +203,10 @@ impl Default for Material {
             two_sided: false,
             wrap: [true; 2],
             normal_texture: None,
+            normal_scale: 1.0,
             metal_rough_texture: None,
+            occlusion_texture: None,
+            occlusion_strength: 1.0,
             emissive_texture: None,
             emissive: [0.0; 3],
             metallic: 1.0,
@@ -343,6 +376,7 @@ impl Model {
                 m.base_texture,
                 m.normal_texture,
                 m.metal_rough_texture,
+                m.occlusion_texture,
                 m.emissive_texture,
             ];
             if texs.iter().flatten().any(|&t| t >= self.images.len()) {

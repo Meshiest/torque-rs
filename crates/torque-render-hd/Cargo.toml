@@ -28,6 +28,10 @@ gizmos = []
 torque-scene = { path = "../torque-scene" }
 png = "0.18"
 criterion = { workspace = true }
+# The physically based materials' tests and gallery: the sidecar and its material.
+torque-modelcore = { path = "../torque-modelcore" }
+# The gallery reads a library's files without following links.
+torque-resource = { path = "../torque-resource" }
 
 [[bench]]
 name = "upload"

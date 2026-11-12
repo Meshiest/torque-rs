@@ -263,3 +263,107 @@ fn the_cpu_field_is_the_shaders() {
         assert!(wgsl.contains(c), "{c}");
     }
 }
+
+/// Every permutation that draws without a PBR material, by name, and the FNV-1a hash of its source composed with the engine's
+/// own extension: a change to any of them moves pixels that must not move (the PBR path has modules of its own).
+const NON_PBR_SOURCES: [(&str, u64); 40] = [
+    (
+        "forward.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
+        0xe46c25ea019d12ce,
+    ),
+    (
+        "forward.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
+        0x76b22a462d114991,
+    ),
+    (
+        "forward.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
+        0x62e1616826810b3b,
+    ),
+    (
+        "forward.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
+        0x17d5d70f3882df96,
+    ),
+    ("clusters.wgsl", 0xf9910b500be3f387),
+    ("tonemap.wgsl", 0xaf3880f9b042906f),
+    ("shadow.wgsl (UNCLIPPED = true)", 0x2c77f938a82871e2),
+    ("shadow.wgsl (UNCLIPPED = false)", 0x63ae3f4de11ba8b1),
+    ("contact.wgsl", 0xf272e766dd6b3f38),
+    ("contact_filter.wgsl", 0x5a720895d77e42c9),
+    ("ao.wgsl (GTAO = true)", 0x4d5308986eebf3e7),
+    ("ao.wgsl (GTAO = false)", 0x44bb2e6b6ddd22bc),
+    ("ao_filter.wgsl", 0xd665528f97e9c439),
+    ("taa.wgsl", 0x8a6e99cfb267243a),
+    ("fxaa.wgsl", 0xa96525dca2b78bff),
+    (
+        "forward.wgsl (a secondary view: CLUSTERED = false, CLIP = true)",
+        0x08da7cd004431b5e,
+    ),
+    ("water.wgsl", 0x49f470d463a99cf8),
+    ("hiz.wgsl", 0x0b2dc8f0063114ed),
+    ("ssr.wgsl", 0x736fc1e3bce41d02),
+    ("down.wgsl", 0x3d4a40d1d9c5b930),
+    ("prefilter.wgsl", 0xaebb7728517df56a),
+    ("irradiance.wgsl", 0x62c652196617e311),
+    ("atmosphere.wgsl", 0x39c9bd8b08ea6c07),
+    ("sky.wgsl", 0x989fd0754a5928a0),
+    ("volumetric.wgsl", 0xdfd7672a3a7fc3f6),
+    ("froxels.wgsl", 0xcdf1508c3477498f),
+    ("bloom.wgsl", 0x6f4fbe1ca8643292),
+    ("exposure.wgsl", 0x7e42d0828fe4962f),
+    ("wboit.wgsl", 0x202ec555530680d0),
+    ("clouds.wgsl", 0x93e82945bd675318),
+    ("cull.wgsl", 0x0ff6b6076072b463),
+    (
+        "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
+        0xfe537ba2c072ba3a,
+    ),
+    (
+        "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = false)",
+        0xb257954275fb6af5,
+    ),
+    (
+        "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = true, FRONT_LAYER = true)",
+        0x1c3d5e10c77887ab,
+    ),
+    (
+        "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = false, FRONT_LAYER = true)",
+        0x5c9b6c6d409392c2,
+    ),
+    ("gpu_particles.wgsl", 0xaabc7bb4a1b83dd7),
+    (
+        "forward.wgsl with dissolve.wgsl (CLUSTERED = true)",
+        0x379ac79f045ac5a2,
+    ),
+    (
+        "forward.wgsl with dissolve.wgsl (CLUSTERED = false)",
+        0x3d7056fbbad76969,
+    ),
+    (
+        "shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = true)",
+        0x8dd6d7c0d9573073,
+    ),
+    (
+        "shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = false)",
+        0xe5b1ff61bdf5fc90,
+    ),
+];
+
+#[test]
+fn the_permutations_without_pbr_materials_are_unchanged() {
+    let fnv = |text: &str| {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
+    };
+    let changed: Vec<String> = NON_PBR_SOURCES
+        .iter()
+        .filter(|(name, hash)| {
+            Permutation::ALL
+                .iter()
+                .find(|p| p.name() == *name)
+                .is_none_or(|p| fnv(&p.source()) != *hash)
+        })
+        .map(|(name, _)| (*name).to_string())
+        .collect();
+    assert_eq!(changed, Vec::<String>::new());
+}

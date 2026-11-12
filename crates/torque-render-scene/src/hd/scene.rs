@@ -304,6 +304,8 @@ pub struct HdScene<G> {
     /// when it changed).
     pub lights_generation: u64,
     pub textures: TextureTable,
+    /// The physically based materials the draws' [`super::pbr::PbrDraw`]s name (kept across syncs, as the textures are).
+    pub materials: super::pbr::MaterialTable,
     pub notes: Vec<String>,
     /// Counts the syncs (the GPU side compares it).
     pub generation: u64,
@@ -389,6 +391,7 @@ impl<G> HdScene<G> {
             glow_lights: 0,
             lights_generation: 0,
             textures: TextureTable::default(),
+            materials: super::pbr::MaterialTable::default(),
             notes: Vec::new(),
             generation: 0,
             control_generation: 0,

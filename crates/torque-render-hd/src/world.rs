@@ -366,6 +366,9 @@ pub(crate) struct DrawRef {
     /// Cut out by its texture's alpha (`torque_render_scene::hd::material::CUTOUT`): left out of the depth prepass and of the
     /// shadow casters (neither reads the texture), drawn opaque in the main pass.
     cutout: bool,
+    /// Its physically based material (its tangents are in the PBR path's stream at its vertices): the main view's forward pass
+    /// draws it with the material's pipeline and group; every other pass as any draw of its texture.
+    pbr: Option<torque_render_scene::hd::pbr::MaterialId>,
 }
 
 /// Bind groups made in the last frames by what they bind (wgpu's handles compare by the resource they name): a group is made
@@ -1115,6 +1118,10 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     tonemap_pipeline_layout: wgpu::PipelineLayout,
     tonemap_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    /// The physically based materials' path, made when a scene first holds a material ([`crate::pbr`]), and its pipelines by
+    /// key and parallax.
+    pbr: Option<crate::pbr::PbrGpu>,
+    pbr_pipelines: HashMap<(PipelineKey, bool), wgpu::RenderPipeline>,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
     groups: HashMap<(TexRef, SamplerKey), wgpu::BindGroup>,
     textures: Vec<wgpu::TextureView>,
@@ -1491,8 +1498,11 @@ pub(crate) fn trans_pipeline(
         Stage::Tail => (wgpu::CompareFunction::GreaterEqual, false),
         Stage::Front => (wgpu::CompareFunction::Equal, false),
     };
+    let pbr = vertices == Vertices::Pbr;
     let entry = match stage {
+        Stage::Tail if pbr => Some("fs_pbr_wboit"),
         Stage::Tail => Some("fs_wboit"),
+        Stage::Front if pbr => Some("fs_pbr"),
         Stage::Front => Some("fs_main"),
         _ => None,
     };
@@ -1558,6 +1568,32 @@ pub fn f32_to_f16(v: f32) -> u16 {
         h += 1;
     }
     h
+}
+
+/// How a texture of `width` x `height` with `levels` levels fits the device's `max` side: the first level kept (the levels
+/// above it dropped until it fits, as the lightmap does), its size, and how many levels from it (no more than its full chain
+/// has, at least one). A texture whose last level is still over `max` keeps a level of `max` (its bytes do not fit and are
+/// left unwritten): it is never a validation error.
+pub(crate) fn texture_fit(
+    width: u32,
+    height: u32,
+    levels: usize,
+    max: u32,
+) -> (usize, u32, u32, u32) {
+    let max = max.max(1);
+    let size = |k: usize| {
+        let k = k.min(31) as u32;
+        ((width.max(1) >> k).max(1), (height.max(1) >> k).max(1))
+    };
+    let mut first = 0;
+    while first + 1 < levels && (size(first).0 > max || size(first).1 > max) {
+        first += 1;
+    }
+    let (w, h) = size(first);
+    let (w, h) = (w.min(max), h.min(max));
+    let chain = 32 - w.max(h).leading_zeros();
+    let count = (levels.saturating_sub(first) as u32).clamp(1, chain);
+    (first, w, h, count)
 }
 
 /// The forward pass's pipeline for `key`: of `module` (the forward module of its `clustered` and `front_layer`), the stage's
@@ -1672,6 +1708,7 @@ fn make_pipeline(
 ) -> wgpu::RenderPipeline {
     let forward = |entry| forward_pipeline_of(device, cache, layout, module, key, entry, vertices);
     match key.stage {
+        Stage::Main | Stage::Over if vertices == Vertices::Pbr => forward("fs_pbr"),
         Stage::Main if key.blend == Blend::Modulate2x => forward("fs_modulate2x"),
         Stage::Main | Stage::Over => forward("fs_main"),
         Stage::Particle => forward("fs_particle"),
@@ -1679,14 +1716,16 @@ fn make_pipeline(
     }
 }
 
-/// Where a forward-pass pipeline's vertices come from: the vertex buffers ([`HdVertex`], `vs_main`), or the GPU particle
-/// pool's sprites (`vs_gpu_sprite`: no buffer, six vertices a particle of its instance list).
+/// Where a forward-pass pipeline's vertices come from: the vertex buffers ([`HdVertex`], `vs_main`), the GPU particle
+/// pool's sprites (`vs_gpu_sprite`: no buffer, six vertices a particle of its instance list), or a physically based material's
+/// draw (`vs_pbr`: the vertex buffer and the tangent stream; its fragment entries are `pbr.wgsl`'s).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Vertices {
     Mesh,
     Sprites,
     /// The vertex buffers through a dissolving draw's entry (`vs_dissolve`, [`dissolve`]).
     Dissolve,
+    Pbr,
 }
 
 /// The vertex buffer layout of an [`HdVertex`].
@@ -1700,12 +1739,28 @@ const MESH_BUFFERS: [Option<wgpu::VertexBufferLayout<'static>>; 1] =
         attributes: &MESH_ATTRIBUTES,
     })];
 
+/// The vertex buffer layouts of a physically based material's draw: the [`HdVertex`]es and the tangent stream.
+const TANGENT_ATTRIBUTES: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![6 => Snorm16x4];
+const PBR_BUFFERS: [Option<wgpu::VertexBufferLayout<'static>>; 2] = [
+    Some(wgpu::VertexBufferLayout {
+        array_stride: HD_VERTEX_BYTES as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &MESH_ATTRIBUTES,
+    }),
+    Some(wgpu::VertexBufferLayout {
+        array_stride: torque_render_scene::hd::pbr::TANGENT_BYTES as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &TANGENT_ATTRIBUTES,
+    }),
+];
+
 /// A forward-pass pipeline's vertex stage of `module` for `vertices`.
 fn vertex_state(module: &wgpu::ShaderModule, vertices: Vertices) -> wgpu::VertexState<'_> {
     let (entry, buffers): (&str, &[Option<wgpu::VertexBufferLayout<'static>>]) = match vertices {
         Vertices::Mesh => ("vs_main", &MESH_BUFFERS),
         Vertices::Sprites => ("vs_gpu_sprite", &[]),
         Vertices::Dissolve => ("vs_dissolve", &MESH_BUFFERS),
+        Vertices::Pbr => ("vs_pbr", &PBR_BUFFERS),
     };
     wgpu::VertexState {
         module,
@@ -2961,6 +3016,8 @@ impl<E: HdExtension> HdWorld<E> {
             tonemap_pipeline_layout,
             tonemap_pipelines: HashMap::new(),
             pipelines: HashMap::new(),
+            pbr: None,
+            pbr_pipelines: HashMap::new(),
             samplers: HashMap::new(),
             groups: HashMap::new(),
             textures: Vec::new(),
@@ -3456,6 +3513,29 @@ impl<E: HdExtension> HdWorld<E> {
         self.groups.insert((tex, s), group);
     }
 
+    /// The pipeline a physically based material's draw of `key` is drawn with at the frame's parallax (made when first asked
+    /// for; None while the scene holds no material).
+    fn ensure_pbr_pipeline(&mut self, key: PipelineKey) {
+        let Some(pbr) = &mut self.pbr else {
+            return;
+        };
+        let at = (key, pbr.parallax);
+        if self.pbr_pipelines.contains_key(&at) {
+            return;
+        }
+        let (module, layout) = pbr.module(&self.device, key.clustered, key.front_layer);
+        let pipeline = make_pipeline(
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            layout,
+            module,
+            key,
+            Vertices::Pbr,
+        );
+        self.pbr_pipelines.insert(at, pipeline);
+        self.pipelines_made += 1;
+    }
+
     fn ensure_pipeline(&mut self, key: PipelineKey) {
         if self.pipelines.contains_key(&key) {
             return;
@@ -3697,23 +3777,35 @@ impl<E: HdExtension> HdWorld<E> {
     }
 
     fn upload_texture(&self, t: &torque_render_scene::Texture) -> wgpu::TextureView {
+        let (first, w0, h0, count) = texture_fit(
+            t.width,
+            t.height,
+            t.levels.len(),
+            self.device.limits().max_texture_dimension_2d,
+        );
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&t.path),
             size: wgpu::Extent3d {
-                width: t.width.max(1),
-                height: t.height.max(1),
+                width: w0,
+                height: h0,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: t.levels.len().max(1) as u32,
+            mip_level_count: count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
-        for (i, level) in t.levels.iter().enumerate() {
-            let (w, h) = ((t.width >> i).max(1), (t.height >> i).max(1));
-            if level.len() < (4 * w * h) as usize {
+        for (i, level) in t.levels.iter().skip(first).take(count as usize).enumerate() {
+            let (w, h) = ((w0 >> i).max(1), (h0 >> i).max(1));
+            // A level's own size (from the texture's) must be the GPU level's: a clamped one is left unwritten.
+            let k = (first + i) as u32;
+            let own = (
+                t.width.checked_shr(k).unwrap_or(0).max(1),
+                t.height.checked_shr(k).unwrap_or(0).max(1),
+            );
+            if own != (w, h) || (level.len() as u64) < 4 * u64::from(w) * u64::from(h) {
                 continue;
             }
             self.queue.write_texture(
@@ -3748,6 +3840,23 @@ impl<E: HdExtension> HdWorld<E> {
         while self.textures.len() < scene.textures.textures.len() {
             let view = self.upload_texture(&scene.textures.textures[self.textures.len()]);
             self.textures.push(view);
+        }
+        if !scene.materials.materials.is_empty() {
+            let pbr = self.pbr.get_or_insert_with(|| {
+                crate::pbr::PbrGpu::new(
+                    &self.device,
+                    &self.frame_layout,
+                    &self.sky.layout,
+                    &self.refl.layout,
+                )
+            });
+            pbr.sync(
+                &self.device,
+                &self.queue,
+                &scene.materials,
+                &self.textures,
+                &self.white,
+            );
         }
         if self.lightmap_generation != Some(scene.lightmap_generation) {
             self.lightmap_generation = Some(scene.lightmap_generation);
@@ -4697,6 +4806,7 @@ impl<E: HdExtension> HdWorld<E> {
                     shadow_only: false,
                     view_only: false,
                     cutout: false,
+                    pbr: None,
                 },
             ));
             vcount += d.vertices.len() as u32;
@@ -4826,10 +4936,21 @@ impl<E: HdExtension> HdWorld<E> {
                     .vertices
                     .first()
                     .is_some_and(|v| torque_render_scene::hd::material::view_only(v.material)),
+                // A cutout material's draw too (its main pass discards by the base map's alpha).
                 cutout: d
                     .vertices
                     .first()
-                    .is_some_and(|v| torque_render_scene::hd::material::cutout(v.material)),
+                    .is_some_and(|v| torque_render_scene::hd::material::cutout(v.material))
+                    || d.pbr.as_ref().is_some_and(|p| {
+                        scene.materials.get(p.material).is_some_and(|m| {
+                            m.alpha == torque_render_scene::hd::pbr::AlphaMode::Cutout
+                        })
+                    }),
+                pbr: d
+                    .pbr
+                    .as_ref()
+                    .filter(|p| p.tangents.len() == d.vertices.len())
+                    .map(|p| p.material),
             }
         };
         let draw_at = |d: &HdDraw, base: usize, indices: &mut Vec<u32>| -> DrawRef {
@@ -5242,6 +5363,31 @@ impl<E: HdExtension> HdWorld<E> {
             loose.indices = Some(ibuf);
         }
         self.loose = loose;
+        self.upload_tangents(scene);
+    }
+
+    /// The physically based materials' draws' tangents into the PBR path's stream, at their vertices in the loose buffer.
+    fn upload_tangents(&mut self, scene: &E::Scene) {
+        let Some(pbr) = &mut self.pbr else {
+            return;
+        };
+        let vertices = self
+            .loose
+            .vertices
+            .as_ref()
+            .map_or(0, |b| b.size() as usize / HD_VERTEX_BYTES);
+        let writes: Vec<(usize, &[[i16; 4]])> = scene
+            .objects
+            .iter()
+            .zip(&self.loose.objects)
+            .flat_map(|(o, g)| o.draws.iter().zip(&g.draws))
+            .filter_map(|(d, r)| {
+                let p = d.pbr.as_ref()?;
+                r.pbr?;
+                Some((usize::try_from(r.base_vertex).ok()?, p.tangents.as_slice()))
+            })
+            .collect();
+        pbr.write_tangents(&self.device, &self.queue, vertices, &writes);
     }
 
     /// Whether the table of `end` meshes' places, with its room to grow, fits one storage buffer of the device.
@@ -5945,6 +6091,10 @@ impl<E: HdExtension> HdWorld<E> {
         cpu_mark!("begin: particles");
         let mode = E::mode(scene).unwrap_or_else(E::fallback_mode);
         let (quality, image) = (mode.quality, mode.image);
+        // The materials' parallax marches at the highest quality only.
+        if let Some(pbr) = &mut self.pbr {
+            pbr.parallax = quality == torque_render_scene::hd::Quality::Ultra;
+        }
         let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
         let pq = quality.post();
         let (iw, ih) = internal_size(
@@ -6402,6 +6552,10 @@ impl<E: HdExtension> HdWorld<E> {
                 continue;
             }
             self.ensure_pipeline(key);
+            let pbr = matches!(it, Item::Loose(d) if d.pbr.is_some());
+            if pbr {
+                self.ensure_pbr_pipeline(key);
+            }
             // An alpha-blended translucent draw's weighted-blend passes.
             if wboit
                 && key.front_layer
@@ -6410,6 +6564,9 @@ impl<E: HdExtension> HdWorld<E> {
             {
                 for stage in [Stage::FrontDepth, Stage::Tail, Stage::Front] {
                     self.ensure_pipeline(PipelineKey { stage, ..key });
+                    if pbr {
+                        self.ensure_pbr_pipeline(PipelineKey { stage, ..key });
+                    }
                 }
             }
             // An additive particle's own fragment entry (the late pass).
@@ -7359,6 +7516,36 @@ impl<E: HdExtension> HdWorld<E> {
                     bound = None;
                     loose_bound = None;
                     arena_bound = false;
+                    continue;
+                }
+                // A physically based material's draw: its pipeline, its group and the tangent stream beside the vertices.
+                if let Item::Loose(d) = it
+                    && let Some(id) = d.pbr
+                    && !d.particle
+                    && let Some(pbr) = &self.pbr
+                    && let (Some(pipe), Some(group), Some(t), Some(v), Some(i)) = (
+                        self.pbr_pipelines.get(&(key, pbr.parallax)),
+                        pbr.group(id),
+                        &pbr.tangents,
+                        &self.loose.vertices,
+                        &self.loose.indices,
+                    )
+                {
+                    pass.set_pipeline(pipe);
+                    pass.set_bind_group(1, group, &[]);
+                    if loose_bound != Some(false) {
+                        pass.set_vertex_buffer(0, v.slice(..));
+                        pass.set_index_buffer(i.slice(..), wgpu::IndexFormat::Uint32);
+                        loose_bound = Some(false);
+                        arena_bound = false;
+                    }
+                    pass.set_vertex_buffer(1, t.slice(..));
+                    if d.count > 0 {
+                        pass.draw_indexed(d.first..d.first + d.count, d.base_vertex, 0..1);
+                        crate::count_draws(1);
+                        *draw_calls += 1;
+                    }
+                    bound = None;
                     continue;
                 }
                 if bound.is_none_or(|(k, _)| k != key) {

@@ -79,6 +79,7 @@ impl Look {
             },
             depth_test: true,
             depth_write: self.blend == Blend::Opaque,
+            pbr: None,
         }
     }
 }

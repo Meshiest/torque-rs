@@ -629,6 +629,11 @@ impl Reader<'_> {
             }
             if let Some(n) = &m.normal_texture {
                 out.normal_texture = Some(self.texture(n.index.value(), &mut seen, charge)?);
+                out.normal_scale = n.scale;
+            }
+            if let Some(o) = &m.occlusion_texture {
+                out.occlusion_texture = Some(self.texture(o.index.value(), &mut seen, charge)?);
+                out.occlusion_strength = o.strength.0;
             }
             if let Some(t) = &pbr.metallic_roughness_texture {
                 out.metal_rough_texture = Some(self.texture(t.index.value(), &mut seen, charge)?);

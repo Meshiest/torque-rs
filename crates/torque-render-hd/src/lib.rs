@@ -102,6 +102,22 @@
 //!   room built of shapes would otherwise show the capture the sky through its walls, and the ambient would bounce it. Smaller
 //!   ones (the client's own player and held item) are left out
 //!   (`a_small_shape_that_holds_the_capture_eye_is_left_out_and_a_room_is_not`).
+//! - Physically based materials ([`torque_render_scene::hd::pbr`]) have a path of their own (`pbr.rs`, `shaders/pbr.wgsl`):
+//!   [`shaders::Permutation::ForwardPbr`] modules (the forward module of the same constants with `pbr.wgsl` after it), their
+//!   pipelines (`vs_pbr` over the vertex buffer and a tangent stream, `fs_pbr`, `fs_pbr_wboit`), a group 1 a material (the base
+//!   texture and sampler, then normal, ORM, height, the uniform and emissive) and the loose draws' tangent stream. None of it
+//!   is made until a scene holds a material, and no other permutation's source includes `pbr.wgsl`: every existing
+//!   permutation's source is pinned by its hash (`the_permutations_without_pbr_materials_are_unchanged`), and a scene's plain
+//!   draws draw the same bytes beside a material's (`tests/pbr_materials.rs`). Only the main view's forward pass reads the
+//!   maps; the prepass, shadows, captures and mirrors draw a material's draw as any draw of its base texture (the prepass's
+//!   normal is the geometric one). `pbr.wgsl` lights through forward.wgsl's `shade_surf` with the maps' inputs and the linear
+//!   response, so a roughness by metalness sweep of white spheres under a uniform sky gives back the sky within 2 % at
+//!   metalness 0 and 1 (`tests/pbr_materials.rs`); a change to the shading goes in `brdf.wgsl` and keeps both furnaces.
+//!   Parallax marches the height map at Ultra only. Any table texture is uploaded within the device's side, its top levels
+//!   dropped until it fits and never more levels than its chain has (`texture_fit`;
+//!   `textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_error`). Only loose objects' draws (shapes) take materials: planes, cells and the
+//!   sky ignore a draw's material. The `pbr-gallery` example draws the look (`--library` a folder of sidecars, `--cost` the
+//!   opaque pass with and without the materials).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are
@@ -173,6 +189,7 @@ pub mod gizmos;
 pub mod irradiance;
 pub mod limits;
 pub mod passes;
+mod pbr;
 pub mod post;
 pub mod profile;
 pub mod shaders;

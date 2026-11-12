@@ -756,6 +756,7 @@ impl<E: HdExtension> HdWorld<E> {
             shadow_only: false,
             view_only: false,
             cutout: false,
+            pbr: None,
         })
     }
 

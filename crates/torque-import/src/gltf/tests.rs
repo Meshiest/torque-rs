@@ -189,6 +189,49 @@ fn a_written_model_reads_back_as_itself() {
 }
 
 #[test]
+fn a_gltf_materials_maps_and_factors_are_read() {
+    let mut m = sample();
+    m.materials[0] = Material {
+        name: "wood".into(),
+        base_texture: Some(0),
+        normal_texture: Some(1),
+        normal_scale: 0.5,
+        metal_rough_texture: Some(1),
+        occlusion_texture: Some(0),
+        occlusion_strength: 0.25,
+        emissive_texture: Some(1),
+        emissive: [0.5, 0.25, 0.0],
+        metallic: 0.75,
+        roughness: 0.4,
+        ..Material::default()
+    };
+    let back = read_ok(&write_glb(&m).unwrap()).unwrap();
+    let got = &back.materials[0];
+    let want = &m.materials[0];
+    assert_eq!(
+        (
+            got.base_texture,
+            got.normal_texture,
+            got.metal_rough_texture,
+            got.occlusion_texture,
+            got.emissive_texture
+        ),
+        (
+            want.base_texture,
+            want.normal_texture,
+            want.metal_rough_texture,
+            want.occlusion_texture,
+            want.emissive_texture
+        )
+    );
+    assert_eq!((got.normal_scale, got.occlusion_strength), (0.5, 0.25));
+    assert_eq!(
+        (got.metallic, got.roughness, got.emissive),
+        (0.75, 0.4, [0.5, 0.25, 0.0])
+    );
+}
+
+#[test]
 fn a_gltf_with_data_uris_and_side_files_reads_like_its_glb() {
     let glb = write_glb(&sample()).unwrap();
     let (mut doc, bin) = open(&glb);

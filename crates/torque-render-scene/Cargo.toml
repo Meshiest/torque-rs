@@ -29,6 +29,9 @@ rayon = "1.11"
 shapes = { package = "torque-shapes", path = "../torque-shapes" }
 # A datablock's `.glb` / `.gltf` shape file, read as the `.dts` it makes.
 torque-import = { path = "../torque-import" }
+# The physically based materials' sidecar and MikkTSpace tangents (`hd::pbr`).
+torque-modelcore = { path = "../torque-modelcore" }
+thiserror = { workspace = true }
 # A disk cache file is read without following a link, within a cap.
 torque-resource = { path = "../torque-resource" }
 # The day's sun the TimeOfDay ghost runs on the client (`hd::environment`).
@@ -44,6 +47,8 @@ criterion = { workspace = true }
 torque-bytes = { path = "../torque-bytes" }
 # The benches' interior (`benches/scene.rs`).
 torque-interior-builder = { path = "../torque-interior-builder" }
+# The materials' memory test counts what a build allocates.
+stats_alloc = { workspace = true }
 # The shapes' material tests build their shapes.
 torque-shape-builder = { path = "../torque-shape-builder" }
 

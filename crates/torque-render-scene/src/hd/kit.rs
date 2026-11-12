@@ -82,6 +82,7 @@ pub fn box_object(ghost: u32, centre: [f32; 3], h: [f32; 3]) -> DynamicObject {
             cull: Cull::None,
             depth_test: true,
             depth_write: true,
+            pbr: None,
         }],
         stamp: None,
         nodes: Vec::new(),

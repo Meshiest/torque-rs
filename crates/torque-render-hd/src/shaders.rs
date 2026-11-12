@@ -5,11 +5,12 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 44] = [
+pub const FILES: [(&str, &str); 45] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("area.wgsl", include_str!("../shaders/area.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
+    ("pbr.wgsl", include_str!("../shaders/pbr.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
     (
         "gpu_particle_types.wgsl",
@@ -200,6 +201,14 @@ pub enum Permutation {
     ShadowDissolve {
         unclipped: bool,
     },
+    /// The forward pass of a draw with a physically based material: the forward module of the same constants with `pbr.wgsl`
+    /// (`vs_pbr`, `fs_pbr`, `fs_pbr_wboit`); `parallax` marches the height map (the highest quality). Its own module: the
+    /// permutations above never include `pbr.wgsl`, so a draw without a material compiles to the same shaders as before.
+    ForwardPbr {
+        clustered: bool,
+        front_layer: bool,
+        parallax: bool,
+    },
 }
 
 /// What [`Permutation::Dissolve`] turns into plain functions in the forward pass's text, and what it calls them.
@@ -210,7 +219,7 @@ pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 40] = [
+    pub const ALL: [Permutation; 48] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -275,6 +284,46 @@ impl Permutation {
         Permutation::Dissolve { clustered: false },
         Permutation::ShadowDissolve { unclipped: true },
         Permutation::ShadowDissolve { unclipped: false },
+        Permutation::ForwardPbr {
+            clustered: true,
+            front_layer: false,
+            parallax: false,
+        },
+        Permutation::ForwardPbr {
+            clustered: false,
+            front_layer: false,
+            parallax: false,
+        },
+        Permutation::ForwardPbr {
+            clustered: true,
+            front_layer: true,
+            parallax: false,
+        },
+        Permutation::ForwardPbr {
+            clustered: false,
+            front_layer: true,
+            parallax: false,
+        },
+        Permutation::ForwardPbr {
+            clustered: true,
+            front_layer: false,
+            parallax: true,
+        },
+        Permutation::ForwardPbr {
+            clustered: false,
+            front_layer: false,
+            parallax: true,
+        },
+        Permutation::ForwardPbr {
+            clustered: true,
+            front_layer: true,
+            parallax: true,
+        },
+        Permutation::ForwardPbr {
+            clustered: false,
+            front_layer: true,
+            parallax: true,
+        },
     ];
 
     pub fn name(self) -> String {
@@ -323,6 +372,13 @@ impl Permutation {
             Permutation::ShadowDissolve { unclipped } => {
                 format!("shadow.wgsl with dissolve_shadow.wgsl (UNCLIPPED = {unclipped})")
             }
+            Permutation::ForwardPbr {
+                clustered,
+                front_layer,
+                parallax,
+            } => format!(
+                "forward.wgsl with pbr.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer}, PARALLAX = {parallax})"
+            ),
         }
     }
 
@@ -430,6 +486,21 @@ impl Permutation {
                 Permutation::Shadow { unclipped }.source(),
                 file("dissolve_common.wgsl"),
                 file("dissolve_shadow.wgsl")
+            ),
+            Permutation::ForwardPbr {
+                clustered,
+                front_layer,
+                parallax,
+            } => format!(
+                "const PARALLAX: bool = {parallax};
+{}
+{}",
+                Permutation::Forward {
+                    clustered,
+                    front_layer
+                }
+                .source(),
+                file("pbr.wgsl")
             ),
             Permutation::Hiz => file("hiz.wgsl").to_string(),
             Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),

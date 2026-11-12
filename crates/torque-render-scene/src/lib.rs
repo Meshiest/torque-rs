@@ -92,6 +92,20 @@
 //!   their room is there: [`hd::HdDraw::assign_fixed`]) and counts no new set when there was none and is none; the lit sprites
 //!   are shaped with no list a quad (bench `particles draw+upload 10k`).
 //! - [`hd::TextureTable::intern`] finds a texture it holds by its levels' address with no copy of its path.
+//! - Physically based materials ([`hd::pbr`]): a scene's [`hd::pbr::MaterialTable`] beside its texture table, a draw's
+//!   [`hd::pbr::PbrDraw`] (its material and one tangent a vertex; a draw whose tangents are not one a vertex is drawn plain).
+//!   A material's draw keeps its own base texture so every pass that reads no maps draws it as before. The maps' chains are
+//!   made here: color in linear light (`color_maps_are_filtered_in_linear_light`), normals renormalized with their lost length
+//!   widening the ORM map's roughness (Toksvig; `a_bumpy_normal_maps_lower_levels_are_unit_and_widen_the_roughness`), a
+//!   DirectX map's green flipped as it loads (`a_directx_normal_map_is_flipped_to_opengls_convention`). Maps are hostile
+//!   files: [`hd::pbr::load`] refuses a missing, unknown, oversize or broken map and adds nothing for that material
+//!   (`maps_that_are_missing_unknown_huge_or_broken_fail_the_material`), and counts every map's working memory
+//!   ([`hd::pbr::working_bytes`]) from the headers before any is decoded (`maps_over_the_working_memory_are_refused_from_their_headers`);
+//!   the chains keep two float levels alive at a time, and every byte a build allocates is under that count. A material is
+//!   refused when the scene's texture table would pass [`hd::pbr::MAX_SCENE_TEXTURE_BYTES`] with it
+//!   (`a_scene_of_many_large_maps_is_refused_past_its_texture_budget`) or its factors are out of range
+//!   (`tests/pbr_memory.rs`). The uniform's layout is `pbr.wgsl`'s
+//!   `PbrMaterial` (`the_uniform_holds_the_factors_maps_and_alpha_mode`): a field added goes in both.
 
 pub mod camera;
 pub mod decals;

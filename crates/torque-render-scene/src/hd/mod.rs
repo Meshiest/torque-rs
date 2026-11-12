@@ -28,6 +28,7 @@ pub mod lut;
 pub mod objects;
 pub mod origin;
 pub mod particle_light;
+pub mod pbr;
 pub mod post;
 pub mod reflect;
 pub mod scatter;
@@ -89,6 +90,15 @@ fn content_hash(bytes: &[u8]) -> u64 {
 }
 
 impl TextureTable {
+    /// The bytes of every level of every texture the table holds.
+    pub fn bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .flat_map(|t| t.levels.iter())
+            .map(|l| l.len() as u64)
+            .sum()
+    }
+
     /// The table's index of `t` (added when new).
     pub fn intern(&mut self, t: Texture) -> usize {
         let shared = std::sync::Arc::as_ptr(&t.levels) as usize;
@@ -668,6 +678,8 @@ pub struct HdDraw {
     pub cull: Cull,
     pub depth_test: bool,
     pub depth_write: bool,
+    /// Its physically based material and tangents ([`pbr`]), drawn by the PBR path; None: drawn as every draw was.
+    pub pbr: Option<pbr::PbrDraw>,
 }
 
 impl HdDraw {
@@ -698,6 +710,7 @@ impl HdDraw {
             cull: Cull::None,
             depth_test: true,
             depth_write: true,
+            pbr: None,
         }
     }
 
@@ -735,6 +748,7 @@ impl HdDraw {
         self.cull = d.cull;
         self.depth_test = d.depth_test;
         self.depth_write = d.depth_write;
+        self.pbr = None;
     }
 }
 

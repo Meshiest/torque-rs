@@ -239,6 +239,7 @@ pub fn corona_draw(at: [f32; 3], half: f32, tint: [u8; 3]) -> HdDraw {
         cull: Cull::None,
         depth_test: false,
         depth_write: false,
+        pbr: None,
     })
 }
 

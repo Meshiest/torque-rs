@@ -158,6 +158,8 @@ impl Shift for HdDraw {
             cull: _,
             depth_test: _,
             depth_write: _,
+            // Tangents are directions: a shift leaves them.
+            pbr: _,
         } = self;
         for v in vertices {
             if v.material & material::NODE == 0 {
@@ -358,6 +360,7 @@ impl<G: Shift> Shift for HdScene<G> {
             glow_lights: _,
             lights_generation: _,
             textures: _,
+            materials: _,
             notes: _,
             generation: _,
             control_generation: _,
