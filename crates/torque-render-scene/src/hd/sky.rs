@@ -217,29 +217,55 @@ pub const DEFAULT_HEIGHT_FOG: HeightFog = HeightFog {
     base: 0.0,
 };
 
-/// The volumetrics of a quality: the march's reduced size (1 in this many pixels a side) and its steps.
+/// The volumetric march's reduced size (1 in this many pixels a side) and its steps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VolumetricQuality {
+pub struct MarchSize {
     pub scale: u32,
     pub steps: u32,
 }
 
+/// The volumetrics of a quality: the march's reduced size (1 in this many pixels a side) and its steps, and whether a froxel
+/// grid (the frustum cut into cells, lit once a frame by the point lights, then summed along each column) puts the lights' light
+/// in the fog beside it: then Some(the march's size beside it), the march taking the sun's god rays alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolumetricQuality {
+    pub scale: u32,
+    pub steps: u32,
+    pub froxels: Option<MarchSize>,
+}
+
+impl VolumetricQuality {
+    /// The march's size with the froxel grid (`froxels`) or without it.
+    pub fn march(self, froxels: bool) -> MarchSize {
+        self.froxels.filter(|_| froxels).unwrap_or(MarchSize {
+            scale: self.scale,
+            steps: self.steps,
+        })
+    }
+}
+
 impl Quality {
-    /// Off at Low; Medium a quarter size, 12 steps; High half, 24; Ultra half, 48.
+    /// Off at Low; Medium a quarter size, 12 steps; High half, 24; Ultra half, 48, or beside the froxel grid a quarter, 48.
     pub fn volumetrics(self) -> Option<VolumetricQuality> {
         match self {
             Quality::Low => None,
             Quality::Medium => Some(VolumetricQuality {
                 scale: 4,
                 steps: 12,
+                froxels: None,
             }),
             Quality::High => Some(VolumetricQuality {
                 scale: 2,
                 steps: 24,
+                froxels: None,
             }),
             Quality::Ultra => Some(VolumetricQuality {
                 scale: 2,
                 steps: 48,
+                froxels: Some(MarchSize {
+                    scale: 4,
+                    steps: 48,
+                }),
             }),
         }
     }

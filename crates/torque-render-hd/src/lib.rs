@@ -1,10 +1,11 @@
 //! The enhanced renderer on the GPU: its WGSL and the shader registry ([`shaders`]), and its passes over a
 //! [`torque_render_core::Gpu`]'s device: the bloom chain ([`bloom`]), the automatic exposure ([`exposure`]), the volumetric light
-//! ([`volumetric`]), the moving shapes' vertex runs ([`slots`]), the environment's cube maps and the light capture ([`capture`]),
-//! the screen-space reflections ([`ssr`]), the volumetric clouds ([`clouds`]), the anti-aliasing and AO ([`post`]), the sky
-//! ([`sky`]), the water's planar target and its frame terms ([`water`]), and the static geometry's arena ([`arena`]) culled into
-//! draw lists ([`cull`]); what a world's static geometry brings beside the engine's frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains, full-frame pipelines, the pass
-//! and draw counts by kind).
+//! ([`volumetric`], and its froxel grid: [`froxels`]), the moving shapes' vertex runs ([`slots`]), the environment's cube maps
+//! and the light capture ([`capture`]), the screen-space reflections ([`ssr`]), the volumetric clouds ([`clouds`]), the
+//! anti-aliasing and AO ([`post`]), the sky ([`sky`]), the water's planar target and its frame terms ([`water`]), and the static
+//! geometry's arena ([`arena`]) culled into draw lists ([`cull`]); what a world's static geometry brings beside the engine's
+//! frame ([`ext`]); with the helpers they share (bind group entries, compute filter chains, full-frame pipelines, the pass and
+//! draw counts by kind).
 //!
 //! # Maintaining
 //!
@@ -60,6 +61,22 @@
 //! - The translucent draws are sorted as one flat list (no list an object); the opaque frame's copy is taken only when a draw
 //!   after it or an extension's pass may read it.
 //!
+//! The froxel volumetrics ([`froxels`], Ultra; `shaders/froxels.wgsl`) put the point lights in the fog beside the march, which
+//! keeps the sun's god rays (a froxel's width blurs a shaft's edge a pixel's own ray keeps). They keep these, each held by a test:
+//! - A pixel takes only the light of the air in front of it, and a light's shadow cubes are tapped over a cone of directions at
+//!   the froxel's own distance, so a closed room's froxels and god rays hold none of the light outside it
+//!   (`a_closed_room_holds_none_of_the_light_outside_it`); a point light adds light only within its radius
+//!   (`a_point_light_in_fog_adds_light_within_its_radius_only`).
+//! - The fog's medium is the distance and height fog's own extinction (`skyfog.wgsl`'s `fog_keep` as a rate along the ray), so
+//!   the lights' light it scatters fades as the fog hides what is behind it.
+//! - The grid is taken from the scene alone every frame (no noise, no history), so a light switched or moved shows at once (the
+//!   `fog-lights` row of the `ghosting` example, gated like the rest). The gather's bindings in the compute stage are counted by
+//!   [`limits`] (WebGPU's defaults hold: the grid is `Rgba16Float` write-only storage, which WebGPU allows in 3D). Its GPU time
+//!   and the march's beside it (at the quality's `VolumetricQuality::froxels` size: a quarter of the pixels a side, 48 steps,
+//!   which keeps the shafts of the half-size march at about half its cost) are the `froxel fog` and `volumetric march` marks of
+//!   `track-profile --place crest --quality ultra`. The grid is made when a frame with lights first needs it at Ultra (no
+//!   pipelines before), and let go after a few frames that gather none.
+//!
 //! The volumetric clouds' GPU time (the `clouds` mark of `track-profile --place crest` and `level-profile --view valley-sea`,
 //! under the bench lock; the `clouds` row of the `ghosting` example for their history, and the vehicle demo's `--cloud-shots`
 //! against main's for their look) rests on `clouds.wgsl`'s refined march looking for cloud in at most `REFINED_STEPS` long steps
@@ -91,6 +108,7 @@ pub mod clouds;
 pub mod cull;
 pub mod exposure;
 pub mod ext;
+pub mod froxels;
 pub mod ghosting;
 #[cfg(feature = "gizmos")]
 pub mod gizmos;

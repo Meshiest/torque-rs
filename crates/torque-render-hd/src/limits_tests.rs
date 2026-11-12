@@ -94,7 +94,7 @@ fn limits_at_what_the_pipelines_need_pass_and_one_less_fails() {
     let worst = |pick: fn(&StageCounts) -> u32| {
         needs
             .iter()
-            .flat_map(|p| [pick(&p.vertex), pick(&p.fragment)])
+            .flat_map(|p| [pick(&p.vertex), pick(&p.fragment), pick(&p.compute)])
             .max()
             .unwrap_or(0)
     };
@@ -188,7 +188,8 @@ fn the_count_is_what_the_device_makes_of_the_real_layouts() {
         let need = needs
             .vertex
             .sampled_textures
-            .max(needs.fragment.sampled_textures);
+            .max(needs.fragment.sampled_textures)
+            .max(needs.compute.sampled_textures);
         if need > have {
             eprintln!("{name}: the adapter allows only {have} (needs {need})");
             continue;
@@ -203,4 +204,33 @@ fn the_count_is_what_the_device_makes_of_the_real_layouts() {
             need - 1
         );
     }
+}
+
+#[test]
+fn the_froxel_gather_fits_webgpus_default_compute_limits() {
+    let d = wgpu::Limits::default();
+    let needs = pipeline_needs();
+    let gather = needs
+        .iter()
+        .find(|p| p.name == "froxel volumetrics")
+        .expect("the froxel gather is counted");
+    let c = gather.compute;
+    assert!(c.storage_textures >= 1 && c.storage_buffers >= 2, "{c:?}");
+    assert!(
+        c.sampled_textures <= d.max_sampled_textures_per_shader_stage,
+        "{c:?}"
+    );
+    assert!(c.samplers <= d.max_samplers_per_shader_stage, "{c:?}");
+    assert!(
+        c.storage_buffers <= d.max_storage_buffers_per_shader_stage,
+        "{c:?}"
+    );
+    assert!(
+        c.uniform_buffers <= d.max_uniform_buffers_per_shader_stage,
+        "{c:?}"
+    );
+    assert!(
+        c.storage_textures <= d.max_storage_textures_per_shader_stage,
+        "{c:?}"
+    );
 }

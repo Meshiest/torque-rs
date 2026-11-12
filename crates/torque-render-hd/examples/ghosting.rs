@@ -6,9 +6,10 @@
 //! The scenes: a still camera with a buggy-sized box driving past over a dirt ground (its shadow and occlusion sweep the
 //! ground), the sun moving fast (a day sped up), a light switched on and off, the camera moving over still ground, smoke
 //! rising then gone, the sky's clouds under a fast sun and then a turning camera (the clouds' own history), a water mirror
-//! (at Medium: the screen-space reflections' history) with the buggy driving along it and then the camera moving, and thin
-//! poles far off under a moving camera (sub-pixel features against the history's clip). Each starts with frames that settle,
-//! then the change, then frames held still; a scene with two changes holds after each.
+//! (at Medium: the screen-space reflections' history) with the buggy driving along it and then the camera moving, thin
+//! poles far off under a moving camera (sub-pixel features against the history's clip), and at Ultra lights in a thick fog
+//! (the froxel grid): the buggy driving past with its headlights on at dusk, then a lamp switched on and off. Each starts with
+//! frames that settle, then the change, then frames held still; a scene with two changes holds after each.
 //!
 //! Per scene: `floor` the share of pixels off the reference once settled before the change (the noise left), `worst` and `mean`
 //! the share off from the change on, `settle` the frames after each change ends (the motion stopped, the light switched) until
@@ -16,10 +17,11 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>] [--quality low|medium|high|ultra] [--trace] [--gpu-particles]`: `--audit` draws each scene again
-//! with each pass's history off on its own (`HdWorld::histories`) and the reflection capture drawn whole every frame; `--out`
-//! writes the worst frame of each scene, its reference and their difference (`--frame <n>`: that frame too); `--quality` draws
-//! every scene at that quality in place of its own; `--trace` prints each frame's share off. Each row ends with
+//! [--max-trail <percent>] [--quality low|medium|high|ultra] [--trace] [--gpu-particles] [--march]`: `--audit` draws each
+//! scene again with each pass's history off on its own (`HdWorld::histories`) and the reflection capture drawn whole every
+//! frame; `--out` writes the worst frame of each scene, its reference and their difference (`--frame <n>`: that frame too);
+//! `--quality` draws every scene at that quality in place of its own; `--march` draws the volumetric light with the march alone
+//! at every quality (the froxel grid off, `HdFeatures::froxel_fog`); `--trace` prints each frame's share off. Each row ends with
 //! the run's GPU time a frame (ms, the whole frame, the sun mask's pass and the anti-aliasing's; with the device's timestamps).
 //! The command fails when a gated scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to settle
 //! and a `ghosting::MAX_TRAIL` % trail); the cloud, mirror and thin-far scenes report their numbers without gating (their
@@ -37,7 +39,7 @@ use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::{Lcg, box_object, look_at};
 use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
 use torque_render_scene::hd::{
-    DynamicObject, HdCamera, HdDraw, HdLight, HdMode, HdScene, Quality, material,
+    DynamicObject, HdCamera, HdDraw, HdLight, HdMode, HdScene, HdSpot, Quality, material,
 };
 use torque_render_scene::particles::{GpuSpawn, SpriteFrame, SpriteLook};
 use torque_render_scene::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
@@ -59,6 +61,8 @@ struct State {
     /// The buggy's place (its middle on the ground).
     buggy: Option<[f32; 3]>,
     light: bool,
+    /// The buggy's two headlights.
+    headlights: bool,
     /// The smoke's age (frames), none: no smoke.
     smoke: Option<f32>,
     /// The frame itself, where the scene moves with the time though nothing else changes (the water's waves): no two frames share
@@ -72,6 +76,7 @@ const BASE: State = State {
     sun: [-40.0, 32.0],
     buggy: None,
     light: false,
+    headlights: false,
     smoke: None,
     frame: None,
 };
@@ -81,9 +86,10 @@ const BASE: State = State {
 struct Shot {
     name: &'static str,
     quality: Quality,
-    /// A water plane over the ground (the mirror), thin poles far off.
+    /// A water plane over the ground (the mirror), thin poles far off, a thick fog from a few units off.
     water: bool,
     poles: bool,
+    fog: bool,
     /// Whether the scene's numbers fail the command past the limits.
     gated: bool,
     frames: usize,
@@ -103,6 +109,7 @@ fn plain(
         quality: Quality::High,
         water: false,
         poles: false,
+        fog: false,
         gated: true,
         frames,
         changes,
@@ -217,6 +224,7 @@ fn shots() -> Vec<Shot> {
             quality: Quality::Medium,
             water: true,
             poles: false,
+            fog: false,
             gated: false,
             frames: SETTLE + drive + HOLD + walk + HOLD,
             changes: vec![
@@ -241,6 +249,7 @@ fn shots() -> Vec<Shot> {
             quality: Quality::High,
             water: false,
             poles: true,
+            fog: false,
             gated: false,
             frames: SETTLE + walk + HOLD,
             changes: vec![(SETTLE, SETTLE + walk)],
@@ -249,6 +258,33 @@ fn shots() -> Vec<Shot> {
                 State {
                     eye: [-1.0 + 0.03 * t, -8.0, 4.0],
                     target: [0.02 * t, 40.0, 3.0],
+                    ..BASE
+                }
+            }),
+        },
+        // Lights in a thick fog at Ultra (the froxel grid): at dusk the buggy driving past with its headlights on, held,
+        // then a lamp switched on and off.
+        Shot {
+            name: "fog-lights",
+            quality: Quality::Ultra,
+            water: false,
+            poles: false,
+            fog: true,
+            gated: true,
+            frames: SETTLE + drive + HOLD + 30 + HOLD,
+            changes: vec![
+                (SETTLE, SETTLE + drive),
+                (SETTLE + drive + HOLD, SETTLE + drive + HOLD),
+                (SETTLE + drive + HOLD + 30, SETTLE + drive + HOLD + 30),
+            ],
+            state: Box::new(move |f| {
+                let t = after(f).clamp(0.0, drive as f32);
+                let on = SETTLE + drive + HOLD;
+                State {
+                    sun: [-40.0, -3.0],
+                    buggy: Some([-9.0 + 0.25 * t, 1.0, 0.0]),
+                    headlights: true,
+                    light: (on..on + 30).contains(&f),
                     ..BASE
                 }
             }),
@@ -411,6 +447,24 @@ fn buggy(at: [f32; 3], before: [f32; 3]) -> DynamicObject {
     car.transform.set_column3(at);
     car.prev_transform.set_column3(before);
     car
+}
+
+/// One of the buggy's headlights (the buggy at `at`, `dy` across its front), pointing along its way and a little down.
+fn headlight(at: [f32; 3], dy: f32) -> HdSpot {
+    let range = 30.0f32;
+    let gain = 0.5 * (1.0 + 0.25 * (range / 2.0).powi(2));
+    HdSpot {
+        light: HdLight {
+            position: [at[0] + 1.6, at[1] + dy, 0.8],
+            color: [1.0, 0.88, 0.7].map(|c: f32| c * gain),
+            radius: range,
+            carrier: Some(BUGGY),
+        },
+        direction: [1.0, 0.0, -0.1],
+        inner: 9f32.to_radians(),
+        outer: 22f32.to_radians(),
+        shadows: true,
+    }
 }
 
 /// The still blocks about the track.
@@ -634,6 +688,11 @@ impl Stage {
         if shot.water {
             frame.water = vec![HdDraw::from_fixed(&water(200.0), material::KIND_PLANE, &[])];
         }
+        if shot.fog {
+            frame.fog_distance = 4.0;
+            frame.fog.start = 4.0;
+            frame.fog.end = 90.0;
+        }
         frame.size = SIZE;
         frame.fov = FOV;
         Stage {
@@ -689,6 +748,16 @@ impl Stage {
                 }]
             } else {
                 Vec::new()
+            };
+            s.lights_generation += 1;
+        }
+        if self
+            .last
+            .is_none_or(|l| l.headlights != st.headlights || l.buggy != st.buggy)
+        {
+            s.spots = match (st.headlights, st.buggy) {
+                (true, Some(at)) => [-0.5, 0.5].map(|dy| headlight(at, dy)).to_vec(),
+                _ => Vec::new(),
             };
             s.lights_generation += 1;
         }
@@ -754,9 +823,15 @@ impl Drawer {
 }
 
 /// The references of `shot`, one a frame (a frame whose state is the last one's shares its image).
-fn references(gpu: &Gpu, shot: &Shot, sprites: bool) -> Result<Vec<Arc<Image>>, String> {
+fn references(
+    gpu: &Gpu,
+    shot: &Shot,
+    sprites: bool,
+    march: bool,
+) -> Result<Vec<Arc<Image>>, String> {
     let mut stage = Stage::new(shot, sprites);
     let mut d = Drawer::new(gpu, sprites)?;
+    d.world.features.froxel_fog = !march;
     let mut out: Vec<Arc<Image>> = Vec::with_capacity(shot.frames);
     let mut last: Option<State> = None;
     for f in 0..shot.frames {
@@ -796,6 +871,7 @@ struct Args {
     max_trail: Option<f64>,
     gpu_particles: bool,
     quality: Option<Quality>,
+    march: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -809,6 +885,7 @@ fn args() -> Result<Args, String> {
         max_trail: Some(MAX_TRAIL),
         gpu_particles: false,
         quality: None,
+        march: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -817,6 +894,7 @@ fn args() -> Result<Args, String> {
             "--audit" => a.audit = true,
             "--trace" => a.trace = true,
             "--gpu-particles" => a.gpu_particles = true,
+            "--march" => a.march = true,
             "--frame" => a.frame = Some(value()?.parse().map_err(|e| format!("{e}"))?),
             "--shot" => a.shot = Some(value()?),
             "--out" => a.out = Some(PathBuf::from(value()?)),
@@ -851,10 +929,11 @@ fn main() -> Result<(), String> {
         if args.shot.as_deref().is_some_and(|s| s != shot.name) {
             continue;
         }
-        let refs = references(&gpu, &shot, args.gpu_particles)?;
+        let refs = references(&gpu, &shot, args.gpu_particles, args.march)?;
         for (name, set) in ghosting::settings::<NoExtension>(args.audit) {
             let mut stage = Stage::new(&shot, args.gpu_particles);
             let mut d = Drawer::new(&gpu, args.gpu_particles)?;
+            d.world.features.froxel_fog = !args.march;
             set(&mut d.world);
             let mut areas = Vec::with_capacity(shot.frames);
             let mut frames: Vec<Image> = Vec::new();

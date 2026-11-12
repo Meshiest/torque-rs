@@ -216,6 +216,7 @@ const FEATURES_DEFAULT: HdFeatures = HdFeatures {
     cloud_from_eye: true,
     cloud_cube: true,
     gpu_particles: false,
+    froxel_fog: true,
 };
 
 /// Why a swap of renderers was refused.

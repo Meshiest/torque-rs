@@ -147,3 +147,26 @@ fn the_white_hot_disk_shows_brighter_than_the_sky_about_it() {
     // Under white nothing changes.
     assert_eq!(disk_white_hot([0.9, 0.5, 0.2]), [0.9, 0.5, 0.2]);
 }
+
+/// Only Ultra has the froxel grid; every quality's march is its own size without the grid, and Ultra's is the smaller one beside it.
+#[test]
+fn only_ultra_has_the_froxel_grid_and_the_march_shrinks_beside_it() {
+    let sizes = |q: Quality| {
+        let v = q.volumetrics()?;
+        Some((v.march(false), v.march(true), v.froxels.is_some()))
+    };
+    let march = |scale, steps| MarchSize { scale, steps };
+    assert_eq!(sizes(Quality::Low), None);
+    assert_eq!(
+        sizes(Quality::Medium),
+        Some((march(4, 12), march(4, 12), false))
+    );
+    assert_eq!(
+        sizes(Quality::High),
+        Some((march(2, 24), march(2, 24), false))
+    );
+    assert_eq!(
+        sizes(Quality::Ultra),
+        Some((march(2, 48), march(4, 48), true))
+    );
+}

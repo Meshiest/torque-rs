@@ -35,10 +35,11 @@
 //! pixel);
 //! the water plane is drawn as water over the opaque frame's copy (`water`); after the translucent pass the frame is kept for the
 //! next frame's rays.
-//! **Sky, fog, bloom, exposure, volumetrics** ([`sky`], [`bloom`], [`exposure`], [`volumetric`]; the data is
+//! **Sky, fog, bloom, exposure, volumetrics** ([`sky`], [`bloom`], [`exposure`], [`volumetric`], [`froxels`]; the data is
 //! `torque_render_scene::hd::{atmosphere, sky, grade}`): each frame the sky uniform (bind group 2 of the forward pass, the sky passes and the
 //! volumetrics) and, with the physical sky, the sky view table (the transmittance and multiple scattering tables once). After the AO
-//! the volumetric light's march (a reduced size, the prepass's depth, the sun's cascades). The opaque pass is split after the sky:
+//! the volumetric light's march (a reduced size, the prepass's depth, the sun's cascades), or where the quality has it the froxel
+//! grid beside it ([`froxels`]: the point lights in the fog, one compute pass). The opaque pass is split after the sky:
 //! the server's sky (its box, flare, clouds and bans) with an HDR sun disk before the clouds, with the physical sky its box shaded
 //! by the atmosphere (a full-frame pass after the box) and its clouds brightened toward the sun; the frame is copied there with its
 //! box-filtered mips (the fog's colour is the sky behind each pixel without its detail, the detail only where a surface wholly fogged
@@ -104,8 +105,8 @@ use crate::shadows::{MAX_DIRTY, ObjectCaster, ShadowInput, Shadows};
 pub use crate::shadows::{ShadowStats, ShadowSwitches};
 use crate::{
     DEPTH_FORMAT, DRAW_KIND_MARKS, HDR_FORMAT, PASS_KIND_MARKS, PASS_KIND_NAMES, PASSES, PassKind,
-    arena, bloom, capture, clouds, colour, cull, exposure, invert, module, passes_by_kind, post,
-    push_f32, push_u32, set_pass_kind, shaders, shadows, sky, slots, storage, tv, uniform,
+    arena, bloom, capture, clouds, colour, cull, exposure, froxels, invert, module, passes_by_kind,
+    post, push_f32, push_u32, set_pass_kind, shaders, shadows, sky, slots, storage, tv, uniform,
     volumetric, water,
 };
 
@@ -812,6 +813,9 @@ pub struct HdFeatures {
     /// The particles handed over to the GPU particle pool are stepped and drawn there (where the device runs it:
     /// [`HdWorld::gpu_particles_on`]); off by default: the pool is not made, and the CPU path's particles are all there is.
     pub gpu_particles: bool,
+    /// The froxel volumetrics where the quality has them ([`crate::froxels`]: the point lights scatter in the fog too, beside
+    /// the march's god rays); off: the march alone at every quality, as before (the checks' before pictures).
+    pub froxel_fog: bool,
 }
 
 impl Default for HdFeatures {
@@ -838,6 +842,7 @@ impl Default for HdFeatures {
             cloud_from_eye: true,
             cloud_cube: true,
             gpu_particles: false,
+            froxel_fog: true,
         }
     }
 }
@@ -865,6 +870,7 @@ impl HdFeatures {
         cloud_from_eye: true,
         cloud_cube: true,
         gpu_particles: false,
+        froxel_fog: true,
     };
     /// No anti-aliasing and no AO.
     pub const NO_POST: HdFeatures = HdFeatures {
@@ -889,6 +895,7 @@ impl HdFeatures {
         cloud_from_eye: true,
         cloud_cube: true,
         gpu_particles: false,
+        froxel_fog: true,
     };
     /// No reflections.
     pub const NO_REFLECTIONS: HdFeatures = HdFeatures {
@@ -913,6 +920,7 @@ impl HdFeatures {
         cloud_from_eye: true,
         cloud_cube: true,
         gpu_particles: false,
+        froxel_fog: true,
     };
 }
 
@@ -1017,6 +1025,8 @@ pub struct LodReport {
 
 /// An image read back as floats: width, height, RGBA pixels.
 pub type FloatImage = (u32, u32, Vec<[f32; 4]>);
+/// A froxel grid read back: its size (across, down, slices) and its texels (texel `x + w (y + h z)`).
+pub type FroxelGrid = ([u32; 3], Vec<[f32; 4]>);
 
 /// Why the enhanced renderer could not draw.
 pub type HdError = String;
@@ -1198,6 +1208,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     bloom: bloom::Bloom,
     exposure: exposure::Exposure,
     volumetric: volumetric::Volumetric,
+    /// The froxel volumetrics (in the march's place where the quality has them), made when a frame first needs them.
+    froxels: Option<froxels::Froxels>,
     /// The volumetric clouds.
     clouds: clouds::Clouds,
     /// The seconds a frame stands for (the automatic exposure's adaptation): 1/60 unless the caller measures its frames.
@@ -1972,41 +1984,48 @@ fn cluster_count() -> u32 {
     CLUSTER_GRID[0] * CLUSTER_GRID[1] * CLUSTER_GRID[2]
 }
 
+/// `e` seen by the compute stage too (the froxel volumetrics' gather reads the lights, their masks and the shadows).
+fn and_compute(mut e: wgpu::BindGroupLayoutEntry) -> wgpu::BindGroupLayoutEntry {
+    e.visibility |= wgpu::ShaderStages::COMPUTE;
+    e
+}
+
 /// The frame group's bindings (group 0 of the forward, sky and effect pipelines).
 pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let vf = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
+    let fc = wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE;
     vec![
         uniform(0, vf | wgpu::ShaderStages::COMPUTE),
-        storage(1, true, wgpu::ShaderStages::FRAGMENT),
-        storage(2, true, wgpu::ShaderStages::FRAGMENT),
+        storage(1, true, fc),
+        storage(2, true, fc),
         texture_entry(
             3,
             wgpu::TextureSampleType::Float { filterable: false },
             wgpu::TextureViewDimension::D2,
         ),
-        uniform(4, wgpu::ShaderStages::FRAGMENT),
-        texture_entry(
+        uniform(4, fc),
+        and_compute(texture_entry(
             5,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::D2Array,
-        ),
+        )),
         wgpu::BindGroupLayoutEntry {
             binding: 6,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: fc,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
             count: None,
         },
         wgpu::BindGroupLayoutEntry {
             binding: 7,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: fc,
             ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
             count: None,
         },
-        texture_entry(
+        and_compute(texture_entry(
             8,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::CubeArray,
-        ),
+        )),
         texture_entry(
             9,
             wgpu::TextureSampleType::Float { filterable: false },
@@ -2040,16 +2059,16 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
         // The meshes' places the shapes' vertices in their meshes' own space name (torque_render_scene::hd::NodePlace).
         storage(16, true, wgpu::ShaderStages::VERTEX),
         // The point lights' cubes of the second and third tiers (the first is binding 8).
-        texture_entry(
+        and_compute(texture_entry(
             17,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::CubeArray,
-        ),
-        texture_entry(
+        )),
+        and_compute(texture_entry(
             18,
             wgpu::TextureSampleType::Depth,
             wgpu::TextureViewDimension::CubeArray,
-        ),
+        )),
         // The scene's lightmap (HdScene::lightmap; sampled with binding 13's linear clamped sampler).
         texture_entry(
             19,
@@ -2618,6 +2637,7 @@ impl<E: HdExtension> HdWorld<E> {
             bloom,
             exposure,
             volumetric,
+            froxels: None,
             clouds,
             frame_seconds: 1.0 / 60.0,
             auto_exposure: false,
@@ -5110,6 +5130,9 @@ impl<E: HdExtension> HdWorld<E> {
         self.targets = None;
         self.exposure.forget_source();
         self.volumetric.forget_depth();
+        if let Some(f) = &mut self.froxels {
+            f.forget_depth();
+        }
         self.bloom.forget_source();
         let device = &self.device;
         let tex = |label: &str, (w, h): (u32, u32), format, usage| {
@@ -6377,6 +6400,14 @@ impl<E: HdExtension> HdWorld<E> {
             && self.features.volumetrics
             && vol_quality.is_some()
             && image.volumetrics_on(scene.fog.start, scene.fog.end);
+        // The froxel grid where the quality has it (the march then takes the god rays alone, at its own size, whether or not the
+        // frame has lights for the grid to gather).
+        let froxel_march =
+            vol_on && self.features.froxel_fog && vol_quality.is_some_and(|q| q.froxels.is_some());
+        let froxels_on = froxel_march && self.light_count > 0;
+        let march = vol_quality
+            .filter(|_| vol_on)
+            .map(|q| q.march(froxel_march));
         // The clouds' uniform and targets (the sky group bound again when their image changed).
         self.clouds.from_eye = self.features.cloud_from_eye;
         let sky_clouds = self.clouds.prepare(
@@ -6403,9 +6434,8 @@ impl<E: HdExtension> HdWorld<E> {
             &self.queue,
             &**scene,
             &image,
-            quality,
             E::time(scene),
-            vol_on,
+            march,
             sky_clouds,
             &E::fog_ends(scene),
         );
@@ -6852,8 +6882,31 @@ impl<E: HdExtension> HdWorld<E> {
             scene.visible_distance.max(1.0),
         );
         mark!("clouds' cube");
-        // The volumetric light's march, from the prepass's depth.
-        if let (true, Some(vq)) = (vol_on, vol_quality) {
+        // The volumetric light from the prepass's depth: the march (the sun's god rays) and, where the quality has it, the froxel
+        // grid (the point lights in the fog).
+        if froxels_on {
+            let (device, cache, layouts) = (
+                &self.device,
+                self.pipeline_cache.as_ref(),
+                (&self.frame_layout, &self.sky.layout),
+            );
+            self.froxels
+                .get_or_insert_with(|| froxels::Froxels::new(device, cache, layouts.0, layouts.1))
+                .encode(
+                    &mut encoder,
+                    &froxels::GatherArgs {
+                        device,
+                        queue: &self.queue,
+                        frame_group: &frame_group,
+                        sky_group: &self.sky.group,
+                        depth: &targets.depth_view,
+                        internal: (targets.iw, targets.ih),
+                        far: image.volumetric.reach.min(icam.far).max(1.0),
+                    },
+                );
+            mark!("froxel fog");
+        }
+        if let Some(m) = march {
             self.volumetric.encode_march(
                 &self.device,
                 &mut encoder,
@@ -6861,7 +6914,7 @@ impl<E: HdExtension> HdWorld<E> {
                 &self.sky.group,
                 &targets.depth_view,
                 (targets.iw, targets.ih),
-                vq.scale,
+                m.scale,
             );
         } else {
             self.volumetric.drawn = false;
@@ -7074,6 +7127,14 @@ impl<E: HdExtension> HdWorld<E> {
         // The volumetric light over the opaque frame, the water's depth, the opaque frame's copy.
         if vol_on {
             self.volumetric.encode_composite(
+                &mut encoder,
+                &frame_group,
+                &self.sky.group,
+                &targets.hdr_view,
+            );
+        }
+        if froxels_on && let Some(f) = &self.froxels {
+            f.encode_composite(
                 &mut encoder,
                 &frame_group,
                 &self.sky.group,
@@ -7832,6 +7893,9 @@ impl<E: HdExtension> HdWorld<E> {
         self.refl.history_valid = refl_kept;
         self.output = output;
         self.clouds.advance();
+        if let Some(f) = &mut self.froxels {
+            f.advance();
+        }
         self.temporal.advance(
             icam.view_proj,
             camera.eye,
@@ -8166,12 +8230,18 @@ impl<E: HdExtension> HdWorld<E> {
         bpp: u32,
     ) -> Result<(u32, u32, Vec<u8>), HdError> {
         let (w, h) = (texture.width(), texture.height());
+        // A 3D texture is read whole, its slices one after another (an array's first layer only).
+        let layers = if texture.dimension() == wgpu::TextureDimension::D3 {
+            texture.depth_or_array_layers()
+        } else {
+            1
+        };
         let row = bpp * w;
         let padded =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("hd readback"),
-            size: u64::from(padded) * u64::from(h),
+            size: u64::from(padded) * u64::from(h) * u64::from(layers),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
@@ -8198,7 +8268,7 @@ impl<E: HdExtension> HdWorld<E> {
             wgpu::Extent3d {
                 width: w,
                 height: h,
-                depth_or_array_layers: 1,
+                depth_or_array_layers: layers,
             },
         );
         self.queue.submit([encoder.finish()]);
@@ -8214,8 +8284,8 @@ impl<E: HdExtension> HdWorld<E> {
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())?;
         let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
-        let mut out = Vec::with_capacity((row * h) as usize);
-        for y in 0..h as usize {
+        let mut out = Vec::with_capacity((row * h * layers) as usize);
+        for y in 0..(h * layers) as usize {
             let start = y * padded as usize;
             out.extend_from_slice(&data[start..start + row as usize]);
         }
@@ -8389,6 +8459,26 @@ impl<E: HdExtension> HdWorld<E> {
         };
         let (w, h, bytes) = self.read_texture(t, 8)?;
         Ok(Some((w, h, halves(&bytes))))
+    }
+
+    /// The froxel grid the last frame gathered (rgb: the point lights' light the fog and the thin medium scatter toward the eye
+    /// per unit length, a: their extinction) and its size, if it gathered one ([`crate::froxels`]).
+    pub fn read_froxels(&self) -> Result<Option<FroxelGrid>, HdError> {
+        let Some((t, dims)) = self.froxels.as_ref().and_then(froxels::Froxels::gathered) else {
+            return Ok(None);
+        };
+        let (_, _, bytes) = self.read_texture(t, 8)?;
+        Ok(Some((dims, halves(&bytes))))
+    }
+
+    /// The froxel grid the last frame summed (rgb: the light from the eye to each froxel's far boundary, a: the
+    /// transmittance there), as [`HdWorld::read_froxels`].
+    pub fn read_froxel_sums(&self) -> Result<Option<FroxelGrid>, HdError> {
+        let Some((t, dims)) = self.froxels.as_ref().and_then(froxels::Froxels::summed) else {
+            return Ok(None);
+        };
+        let (_, _, bytes) = self.read_texture(t, 8)?;
+        Ok(Some((dims, halves(&bytes))))
     }
 
     /// The volumetric clouds' image after the last frame (rgb: their light, a: their transmittance; the internal size over the

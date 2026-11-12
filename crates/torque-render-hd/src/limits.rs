@@ -27,6 +27,7 @@ pub struct PipelineNeeds {
     pub name: &'static str,
     pub vertex: StageCounts,
     pub fragment: StageCounts,
+    pub compute: StageCounts,
 }
 
 /// The bindings `groups` (one pipeline layout's) have in `stage`.
@@ -79,6 +80,18 @@ pub(crate) fn pipeline_groups() -> Vec<(&'static str, Vec<Vec<wgpu::BindGroupLay
             ],
         ),
         (
+            "froxel volumetrics",
+            vec![frame.clone(), crate::froxels::layout_entries(), sky.clone()],
+        ),
+        (
+            "froxel composite",
+            vec![
+                frame.clone(),
+                crate::froxels::composite_entries(),
+                sky.clone(),
+            ],
+        ),
+        (
             "clouds' march",
             vec![frame, crate::clouds::march_entries(), sky],
         ),
@@ -96,6 +109,7 @@ pub fn pipeline_needs() -> Vec<PipelineNeeds> {
                 name,
                 vertex: count(&groups, wgpu::ShaderStages::VERTEX),
                 fragment: count(&groups, wgpu::ShaderStages::FRAGMENT),
+                compute: count(&groups, wgpu::ShaderStages::COMPUTE),
             }
         })
         .collect()
@@ -178,8 +192,12 @@ pub fn check_needs(needs: &[PipelineNeeds], limits: &wgpu::Limits) -> Result<(),
         let worst = needs
             .iter()
             .flat_map(|p| {
-                [("vertex", p.vertex), ("fragment", p.fragment)]
-                    .map(|(stage, c)| (pick(&c), p.name, stage))
+                [
+                    ("vertex", p.vertex),
+                    ("fragment", p.fragment),
+                    ("compute", p.compute),
+                ]
+                .map(|(stage, c)| (pick(&c), p.name, stage))
             })
             .max_by_key(|(n, ..)| *n);
         if let Some((need, pipeline, stage)) = worst

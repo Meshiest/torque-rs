@@ -16,9 +16,9 @@ use torque_render_scene::hd::atmosphere::{
 };
 use torque_render_scene::hd::sky::{
     CLOUD_HORIZON_FADE, CLOUD_LOBE_CAP, CLOUD_LOBE_SHARE, DEFAULT_HEIGHT_FOG, DEFAULT_SKY_SHADING,
-    NIGHT_SKY, STAR_BRIGHTNESS, STAR_DENSITY, STAR_SKY_LIMIT, default_sky_scale,
+    MarchSize, NIGHT_SKY, STAR_BRIGHTNESS, STAR_DENSITY, STAR_SKY_LIMIT, default_sky_scale,
 };
-use torque_render_scene::hd::{HdScene, ImageSettings, Quality, srgb_to_linear};
+use torque_render_scene::hd::{HdScene, ImageSettings, srgb_to_linear};
 
 use crate::clouds::SkyClouds;
 use crate::shaders::Permutation;
@@ -479,8 +479,8 @@ impl SkyGpu {
         }
     }
 
-    /// The sky uniform for `scene` drawn with `image` at `quality` at the effect time `time`; `volumetrics`: whether they run this
-    /// frame; `clouds`: the shadow map and its uses (all 0 without clouds); `ext_fog_ends`: where the extension's geometry is wholly
+    /// The sky uniform for `scene` drawn with `image` at the effect time `time`; `march`: the volumetric march's
+    /// size this frame (None: no volumetrics); `clouds`: the shadow map and its uses (all 0 without clouds); `ext_fog_ends`: where the extension's geometry is wholly
     /// fogged in each heading about the eye (0: with the rest of the fog; its fog hook reads them).
     #[allow(clippy::too_many_arguments)]
     pub fn write<G>(
@@ -488,9 +488,8 @@ impl SkyGpu {
         queue: &wgpu::Queue,
         scene: &HdScene<G>,
         image: &ImageSettings,
-        quality: Quality,
         time: f32,
-        volumetrics: bool,
+        march: Option<MarchSize>,
         clouds: SkyClouds,
         ext_fog_ends: &[f32; EXT_FOG_SECTORS],
     ) {
@@ -519,7 +518,6 @@ impl SkyGpu {
         let shading = DEFAULT_SKY_SHADING;
         let e = image.emissive;
         let vol = image.volumetric;
-        let vq = quality.volumetrics();
         let t = scene.atmosphere_towards();
         let mut b = Vec::with_capacity(SKY_BYTES as usize);
         let flag = |on: bool| if on { 1.0 } else { 0.0 };
@@ -569,9 +567,9 @@ impl SkyGpu {
         push_f32(
             &mut b,
             &[
-                if volumetrics { 1.0 } else { 0.0 },
-                vq.map_or(0.0, |v| v.steps as f32),
-                vq.map_or(1.0, |v| v.scale as f32),
+                flag(march.is_some()),
+                march.map_or(0.0, |m| m.steps as f32),
+                march.map_or(1.0, |m| m.scale as f32),
                 CLOUD_LOBE_CAP,
             ],
         );

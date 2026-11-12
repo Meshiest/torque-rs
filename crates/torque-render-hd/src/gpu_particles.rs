@@ -175,6 +175,7 @@ pub(super) fn sprites_supported(device: &wgpu::Device) -> bool {
         name: "particle sprites",
         vertex: crate::limits::count(&groups, wgpu::ShaderStages::VERTEX),
         fragment: crate::limits::count(&groups, wgpu::ShaderStages::FRAGMENT),
+        compute: crate::limits::StageCounts::default(),
     };
     let limits = device.limits();
     let compute = crate::limits::count(&[&sim_entries()], wgpu::ShaderStages::COMPUTE);

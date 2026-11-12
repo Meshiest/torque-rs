@@ -5,7 +5,7 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 37] = [
+pub const FILES: [(&str, &str); 38] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
@@ -51,6 +51,7 @@ pub const FILES: [(&str, &str); 37] = [
         "volumetric.wgsl",
         include_str!("../shaders/volumetric.wgsl"),
     ),
+    ("froxels.wgsl", include_str!("../shaders/froxels.wgsl")),
     ("bloom.wgsl", include_str!("../shaders/bloom.wgsl")),
     ("exposure.wgsl", include_str!("../shaders/exposure.wgsl")),
     ("surface.wgsl", include_str!("../shaders/surface.wgsl")),
@@ -153,6 +154,8 @@ pub enum Permutation {
     Sky,
     /// The volumetric light's march and its composite.
     Volumetric,
+    /// The froxel volumetrics' gather, sum (compute) and composite (the point lights in the fog).
+    Froxels,
     /// The bloom chain.
     Bloom,
     /// The automatic exposure (compute).
@@ -174,7 +177,7 @@ pub enum Permutation {
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 34] = [
+    pub const ALL: [Permutation; 35] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -211,6 +214,7 @@ impl Permutation {
         Permutation::Atmosphere,
         Permutation::Sky,
         Permutation::Volumetric,
+        Permutation::Froxels,
         Permutation::Bloom,
         Permutation::Exposure,
         Permutation::Wboit,
@@ -261,6 +265,7 @@ impl Permutation {
             Permutation::Atmosphere => "atmosphere.wgsl".to_string(),
             Permutation::Sky => "sky.wgsl".to_string(),
             Permutation::Volumetric => "volumetric.wgsl".to_string(),
+            Permutation::Froxels => "froxels.wgsl".to_string(),
             Permutation::Bloom => "bloom.wgsl".to_string(),
             Permutation::Exposure => "exposure.wgsl".to_string(),
             Permutation::Wboit => "wboit.wgsl".to_string(),
@@ -413,6 +418,16 @@ impl Permutation {
                 file("skycommon.wgsl"),
                 file("volumetric.wgsl"),
                 file("cloudshadow.wgsl")
+            ),
+            Permutation::Froxels => format!(
+                "{}
+{}
+{}
+{}",
+                common,
+                full,
+                file("skycommon.wgsl"),
+                file("froxels.wgsl")
             ),
             Permutation::Bloom => file("bloom.wgsl").to_string(),
             Permutation::Exposure => file("exposure.wgsl").to_string(),
