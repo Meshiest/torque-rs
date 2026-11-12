@@ -18,7 +18,7 @@ struct PoolParticle {
 };
 
 // A look: a particle datablock's color, size and time keys, its coefficients (drag, gravity, wind, frames a second), its
-// vertex material word and frame count, and each frame's bucket a byte (POOL_MAX_FRAMES).
+// vertex material word, frame count and orient mode, and each frame's bucket a byte (POOL_MAX_FRAMES).
 struct PoolLook {
     colors: array<vec4<f32>, 4>,
     sizes: vec4<f32>,
@@ -43,3 +43,22 @@ fn pool_bucket(words: vec4<u32>, fps: f32, f0: vec4<u32>, f1: vec4<u32>, age: i3
     let lane = select(f0, f1, k >= 16u);
     return (lane[(k / 4u) % 4u] >> ((k % 4u) * 8u)) & 0xffu;
 }
+
+// The unit direction a particle was ejected along, from the flags word above its two low bits: an octahedral fold, two 15-bit
+// unorm coordinates (torque-render-scene's `orient_bits` writes them).
+fn pool_orient_dir(flags: u32) -> vec3<f32> {
+    let bits = flags >> 2u;
+    let a = f32(bits & 0x7fffu) / 32767.0 * 2.0 - 1.0;
+    let b = f32((bits >> 15u) & 0x7fffu) / 32767.0 * 2.0 - 1.0;
+    var n = vec3<f32>(a, b, 1.0 - abs(a) - abs(b));
+    if n.z < 0.0 {
+        let sx = select(-1.0, 1.0, n.x >= 0.0);
+        let sy = select(-1.0, 1.0, n.y >= 0.0);
+        n = vec3<f32>((1.0 - abs(n.y)) * sx, (1.0 - abs(n.x)) * sy, n.z);
+    }
+    return normalize(n);
+}
+
+// A look's orient mode (words.z): billboards, along the ejection direction, along the velocity.
+const POOL_ORIENT_EMISSION: u32 = 1u;
+const POOL_ORIENT_VELOCITY: u32 = 2u;

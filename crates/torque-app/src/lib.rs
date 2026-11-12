@@ -56,6 +56,10 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - A [`ghosts::GhostScene`] gives the Sky's wind ([`torque_render_scene::sky::wind`]) to every emitter it runs at the start
+//!   of a frame (an emitter made in a frame has it from the next) and to the pool's frame, and runs the ghosted
+//!   `ParticleEmitterNode`s ([`torque_render_scene::emitter_nodes::EmitterNodes`]) beside the trails and the dust, handing their
+//!   particles to the pool or drawing them like the others (`the_skys_wind_reaches_every_emitter_and_the_pools_frame`).
 //! - A [`ghosts::GhostScene`] draws its moving shapes under [`ghosts::GhostOptions::budget`] (4M vertices and 4 shape parses a
 //!   frame by default) (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first` and
 //!   `a_frame_parses_at_most_its_budget_of_new_shapes_and_the_rest_wait`, in `torque-render-scene`).

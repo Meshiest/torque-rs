@@ -8,7 +8,7 @@
 //! [`SpriteLook`]s (a particle datablock's keys and textures, with the emitter's own colors where it uses them), and the
 //! simulation time the pool steps its particles by before it takes the new ones.
 
-use super::{AGED_SPIN_TO_RADIANS, Emitter, MAX_MISSING_NAMES, MISSING};
+use super::{AGED_SPIN_TO_RADIANS, Emitter, MAX_MISSING_NAMES, MISSING, Orient};
 use crate::textures::TextureSet;
 use crate::{Blend, Filter, Sampler};
 
@@ -38,14 +38,18 @@ pub struct GpuSpawn {
     pub fresh: bool,
     pub color: [f32; 4],
     pub size: f32,
+    /// The unit direction it was ejected along (what an emitter that orients its particles without their velocity turns them to).
+    pub orient_dir: [f32; 3],
 }
 
 impl GpuSpawn {
     /// The bytes of one pool particle (64): `pos, age`, `vel, life`, `acc, spin`, `look, flags, color (RGBA8), size`.
     pub const BYTES: usize = 64;
-    /// Its flags word: alive (always, for a spawn) and fresh.
+    /// Its flags word: alive (always, for a spawn) and fresh, and from [`GpuSpawn::ORIENT_SHIFT`] up the direction it was
+    /// ejected along ([`orient_bits`]).
     pub const ALIVE: u32 = 1;
     pub const FRESH: u32 = 2;
+    pub const ORIENT_SHIFT: u32 = 2;
 
     /// The particle's bytes as the pool's `Particle` holds them, the color rounded to bytes as the CPU path's vertices are.
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -59,7 +63,12 @@ impl GpuSpawn {
         self.acc.iter().for_each(|&v| f(out, v));
         f(out, self.spin);
         u(out, self.look);
-        u(out, Self::ALIVE | if self.fresh { Self::FRESH } else { 0 });
+        u(
+            out,
+            Self::ALIVE
+                | if self.fresh { Self::FRESH } else { 0 }
+                | (orient_bits(self.orient_dir) << Self::ORIENT_SHIFT),
+        );
         u(out, u32::from_le_bytes(self.color.map(unit_byte)));
         f(out, self.size);
     }
@@ -68,6 +77,24 @@ impl GpuSpawn {
     pub fn angle(&self) -> f32 {
         self.spin * self.age_ms as f32 * AGED_SPIN_TO_RADIANS
     }
+}
+
+/// The 30 bits a direction travels in: the unit vector of `dir` (up when it has none) folded onto an octahedron, its two
+/// coordinates 15-bit unorm (`gpu_particle_types.wgsl`'s `pool_orient_dir` unfolds them).
+pub fn orient_bits(dir: [f32; 3]) -> u32 {
+    let len: f32 = dir.iter().map(|c| c.abs()).sum();
+    if !(len.is_finite() && len > 1e-12) {
+        return orient_bits([0.0, 0.0, 1.0]);
+    }
+    let n = dir.map(|c| c / len);
+    let fold = |a: f32, b: f32| (1.0 - b.abs()) * if a >= 0.0 { 1.0 } else { -1.0 };
+    let (x, y) = if n[2] < 0.0 {
+        (fold(n[0], n[1]), fold(n[1], n[0]))
+    } else {
+        (n[0], n[1])
+    };
+    let q = |v: f32| ((v * 0.5 + 0.5).clamp(0.0, 1.0) * 32767.0).round() as u32;
+    q(x) | (q(y) << 15)
 }
 
 /// A color channel as the CPU path's vertex byte.
@@ -97,6 +124,8 @@ pub struct SpriteLook {
     pub fps: i32,
     /// Its textures named none that loads: alive in the pool, never drawn (the CPU path draws none of them either).
     pub hidden: bool,
+    /// How its particles are turned (`orientParticles`, `orientOnVelocity`).
+    pub orient: Orient,
 }
 
 /// A frame's hand-over to the pool: the particles made since the last one and their looks, the simulation steps (ms, in
@@ -108,6 +137,8 @@ pub struct SpriteFrame {
     pub spawns: Vec<GpuSpawn>,
     pub steps: Vec<u32>,
     pub clear: bool,
+    /// The air's velocity the pool carries its particles by (units a second; the Sky's).
+    pub wind: [f32; 3],
 }
 
 impl SpriteFrame {
@@ -166,6 +197,7 @@ impl Emitter {
                 fresh: q.fresh,
                 color: q.color,
                 size: q.size,
+                orient_dir: q.orient_dir,
             });
         }
         self.particles.clear();
@@ -221,6 +253,7 @@ impl Emitter {
             frames,
             fps: if p.animate { p.fps } else { 0 },
             hidden,
+            orient: self.data.extras.orient,
         }
     }
 }

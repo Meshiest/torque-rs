@@ -126,6 +126,7 @@ fn a_trails_particle_data_makes_its_ribbon() {
         textures: vec!["kit/spark".to_string()],
         animate: false,
         fps: 0,
+        extras: crate::particles::ParticleExtras::default(),
     };
     let r = RibbonData::of_particle(&p);
     assert_eq!(r.sizes, [0.1, 0.05, 0.0, 0.0], "half the particle's width");

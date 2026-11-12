@@ -173,7 +173,8 @@ impl EventUnpacker for Unpacker<'_> {
         r: &mut BitReader,
         ctx: &EventCtx<'_>,
     ) -> Result<Ev, NetError> {
-        let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits);
+        let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits)
+            .with_extensions(ctx.ids.datablock_remove().is_some());
         let (lo, hi) = widths.datablock_range();
         if class == ctx.ids.ghost_always_object {
             return self.ghosts.read_always_event(r).map(|_| Ev::Always);
@@ -967,4 +968,50 @@ fn a_server_of_torques_protocol_posts_nothing_on_a_removal_and_keeps_torques_eve
         0,
         "no connection had it"
     );
+}
+
+/// A client of the engine's protocol reads the particle fields TGE does not have (a Torque-protocol client is sent none:
+/// `datablock_live`'s `a_client_of_torques_protocol_is_sent_particle_datablocks_without_the_engines_fields`).
+#[test]
+fn the_particle_fields_reach_a_client_of_the_engines_protocol() {
+    let fields_of = |world: &ClientWorld<TgeClientSet>, id: ObjId| -> BTreeMap<String, String> {
+        world.datablocks[&id]
+            .fields
+            .iter()
+            .map(|(n, i, v)| (format!("{n}[{i}]"), format!("{v:?}")))
+            .collect()
+    };
+    let mut rig = Rig::new(5, 0);
+    eval(&mut rig.s, crate::datablock_live::SPARKS);
+    rig.round();
+    let (sparks, plain, emitter) = (
+        id_of(&rig.s, "Sparks"),
+        id_of(&rig.s, "Plain"),
+        id_of(&rig.s, "SparkEmitter"),
+    );
+    assert!(rig.run_until(100, |r| r.client.ids().contains(&emitter)));
+    let sent = fields_of(&rig.client.world, sparks);
+    for (field, want) in [
+        ("turbulence[0]", "F32(4.0)"),
+        ("turbulenceScale[0]", "F32(2.5)"),
+        ("collide[0]", "Bool(true)"),
+        ("bounceElasticity[0]", "F32(0.6)"),
+        ("bounceFriction[0]", "F32(0.1)"),
+        ("lit[0]", "Int(2)"),
+        ("softDistance[0]", "F32(1.5)"),
+        ("flipbookBlend[0]", "Bool(true)"),
+        ("sizeByVelocity[0]", "F32(0.05)"),
+    ] {
+        assert_eq!(sent.get(field).map(String::as_str), Some(want), "{field}");
+    }
+    let sent = fields_of(&rig.client.world, emitter);
+    assert_eq!(sent.get("trail[0]").map(String::as_str), Some("Bool(true)"));
+    assert_eq!(sent.get("budget[0]").map(String::as_str), Some("Int(300)"));
+    // A datablock with every field at its default sends the flag alone: no value of the block comes back.
+    let quiet = fields_of(&rig.client.world, plain);
+    assert!(
+        quiet.keys().all(|k| !k.starts_with("turbulence")),
+        "{quiet:?}"
+    );
+    assert!(rig.client.errors.is_empty(), "{:?}", rig.client.errors);
 }

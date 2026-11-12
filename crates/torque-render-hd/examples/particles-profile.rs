@@ -130,6 +130,7 @@ fn emitter(k: u32, count: u32, scale: f32) -> Emitter {
         use_emitter_sizes: false,
         use_emitter_colors: false,
         particles: vec![1],
+        extras: torque_render_scene::particles::EmitterExtras::default(),
     };
     let p = ParticleData {
         drag: 0.4,
@@ -163,6 +164,7 @@ fn emitter(k: u32, count: u32, scale: f32) -> Emitter {
         textures: vec!["fx/puff".to_string()],
         animate: false,
         fps: 0,
+        extras: torque_render_scene::particles::ParticleExtras::default(),
     };
     Emitter::of_data(data, vec![p]).expect("an emitter")
 }

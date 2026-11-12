@@ -1,5 +1,5 @@
 use super::*;
-use crate::particles::{GpuSpawn, SpriteFrame, SpriteLook};
+use crate::particles::{GpuSpawn, Orient, SpriteFrame, SpriteLook};
 
 fn look(blend: Blend, frames: Vec<usize>) -> SpriteLook {
     SpriteLook {
@@ -14,6 +14,7 @@ fn look(blend: Blend, frames: Vec<usize>) -> SpriteLook {
         fps: if frames.len() > 1 { 10 } else { 0 },
         frames,
         hidden: false,
+        orient: Orient::default(),
     }
 }
 
@@ -29,6 +30,7 @@ fn spawn(look: u32, life_ms: i32) -> GpuSpawn {
         fresh: false,
         color: [1.0; 4],
         size: 1.0,
+        orient_dir: [0.0, 0.0, 1.0],
     }
 }
 
@@ -44,6 +46,7 @@ fn looks_become_records_once_and_their_frames_buckets() {
         spawns: vec![spawn(0, 100), spawn(1, 100), spawn(2, 100)],
         steps: vec![16],
         clear: false,
+        wind: [0.0; 3],
     };
     // Frame texture i is the scene's 10 + i.
     s.push(&frame, |t| Some(10 + t), None);
@@ -75,6 +78,7 @@ fn a_bucket_is_drawn_while_a_particle_handed_to_it_can_live() {
         spawns,
         steps: vec![step_ms],
         clear: false,
+        wind: [0.0; 3],
     };
     s.push(&frame(vec![spawn(0, 50), spawn(1, 200)], 0), Some, None);
     assert_eq!(s.live_buckets().count(), 2);
@@ -222,4 +226,38 @@ fn looks_that_differ_only_in_label_share_a_record() {
         None,
     );
     assert_eq!(s.records.len(), 1);
+}
+
+#[test]
+fn a_frames_wind_and_a_looks_orient_mode_reach_the_pool() {
+    let mut s = GpuSprites::default();
+    let mut turned = look(Blend::Alpha, vec![0]);
+    turned.orient = Orient::Velocity;
+    let frame = SpriteFrame {
+        looks: vec![look(Blend::Alpha, vec![0]), turned],
+        spawns: vec![spawn(0, 100), spawn(1, 100)],
+        wind: [3.0, 0.0, -1.0],
+        ..SpriteFrame::default()
+    };
+    s.push(&frame, Some, None);
+    assert_eq!(s.wind, [3.0, 0.0, -1.0]);
+    // Two looks alike but for their orientation are two records, the mode the third word after the keys and coefficients.
+    assert_eq!(s.records.len(), 2);
+    let word = |r: &SpriteRecord, at: usize| {
+        let mut bytes = Vec::new();
+        r.write(&mut bytes);
+        assert_eq!(bytes.len(), SpriteRecord::BYTES);
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    };
+    assert_eq!((word(&s.records[0], 120), word(&s.records[1], 120)), (0, 2));
+    // A wind that is not finite is still air.
+    s.push(
+        &SpriteFrame {
+            wind: [f32::NAN, 1.0, 1.0],
+            ..SpriteFrame::default()
+        },
+        Some,
+        None,
+    );
+    assert_eq!(s.wind, [0.0; 3]);
 }

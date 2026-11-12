@@ -75,9 +75,9 @@ Console classes, with the fields each adds to its parent's. 119 classes.
 | [MissionMarkerData](#missionmarkerdata) | [ShapeBaseData](#shapebasedata) | 0 |
 | [NetConnection](#netconnection) | [SimGroup](#simgroup) | 0 |
 | [NetObject](#netobject) | [SimObject](#simobject) | 0 |
-| [ParticleData](#particledata) | [SimDataBlock](#simdatablock) | 18 |
+| [ParticleData](#particledata) | [SimDataBlock](#simdatablock) | 27 |
 | [ParticleEmitter](#particleemitter) | [GameBase](#gamebase) | 0 |
-| [ParticleEmitterData](#particleemitterdata) | [GameBaseData](#gamebasedata) | 17 |
+| [ParticleEmitterData](#particleemitterdata) | [GameBaseData](#gamebasedata) | 19 |
 | [ParticleEmitterNode](#particleemitternode) | [GameBase](#gamebase) | 2 |
 | [ParticleEmitterNodeData](#particleemitternodedata) | [GameBaseData](#gamebasedata) | 1 |
 | [Path](#path) | [SimGroup](#simgroup) | 1 |
@@ -1007,6 +1007,15 @@ No fields of its own.
 | `colors[4]` | ColorF |  |  |
 | `sizes[4]` | float |  |  |
 | `times[4]` | float |  |  |
+| `turbulence` | float |  |  |
+| `turbulenceScale` | float |  |  |
+| `collide` | bool |  |  |
+| `bounceElasticity` | float |  |  |
+| `bounceFriction` | float |  |  |
+| `lit` | enum (Auto, On, Off) |  |  |
+| `softDistance` | float |  |  |
+| `flipbookBlend` | bool |  |  |
+| `sizeByVelocity` | float |  |  |
 
 ## ParticleEmitter
 
@@ -1037,6 +1046,8 @@ No fields of its own.
 | `lifetimeVarianceMS` | int |  |  |
 | `useEmitterSizes` | bool |  |  |
 | `useEmitterColors` | bool |  |  |
+| `trail` | bool |  |  |
+| `budget` | int |  |  |
 
 ## ParticleEmitterNode
 

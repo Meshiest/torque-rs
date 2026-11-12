@@ -120,6 +120,23 @@ pub fn sky_color(src: &dyn SceneSource) -> [f32; 3] {
         .map_or([1.0; 3], |m| m.sky_color)
 }
 
+/// The fastest wind a component of [`wind`] gives (units a second): a server's hostile `windVelocity` carries no particle faster.
+pub const MAX_WIND: f32 = 100.0;
+
+/// The air's velocity the Sky's `windVelocity` gives the particles (units a second): still air when the world has no Sky or it
+/// sent none, a component that is not finite counting as 0 and the others held to [`MAX_WIND`].
+pub fn wind(src: &dyn SceneSource) -> [f32; 3] {
+    src.sky().and_then(|s| s.wind).map_or([0.0; 3], |w| {
+        w.map(|c| {
+            if c.is_finite() {
+                c.clamp(-MAX_WIND, MAX_WIND)
+            } else {
+                0.0
+            }
+        })
+    })
+}
+
 /// Whether the Sky is drawn in its solid colour: TGE 1.x draws a Sky whose `useSkyTextures` is 0 in its `SkySolidColor` and
 /// reads none of its material list. A source gives such a Sky no material list and its `SkySolidColor` as the `skyColor`; the
 /// box is then drawn untextured in that colour (`GL_MODULATE` of the colour over a white face), with no cloud layers. With

@@ -278,14 +278,16 @@ pub trait NetCodecs: Debug {
 
     /// The record of datablock `id` of `class` (its `packData`) written from the host's view of it; `values` are the
     /// datablocks' computed values. None: the class has no writer, and the event goes out as the one 0 bit. By default the
-    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]); a plugin's class's record
-    /// ([`PluginDbRecord`]) with its class id past the table's.
+    /// class's record of [`TgeDatablocks`], in the widths of a server's start ([`TgeDbRecord`]), with the engine protocol's
+    /// record extensions when `extensions` is set (the connection's peer is the engine's own, [`PeerKind::Engine`]); a plugin's
+    /// class's record ([`PluginDbRecord`]) with its class id past the table's.
     fn datablock_record(
         &self,
         class: &str,
         id: ObjId,
         view: &dyn DatablockView,
         values: &DbValues,
+        extensions: bool,
     ) -> Option<Rc<dyn DatablockRecord>> {
         let _ = (id, values);
         let widths = NetWidths::new(
@@ -304,6 +306,7 @@ pub trait NetCodecs: Debug {
                 widths,
             }));
         };
+        let widths = widths.with_extensions(extensions);
         let record = TgeDatablocks::pack(class, &TgeView { class, view }, widths);
         Some(Rc::new(TgeDbRecord { record, widths }))
     }

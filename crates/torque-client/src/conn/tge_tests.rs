@@ -257,6 +257,7 @@ fn a_datablock_event_reads_as_the_server_wrote_it_with_its_script_fields() {
             40,
             &CrateView,
             &torque_game::dbvalues::DbValues::default(),
+            false,
         )
         .expect("TGE's StaticShapeData has a record");
     let event = DatablockEvent {
@@ -484,6 +485,7 @@ fn a_plugins_datablock_goes_out_past_tges_class_ids_and_the_client_makes_and_pre
                 id,
                 &PropView(model),
                 &torque_game::dbvalues::DbValues::default(),
+                false,
             )
             .expect("the plugin's class has a record");
         // The class id past the TGE table's 35.

@@ -7,6 +7,8 @@
 // size in the camera's plane (the frame's view rows), turned by its spin times its age; the corners in the CPU path's order
 // (v0 v1 v3, v1 v2 v3 of v0 (-1, -1), v1 (1, -1), v2 (1, 1), v3 (-1, 1)). A lit look's corner normal points from the center and
 // its extra word is the half diagonal (what `shape_sprites` writes); a particle at a place that is not finite draws nothing.
+// A look that orients its particles (words.z) turns the square instead: `setupOriented`'s, along the particle's ejection direction
+// or its velocity.
 
 @group(1) @binding(2) var<storage, read> sprite_particles: array<PoolParticle>;
 @group(1) @binding(3) var<storage, read> sprite_instances: array<u32>;
@@ -42,7 +44,27 @@ fn vs_gpu_sprite(@builtin(vertex_index) vi: u32) -> VertexOut {
     let angle = q.spin * f32(q.age) * SPRITE_SPIN;
     let s = sin(angle);
     let c = cos(angle);
-    let off = (right * (x * c - z * s) + up * (x * s + z * c)) * width;
+    var off = (right * (x * c - z * s) + up * (x * s + z * c)) * width;
+    // An oriented particle (TGE's `setupOriented`): a square of its size whose z axis lies along its direction (ejection, or
+    // velocity: a particle at rest draws nothing) and whose x axis is across it and the line of sight; it has no spin.
+    let orient = sprite_looks[q.look].words.z;
+    if orient != 0u {
+        var dir = pool_orient_dir(q.flags);
+        if orient == POOL_ORIENT_VELOCITY {
+            let speed = length(q.vel);
+            if speed > 1e-6 {
+                dir = q.vel / speed;
+            } else {
+                out.clip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+                return out;
+            }
+        }
+        let across = cross(q.pos - frame.eye.xyz, dir);
+        let across_length = length(across);
+        if across_length > 1e-9 {
+            off = (across / across_length * x + dir * z) * width;
+        }
+    }
     let at = q.pos + off;
     if !(sprite_finite(at.x) && sprite_finite(at.y) && sprite_finite(at.z) && sprite_finite(width)
         && sprite_finite(angle)) {

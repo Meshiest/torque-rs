@@ -25,6 +25,7 @@ fn emitter() -> Emitter {
         use_emitter_sizes: false,
         use_emitter_colors: false,
         particles: vec![1],
+        extras: EmitterExtras::default(),
     };
     let p = ParticleData {
         drag: 0.5,
@@ -49,6 +50,7 @@ fn emitter() -> Emitter {
         textures: Vec::new(),
         animate: false,
         fps: 0,
+        extras: ParticleExtras::default(),
     };
     Emitter::of_data(data, vec![p]).expect("an emitter")
 }
@@ -139,4 +141,105 @@ fn a_frame_keeps_each_look_once_and_a_spawn_is_64_bytes() {
     frame.spawns[0].write(&mut bytes);
     assert_eq!(bytes.len(), GpuSpawn::BYTES);
     assert!(!frame.is_empty());
+}
+
+/// The ejection direction the pool's vertex stage unfolds from a particle's flags (`gpu_particle_types.wgsl`'s `pool_orient_dir`).
+fn unfolded(flags: u32) -> [f32; 3] {
+    let bits = flags >> GpuSpawn::ORIENT_SHIFT;
+    let a = (bits & 0x7fff) as f32 / 32767.0 * 2.0 - 1.0;
+    let b = ((bits >> 15) & 0x7fff) as f32 / 32767.0 * 2.0 - 1.0;
+    let mut n = [a, b, 1.0 - a.abs() - b.abs()];
+    if n[2] < 0.0 {
+        let sign = |v: f32| if v >= 0.0 { 1.0 } else { -1.0 };
+        n = [(1.0 - b.abs()) * sign(a), (1.0 - a.abs()) * sign(b), n[2]];
+    }
+    let len = n.iter().map(|c| c * c).sum::<f32>().sqrt();
+    n.map(|c| c / len)
+}
+
+/// A direction travels in the 30 bits above a particle's alive and fresh flags and comes back within a thousandth of a radian,
+/// whichever way it points; none (or a direction that is not finite) is up.
+#[test]
+fn an_ejection_direction_travels_in_the_flags_of_a_particle() {
+    let mut rng = Rng::new(11);
+    let mut dirs: Vec<[f32; 3]> = vec![
+        [1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, 0.0, -1.0],
+        [0.6, -0.8, 0.0],
+        [-0.3, 0.2, -0.9],
+    ];
+    dirs.extend((0..2000).map(|_| [0, 1, 2].map(|_| rng.f() * 2.0 - 1.0)));
+    for d in dirs {
+        let len = d.iter().map(|c| c * c).sum::<f32>().sqrt();
+        if len < 1e-3 {
+            continue;
+        }
+        let u = d.map(|c| c / len);
+        let back = unfolded(orient_bits(d) << GpuSpawn::ORIENT_SHIFT);
+        let dot: f32 = (0..3).map(|k| u[k] * back[k]).sum();
+        assert!(dot > 0.999_999, "{d:?} came back as {back:?}");
+    }
+    for none in [[0.0; 3], [f32::NAN; 3], [f32::INFINITY, 0.0, 0.0]] {
+        assert_eq!(orient_bits(none), orient_bits([0.0, 0.0, 1.0]), "{none:?}");
+    }
+    // The bits stay above the two flags.
+    assert_eq!(orient_bits([0.3, 0.9, -0.2]) >> 30, 0);
+    let mut bytes = Vec::new();
+    GpuSpawn {
+        fresh: true,
+        orient_dir: [0.0, 1.0, 0.0],
+        ..spawn_of_flags()
+    }
+    .write(&mut bytes);
+    let flags = u32::from_le_bytes(bytes[52..56].try_into().unwrap());
+    assert_eq!(flags & 3, GpuSpawn::ALIVE | GpuSpawn::FRESH);
+    let up = unfolded(flags);
+    assert!(up[1] > 0.9999, "{up:?}");
+}
+
+fn spawn_of_flags() -> GpuSpawn {
+    GpuSpawn {
+        pos: [0.0; 3],
+        age_ms: 0,
+        vel: [0.0; 3],
+        life_ms: 100,
+        acc: [0.0; 3],
+        spin: 0.0,
+        look: 0,
+        fresh: false,
+        color: [1.0; 4],
+        size: 1.0,
+        orient_dir: [0.0, 0.0, 1.0],
+    }
+}
+
+/// A particle keeps the way it was ejected, and its look the way its emitter turns it.
+#[test]
+fn handing_over_keeps_the_ejection_direction_and_the_emitters_orientation() {
+    let mut e = emitter();
+    e.data.extras.orient = Orient::of(true, true);
+    let (mut rng, mut live) = (Rng::new(2), 0);
+    let mut t = TextureSet::new(&Empty);
+    let mut frame = SpriteFrame::default();
+    for k in 0..4 {
+        run(&mut e, &mut rng, &mut live, k);
+        let made: Vec<[f32; 3]> = e.particles.iter().map(|q| q.orient_dir).collect();
+        let before = frame.spawns.len();
+        e.hand_over(&mut frame, &mut t, "x", &mut live);
+        let handed: Vec<[f32; 3]> = frame.spawns[before..]
+            .iter()
+            .map(|s| s.orient_dir)
+            .collect();
+        assert_eq!(made, handed);
+    }
+    assert!(frame.spawns.len() > 4);
+    for s in &frame.spawns {
+        let len = s.orient_dir.iter().map(|c| c * c).sum::<f32>().sqrt();
+        assert!((len - 1.0).abs() < 1e-4, "{:?}", s.orient_dir);
+    }
+    assert_eq!(frame.looks[0].orient, Orient::Velocity);
+    let plain = emitter().look(0, &mut t, "x");
+    assert_eq!(plain.orient, Orient::Billboard);
 }

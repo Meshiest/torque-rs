@@ -185,6 +185,18 @@ impl VehicleDust {
         self.live = 0;
     }
 
+    /// The air's velocity each emitter's dust is carried by.
+    pub fn winds(&self) -> Vec<[f32; 3]> {
+        self.emitters.values().map(|k| k.emitter.wind()).collect()
+    }
+
+    /// The air's velocity the dust is carried by from now on.
+    pub fn set_wind(&mut self, wind: [f32; 3]) {
+        for k in self.emitters.values_mut() {
+            k.emitter.set_wind(wind);
+        }
+    }
+
     /// Forgets the emitters of ghost `index` and their particles (another object took its index): its next dust starts anew.
     pub fn forget(&mut self, index: u32) {
         let mut gone = 0;

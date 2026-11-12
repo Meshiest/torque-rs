@@ -16,6 +16,14 @@
 //! it loads the datablock (a shape's CRC, the image states' transition indices and sequence ids, an emitter's particle ids)
 //! are fields like the others. A packer never fails: a missing value is 0, false, "" or null.
 //!
+//! **Extension blocks.** A class of the engine's own protocol may end its record with a block TGE's does not have, behind a
+//! presence flag, written only when the connection's [`NetWidths::extensions`] is set (`ParticleData`, `ParticleEmitterData`:
+//! [`effects`]). Torque's protocol never sets it, so its records stay TGE's bit for bit; a packer fills the block whatever the
+//! widths and [`TgeDatablocks::pack`] drops it for a connection without (`for_widths`). A block's values are sanitized by its
+//! layout, in both directions: a reader makes a value in range of any bits (a float that is not finite is the field's default, a
+//! count is cut to its cap), a writer sends one that is. A new extension adds its range to the layout and a hostile-value
+//! test for each field.
+//!
 //! **Caps** (each wire count is also checked against the bits left): [`MAX_PARTICLE_TEXTURES`], [`MAX_EMITTER_PARTICLES`],
 //! [`MAX_EXPLOSION_KEYS`], [`MAX_SHAPE_SEQUENCES`].
 //!

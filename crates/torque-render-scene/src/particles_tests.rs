@@ -19,6 +19,7 @@ fn data() -> (EmitterData, ParticleData) {
             use_emitter_sizes: false,
             use_emitter_colors: false,
             particles: vec![1],
+            extras: EmitterExtras::default(),
         },
         ParticleData {
             drag: 0.0,
@@ -43,6 +44,7 @@ fn data() -> (EmitterData, ParticleData) {
             textures: Vec::new(),
             animate: false,
             fps: 0,
+            extras: ParticleExtras::default(),
         },
     )
 }
@@ -59,6 +61,7 @@ fn emitter() -> Emitter {
         near_z_cross: [0.0, 1.0, 0.0],
         colors: None,
         colors_inv_alpha: false,
+        wind: [0.0; 3],
         dead: false,
     }
 }
@@ -200,7 +203,10 @@ fn sent(
     let record = record(&View(fields));
     ghost_world::tge::TgeDatablock {
         class: record.class().name().to_string(),
-        fields: ghosts::datablocks::fields::fields(&record, ghosts::codec::NetWidths::new(10, 10)),
+        fields: ghosts::datablocks::fields::fields(
+            &record,
+            ghosts::codec::NetWidths::new(10, 10).with_extensions(true),
+        ),
     }
 }
 
@@ -455,4 +461,280 @@ fn a_trail_is_emitted_against_the_flight_from_where_the_projectile_was() {
             .iter()
             .all(|q| q.pos[1] > 1.6 - 0.1 && q.pos[0].abs() < 0.1)
     );
+}
+
+/// The engine protocol's fields of the particle datablocks come through as the server sent them, and a datablock that sent none
+/// has the defaults that leave TGE's look and motion as they are.
+#[test]
+fn an_emitter_reads_the_engine_fields_the_server_sent_and_defaults_the_rest() {
+    use ghosts::Value;
+    use ghosts::datablocks::TgeDatablockRecord as R;
+    use ghosts::datablocks::effects::{pack_particle_data, pack_particle_emitter_data};
+    let f = |name, v: f32| (name, 0, Value::F32(v));
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    w.datablocks.insert(
+        10,
+        sent(
+            |v| R::ParticleData(pack_particle_data(v)),
+            &[
+                f("turbulence", 4.0),
+                f("turbulenceScale", 2.5),
+                ("collide", 0, Value::Bool(true)),
+                f("bounceElasticity", 0.6),
+                f("bounceFriction", 0.1),
+                ("lit", 0, Value::Int(2)),
+                f("softDistance", 1.5),
+                ("flipbookBlend", 0, Value::Bool(true)),
+                f("sizeByVelocity", 0.05),
+            ],
+        ),
+    );
+    w.datablocks
+        .insert(14, sent(|v| R::ParticleData(pack_particle_data(v)), &[]));
+    let emitter = |extra: &[(&str, usize, Value)]| {
+        let mut fields = vec![("dataBlockIds", 0, Value::Int(10))];
+        fields.extend_from_slice(extra);
+        sent(
+            |v| R::ParticleEmitterData(pack_particle_emitter_data(v)),
+            &fields,
+        )
+    };
+    let bool_on = |name| (name, 0, Value::Bool(true));
+    w.datablocks.insert(
+        11,
+        emitter(&[
+            bool_on("trail"),
+            ("budget", 0, Value::Int(500)),
+            bool_on("orientParticles"),
+            bool_on("orientOnVelocity"),
+        ]),
+    );
+    w.datablocks
+        .insert(12, emitter(&[bool_on("orientParticles")]));
+    w.datablocks.insert(13, emitter(&[]));
+    let p = w.particle_data(10).unwrap().extras;
+    assert_eq!(
+        (p.turbulence, p.turbulence_scale, p.collide),
+        (4.0, 2.5, true)
+    );
+    assert_eq!((p.bounce_elasticity, p.bounce_friction), (0.6, 0.1));
+    assert_eq!(
+        (p.lit, p.soft_distance, p.flipbook_blend, p.size_by_velocity),
+        (Lit::Off, 1.5, true, 0.05)
+    );
+    // No field sent, none read: the defaults, which are TGE's look.
+    assert_eq!(
+        w.particle_data(14).unwrap().extras,
+        ParticleExtras::default()
+    );
+    let d = ParticleExtras::default();
+    assert_eq!(
+        (
+            d.turbulence,
+            d.collide,
+            d.lit,
+            d.soft_distance,
+            d.size_by_velocity
+        ),
+        (0.0, false, Lit::Auto, 0.4, 0.0)
+    );
+    let e = w.emitter_data(11).unwrap().extras;
+    assert_eq!((e.trail, e.budget, e.orient), (true, 500, Orient::Velocity));
+    assert_eq!(w.emitter_data(12).unwrap().extras.orient, Orient::Emission);
+    assert_eq!(w.emitter_data(13).unwrap().extras, EmitterExtras::default());
+}
+
+/// A datablock the world holds that the wire's reader did not make (or one it made before a value was out of range) is held to
+/// its ranges as it is read.
+#[test]
+fn hostile_engine_fields_are_held_to_their_ranges_as_they_are_read() {
+    let f = |name: &'static str, v: f32| (name, Value::F32(v));
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    w.datablocks.insert(
+        1,
+        datablock(
+            "ParticleData",
+            &[
+                f("turbulence", f32::NAN),
+                f("turbulenceScale", -5.0),
+                f("bounceElasticity", f32::INFINITY),
+                f("bounceFriction", 9.0),
+                ("lit", Value::Int(77)),
+                f("softDistance", f32::NEG_INFINITY),
+                f("sizeByVelocity", 1.0e9),
+            ],
+        ),
+    );
+    let p = w.particle_data(1).unwrap().extras;
+    let d = ParticleExtras::default();
+    assert_eq!(p.turbulence, d.turbulence);
+    assert_eq!(p.turbulence_scale, 0.01);
+    assert_eq!(p.bounce_elasticity, d.bounce_elasticity);
+    assert_eq!(p.bounce_friction, 1.0);
+    assert_eq!(p.lit, Lit::Auto);
+    assert_eq!(p.soft_distance, d.soft_distance);
+    assert_eq!(p.size_by_velocity, 10.0);
+    // A negative lit and a float lit are no mode either.
+    w.datablocks
+        .insert(2, datablock("ParticleData", &[("lit", Value::Int(-1))]));
+    assert_eq!(w.particle_data(2).unwrap().extras.lit, Lit::Auto);
+    for budget in [i64::MAX, i64::from(u32::MAX) + 1, 1 << 40] {
+        w.datablocks.insert(
+            3,
+            datablock(
+                "ParticleEmitterData",
+                &[
+                    ("budget", Value::Int(budget)),
+                    ("dataBlockIds", Value::Int(1)),
+                ],
+            ),
+        );
+        let budget = w.emitter_data(3).unwrap().extras.budget;
+        assert!(budget <= ghosts::datablocks::effects::MAX_EMITTER_BUDGET);
+    }
+    w.datablocks.insert(
+        3,
+        datablock(
+            "ParticleEmitterData",
+            &[("budget", Value::Int(-4)), ("dataBlockIds", Value::Int(1))],
+        ),
+    );
+    assert_eq!(w.emitter_data(3).unwrap().extras.budget, 0);
+}
+
+/// An emitter that makes one still, dragless particle of `wind_coefficient` and runs it for `ms` under `wind`: where it ended.
+fn drift(wind: [f32; 3], wind_coefficient: f32, ms: u32) -> [f32; 3] {
+    let mut e = emitter();
+    e.data.velocity = 0.0;
+    e.data.velocity_variance = 0.0;
+    e.data.offset = 0.0;
+    e.particle_data[0].drag = 0.0;
+    e.particle_data[0].gravity = 0.0;
+    e.particle_data[0].wind = wind_coefficient;
+    e.particle_data[0].lifetime_ms = 60_000;
+    e.particle_data[0].lifetime_variance_ms = 0;
+    e.set_wind(wind);
+    let (mut rng, mut live) = (Rng::new(5), 0);
+    e.emit_burst(
+        [1.0, 2.0, 3.0],
+        [0.0, 0.0, 1.0],
+        0.0,
+        1,
+        &mut rng,
+        &mut live,
+    );
+    assert_eq!(e.particles.len(), 1);
+    for _ in 0..ms / 10 {
+        e.advance(10, &mut live);
+    }
+    let q = &e.particles[0];
+    assert_eq!(
+        q.vel, [0.0; 3],
+        "the air does not push the particle's own velocity"
+    );
+    [q.pos[0] - 1.0, q.pos[1] - 2.0, q.pos[2] - 3.0]
+}
+
+/// `windCoefficient` 1 under a wind of (3, 0, 0) carries a dragless particle 3 units a second; its coefficient scales that.
+#[test]
+fn the_wind_carries_a_dragless_particle_its_coefficient_of_the_winds_speed() {
+    let near = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-3);
+    assert!(near(drift([3.0, 0.0, 0.0], 1.0, 1000), [3.0, 0.0, 0.0]));
+    assert!(near(drift([3.0, 0.0, 0.0], 1.0, 500), [1.5, 0.0, 0.0]));
+    assert!(near(drift([3.0, 0.0, 0.0], 0.5, 1000), [1.5, 0.0, 0.0]));
+    assert!(near(drift([0.0, -2.0, 1.0], 1.0, 1000), [0.0, -2.0, 1.0]));
+    // Still air, and a coefficient of 0, carry nothing; a wind that is not finite is still air.
+    assert!(near(drift([0.0; 3], 1.0, 1000), [0.0; 3]));
+    assert!(near(drift([3.0, 0.0, 0.0], 0.0, 1000), [0.0; 3]));
+    assert!(near(
+        drift([f32::NAN, 1.0, f32::INFINITY], 1.0, 1000),
+        [0.0; 3]
+    ));
+}
+
+/// A set gives its wind to the emitters it holds and to the ones it takes later.
+#[test]
+fn a_set_of_emitters_shares_one_wind() {
+    let mut set = Emitters::default();
+    let first = set.add(emitter()).unwrap();
+    set.set_wind([3.0, 0.0, 0.0]);
+    let second = set.add(emitter()).unwrap();
+    for id in [first, second] {
+        assert_eq!(set.get(&id).unwrap().wind, [3.0, 0.0, 0.0]);
+    }
+}
+
+/// The unbounded floats of a particle datablock are held to ranges as they are read: a coefficient that is not finite is the
+/// default, a huge one is cut (TGE refuses a `spinSpeed` outside `-10000..=10000`).
+#[test]
+fn hostile_wind_acceleration_and_spin_are_held_to_their_ranges() {
+    let f = |name: &'static str, v: f32| (name, Value::F32(v));
+    let mut w = ClientWorld::<TgeClientSet>::default();
+    w.datablocks.insert(
+        1,
+        datablock(
+            "ParticleData",
+            &[
+                f("windCoefficient", 1.0e30),
+                f("constantAcceleration", -1.0e30),
+                f("spinSpeed", 1.0e30),
+            ],
+        ),
+    );
+    let p = w.particle_data(1).unwrap();
+    assert_eq!(
+        (p.wind, p.constant_accel, p.spin_speed),
+        (
+            MAX_WIND_COEFFICIENT,
+            -MAX_CONSTANT_ACCELERATION,
+            MAX_SPIN_SPEED
+        )
+    );
+    w.datablocks.insert(
+        2,
+        datablock(
+            "ParticleData",
+            &[
+                f("windCoefficient", f32::NAN),
+                f("constantAcceleration", f32::INFINITY),
+                f("spinSpeed", f32::NEG_INFINITY),
+            ],
+        ),
+    );
+    let p = w.particle_data(2).unwrap();
+    assert_eq!((p.wind, p.constant_accel, p.spin_speed), (1.0, 0.0, 0.0));
+    w.datablocks.insert(
+        3,
+        datablock("ParticleData", &[f("windCoefficient", -1.0e9)]),
+    );
+    assert_eq!(w.particle_data(3).unwrap().wind, -MAX_WIND_COEFFICIENT);
+    // A lit that is a float is no mode.
+    w.datablocks
+        .insert(4, datablock("ParticleData", &[f("lit", 1.0)]));
+    assert_eq!(w.particle_data(4).unwrap().extras.lit, Lit::Auto);
+}
+
+/// A particle the call outlives is dropped and taken off the live count, as the one that died of age is.
+#[test]
+fn a_particle_dropped_at_birth_does_not_leak_the_live_count() {
+    let mut e = emitter();
+    e.data.period_ms = 1;
+    e.data.period_variance_ms = 0;
+    e.particle_data[0].lifetime_ms = 0;
+    e.particle_data[0].lifetime_variance_ms = 0;
+    let (mut rng, mut live) = (Rng::new(1), 0);
+    for _ in 0..50 {
+        e.emit_path(
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+            100,
+            &mut rng,
+            &mut live,
+        );
+        e.advance(100, &mut live);
+        assert_eq!(live, e.particles.len());
+    }
+    assert!(live <= 1, "{live}");
+    assert!(e.particles.len() <= 1);
 }

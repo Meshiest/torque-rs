@@ -183,3 +183,39 @@ fn the_scene_and_shape_classes_name_the_methods_their_natives_replace() {
         );
     }
 }
+
+/// A datablock a script made reads the defaults that leave TGE's particles as they are: an emitter node's `timeMultiple` is 1
+/// (TGE's constructor), a particle's engine fields their `ParticleExt` defaults, and the rest of the new fields their zero.
+#[test]
+fn the_particle_datablocks_read_defaults_that_leave_tges_particles_as_they_are() {
+    use torque_ghosts::datablocks::effects::ParticleExt;
+    use ts_vm::fields::Value;
+    let mut vm = Vm::new();
+    assert_eq!(install(&mut vm), CLASSES.len());
+    let classes = &vm.objects().classes;
+    let initial = |class: &str, name: &str| {
+        let def = classes
+            .get(classes.find(class.as_bytes()).unwrap())
+            .unwrap();
+        let (_, slots) = def.layout.field(name.as_bytes()).unwrap();
+        def.layout.initial[slots[0]].clone()
+    };
+    assert_eq!(
+        initial("ParticleEmitterNodeData", "timeMultiple"),
+        Value::Float(1.0)
+    );
+    for (name, want) in [
+        ("turbulenceScale", ParticleExt::DEFAULT_TURBULENCE_SCALE),
+        ("bounceElasticity", ParticleExt::DEFAULT_BOUNCE_ELASTICITY),
+        ("bounceFriction", ParticleExt::DEFAULT_BOUNCE_FRICTION),
+        ("softDistance", ParticleExt::DEFAULT_SOFT_DISTANCE),
+        ("turbulence", 0.0),
+        ("sizeByVelocity", 0.0),
+    ] {
+        assert_eq!(initial("ParticleData", name), Value::Float(want), "{name}");
+    }
+    assert_eq!(initial("ParticleData", "collide"), Value::Bool(false));
+    assert_eq!(initial("ParticleData", "lit"), Value::Int(0));
+    assert_eq!(initial("ParticleEmitterData", "budget"), Value::Int(0));
+    assert_eq!(initial("ParticleEmitterData", "trail"), Value::Bool(false));
+}

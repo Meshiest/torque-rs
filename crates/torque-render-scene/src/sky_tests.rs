@@ -125,3 +125,21 @@ fn a_sky_without_a_material_list_is_drawn_in_its_solid_colour() {
             .all(|a| !a.label.starts_with("sky cloud"))
     );
 }
+
+/// The Sky's `windVelocity` is the particles' air, still where it sent none and held to a bound where it is hostile.
+#[test]
+fn the_skys_wind_is_the_particles_air() {
+    let world = |wind| World {
+        sky: SkyDesc {
+            wind,
+            ..Default::default()
+        },
+        map: false,
+    };
+    assert_eq!(wind(&world(Some([3.0, 0.0, -1.0]))), [3.0, 0.0, -1.0]);
+    assert_eq!(wind(&world(None)), [0.0; 3]);
+    assert_eq!(
+        wind(&world(Some([f32::NAN, 1.0e9, f32::NEG_INFINITY]))),
+        [0.0, MAX_WIND, 0.0]
+    );
+}

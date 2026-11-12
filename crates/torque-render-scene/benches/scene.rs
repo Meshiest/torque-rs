@@ -44,6 +44,7 @@ fn emitter() -> Emitter {
         textures: Vec::new(),
         animate: false,
         fps: 0,
+        extras: torque_render_scene::particles::ParticleExtras::default(),
     };
     let data = EmitterData {
         period_ms: 1,
@@ -60,6 +61,7 @@ fn emitter() -> Emitter {
         use_emitter_sizes: false,
         use_emitter_colors: false,
         particles: vec![1],
+        extras: torque_render_scene::particles::EmitterExtras::default(),
     };
     Emitter::of_data(data, vec![particle]).expect("a particle datablock")
 }

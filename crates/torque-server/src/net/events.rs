@@ -1065,6 +1065,7 @@ impl<H: GameEvents, S: GhostGame> PayloadLayer for EventLayer<H, S> {
             None => PeerKind::of(ctx.vm, false),
         };
         c.datablocks.set_plugin_classes(peer.sees_engine_classes());
+        c.datablocks.set_extensions(peer == PeerKind::Engine);
         // The datablock events are rendered from the live datablocks before the section is written (they need the `Vm`, which a
         // pack has not). A game's prepack runs first ([`DbValues::before_pack`]); that needs the `Vm`.
         for id in c

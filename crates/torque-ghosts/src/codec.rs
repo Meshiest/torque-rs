@@ -41,11 +41,15 @@ pub type R = Result<(), NetError>;
 /// width.
 pub const DATABLOCK_ID_FIRST: u32 = torque_net::gameevents::DATABLOCK_ID_FIRST;
 
-/// The id widths of a connection: the ghost index (the accept's, or the width of the ghost limit) and the datablock id.
+/// The id widths of a connection: the ghost index (the accept's, or the width of the ghost limit) and the datablock id, and
+/// whether its datablock records carry the engine protocol's extension blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetWidths {
     pub ghost_bits: u8,
     pub datablock_bits: u8,
+    /// A record of a class that has an extension block (`ParticleData`, `ParticleEmitterData`) ends with it, after TGE's bits.
+    /// Only the engine's own protocol sets it: Torque's records stay bit for bit TGE's.
+    pub extensions: bool,
 }
 
 impl NetWidths {
@@ -53,6 +57,16 @@ impl NetWidths {
         NetWidths {
             ghost_bits,
             datablock_bits,
+            extensions: false,
+        }
+    }
+
+    /// These widths with the engine protocol's record extensions `on` or off.
+    #[must_use]
+    pub const fn with_extensions(self, on: bool) -> NetWidths {
+        NetWidths {
+            extensions: on,
+            ..self
         }
     }
 

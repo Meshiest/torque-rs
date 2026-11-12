@@ -126,11 +126,20 @@ fn the_server_refuses_another_game_or_version_with_one_line() {
         ),
         (
             Connect {
-                versions: Versions { min: 3, max: 4 },
+                versions: Versions { min: 4, max: 5 },
                 ..connect()
             },
             RejectCode::Version,
-            "server speaks network version 2, you have 4",
+            "server speaks network version 3, you have 5",
+        ),
+        // A peer of framing 2, which wrote datablock records without the particle block, is refused at the connect.
+        (
+            Connect {
+                versions: Versions { min: 2, max: 2 },
+                ..connect()
+            },
+            RejectCode::Version,
+            "server speaks network version 3, you have 2",
         ),
     ];
     for facts in [LinkFacts::MEMORY, LinkFacts::PLAIN] {

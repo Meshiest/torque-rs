@@ -55,7 +55,7 @@ pub struct SpriteRecord {
 
 impl SpriteRecord {
     /// The record's bytes as the pool's `Look` holds them (160): the color keys, the size keys, the time keys, `drag, gravity,
-    /// wind, fps`, `material, frame count, 0, 0`, and the frames' buckets a byte each.
+    /// wind, fps`, `material, frame count, orient mode, 0`, and the frames' buckets a byte each.
     pub const BYTES: usize = 160;
 
     pub fn write(&self, out: &mut Vec<u8>) {
@@ -68,7 +68,7 @@ impl SpriteRecord {
         for v in [l.drag, l.gravity, l.wind, l.fps as f32] {
             f(out, v);
         }
-        for v in [self.material, self.buckets.len() as u32, 0, 0] {
+        for v in [self.material, self.buckets.len() as u32, l.orient as u32, 0] {
             u(out, v);
         }
         let mut frames = [0u8; MAX_FRAMES];
@@ -88,6 +88,8 @@ pub struct GpuSprites {
     /// The frame's steps (ms, in order, at most [`MAX_STEPS`]: the rest summed into the last).
     pub steps: Vec<u32>,
     pub clear: bool,
+    /// The air's velocity the frame's steps carry the pool's particles by (units a second).
+    pub wind: [f32; 3],
     /// Counts the frames handed over (the renderer runs each once: a frame drawn again steps nothing).
     pub generation: u64,
     /// Counts the changes of the record table (the renderer uploads it again).
@@ -153,6 +155,11 @@ impl GpuSprites {
             self.spawns.push(GpuSpawn { look: r, ..*s });
         }
         self.clear = frame.clear;
+        self.wind = if frame.wind.iter().all(|c| c.is_finite()) {
+            frame.wind
+        } else {
+            [0.0; 3]
+        };
         self.generation = self.generation.wrapping_add(1);
     }
 
@@ -361,6 +368,7 @@ fn look_key(look: &SpriteLook, lit: bool) -> Vec<u8> {
             | (u8::from(lit) << 1)
             | (u8::from(look.hidden) << 2),
     );
+    k.push(look.orient as u8);
     for &t in &look.frames {
         k.extend_from_slice(&(t as u64).to_le_bytes());
     }

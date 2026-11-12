@@ -498,7 +498,9 @@ fn read_datablock(
     if !r.read_flag()? {
         return Ok(None);
     }
-    let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits);
+    // The engine protocol's event table is the one with the datablock removal event: its records carry the extension blocks.
+    let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits)
+        .with_extensions(ctx.ids.datablock_remove().is_some());
     let (lo, hi) = widths.datablock_range();
     let id = r.read_ranged_u32(lo, hi)?;
     let class_id = r.read_bits(classes.id_bits(Kind::DataBlock))?;

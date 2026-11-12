@@ -194,7 +194,8 @@ impl EventUnpacker for Unpacker<'_> {
         if !r.read_flag()? {
             return Ok(Ev::DataBlock(None));
         }
-        let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits);
+        let widths = NetWidths::new(ctx.ghost_bits, ctx.datablock_bits)
+            .with_extensions(ctx.ids.datablock_remove().is_some());
         let (lo, hi) = widths.datablock_range();
         let id = r.read_ranged_u32(lo, hi)?;
         let class_id = r.read_bits(self.classes.id_bits(Kind::DataBlock))?;
@@ -861,4 +862,67 @@ fn a_connection_before_its_mission_chain_is_not_reached_and_gets_everything_from
             .is_some()
     );
     assert_eq!(global(&rig.s, "$updated"), "");
+}
+
+/// The datablocks of a particle effect, with the engine protocol's fields set.
+pub(crate) const SPARKS: &str = r#"
+datablock ParticleData(Sparks) {
+    lifetimeMS = 800; windCoefficient = 1; turbulence = 4; turbulenceScale = 2.5; collide = 1; bounceElasticity = 0.6;
+    bounceFriction = 0.1; lit = "Off"; softDistance = 1.5; flipbookBlend = 1; sizeByVelocity = 0.05;
+};
+datablock ParticleData(Plain) { lifetimeMS = 800; };
+datablock ParticleEmitterData(SparkEmitter) {
+    ejectionPeriodMS = 20; particles = "Sparks"; trail = 1; budget = 300; orientParticles = 1; orientOnVelocity = 1;
+};
+datablock ParticleEmitterData(PlainEmitter) { ejectionPeriodMS = 20; particles = "Plain"; };
+"#;
+
+/// Torque's protocol writes TGE's records: a client of it is sent the particle datablocks with none of the engine's fields (and
+/// reads its stream on); `datablock_remove_wire` has the engine protocol's half.
+#[test]
+fn a_client_of_torques_protocol_is_sent_particle_datablocks_without_the_engines_fields() {
+    let mut rig = Rig::new();
+    let c = rig.connected();
+    eval(&mut rig.s, SPARKS);
+    assert_eq!(rig.update(), 1);
+    rig.round(c);
+    let names = |db: &str| -> Vec<String> {
+        let id = id_of(&rig.s, db);
+        rig.clients[c].datablocks[&id]
+            .iter()
+            .map(|(n, ..)| n.clone())
+            .collect()
+    };
+    let sparks = names("Sparks");
+    assert!(sparks.iter().any(|n| n == "lifetimeMS"), "{sparks:?}");
+    for field in [
+        "turbulence",
+        "turbulenceScale",
+        "collide",
+        "bounceElasticity",
+        "bounceFriction",
+        "lit",
+        "softDistance",
+        "flipbookBlend",
+        "sizeByVelocity",
+        "ext",
+    ] {
+        assert!(!sparks.iter().any(|n| n == field), "{field} in {sparks:?}");
+    }
+    let emitter = names("SparkEmitter");
+    assert!(
+        emitter.iter().any(|n| n == "ejectionPeriodMS"),
+        "{emitter:?}"
+    );
+    assert!(
+        !emitter
+            .iter()
+            .any(|n| matches!(n.as_str(), "trail" | "budget")),
+        "{emitter:?}"
+    );
+    assert!(
+        rig.clients[c].errors.is_empty(),
+        "{:?}",
+        rig.clients[c].errors
+    );
 }

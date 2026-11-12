@@ -348,7 +348,7 @@ changes. This is harmless because a datablock is only removed once no object use
 script engine. Tests: `crates/torque-server/tests/datablock_remove.rs`.
 
 **The wire, in the engine's protocol.** The event table has one class Torque's lacks, `DataBlockRemoveEvent {id}` (the id
-`ranged` over the datablock-id range, as a `SimDataBlockEvent`'s), which made the engine framing version 2. The server posts it
+`ranged` over the datablock-id range, as a `SimDataBlockEvent`'s), which made the engine framing version 2 (version 3 added the particle datablocks' extension block, see [Network protocols](network-protocols.md)). The server posts it
 on the **ordered event queue**, behind the chain's events, so a removal can never overtake the add or an update of the same id,
 and only to the connections that were sent a body of the datablock (a connection still downloading its chain never had it, and
 the chain renders a deleted datablock as the empty event). It is posted when the datablock is **deleted**, never when it

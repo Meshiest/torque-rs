@@ -157,8 +157,8 @@ datablock_classes! {
     ItemData = "ItemData" (ItemData, pack_item_data),
     LightningData = "LightningData" (LightningData, pack_lightning_data),
     MissionMarkerData = "MissionMarkerData" (ShapeBaseData, pack_shapebase_data),
-    ParticleData = "ParticleData" (ParticleData, |v, _| pack_particle_data(v)),
-    ParticleEmitterData = "ParticleEmitterData" (ParticleEmitterData, |v, _| pack_particle_emitter_data(v)),
+    ParticleData = "ParticleData" (ParticleData, |v, w| pack_particle_data(v).for_widths(w)),
+    ParticleEmitterData = "ParticleEmitterData" (ParticleEmitterData, |v, w| pack_particle_emitter_data(v).for_widths(w)),
     ParticleEmitterNodeData = "ParticleEmitterNodeData" (ParticleEmitterNodeData, |v, _| pack_particle_emitter_node_data(v)),
     PathCameraData = "PathCameraData" (ShapeBaseData, pack_shapebase_data),
     PathedInteriorData = "PathedInteriorData" (PathedInteriorData, pack_pathed_interior_data),
@@ -343,6 +343,7 @@ impl TgeDatablockClass {
             (ExplosionData, "explosionList") => field("subExplosion"),
             (LightningData, "strikeTextureNames") => field("strikeTextures"),
             (ParticleData, "textureNameList") => field("animTexName"),
+            (ParticleData | ParticleEmitterData, "ext") => Absent,
             (ItemData | StaticShapeData, "dynamicTypeField") => field("dynamicType"),
             (DebrisData | ShapeBaseImageData | WheeledVehicleTire, "shapeName") => {
                 field("shapeFile")

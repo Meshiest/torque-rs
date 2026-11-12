@@ -31,7 +31,11 @@
 //!   slots' key, last) and at most `MAX_KEYS` (65: 64 buckets); a bucket's draw is its 16 bytes of `args`; the free slots' place
 //!   and count and the spawns dropped (the last pass's, all passes') follow at `FREE_AT`. The two-run test (`tests/gpu_particles.rs`) holds the pictures byte-identical; its CPU-path
 //!   comparison holds the step and the corners to the CPU path's.
-//! - Extension points: the wind (`Sim::wind`, still air: `HdScene`'s wind goes there), the step's new terms (turbulence,
+//! - The wind is `Sim::wind` (the frame's `GpuSprites::wind`, the Sky's): the step carries a particle by `windCoefficient` times it
+//!   on top of its own velocity (`p += (v + wind * coef) dt`, as `Emitter::step` does). A particle's ejection direction rides in
+//!   its flags above the two low bits (`pool_orient_dir`, `orient_bits`), and a look's orient mode is the third word of
+//!   its record (`SpriteRecord::write`): `vs_gpu_sprite` turns the square along the direction (mode 1) or the velocity (mode 2).
+//! - Extension points: the step's new terms (turbulence,
 //!   collision: `cs_update`, which can bind more after `args`), a look's new fields (`PoolLook` and `SpriteRecord::write`
 //!   together), a per-emitter budget (`cs_spawn` takes the free slots in request order), a sort (a pass after `cs_scatter` over a
 //!   bucket's list), trails (another vertex entry over the same lists), a fill governor (sum the buckets' areas in `cs_count`).
@@ -419,8 +423,7 @@ impl GpuParticles {
             ],
         );
         push_f32(&mut sim, &[shift[0], shift[1], shift[2], 0.0]);
-        // Still air.
-        push_f32(&mut sim, &[0.0; 4]);
+        push_f32(&mut sim, &[s.wind[0], s.wind[1], s.wind[2], 0.0]);
         push_u32(&mut sim, &steps);
         queue.write_buffer(&self.sim, 0, &sim);
         self.keys_run = keys;

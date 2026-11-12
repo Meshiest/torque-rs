@@ -4,6 +4,7 @@
 //! particles the CPU path keeps, its pictures are the same byte for byte from run to run, and they are the CPU path's within a
 //! few levels.
 
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::sync::Arc;
 
 use torque_render_core::{Frame, Gpu};
@@ -31,7 +32,7 @@ impl Assets for NoFiles {
 fn particle(inv_alpha: bool) -> ParticleData {
     ParticleData {
         drag: if inv_alpha { 0.6 } else { 0.1 },
-        wind: 0.0,
+        wind: 1.0,
         gravity: if inv_alpha { -0.15 } else { 0.8 },
         inherited_vel: 0.0,
         constant_accel: 0.0,
@@ -65,6 +66,7 @@ fn particle(inv_alpha: bool) -> ParticleData {
         textures: Vec::new(),
         animate: false,
         fps: 0,
+        extras: torque_render_scene::particles::ParticleExtras::default(),
     }
 }
 
@@ -84,6 +86,7 @@ fn emitter(inv_alpha: bool) -> Emitter {
         use_emitter_sizes: false,
         use_emitter_colors: false,
         particles: vec![1],
+        extras: torque_render_scene::particles::EmitterExtras::default(),
     };
     Emitter::of_data(data, vec![particle(inv_alpha)]).expect("an emitter")
 }
@@ -119,7 +122,7 @@ struct Run {
 
 /// The emitters run `FRAMES` frames, drawn through the pool (`gpu`) or the CPU path. None: no GPU, or one that does not run
 /// the pool.
-fn run(gpu: &Gpu, pool: bool) -> Option<Run> {
+fn run(gpu: &Gpu, pool: bool, wind: [f32; 3]) -> Option<Run> {
     let mut s = scene();
     let eye = s.frame.eye.expect("the eye");
     let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
@@ -140,12 +143,14 @@ fn run(gpu: &Gpu, pool: bool) -> Option<Run> {
         let steps = if k % 3 == 0 { 2 } else { 1 };
         let mut frame = SpriteFrame {
             steps: vec![MS; steps],
+            wind,
             ..SpriteFrame::default()
         };
         let mut set = TextureSet::new(&NoFiles);
         let mut draws = Vec::new();
         for (i, (e, label)) in emitters.iter_mut().enumerate() {
             let at = [i as f32 * 1.5 - 0.75 + t.sin() * 0.3, 4.0, 0.2];
+            e.set_wind(wind);
             for _ in 0..steps {
                 e.advance(MS, &mut live);
                 e.emit_path(at, [0.0, 0.0, 1.0], [0.0; 3], MS, &mut rng, &mut live);
@@ -189,7 +194,7 @@ fn gpu() -> Option<Gpu> {
 #[test]
 fn the_pool_draws_the_same_picture_every_run() {
     let Some(gpu) = gpu() else { return };
-    let (Some(a), Some(b)) = (run(&gpu, true), run(&gpu, true)) else {
+    let (Some(a), Some(b)) = (run(&gpu, true, [0.0; 3]), run(&gpu, true, [0.0; 3])) else {
         eprintln!("skipped: the device does not run the pool");
         return;
     };
@@ -204,11 +209,11 @@ fn the_pool_draws_the_same_picture_every_run() {
 #[test]
 fn the_pool_keeps_the_cpu_paths_particles_and_draws_them_as_it_does() {
     let Some(gpu) = gpu() else { return };
-    let Some(pool) = run(&gpu, true) else {
+    let Some(pool) = run(&gpu, true, [0.0; 3]) else {
         eprintln!("skipped: the device does not run the pool");
         return;
     };
-    let cpu = run(&gpu, false).expect("the CPU path");
+    let cpu = run(&gpu, false, [0.0; 3]).expect("the CPU path");
     assert_eq!(
         pool.live, cpu.live,
         "the particles alive after {FRAMES} frames"
@@ -320,6 +325,7 @@ fn still(look: u32, x: f32) -> GpuSpawn {
         fresh: false,
         color: [1.0, 0.6, 0.2, 0.8],
         size: 0.3,
+        orient_dir: [0.0, 0.0, 1.0],
     }
 }
 
@@ -336,6 +342,7 @@ fn look_of(frames: Vec<usize>) -> SpriteLook {
         frames,
         fps: 0,
         hidden: false,
+        orient: torque_render_scene::particles::Orient::default(),
     }
 }
 
@@ -432,4 +439,111 @@ fn looks_past_the_buckets_are_hidden_and_the_rest_drawn() {
         .position(|b| !b.drawn)
         .expect("the hidden bucket");
     assert_eq!(counts.buckets[hidden], 80 - 63);
+}
+
+/// The share of the pixels that differ by more than 4 levels in a color channel.
+fn share_differing(a: &[u8], b: &[u8]) -> f64 {
+    let off = a
+        .chunks(4)
+        .zip(b.chunks(4))
+        .filter(|(p, q)| p.iter().zip(*q).take(3).any(|(x, y)| x.abs_diff(*y) > 4))
+        .count();
+    off as f64 / (a.len() / 4) as f64
+}
+
+#[test]
+fn the_pool_carries_its_particles_by_the_wind_as_the_cpu_path_does() {
+    let Some(gpu) = gpu() else { return };
+    let wind = [1.5, 0.0, 0.0];
+    let Some(pool) = run(&gpu, true, wind) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    let cpu = run(&gpu, false, wind).expect("the CPU path");
+    assert_eq!(pool.live, cpu.live);
+    assert!(
+        share_differing(&pool.picture.rgba, &cpu.picture.rgba) < 0.002,
+        "the pool's picture is not the CPU path's under a wind"
+    );
+    // The wind moved them: the windless picture is not this one.
+    let still = run(&gpu, true, [0.0; 3]).expect("the pool");
+    assert!(
+        share_differing(&pool.picture.rgba, &still.picture.rgba) > 0.01,
+        "the wind did not move the particles"
+    );
+}
+
+/// The pixels a single particle of `look` at the middle of the scene covers, as the width and height of their box: the particle
+/// is drawn over a few frames (the pool steps it by nothing) and compared with the scene alone. None: no pool.
+fn extent(gpu: &Gpu, look: SpriteLook, spawn: GpuSpawn) -> Option<(u32, u32)> {
+    let mut s = scene();
+    let eye = s.frame.eye.expect("the eye");
+    let camera = HdCamera::new(eye, f32::from(s.frame.fov), 200.0, SIZE.0, SIZE.1);
+    let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
+    world.features.gpu_particles = true;
+    if !world.gpu_particles_on() {
+        return None;
+    }
+    s.frame.generation += 1;
+    world.upload(&s);
+    s.frame.push_sprites(&SpriteFrame {
+        looks: vec![look],
+        spawns: vec![spawn],
+        ..SpriteFrame::default()
+    });
+    for _ in 0..4 {
+        world.draw(&s, &camera, None).expect("a frame");
+    }
+    let drawn = world.read_ldr().expect("the picture").rgba;
+    let blank = run_blank(gpu).rgba;
+    let (mut lo, mut hi) = ((u32::MAX, u32::MAX), (0, 0));
+    for (i, (p, q)) in drawn.chunks(4).zip(blank.chunks(4)).enumerate() {
+        if p.iter().zip(q).take(3).any(|(x, y)| x.abs_diff(*y) > 12) {
+            let (x, y) = (i as u32 % SIZE.0, i as u32 / SIZE.0);
+            lo = (lo.0.min(x), lo.1.min(y));
+            hi = (hi.0.max(x), hi.1.max(y));
+        }
+    }
+    Some(if hi.0 < lo.0 {
+        (0, 0)
+    } else {
+        (hi.0 - lo.0 + 1, hi.1 - lo.1 + 1)
+    })
+}
+
+#[test]
+fn an_oriented_particle_lies_along_its_direction_and_one_at_rest_has_no_velocity_to_lie_along() {
+    use torque_render_scene::particles::Orient;
+    let Some(gpu) = gpu() else { return };
+    let diagonal = [FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2];
+    let mut spawn = GpuSpawn {
+        pos: [0.0, 4.0, 1.0],
+        size: 1.0,
+        color: [1.0, 0.1, 0.1, 1.0],
+        orient_dir: diagonal,
+        ..still(0, 0.0)
+    };
+    let look = |orient| SpriteLook {
+        orient,
+        ..look_of(Vec::new())
+    };
+    let Some((w, h)) = extent(&gpu, look(Orient::Billboard), spawn) else {
+        eprintln!("skipped: the device does not run the pool");
+        return;
+    };
+    assert!(w >= 10 && h >= 10, "a billboard covers {w} x {h}");
+    assert!(w.abs_diff(h) <= 2, "a billboard is square: {w} x {h}");
+    // A square turned an eighth of a turn about the line of sight has a box 1.41 times as wide and as high.
+    let (ew, eh) = extent(&gpu, look(Orient::Emission), spawn).expect("the pool");
+    let (a, b) = (f64::from(ew) / f64::from(w), f64::from(eh) / f64::from(h));
+    assert!(
+        (1.25..1.6).contains(&a) && (1.25..1.6).contains(&b),
+        "billboard {w} x {h}, along its emission direction {ew} x {eh}"
+    );
+    // Along its velocity: the same square turned to it; at rest it draws nothing.
+    spawn.vel = [2.0, 0.0, 2.0];
+    let (vw, vh) = extent(&gpu, look(Orient::Velocity), spawn).expect("the pool");
+    assert!(vw.abs_diff(ew) <= 2 && vh.abs_diff(eh) <= 2, "{vw} x {vh}");
+    spawn.vel = [0.0; 3];
+    assert_eq!(extent(&gpu, look(Orient::Velocity), spawn), Some((0, 0)));
 }

@@ -37,7 +37,10 @@
 //!   schedule's lobes). The clouds' cube and the color pyramid keep the box filter ([`capture::DownPipe`]).
 //! - The GPU particle pool (`world.rs`'s `gpu_particles` module, [`HdFeatures::gpu_particles`], off by default) keeps the CPU
 //!   path's particles and pictures: the same particles alive, the same picture every run, the CPU path's within a few levels
-//!   (`tests/gpu_particles.rs`); its draws are the forward pass's fragment entries over its own vertex entry.
+//!   (`tests/gpu_particles.rs`); its draws are the forward pass's fragment entries over its own vertex entry. The Sky's wind
+//!   (`GpuSprites::wind`, a frame's) carries its particles by their `windCoefficient` as the CPU path's does, and a look that
+//!   orients its particles turns them along their ejection direction or velocity (`tests/gpu_particles.rs`: the wind's picture
+//!   is the CPU path's, an oriented square's box is a turned one's, one at rest draws nothing).
 //! - The AO pass runs at half the internal frame's resolution at every quality (`ImageSettings::ao_full_res` asks for the whole;
 //!   `ImageSettings::ao_scale` is the one place that says which): an AO texel stands for the internal pixel at its top left block
 //!   (`ao.wgsl`, `ao_filter.wgsl`), and the forward pass upsamples the four texels about a pixel by their bilinear weights times

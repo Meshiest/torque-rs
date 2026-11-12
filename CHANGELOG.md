@@ -58,6 +58,11 @@ different.
   object once no ghost, mounted image or predictor names it, at most 256 retired at once (past that the connection ends), an
   unknown id ignored and counted, a body for a retired id refused. Torque's protocol stays byte for byte: a stock client keeps
   a removed datablock until the mission reloads.
+- `ParticleData` has the fields `turbulence`, `turbulenceScale`, `collide`, `bounceElasticity`, `bounceFriction`, `lit`,
+  `softDistance`, `flipbookBlend` and `sizeByVelocity`, and `ParticleEmitterData` has `trail` and `budget`; each defaults to
+  the behavior TGE has. They travel in a block after TGE's bits on the engine's protocol only (a Torque-protocol client is
+  sent TGE's record unchanged; the engine framing is now 3), and a client holds every value to its range as it reads it. A
+  `ParticleEmitterNodeData` that sets no `timeMultiple` now reads 1, as in TGE.
 
 #### Mods
 

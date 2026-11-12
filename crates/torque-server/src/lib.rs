@@ -5,6 +5,11 @@
 //!
 //! # Maintaining
 //!
+//! **A datablock record's extension blocks follow the peer.** `ConnDatablocks::set_extensions` is true for a peer of
+//! `PeerKind::Engine` only (every peer of a server that speaks the engine's protocol), so `NetCodecs::datablock_record` packs
+//! `ParticleData` and `ParticleEmitterData` with the engine's block after TGE's bits for that peer alone, and Torque's protocol
+//! stays bit for bit TGE's (torque-trace-hash's `wire_golden`; torque-ghosts' `torques_records_end_where_tges_do_and_the_engines_carry_the_extension_after`).
+//!
 //! A limit a pref sets is held under a cap of the engine's own, whoever wrote the pref: `$Pref::Server::MaxPlayers` never
 //! lets in more than `net::pump::MAX_PLAYERS` (`max_players_is_held_under_the_engines_cap`).
 //!

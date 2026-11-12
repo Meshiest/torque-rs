@@ -25,6 +25,7 @@
 //! [`install`]: it would make them exist everywhere. One that registers the world classes only while it runs a mission calls
 //! [`install_map_classes`] then, with its own fields on them ([`ClassExtra`]).
 
+use torque_ghosts::datablocks::effects::PARTICLE_EXT_DEFAULTS;
 use ts_vm::classes::{
     ClassExtra, ClassSpec, FieldSpec, MethodSpec, Returns, install_spec, install_spec_with,
 };
@@ -72,6 +73,11 @@ pub static LIQUID_TYPES: EnumTable = EnumTable {
         (6, "CrustyLava"),
         (7, "Quicksand"),
     ],
+};
+
+/// `ParticleData::lit`: whether the particle is lit, by the plugin's rule or always or never.
+pub static LIT_MODES: EnumTable = EnumTable {
+    entries: &[(0, "Auto"), (1, "On"), (2, "Off")],
 };
 
 /// The classes a mission's world is built of (terrain, interiors, water, the mission area and the two replicators), in
@@ -692,9 +698,19 @@ pub static CLASSES: &[ClassSpec] = &[
             field("colors", FieldType::ColorF, 4),
             field("sizes", FieldType::F32, 4),
             field("times", FieldType::F32, 4),
+            field("turbulence", FieldType::F32, 1),
+            field("turbulenceScale", FieldType::F32, 1),
+            field("collide", FieldType::Bool, 1),
+            field("bounceElasticity", FieldType::F32, 1),
+            field("bounceFriction", FieldType::F32, 1),
+            field("lit", FieldType::Enum(&LIT_MODES), 1),
+            field("softDistance", FieldType::F32, 1),
+            field("flipbookBlend", FieldType::Bool, 1),
+            field("sizeByVelocity", FieldType::F32, 1),
         ],
         methods: &[],
-        defaults: None,
+        // What a ParticleData a script made reads for the engine's fields it did not set (the others read their type's zero).
+        defaults: Some(PARTICLE_EXT_DEFAULTS),
     },
     ClassSpec {
         name: "ParticleEmitterData",
@@ -719,6 +735,8 @@ pub static CLASSES: &[ClassSpec] = &[
             field("lifetimeVarianceMS", FieldType::S32, 1),
             field("useEmitterSizes", FieldType::Bool, 1),
             field("useEmitterColors", FieldType::Bool, 1),
+            field("trail", FieldType::Bool, 1),
+            field("budget", FieldType::S32, 1),
         ],
         methods: &[],
         defaults: None,
@@ -739,7 +757,7 @@ pub static CLASSES: &[ClassSpec] = &[
         inherits_fields: true,
         fields: &[field("timeMultiple", FieldType::F32, 1)],
         methods: &[],
-        defaults: None,
+        defaults: Some(&[("timeMultiple", "1")]),
     },
     ClassSpec {
         name: "ParticleEmitterNode",

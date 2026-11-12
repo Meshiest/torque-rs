@@ -122,7 +122,7 @@
 //!
 //! **The engine protocol's event table is Torque's plus its own classes** ([`events::EventRegistry::engine`]:
 //! `DataBlockRemoveEvent`, server to client), derived on both sides by the one sort rule, so the ids of the classes after a new
-//! one move and any change to it is a new [`engine::ENGINE_FRAMING`] (the goldens of `tests/engine_golden_v2.rs` and
+//! one move and any change to it is a new [`engine::ENGINE_FRAMING`] (the goldens of `tests/engine_golden_v3.rs` and
 //! torque-trace-hash's `wire_golden` pin the current version's bytes). Torque's table ([`events::EventRegistry::torque`]) never
 //! changes: a stock peer has no class for the engine's events. A Torque class the engine codes keeps a field of
 //! [`events::EventIds`]; an engine class is answered by an `Option` the table may lack ([`events::EventIds::datablock_remove`]).

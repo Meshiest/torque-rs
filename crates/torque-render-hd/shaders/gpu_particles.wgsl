@@ -1,7 +1,7 @@
 // The GPU particle pool's frame (our own code; composed after gpu_particle_types.wgsl). One compute pass of these dispatches,
 // in order:
 //   cs_update       each live particle aged by each of the frame's steps in turn and stepped as TGE's `updateSingleParticle` steps it
-//                   (`v += (a - v drag - wind windCoefficient - (0, 0, 9.81 gravityCoefficient)) dt; p += v dt`, the color and
+//                   (`v += (a - v drag - (0, 0, 9.81 gravityCoefficient)) dt; p += (v + wind windCoefficient) dt`, the color and
 //                   size between the keys its age reached), or let go past its life; a fresh one aged only; all moved by the
 //                   render origin's shift; all let go on a clear;
 //   cs_spawn        each of the frame's spawns into a free slot of the last frame's list (in the list's order; past its end
@@ -28,7 +28,7 @@ struct Sim {
     clear: u32,
     // The render origin's move since the last frame (xyz).
     shift: vec4<f32>,
-    // The air's velocity (xyz): still air.
+    // The air's velocity (xyz), units a second.
     wind: vec4<f32>,
     // The frame's steps (ms, in order), four a vector.
     steps: array<vec4<u32>, 8>,
@@ -60,9 +60,9 @@ fn pool_step(p: ptr<function, PoolParticle>, ms: i32) {
     let dt = f32(ms) / 1000.0;
     let g = vec3<f32>(0.0, 0.0, POOL_GRAVITY * coef.y);
     let wind = sim.wind.xyz * coef.z;
-    let v = (*p).vel + ((*p).acc - (*p).vel * coef.x - wind - g) * dt;
+    let v = (*p).vel + ((*p).acc - (*p).vel * coef.x - g) * dt;
     (*p).vel = v;
-    (*p).pos = (*p).pos + v * dt;
+    (*p).pos = (*p).pos + (v + wind) * dt;
     var t = 1.0;
     if (*p).life > 0 {
         t = f32((*p).age) / f32((*p).life);

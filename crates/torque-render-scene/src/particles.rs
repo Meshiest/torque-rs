@@ -16,9 +16,10 @@
 //!   of the emitter's particle datablocks at random; the velocity plus the inherited one times `inheritedVelFactor`, the
 //!   acceleration the velocity times `constantAcceleration`, the life `lifetimeMS +- lifetimeVarianceMS`, the spin `spinSpeed`
 //!   plus a random `spinRandomMin..Max`.
-//! - **A step** (`updateSingleParticle`): `v += (a - v * drag - wind * windCoefficient - (0, 0, 9.81 * gravityCoefficient)) *
-//!   dt`, `p += v * dt`; the colour and size between the keys the age has reached (the emitter's own colours and sizes with
-//!   `useEmitterColors` / `useEmitterSizes`), the last key's past the last time. The particle a call made is not stepped again
+//! - **A step** (`updateSingleParticle`): `v += (a - v * drag - (0, 0, 9.81 * gravityCoefficient)) * dt`, `p += (v + wind *
+//!   windCoefficient) * dt` (the air carries a particle at `windCoefficient` of its velocity: [`Emitter::set_wind`], the Sky's);
+//!   the colour and size between the keys the age has reached (the emitter's own colours and sizes with `useEmitterColors` /
+//!   `useEmitterSizes`), the last key's past the last time. The particle a call made is not stepped again
 //!   by the next frame.
 //! - **Drawn** (`ParticleEmitter::renderObject`, `renderBillboardParticle`): textured (`GL_MODULATE`, clamped), blended
 //!   `SRC_ALPHA, ONE` unless the particle datablock has `useInvAlpha` (or the emitter's own colours ask for it: [`Emitter::set_colors`]),
@@ -27,9 +28,10 @@
 //!   its list at `framesPerSec`).
 //!
 //! **Approximations**: the random numbers are the emitters' own ([`Rng`], TGE's `MRandomLCG` step; TGE's particle engine draws
-//! from one file-wide `sgRandom`); the wind is still air; an emitter's particles sort with the frame's translucent draws as one,
-//! at its centre; `orientParticles` draws billboards too. **Caps:** at most [`MAX_EMITTERS`] emitters (an [`Emitters`] set) and
-//! [`MAX_PARTICLES`] particles in all, a burst of [`MAX_BURST`] (a server's datablocks name the counts).
+//! from one file-wide `sgRandom`); an emitter's particles sort with the frame's translucent draws as one, at its centre; the CPU
+//! path draws billboards where an emitter says `orientParticles` (the GPU pool turns them: [`Orient`]). **Caps:** at most
+//! [`MAX_EMITTERS`] emitters (an [`Emitters`] set) and [`MAX_PARTICLES`] particles in all, a burst of [`MAX_BURST`] (a server's
+//! datablocks name the counts).
 //!
 //! The datablocks come through [`ParticleDatablocks`] (TGE's client set reads its records' fields).
 //!
@@ -54,9 +56,12 @@ use crate::math::{Mat, unit_over};
 use crate::textures::TextureSet;
 use crate::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
 
+#[path = "particles_extras.rs"]
+mod extras;
 #[path = "particles_gpu.rs"]
 mod gpu;
-pub use gpu::{GpuSpawn, SPRITE_SAMPLER, SpriteFrame, SpriteLook};
+pub use extras::{EmitterExtras, Lit, Orient, ParticleExtras};
+pub use gpu::{GpuSpawn, SPRITE_SAMPLER, SpriteFrame, SpriteLook, orient_bits};
 
 /// The most texture names [`take_missing_textures`] keeps between takes.
 const MAX_MISSING_NAMES: usize = 64;
@@ -102,6 +107,8 @@ pub struct ParticleData {
     pub textures: Vec<String>,
     pub animate: bool,
     pub fps: i32,
+    /// The engine protocol's fields beyond TGE's.
+    pub extras: ParticleExtras,
 }
 
 /// A `ParticleEmitterData` as the client holds it.
@@ -121,6 +128,8 @@ pub struct EmitterData {
     pub use_emitter_sizes: bool,
     pub use_emitter_colors: bool,
     pub particles: Vec<u32>,
+    /// The orientation flags and the engine protocol's fields beyond TGE's.
+    pub extras: EmitterExtras,
 }
 
 /// What the emitters read of a client's datablocks: its `ParticleData` and `ParticleEmitterData` as the client holds them
@@ -135,6 +144,13 @@ pub trait ParticleDatablocks {
         [0.0, 1.0, 0.0]
     }
 }
+
+/// What a client holds a particle datablock's unbounded floats to: `windCoefficient` (the share of the air's speed that carries
+/// the particle), `constantAcceleration` (a multiple of its first velocity) and `spinSpeed` (degrees a second; TGE refuses a
+/// datablock outside `-10000..=10000`).
+pub const MAX_WIND_COEFFICIENT: f32 = 100.0;
+pub const MAX_CONSTANT_ACCELERATION: f32 = 100.0;
+pub const MAX_SPIN_SPEED: f32 = 10_000.0;
 
 /// TGE's `MaxParticleSize`: a size key travels as a fraction of it.
 const MAX_PARTICLE_SIZE: f32 = 50.0;
@@ -200,14 +216,15 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             .collect();
         Some(ParticleData {
             drag: unit("dragCoefficient", 0, 10).map_or(0.0, |v| v * 5.0),
-            wind: float("windCoefficient", 1.0),
+            wind: float("windCoefficient", 1.0).clamp(-MAX_WIND_COEFFICIENT, MAX_WIND_COEFFICIENT),
             // `readSignedFloat(12) * 10`.
             gravity: unit("gravityCoefficient", 0, 12).map_or(0.0, |v| (v * 2.0 - 1.0) * 10.0),
             inherited_vel: unit("inheritedVelFactor", 0, 9).unwrap_or(0.0),
-            constant_accel: float("constantAcceleration", 0.0),
+            constant_accel: float("constantAcceleration", 0.0)
+                .clamp(-MAX_CONSTANT_ACCELERATION, MAX_CONSTANT_ACCELERATION),
             lifetime_ms: ms("lifetimeMS", 1000),
             lifetime_variance_ms: ms("lifetimeVarianceMS", 0),
-            spin_speed: float("spinSpeed", 0.0),
+            spin_speed: float("spinSpeed", 0.0).clamp(-MAX_SPIN_SPEED, MAX_SPIN_SPEED),
             spin_min: spin(0),
             spin_max: spin(1),
             inv_alpha: flag("useInvAlpha"),
@@ -221,6 +238,7 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
                 f @ 0..=200 => f as i32,
                 _ => 20,
             },
+            extras: ParticleExtras::read(db),
         })
     }
 
@@ -269,6 +287,7 @@ impl ParticleDatablocks for ClientWorld<TgeClientSet> {
             use_emitter_sizes: flag("useEmitterSizes"),
             use_emitter_colors: flag("useEmitterColors"),
             particles,
+            extras: EmitterExtras::read(db),
         })
     }
 }
@@ -309,6 +328,9 @@ pub struct Particle {
     acc: [f32; 3],
     pub life_ms: i32,
     pub age_ms: i32,
+    /// The unit direction it was ejected along (`orientDir`: what an emitter that orients its particles without their velocity
+    /// turns them to).
+    pub orient_dir: [f32; 3],
     /// The particle datablock (an index into the emitter's list).
     data: usize,
     pub color: [f32; 4],
@@ -351,6 +373,8 @@ pub struct Emitter {
     /// The emitter's own colours ([`Emitter::set_colors`]) and whether they draw blended by alpha.
     colors: Option<[[f32; 4]; 4]>,
     colors_inv_alpha: bool,
+    /// The air's velocity (units a second): a particle is carried by `windCoefficient` of it ([`Emitter::set_wind`]).
+    wind: [f32; 3],
     /// No more particles: removed once the last one died (`deleteWhenEmpty`).
     pub dead: bool,
 }
@@ -384,6 +408,7 @@ impl Emitter {
             near_z_cross: [0.0, 1.0, 0.0],
             colors: None,
             colors_inv_alpha: false,
+            wind: [0.0; 3],
             dead: false,
         })
     }
@@ -392,6 +417,20 @@ impl Emitter {
     /// pause).
     pub fn break_path(&mut self) {
         self.last = None;
+    }
+
+    /// The air's velocity the particles of this emitter are carried by.
+    pub fn wind(&self) -> [f32; 3] {
+        self.wind
+    }
+
+    /// The air's velocity the particles of this emitter are carried by from now on (a velocity that is not finite is still air).
+    pub fn set_wind(&mut self, wind: [f32; 3]) {
+        self.wind = if wind.iter().all(|c| c.is_finite()) {
+            wind
+        } else {
+            [0.0; 3]
+        };
     }
 
     /// The emitter's own colour keys (`ParticleEmitter::setColors`), and whether they draw blended by alpha
@@ -437,6 +476,7 @@ impl Emitter {
             acc: acc.to_array(),
             life_ms: life.max(0),
             age_ms: 0,
+            orient_dir: dir.to_array(),
             data: which,
             color: p.colors[0],
             size: p.sizes[0],
@@ -451,11 +491,12 @@ impl Emitter {
     fn step(&self, q: &mut Particle, ms: i32) {
         let p = &self.particle_data[q.data.min(self.particle_data.len() - 1)];
         let dt = ms as f32 / 1000.0;
-        // Still air: the wind term is 0.
         let g = Vec3::new(0.0, 0.0, GRAVITY * p.gravity);
         let vel = Vec3::from(q.vel) + (Vec3::from(q.acc) - Vec3::from(q.vel) * p.drag - g) * dt;
         q.vel = vel.to_array();
-        q.pos = (Vec3::from(q.pos) + vel * dt).to_array();
+        // The air carries the particle: `windCoefficient` of its velocity on top of the particle's own.
+        let carried = vel + Vec3::from(self.wind) * p.wind;
+        q.pos = (Vec3::from(q.pos) + carried * dt).to_array();
         let t = if q.life_ms > 0 {
             q.age_ms as f32 / q.life_ms as f32
         } else {
@@ -533,7 +574,7 @@ impl Emitter {
             self.clock_ms += self.next_ms;
             let (at, at_axis, at_vel) = along(done as f32 / ms as f32);
             if let Some(i) = self.add_particle(at, at_axis, at_vel, axisx, rng, live) {
-                self.run_new(i, ms - done);
+                self.run_new(i, ms - done, live);
             }
             self.next_ms = 0;
         }
@@ -555,7 +596,7 @@ impl Emitter {
             if let Some(i) = self.add_particle(at, at_axis, at_vel, axisx, rng, live)
                 && !self.data.override_advance
             {
-                self.run_new(i, ms - done);
+                self.run_new(i, ms - done, live);
             }
         }
         self.last = Some((end, axis, vel));
@@ -579,13 +620,15 @@ impl Emitter {
         self.emit_path(to, axis, vel, ms, rng, live);
     }
 
-    /// A new particle run for the time left of its call (dropped when that outlives it), not stepped again by the next frame.
-    fn run_new(&mut self, i: usize, left: i32) {
+    /// A new particle run for the time left of its call (dropped, and taken off `live`, when that outlives it), not stepped again
+    /// by the next frame.
+    fn run_new(&mut self, i: usize, left: i32, live: &mut usize) {
         let Some(mut q) = self.particles.get(i).cloned() else {
             return;
         };
         if left > q.life_ms {
             self.particles.remove(i);
+            *live = live.saturating_sub(1);
             return;
         }
         q.age_ms = left;
@@ -767,6 +810,7 @@ impl Emitter {
 pub struct Emitters {
     map: BTreeMap<usize, Emitter>,
     next_id: usize,
+    wind: [f32; 3],
 }
 
 impl Default for Emitters {
@@ -774,20 +818,28 @@ impl Default for Emitters {
         Emitters {
             map: BTreeMap::new(),
             next_id: 1,
+            wind: [0.0; 3],
         }
     }
 }
 
 impl Emitters {
     /// Adds `e`: its id, or `None` (`e` dropped) when [`MAX_EMITTERS`] run.
-    pub fn add(&mut self, e: Emitter) -> Option<usize> {
+    pub fn add(&mut self, mut e: Emitter) -> Option<usize> {
         if self.map.len() >= MAX_EMITTERS {
             return None;
         }
+        e.set_wind(self.wind);
         let id = self.next_id;
         self.next_id += 1;
         self.map.insert(id, e);
         Some(id)
+    }
+
+    /// The air's velocity every emitter of the set, and every one added later, is carried by ([`Emitter::set_wind`]).
+    pub fn set_wind(&mut self, wind: [f32; 3]) {
+        self.wind = wind;
+        self.map.values_mut().for_each(|e| e.set_wind(wind));
     }
 
     pub fn get(&self, id: &usize) -> Option<&Emitter> {

@@ -478,6 +478,8 @@ pub struct ConnDatablocks {
     done_message: Option<u8>,
     /// The connection may be sent the plugins' datablock classes ([`set_plugin_classes`](Self::set_plugin_classes)).
     plugin_classes: bool,
+    /// Its datablock records carry the engine protocol's extension blocks ([`set_extensions`](Self::set_extensions)).
+    extensions: bool,
 }
 
 /// What a `transmitDataBlocks` call did.
@@ -541,6 +543,12 @@ impl ConnDatablocks {
     /// datablock the client has, so a TGE client is never sent a class id it does not know.
     pub fn set_plugin_classes(&mut self, on: bool) {
         self.plugin_classes = on;
+    }
+
+    /// Whether the connection's peer reads the engine protocol's extension blocks at the end of a datablock record (every peer of
+    /// a server that speaks the engine's protocol does; one of Torque's protocol never does).
+    pub fn set_extensions(&mut self, on: bool) {
+        self.extensions = on;
     }
 
     /// The events a chain keeps queued or unacked.
@@ -1053,7 +1061,8 @@ impl ConnDatablocks {
             values,
             affine: codecs.affine_fn(),
         };
-        let Some(record) = codecs.datablock_record(class, cell.id, &view, values) else {
+        let Some(record) = codecs.datablock_record(class, cell.id, &view, values, self.extensions)
+        else {
             return none;
         };
         let entries = record.entries();

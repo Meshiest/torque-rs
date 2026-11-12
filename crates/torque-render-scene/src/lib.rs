@@ -10,6 +10,22 @@
 //! # Maintaining
 //!
 //! Rules a change must keep, each guarded by a test:
+//! - The engine protocol's particle fields ([`particles::ParticleExtras`], [`particles::EmitterExtras`]) are read from the client's
+//!   datablock as torque-ghosts' extension block made it and held to its ranges again (`hostile_engine_fields_are_held_to_their_ranges_as_they_are_read`);
+//!   a datablock that sent none reads the defaults that leave TGE's look and motion. A new field is added in torque-ghosts'
+//!   `effects.rs` first, then in `particles_extras.rs` (the reader) and in whatever draws or steps with it.
+//! - The air carries a particle: `p += (v + wind * windCoefficient) dt`, in [`particles::Emitter::set_wind`] (a set's
+//!   [`particles::Emitters::set_wind`]) and in the pool's step, the Sky's [`sky::wind`] held to [`sky::MAX_WIND`]
+//!   (`the_wind_carries_a_dragless_particle_its_coefficient_of_the_winds_speed`; torque-render-hd's
+//!   `the_pool_carries_its_particles_by_the_wind_as_the_cpu_path_does`).
+//! - A ghosted `ParticleEmitterNode` emits (`emitter_nodes`, run by torque-app's `GhostScene`): `1000 / ejectionPeriodMS`
+//!   particles a second at any frame rate, `timeMultiple` (an unset one 1, held to `0.01..=100`) scaling its clock, at most
+//!   [`emitter_nodes::MAX_NODES`] nodes making at most [`emitter_nodes::MAX_SPAWNS_PER_NODE`] particles each and
+//!   [`emitter_nodes::MAX_SPAWNS_PER_FRAME`] together a frame, a node whose pose is not finite emitting nothing (`a_ghosted_emitter_node_spawns_a_request_every_ejection_period`,
+//!   `hostile_and_missing_nodes_make_little_and_a_gone_node_is_forgotten`, `a_frames_particles_are_capped_a_node_and_in_all`,
+//!   `nodes_whose_particles_die_at_birth_do_not_leak_the_live_count`). A datablock's `windCoefficient`, `constantAcceleration` and
+//!   `spinSpeed` are held to [`particles::MAX_WIND_COEFFICIENT`], [`particles::MAX_CONSTANT_ACCELERATION`] and
+//!   [`particles::MAX_SPIN_SPEED`] as they are read (`hostile_wind_acceleration_and_spin_are_held_to_their_ranges`).
 //! - A frame's moving shapes under [`moving::with_budget`] build at most [`moving::ShapeBudget::max_vertices`], the nearest first
 //!   (the control object always), the rest lowered or left out and counted
 //!   (`a_frames_moving_shapes_stay_within_the_vertex_budget_nearest_first`).
@@ -62,6 +78,7 @@
 
 pub mod camera;
 pub mod decals;
+pub mod emitter_nodes;
 pub mod env;
 pub mod first_person;
 pub mod flare;

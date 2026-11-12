@@ -13,6 +13,13 @@
 //!
 //! # Maintaining
 //!
+//! **Fields beyond TGE's** (`ParticleData`'s `turbulence`, `turbulenceScale`, `collide`, `bounceElasticity`, `bounceFriction`,
+//! `lit`, `softDistance`, `flipbookBlend`, `sizeByVelocity`; `ParticleEmitterData`'s `trail`, `budget`) are script fields in
+//! `specs.rs` like the others, their defaults in the class's `defaults` (what a datablock a script made reads for a field it
+//! did not set; they are the defaults that leave TGE's look and motion), and they reach a client on the engine's protocol only
+//! (torque-ghosts' extension blocks). A new one is added in `specs.rs`, in torque-ghosts' `effects.rs` (the block, its range, its
+//! packer) and in torque-render-scene's `particles_extras.rs`; `just script-reference` writes the reference again.
+//!
 //! **Speed.** A server tick builds a collision phase for every Player, Item and vehicle. Rules a change must keep; the bench
 //! that shows them is torque-trace-hash's `server` (64 AIPlayers standing among and walking beside 1,024 props, with the
 //! allocations a tick it prints), and torque-vehicle's `tick` for the mover itself:

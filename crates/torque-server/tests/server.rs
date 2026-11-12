@@ -228,7 +228,7 @@ fn torques_codecs_ghost_tge_classes_by_their_constructors_flags_and_write_tge_da
     assert_eq!(codecs.datablock_class("ScriptObject"), None);
     let values = torque_game::dbvalues::DbValues::default();
     let record = codecs
-        .datablock_record("AudioDescription", 40, &LoudView, &values)
+        .datablock_record("AudioDescription", 40, &LoudView, &values, false)
         .expect("TGE's AudioDescription has a record");
     let bits = |record: &dyn torque_server::net::datablock::DatablockRecord| {
         let mut w = BitWriter::new();
@@ -238,12 +238,12 @@ fn torques_codecs_ghost_tge_classes_by_their_constructors_flags_and_write_tge_da
         w.into_bytes()
     };
     let quiet = codecs
-        .datablock_record("AudioDescription", 40, &NullView, &values)
+        .datablock_record("AudioDescription", 40, &NullView, &values, false)
         .expect("a record of the defaults");
     assert_ne!(bits(&*record), bits(&*quiet), "the volume is in the record");
     assert!(
         codecs
-            .datablock_record("ScriptObject", 41, &LoudView, &values)
+            .datablock_record("ScriptObject", 41, &LoudView, &values, false)
             .is_none()
     );
 }

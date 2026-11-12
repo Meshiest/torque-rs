@@ -271,6 +271,14 @@ A local connection (the listen server's own client, `connectLocal`) stays in pro
 list's answers stay TGE's for now, on the QUIC endpoint's port in the engine's protocol. The plugins' class ids, the move layout and the ghost records are the same in both; they may
 change in the engine's protocol later with a new framing version, never in Torque's.
 
+## Datablock records in the engine's protocol
+
+A datablock record is Torque's `packData` bit for bit, and in the engine's protocol a class may end it with a block TGE's lacks,
+behind a presence flag: `ParticleData` and `ParticleEmitterData` carry the fields Torque has no name for (`turbulence`,
+`collide`, `lit`, `softDistance`, `sizeByVelocity`, `trail`, `budget` and the rest). The block is why the engine framing is
+version 3: a peer of framing 2 reads those records without it, so the connect refuses it ("server speaks network version 3")
+instead of letting its stream drift. A reader holds every value of a block to its range as it reads it.
+
 ## Determinism
 
 `just trace-hash` prints each scenario once per protocol: `figure tge ...` and `figure engine ...`. Every line is pinned in

@@ -384,3 +384,282 @@ fn splash_data_sends_its_colours_as_bytes() {
         96 + 4 * 32 + 32 + 32 + 9 * 32 + 1 + db() + 3 + 128 + 128 + 2 * EMPTY,
     );
 }
+
+// The engine protocol's extension blocks.
+
+use crate::datablocks::effects::{
+    EmitterExt, LIT_AUTO, MAX_EMITTER_BUDGET, MAX_SIZE_BY_VELOCITY, MAX_SOFT_DISTANCE,
+    MAX_TURBULENCE, ParticleExt, TURBULENCE_SCALE_RANGE,
+};
+
+fn with_extensions() -> NetWidths {
+    widths().with_extensions(true)
+}
+
+/// A view of a ParticleData whose engine fields are not their defaults.
+fn particle_ext_view() -> MapView {
+    floats(&[
+        ("turbulence", 4.0),
+        ("turbulenceScale", 2.5),
+        ("bounceElasticity", 0.6),
+        ("bounceFriction", 0.1),
+        ("softDistance", 1.5),
+        ("sizeByVelocity", 0.05),
+    ])
+    .with("collide", 0, Value::Bool(true))
+    .with("flipbookBlend", 0, Value::Bool(true))
+    .with("lit", 0, Value::Int(2))
+}
+
+/// `rec` written in `widths`: its bytes and bit count.
+fn written<L: Layout>(rec: &L, widths: NetWidths) -> (Vec<u8>, usize) {
+    let mut w = writer();
+    encode(rec, &mut w, &table(), widths).unwrap();
+    let bits = w.bits();
+    (w.into_bytes(), bits)
+}
+
+fn read<L: Layout>(
+    bytes: &[u8],
+    bits: usize,
+    widths: NetWidths,
+) -> Result<L, torque_net::NetError> {
+    decode(
+        &mut reader(bytes, bits),
+        &table(),
+        &mut free_charge(),
+        &ReadCtx::new(widths, true),
+    )
+}
+
+/// `rec` written in the extended widths with the first field logged as `name` replaced by `value` (its bits, low first), and
+/// what a reader makes of it.
+fn hostile<L: Layout + Debug>(rec: &L, name: &str, value: u32) -> L {
+    let t = table();
+    let mut w = writer();
+    let mut c = Enc::logging(&mut w, &t, with_extensions());
+    rec.clone().layout(&mut c).unwrap();
+    let log = c.into_log();
+    let at: usize = log
+        .iter()
+        .take_while(|(n, _)| *n != name)
+        .map(|(_, w)| w)
+        .sum();
+    let width = log
+        .iter()
+        .find(|(n, _)| *n == name)
+        .expect("a logged field")
+        .1;
+    let (bytes, bits) = written(rec, with_extensions());
+    let mut r = reader(&bytes, bits);
+    let mut flags: Vec<bool> = (0..bits).map(|_| r.read_flag().unwrap()).collect();
+    for k in 0..width {
+        flags[at + k] = (value >> k) & 1 == 1;
+    }
+    let mut out = writer();
+    flags.into_iter().for_each(|b| out.write_flag(b));
+    read(&out.into_bytes(), bits, with_extensions()).unwrap_or_else(|e| panic!("{name}: {e:?}"))
+}
+
+#[test]
+fn torques_records_end_where_tges_do_and_the_engines_carry_the_extension_after() {
+    let rec = pack_particle_data(&particle_ext_view());
+    assert!(rec.ext.is_some());
+    // Torque's widths: the record is TGE's bit for bit, the block not written.
+    let plain = ParticleData {
+        ext: None,
+        ..rec.clone()
+    };
+    assert_eq!(written(&rec, widths()), written(&plain, widths()));
+    let (bytes, bits) = written(&rec, widths());
+    let back: ParticleData = read(&bytes, bits, widths()).unwrap();
+    assert_eq!(back, plain);
+    // The engine's: TGE's bits, then a presence flag and 196 bits of block (six floats of 32, two flags and a 2-bit enum).
+    let (bytes, bits) = written(&rec, with_extensions());
+    assert_eq!(bits, bit_total(&plain, &table()) + 1 + 196);
+    let back: ParticleData = read(&bytes, bits, with_extensions()).unwrap();
+    assert_eq!(back, rec);
+    // Every field at its default is the flag alone, and a datablock with no value for them is that.
+    let defaults = pack_particle_data(&particle_defaults());
+    assert_eq!(defaults.ext, None);
+    assert_eq!(
+        written(&defaults, with_extensions()).1,
+        bit_total(&defaults, &table()) + 1
+    );
+    let emitter = pack_particle_emitter_data(
+        &floats(&[])
+            .with("trail", 0, Value::Bool(true))
+            .with("budget", 0, Value::Int(500)),
+    );
+    assert_eq!(
+        emitter.ext,
+        Some(EmitterExt {
+            trail: true,
+            budget: 500
+        })
+    );
+    let (bytes, bits) = written(&emitter, with_extensions());
+    let plain = ParticleEmitterData {
+        ext: None,
+        ..emitter.clone()
+    };
+    assert_eq!(bits, bit_total(&plain, &table()) + 1 + 1 + 18);
+    assert_eq!(
+        read::<ParticleEmitterData>(&bytes, bits, with_extensions()).unwrap(),
+        emitter
+    );
+    let (bytes, bits) = written(&emitter, widths());
+    assert_eq!((bytes, bits), written(&plain, widths()));
+}
+
+#[test]
+fn a_hostile_value_of_each_particle_field_is_held_to_its_range() {
+    let rec = pack_particle_data(&particle_ext_view());
+    let ext = |name: &str, bits: u32| hostile(&rec, name, bits).ext.expect("the block");
+    let (nan, inf) = (f32::NAN.to_bits(), f32::INFINITY.to_bits());
+    let neg = (-3.0f32).to_bits();
+    let huge = 1.0e30f32.to_bits();
+    let d = ParticleExt::default();
+    // turbulence
+    assert_eq!(ext("turbulence", nan).turbulence, d.turbulence);
+    assert_eq!(ext("turbulence", inf).turbulence, d.turbulence);
+    assert_eq!(ext("turbulence", neg).turbulence.get(), 0.0);
+    assert_eq!(ext("turbulence", huge).turbulence.get(), MAX_TURBULENCE);
+    // turbulenceScale
+    assert_eq!(
+        ext("turbulenceScale", nan).turbulence_scale,
+        d.turbulence_scale
+    );
+    assert_eq!(
+        ext("turbulenceScale", 0).turbulence_scale.get(),
+        TURBULENCE_SCALE_RANGE.0
+    );
+    assert_eq!(
+        ext("turbulenceScale", neg).turbulence_scale.get(),
+        TURBULENCE_SCALE_RANGE.0
+    );
+    assert_eq!(
+        ext("turbulenceScale", huge).turbulence_scale.get(),
+        TURBULENCE_SCALE_RANGE.1
+    );
+    // bounceElasticity and bounceFriction
+    assert_eq!(
+        ext("bounceElasticity", nan).bounce_elasticity,
+        d.bounce_elasticity
+    );
+    assert_eq!(ext("bounceElasticity", neg).bounce_elasticity.get(), 0.0);
+    assert_eq!(ext("bounceElasticity", huge).bounce_elasticity.get(), 1.0);
+    assert_eq!(
+        ext("bounceFriction", inf).bounce_friction,
+        d.bounce_friction
+    );
+    assert_eq!(ext("bounceFriction", neg).bounce_friction.get(), 0.0);
+    assert_eq!(ext("bounceFriction", huge).bounce_friction.get(), 1.0);
+    // softDistance
+    assert_eq!(ext("softDistance", nan).soft_distance, d.soft_distance);
+    assert_eq!(ext("softDistance", neg).soft_distance.get(), 0.0);
+    assert_eq!(
+        ext("softDistance", huge).soft_distance.get(),
+        MAX_SOFT_DISTANCE
+    );
+    // sizeByVelocity
+    assert_eq!(
+        ext("sizeByVelocity", nan).size_by_velocity,
+        d.size_by_velocity
+    );
+    assert_eq!(ext("sizeByVelocity", neg).size_by_velocity.get(), 0.0);
+    assert_eq!(
+        ext("sizeByVelocity", huge).size_by_velocity.get(),
+        MAX_SIZE_BY_VELOCITY
+    );
+    // lit: the 2-bit value past the enum is the default.
+    assert_eq!(ext("lit", 3).lit, LIT_AUTO);
+    assert_eq!(ext("lit", 1).lit, 1);
+    // The others of the record are as sent.
+    let other = ext("turbulence", huge);
+    assert!(other.collide && other.flipbook_blend);
+    assert_eq!(other.soft_distance.get(), 1.5);
+}
+
+#[test]
+fn a_hostile_emitter_budget_is_held_to_its_cap_and_the_writer_holds_to_it_too() {
+    let rec = pack_particle_emitter_data(&floats(&[]).with("trail", 0, Value::Bool(true)).with(
+        "budget",
+        0,
+        Value::Int(10),
+    ));
+    let all_ones = (1u32 << 18) - 1;
+    assert!(all_ones > MAX_EMITTER_BUDGET);
+    let back = hostile(&rec, "budget", all_ones).ext.expect("the block");
+    assert_eq!(
+        back,
+        EmitterExt {
+            trail: true,
+            budget: MAX_EMITTER_BUDGET
+        }
+    );
+    assert_eq!(
+        hostile(&rec, "budget", MAX_EMITTER_BUDGET + 1)
+            .ext
+            .unwrap()
+            .budget,
+        MAX_EMITTER_BUDGET
+    );
+    // A packer given a value past the cap, or one that is not finite, sends one that is not.
+    let packed = pack_particle_emitter_data(&floats(&[]).with("trail", 0, Value::Bool(true)).with(
+        "budget",
+        0,
+        Value::Int(i64::MAX),
+    ));
+    assert_eq!(packed.ext.unwrap().budget, MAX_EMITTER_BUDGET);
+    let packed = pack_particle_data(
+        &floats(&[("turbulence", f32::NAN), ("sizeByVelocity", f32::INFINITY)]).with(
+            "collide",
+            0,
+            Value::Bool(true),
+        ),
+    );
+    let ext = packed.ext.expect("collide is not a default");
+    assert_eq!(
+        (ext.turbulence.get(), ext.size_by_velocity.get()),
+        (0.0, 0.0)
+    );
+    // A record built by hand with values out of range is written in range.
+    let wild = ParticleData {
+        ext: Some(ParticleExt {
+            turbulence: F32::new(f32::NAN),
+            lit: 9,
+            ..ParticleExt::default()
+        }),
+        ..ParticleData::default()
+    };
+    let (bytes, bits) = written(&wild, with_extensions());
+    let back: ParticleData = read(&bytes, bits, with_extensions()).unwrap();
+    assert_eq!(back.ext, Some(ParticleExt::default()));
+}
+
+/// The text a script field's default is written in is the record's default.
+#[test]
+fn the_scripts_defaults_are_the_records_defaults() {
+    let d = ParticleExt::default();
+    let text = |name: &str| -> f32 {
+        crate::datablocks::effects::PARTICLE_EXT_DEFAULTS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("no default for {name}"))
+            .1
+            .parse()
+            .unwrap()
+    };
+    assert_eq!(text("turbulenceScale"), d.turbulence_scale.get());
+    assert_eq!(text("bounceElasticity"), d.bounce_elasticity.get());
+    assert_eq!(text("bounceFriction"), d.bounce_friction.get());
+    assert_eq!(text("softDistance"), d.soft_distance.get());
+    // And they are all the non-zero ones: every other field of the block defaults to 0 or false.
+    assert_eq!(crate::datablocks::effects::PARTICLE_EXT_DEFAULTS.len(), 4);
+    assert_eq!(
+        (d.turbulence.get(), d.size_by_velocity.get(), d.lit),
+        (0.0, 0.0, LIT_AUTO)
+    );
+    assert!(!d.collide && !d.flipbook_blend);
+}

@@ -566,6 +566,7 @@ fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
         frames: vec![texture],
         fps: 0,
         hidden: false,
+        orient: torque_render_scene::particles::Orient::default(),
     };
     let spawns = age
         .map(puffs)
@@ -587,6 +588,7 @@ fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
                 f32::from((alpha * 255.0) as u8) / 255.0,
             ],
             size: 2.0 * half,
+            orient_dir: [0.0, 0.0, 1.0],
         })
         .collect();
     SpriteFrame {
@@ -594,6 +596,7 @@ fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
         spawns,
         steps: Vec::new(),
         clear: true,
+        wind: [0.0; 3],
     }
 }
 

@@ -33,6 +33,7 @@ use glam::Vec3;
 
 use torque_ghost_world::images::ImageRecoil;
 use torque_render_scene::decals::{DecalManager, Triangle, projectile_decal};
+use torque_render_scene::emitter_nodes::EmitterNodes;
 use torque_render_scene::hd::DynamicObject;
 use torque_render_scene::images::{HeldMotion, ImageClock};
 use torque_render_scene::math::Mat;
@@ -918,6 +919,10 @@ pub struct GhostScene<S = Plain> {
     eye_pose: EyePose,
     /// The dust the vehicles the client runs kick up ([`VehicleDust`]: TGE's tire and lift-off dust).
     pub dust: VehicleDust,
+    /// The particles of the `ParticleEmitterNode`s the server ghosts ([`EmitterNodes`]).
+    nodes: EmitterNodes,
+    /// The air's velocity the Sky gives the particles (units a second), as the last frame found it.
+    wind: [f32; 3],
     /// The tire tracks they leave, when the game asks for them ([`GhostScene::set_tire_tracks`]).
     pub tracks: Option<TireTracks>,
     /// The datablocks whose shapes and textures were loaded ([`GhostScene::preload`]), each with the generation it was loaded
@@ -972,6 +977,8 @@ impl<S: GhostStyle> GhostScene<S> {
             resting: Default::default(),
             eye_pose: EyePose::default(),
             dust: VehicleDust::default(),
+            nodes: EmitterNodes::default(),
+            wind: [0.0; 3],
             tracks: None,
             preloaded: BTreeMap::new(),
             preloaded_epoch: 0,
@@ -1023,6 +1030,8 @@ impl<S: GhostStyle> GhostScene<S> {
             resting: _,
             eye_pose: self.eye_pose,
             dust: _,
+            nodes: self.nodes,
+            wind: self.wind,
             tracks: _,
             preloaded: self.preloaded,
             preloaded_epoch: self.preloaded_epoch,
@@ -1153,6 +1162,8 @@ impl<S: GhostStyle> GhostScene<S> {
         let dt = input.dt.max(0.0);
         self.preload(assets, &world.records);
         self.forget_reborn(&world.records.birth_order);
+        self.apply_wind(&world.records);
+        self.nodes.update(&world.records, dt);
         self.player_inputs(world, input.ghosts);
         self.place_players(assets, world, input.fov, dt);
         self.update_images(assets, &world.records, dt);
@@ -1256,6 +1267,33 @@ impl<S: GhostStyle> GhostScene<S> {
         }
     }
 
+    /// The frame's hand-over to the GPU particle pool before any particle is put in it: the trails' steps since the last one, the
+    /// clear a forgotten connection asks for, and the Sky's wind.
+    fn take_sprite_frame(&mut self) -> SpriteFrame {
+        SpriteFrame {
+            steps: std::mem::take(&mut self.sprite_steps),
+            clear: std::mem::take(&mut self.sprite_clear),
+            wind: self.wind,
+            ..SpriteFrame::default()
+        }
+    }
+
+    /// The Sky's wind to every emitter the scene runs (a new emitter has it from the next frame).
+    fn apply_wind(&mut self, world: &World) {
+        let wind = torque_render_scene::sky::wind(world);
+        self.wind = wind;
+        self.dust.set_wind(wind);
+        self.nodes.set_wind(wind);
+        let images = self
+            .held
+            .values_mut()
+            .flat_map(|h| h.emitters.iter_mut().map(|(e, _)| e));
+        let trails = self.bolts.values_mut().filter_map(|b| b.trail.as_mut());
+        for e in trails.chain(images).chain(&mut self.fading) {
+            e.set_wind(wind);
+        }
+    }
+
     /// Drops what the scene keeps of each ghost gone or born again since the last frame (`births`: the world's), so an object that
     /// takes a ghost's index starts fresh: its live pose, its images' clocks and held state, its projectile flight and burst, its
     /// vehicle dust and tire-track strips.
@@ -1294,6 +1332,7 @@ impl<S: GhostStyle> GhostScene<S> {
             }
             self.burst.remove(&i);
             self.dust.forget(i);
+            self.nodes.forget(i);
             if let Some(t) = self.tracks.as_mut() {
                 t.forget(i);
             }
@@ -1901,11 +1940,7 @@ impl<S: GhostStyle> GhostScene<S> {
         };
         // With the GPU particle pool the particles made since the last frame go to it; the emitters keep none.
         let pool = view.gpu_particles();
-        let mut sprites = SpriteFrame {
-            steps: std::mem::take(&mut self.sprite_steps),
-            clear: std::mem::take(&mut self.sprite_clear),
-            ..SpriteFrame::default()
-        };
+        let mut sprites = self.take_sprite_frame();
         if pool {
             let images = self
                 .held
@@ -1979,6 +2014,11 @@ impl<S: GhostStyle> GhostScene<S> {
             self.dust.hand_over(&mut sprites, &mut set);
         } else {
             draws.extend(self.dust.draws(eye.position, right, up, &mut set));
+        }
+        if pool {
+            self.nodes.hand_over(&mut sprites, &mut set);
+        } else {
+            draws.extend(self.nodes.draws(eye.position, right, up, &mut set));
         }
         // The plugins' emitter kinds beside TGE's emitters.
         view.emitter_draws(
@@ -2333,5 +2373,202 @@ mod tests {
         }
         scene.preload(&NoAssets, &world);
         assert_eq!(scene.preloaded_epoch, world.datablock_epoch);
+    }
+
+    /// The Sky's wind reaches every emitter the scene runs (a shot's trail, a held image's, a fading one, the vehicles' dust, an
+    /// emitter node's) and the frame handed to the GPU particle pool.
+    #[test]
+    fn the_skys_wind_reaches_every_emitter_and_the_pools_frame() {
+        use torque_ghost_world::tge::TgeDatablock;
+        use torque_ghost_world::world::Ghost;
+        use torque_ghosts::codec::F32;
+        use torque_ghosts::fx::ParticleEmitterNode;
+        use torque_ghosts::parts::GameBase;
+        use torque_ghosts::sky::Sky;
+        use torque_render_scene::vehicle_dust::DustVehicle;
+
+        let ghost = |class, record| Ghost {
+            class: Some(class),
+            serial: 1,
+            always: false,
+            record: Some(record),
+            part: (),
+            position: None,
+            updates: 0,
+        };
+        let db = |class: &str, fields: Vec<(&str, usize, Value)>| TgeDatablock {
+            class: class.into(),
+            fields: fields
+                .into_iter()
+                .map(|(n, i, v)| (n.to_string(), i as u32, v))
+                .collect(),
+        };
+        let mut world = World::default();
+        world.apply_datablock(
+            10,
+            db("ParticleData", vec![("lifetimeMS", 0, Value::Int(800))]),
+        );
+        world.apply_datablock(
+            11,
+            db(
+                "ParticleEmitterData",
+                vec![
+                    ("ejectionPeriodMS", 0, Value::Int(10)),
+                    ("dataBlockIds", 0, Value::Int(10)),
+                ],
+            ),
+        );
+        world.apply_datablock(
+            20,
+            db(
+                "ParticleEmitterNodeData",
+                vec![("timeMultiple", 0, Value::F32(1.0))],
+            ),
+        );
+        world.apply_datablock(
+            30,
+            db(
+                "WheeledVehicleData",
+                vec![
+                    ("tireEmitter", 0, Value::Id(Some(11))),
+                    ("maxWheelSpeed", 0, Value::F32(20.0)),
+                ],
+            ),
+        );
+        let mut matrix = [F32::new(0.0); 16];
+        for k in 0..4 {
+            matrix[k * 5] = F32::new(1.0);
+        }
+        world.ghosts.insert(
+            3,
+            ghost(
+                TgeClass::ParticleEmitterNode,
+                TgeRecord::ParticleEmitterNode(ParticleEmitterNode {
+                    game: GameBase {
+                        scale: None,
+                        datablock: Some(20),
+                    },
+                    matrix,
+                    scale: [F32::new(1.0); 3],
+                    emitter: Some(11),
+                }),
+            ),
+        );
+        let emitter = || Emitter::new(&world, 11).expect("an emitter");
+
+        // A scene with an emitter of every kind, none of which has met the wind yet.
+        let mut scene = GhostScene::new(GhostOptions::default());
+        scene.bolts.insert(
+            1,
+            Bolt {
+                flight: Flight {
+                    start: [0.0; 3],
+                    velocity: [0.0, 10.0, 0.0],
+                    age: 0.0,
+                    muzzle: None,
+                },
+                trail: Some(emitter()),
+                ribbon: None,
+                stop: None,
+            },
+        );
+        scene.held.insert(
+            (2, 0),
+            Held {
+                datablock: 70,
+                fire_count: 0,
+                since_fire: 0.0,
+                emitters: vec![(emitter(), 1.0), (emitter(), 1.0)],
+                emit_ms: 0.0,
+                muzzle: None,
+            },
+        );
+        scene.fading.push(emitter());
+        scene.nodes.update(&world, 0.05);
+        let look = torque_ghost_world::world::VehicleLook {
+            steering: 0.0,
+            velocity: [0.0, 15.0, 0.0],
+            wheels: vec![
+                torque_ghost_world::world::WheelLook {
+                    fitted: true,
+                    contact: true,
+                    point: [1.0, 0.0, 0.0],
+                    slip: 1.0,
+                    ..Default::default()
+                };
+                4
+            ],
+        };
+        let none = |_: [f32; 3], _: f32| None;
+        let vehicle = [DustVehicle {
+            index: 5,
+            datablock: 30,
+            position: [0.0; 3],
+            look: &look,
+        }];
+        scene.dust.update(&world, &vehicle, &none, 0.032);
+        let all = |scene: &GhostScene| -> Vec<[f32; 3]> {
+            let mut winds = Vec::new();
+            winds.extend(
+                scene
+                    .bolts
+                    .values()
+                    .filter_map(|b| b.trail.as_ref())
+                    .map(Emitter::wind),
+            );
+            winds.extend(
+                scene
+                    .held
+                    .values()
+                    .flat_map(|h| h.emitters.iter())
+                    .map(|(e, _)| e.wind()),
+            );
+            winds.extend(scene.fading.iter().map(Emitter::wind));
+            winds.extend(scene.dust.winds());
+            winds.extend(scene.nodes.winds());
+            winds
+        };
+        let before = all(&scene);
+        // The trail, two held, one fading, the dust (a tire a wheel) and the node.
+        assert!(before.len() > 1 + 2 + 1 + 4, "{}", before.len());
+        assert!(before.iter().all(|w| *w == [0.0; 3]));
+        assert_eq!(scene.take_sprite_frame().wind, [0.0; 3]);
+
+        // A Sky that sends a wind: every one of them has it, and so has the pool's frame.
+        let wind = [3.0, -1.0, 0.5];
+        world.ghosts.insert(
+            1,
+            ghost(
+                TgeClass::Sky,
+                TgeRecord::Sky(Sky {
+                    wind: Some(wind.map(F32::new)),
+                    ..Sky::default()
+                }),
+            ),
+        );
+        scene.apply_wind(&world);
+        let after = all(&scene);
+        assert_eq!(after.len(), before.len());
+        assert!(after.iter().all(|w| *w == wind), "{after:?}");
+        assert_eq!(scene.take_sprite_frame().wind, wind);
+
+        // A Sky with a hostile wind gives the bound, and the Sky gone gives still air again.
+        world.ghosts.insert(
+            1,
+            ghost(
+                TgeClass::Sky,
+                TgeRecord::Sky(Sky {
+                    wind: Some([f32::NAN, 1.0e9, -1.0e9].map(F32::new)),
+                    ..Sky::default()
+                }),
+            ),
+        );
+        scene.apply_wind(&world);
+        let bound = torque_render_scene::sky::MAX_WIND;
+        assert!(all(&scene).iter().all(|w| *w == [0.0, bound, -bound]));
+        world.ghosts.remove(&1);
+        scene.apply_wind(&world);
+        assert!(all(&scene).iter().all(|w| *w == [0.0; 3]));
+        assert_eq!(scene.take_sprite_frame().wind, [0.0; 3]);
     }
 }
