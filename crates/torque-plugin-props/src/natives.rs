@@ -3,7 +3,8 @@
 //! commands decide who may spawn what.
 
 use torque_collide::types::{INTERIOR, ITEM, PLAYER, STATIC_SHAPE, STATIC_TS, TERRAIN, VEHICLE};
-use torque_engine::args::vec3;
+use torque_engine::args::{vec3_finite, vec3_text};
+use torque_engine::predict_ids::wire_id;
 use torque_engine::{Res, ScriptClass, ScriptError, VmMut, function};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
@@ -11,20 +12,10 @@ use torque_ts_vm::vm::Vm;
 use crate::data::{PropData, PropParams};
 use crate::quant;
 use crate::server::{
-    ServerProps, axis_angle, is_class, owner_key, owner_of, parse_transform, player_boxes, prop_of,
-    spawn, write_back,
+    ServerProps, axis_angle, owner_key, owner_of, parse_transform, player_boxes, prop_of, spawn,
+    write_back,
 };
 use crate::world::{Prop, PropWorld, world_half};
-
-/// `"x y z"` as a vector of finite numbers.
-fn finite_vec(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    let v = vec3(text, what)?;
-    if v.iter().all(|c| c.is_finite()) {
-        Ok(v)
-    } else {
-        Err(ScriptError::new(format!("{what} must be finite")))
-    }
-}
 
 /// spawns a prop of the datablock at a transform and returns its object id
 ///
@@ -53,7 +44,7 @@ fn prop_spawn(
         .and_then(|o| ObjId::try_from(o).ok())
         .filter(|&o| o != 0 && vm.objects().contains(o))
         .map(|o| owner_of(&mut vm, o));
-    let predict = predict_id.filter(|p| (1..=255).contains(p)).unwrap_or(0) as u8;
+    let predict = wire_id(predict_id);
     match spawn(&mut vm, &props, data, pose, owner, predict) {
         Ok(id) => Ok(id as i32),
         Err(e) => Err(ScriptError::new(e)),
@@ -127,7 +118,7 @@ fn prop_apply_impulse(
     impulse: &str,
 ) -> Result<bool, ScriptError> {
     let id = prop_of(&vm, prop)?;
-    let j = finite_vec(impulse, "the impulse")?;
+    let j = vec3_finite(impulse, "the impulse")?;
     Ok(props.0.borrow_mut().world_mut(&vm).impulse(id, j))
 }
 
@@ -142,11 +133,11 @@ fn prop_set_velocity(
     spin: Option<&str>,
 ) -> Result<bool, ScriptError> {
     let id = prop_of(&vm, prop)?;
-    let v = finite_vec(velocity, "the velocity")?;
+    let v = vec3_finite(velocity, "the velocity")?;
     let mut srv = props.0.borrow_mut();
     let world = srv.world_mut(&vm);
     let w = match spin {
-        Some(s) => finite_vec(s, "the spin")?,
+        Some(s) => vec3_finite(s, "the spin")?,
         None => world.get(id).map_or([0.0; 3], |p| p.q.state().angvel),
     };
     Ok(world.set_velocity(id, v, w))
@@ -158,22 +149,18 @@ fn with_prop<R>(props: &ServerProps, id: u32, f: impl FnOnce(&Prop) -> R) -> Opt
         .flatten()
 }
 
-fn text3(v: [f32; 3]) -> String {
-    format!("{} {} {}", v[0], v[1], v[2])
-}
-
 /// a prop's velocity, `"x y z"` (units a second), as the clients are sent it
 #[function(name = "propGetVelocity")]
 fn prop_get_velocity(vm: VmMut, props: Res<ServerProps>, prop: i32) -> Result<String, ScriptError> {
     let id = prop_of(&vm, prop)?;
-    Ok(with_prop(&props, id, |p| text3(p.q.state().linvel)).unwrap_or_default())
+    Ok(with_prop(&props, id, |p| vec3_text(p.q.state().linvel)).unwrap_or_default())
 }
 
 /// a prop's spin, `"x y z"` (radians a second about each axis)
 #[function(name = "propGetSpin")]
 fn prop_get_spin(vm: VmMut, props: Res<ServerProps>, prop: i32) -> Result<String, ScriptError> {
     let id = prop_of(&vm, prop)?;
-    Ok(with_prop(&props, id, |p| text3(p.q.state().angvel)).unwrap_or_default())
+    Ok(with_prop(&props, id, |p| vec3_text(p.q.state().angvel)).unwrap_or_default())
 }
 
 /// a prop's transform, `"x y z ax ay az angle"`, as the clients are sent it
@@ -204,8 +191,8 @@ fn prop_ray_cast(
     end: &str,
     ignore: Option<i32>,
 ) -> Result<String, ScriptError> {
-    let from = finite_vec(start, "the start")?;
-    let to = finite_vec(end, "the end")?;
+    let from = vec3_finite(start, "the start")?;
+    let to = vec3_finite(end, "the end")?;
     let ignore = ignore.and_then(|i| u32::try_from(i).ok());
     let mut srv = props.0.borrow_mut();
     let Some((id, t)) = srv.world_mut(&vm).ray(from, to, ignore) else {
@@ -301,7 +288,7 @@ fn prop_check_placement(
     let check = parse_transform(transform)
         .map_err(|_| PlacementError::Transform)
         .and_then(|pose| {
-            let eye = finite_vec(eye, "the eye").map_err(|_| PlacementError::Eye)?;
+            let eye = vec3_finite(eye, "the eye").map_err(|_| PlacementError::Eye)?;
             let mut placement = Placement::new(data, pose, eye);
             if let Some(o) = ignore
                 .and_then(|o| ObjId::try_from(o).ok())
@@ -453,7 +440,10 @@ impl ServerProps {
             ignore,
             reach,
         } = placement;
-        if !is_class(vm, data, <PropData as ScriptClass>::NAME) {
+        if !vm
+            .objects()
+            .is_class_named(data, <PropData as ScriptClass>::NAME)
+        {
             return Err(PlacementError::NotPropData);
         }
         let kind = PropData::read(vm, data).map_err(|_| PlacementError::NotPropData)?;
@@ -487,17 +477,12 @@ impl ServerProps {
     }
 }
 
-/// The text of a point for a native's argument (finite numbers, as Rust prints them: no exponent).
-fn point_text(p: [f32; 3]) -> Vec<u8> {
-    format!("{} {} {}", p[0], p[1], p[2]).into_bytes()
-}
-
 /// Whether the server's ray from `eye` to `point` meets the map, a shape, a vehicle, a player or an item (`ignore` left out;
 /// none is the id 0, which names no object).
 fn ray_blocked(vm: &mut Vm, eye: [f32; 3], point: [f32; 3], ignore: Option<ObjId>) -> bool {
     let args = [
-        point_text(eye),
-        point_text(point),
+        vec3_text(eye).into_bytes(),
+        vec3_text(point).into_bytes(),
         PLACEMENT_BLOCKERS.to_string().into_bytes(),
         ignore.unwrap_or(0).to_string().into_bytes(),
     ];
@@ -513,7 +498,7 @@ fn ray_blocked(vm: &mut Vm, eye: [f32; 3], point: [f32; 3], ignore: Option<ObjId
 fn box_blocked(vm: &mut Vm, props: &ServerProps, at: [f32; 3], half: [f32; 3]) -> bool {
     let args = [
         PLACEMENT_BLOCKERS.to_string().into_bytes(),
-        point_text(at),
+        vec3_text(at).into_bytes(),
         half[0].to_string().into_bytes(),
         half[1].to_string().into_bytes(),
         half[2].to_string().into_bytes(),

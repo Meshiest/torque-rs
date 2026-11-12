@@ -5,25 +5,15 @@
 //! point in the world (`"x y z"`). A grapple's first end is a player, with an offset from its position (`"%player 0 0 1.2"`) when
 //! the point held is not its feet. A weld's or a hinge's second end may be left empty: the world.
 
-use torque_engine::args::vec3;
+use torque_engine::args::vec3_finite;
 use torque_engine::{Res, ScriptError, VmMut, function};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
 use super::server::{CLASS, joint_of, make, write_back};
 use super::{End, Hinge, Joint, JointError, Kind, KindId, MAX_LENGTH, Motor, Reach, Spring, Winch};
-use crate::server::{ServerProps, is_class, owner_key, owner_of as server_owner_of};
+use crate::server::{ServerProps, owner_key, owner_of as server_owner_of};
 use crate::world::{Owner, PropWorld, length};
-
-/// `"x y z"` as finite numbers.
-fn finite(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    let v = vec3(text, what)?;
-    if v.iter().all(|c| c.is_finite()) {
-        Ok(v)
-    } else {
-        Err(ScriptError::new(format!("{what} must be finite")))
-    }
-}
 
 fn number(v: f32, what: &str) -> Result<f32, ScriptError> {
     if v.is_finite() {
@@ -55,8 +45,8 @@ fn parse_end(vm: &Vm, world: &PropWorld, text: &str, what: &str) -> Result<End, 
     match words.as_slice() {
         [] => Ok(End::World),
         [name] => thing(object(name)?, [0.0; 3]),
-        [name, x, y, z] => thing(object(name)?, finite(&format!("{x} {y} {z}"), what)?),
-        [_, _, _] => Ok(End::Point(finite(text, what)?)),
+        [name, x, y, z] => thing(object(name)?, vec3_finite(&format!("{x} {y} {z}"), what)?),
+        [_, _, _] => Ok(End::Point(vec3_finite(text, what)?)),
         _ => Err(ScriptError::new(format!(
             "{what} must be a prop, \"prop x y z\" or \"x y z\""
         ))),
@@ -160,7 +150,7 @@ fn joint_hold(
     offset: &str,
     owner: Option<i32>,
 ) -> Result<i32, ScriptError> {
-    let offset = finite(offset, "the offset")?;
+    let offset = vec3_finite(offset, "the offset")?;
     let (a, b) = ends(&mut vm, &props, player, prop)?;
     let (End::Player { id, .. }, End::Prop { id: p, .. }) = (a, b) else {
         return Err(ScriptError::new("a hold is a player's on a prop"));
@@ -238,8 +228,8 @@ fn joint_hinge(
     axis: &str,
     owner: Option<i32>,
 ) -> Result<i32, ScriptError> {
-    let point = finite(point, "the point")?;
-    let axis = finite(axis, "the axis")?;
+    let point = vec3_finite(point, "the point")?;
+    let axis = vec3_finite(axis, "the axis")?;
     let (na, nb) = ends(&mut vm, &props, a, b)?;
     let End::Prop { id: pa, .. } = na else {
         return Err(ScriptError::new("a hinge's first end is a prop"));
@@ -543,7 +533,7 @@ fn joint_check(
         }
     };
     let mut check = || -> Result<(), JointCheckError> {
-        let eye = finite(eye, "the eye").map_err(|_| JointCheckError::Eye)?;
+        let eye = vec3_finite(eye, "the eye").map_err(|_| JointCheckError::Eye)?;
         let client = ObjId::try_from(client)
             .ok()
             .filter(|&c| c != 0 && vm.objects().contains(c))
@@ -554,7 +544,7 @@ fn joint_check(
         };
         let point = match point.map(str::trim).filter(|p| !p.is_empty()) {
             None => None,
-            Some(p) => Some(finite(p, "the point").map_err(|_| JointCheckError::Point)?),
+            Some(p) => Some(vec3_finite(p, "the point").map_err(|_| JointCheckError::Point)?),
         };
         let (a, b) = ends(&mut vm, &props, a, b).map_err(|_| JointCheckError::Ends)?;
         let request = JointCheck {
@@ -728,7 +718,7 @@ impl ServerProps {
 
 /// Whether `id` is a joint.
 pub fn is_joint(vm: &Vm, id: u32) -> bool {
-    is_class(vm, id, CLASS)
+    vm.objects().is_class_named(id, CLASS)
 }
 
 /// The natives, as the plugin registers them.

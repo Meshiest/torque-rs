@@ -110,15 +110,7 @@ fn decode_translation(code: i32) -> f32 {
 }
 
 fn encode_rotation(q: &Quat) -> QuantRotation {
-    // A near tie of two components settles on one in a round or two; a code that is stable is what a client reads back.
-    let (mut dropped, mut parts) = rotation_code::pack(*q);
-    for _ in 0..4 {
-        let (d, p) = rotation_code::pack(rotation_code::unpack(dropped, parts));
-        if (d, p) == (dropped, parts) {
-            break;
-        }
-        (dropped, parts) = (d, p);
-    }
+    let (dropped, parts) = rotation_code::pack_stable(*q);
     QuantRotation { dropped, parts }
 }
 

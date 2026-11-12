@@ -67,19 +67,7 @@ impl Quantized {
     /// The state at the wire's precision (each value held to the world's reach and speeds). The rotation is taken round again
     /// until it quantizes to itself (a near tie of two components settles on one in a round or two).
     pub fn of(s: &BodyState) -> Quantized {
-        let mut q = Quantized::once(s);
-        for _ in 0..4 {
-            let (rot_index, rot) = rotation_code::pack(q.rotation());
-            if (rot_index, rot) == (q.rot_index, q.rot) {
-                break;
-            }
-            (q.rot_index, q.rot) = (rot_index, rot);
-        }
-        q
-    }
-
-    fn once(s: &BodyState) -> Quantized {
-        let (rot_index, rot) = rotation_code::pack(s.rotation);
+        let (rot_index, rot) = rotation_code::pack_stable(s.rotation);
         Quantized {
             pos: s.position.map(|v| round(f64::from(v), POS_SCALE, POS_MAX)),
             rot_index,

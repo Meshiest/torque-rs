@@ -111,6 +111,7 @@ mod engine;
 mod group;
 pub mod net;
 pub mod net_classes;
+mod not_registered;
 pub mod param;
 pub mod permissions;
 mod plugin;
@@ -145,6 +146,7 @@ pub use engine::Engine;
 pub use group::{PluginGroup, PluginGroupBuilder, Plugins};
 pub use net::{NetRegistry, ProtocolKind};
 pub use net_classes::{DatablockCodec, GhostRecord, Replicate};
+pub use not_registered::NotRegistered;
 pub use param::{
     Cx, IntoRecipe, IntoServerTick, Local, Param, ParamError, ParamKind, RecipeReturn, Res, ResMut,
     ResourceError, Slot, This, VmMut, VmRef,

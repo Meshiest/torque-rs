@@ -3,6 +3,7 @@
 
 use std::rc::Rc;
 
+use torque_engine::args::obj_id;
 use torque_engine::{EngineClass, ScriptClass};
 use torque_game::player_tether::{Tether, TetherSource};
 use torque_ts_vm::fields::Value as Field;
@@ -11,7 +12,7 @@ use torque_ts_vm::vm::Vm;
 
 use super::records::{MASK_FLAGS, MASK_INIT, MASK_LENGTH, MASK_SPRING};
 use super::{End, Joint};
-use crate::server::{ServerProps, delete_logged, is_class};
+use crate::server::{ServerProps, delete_logged};
 use crate::world::PropWorld;
 
 /// The class name as scripts see it.
@@ -54,8 +55,8 @@ pub struct NetJoint {
 
 /// The joint `id`, if it is one.
 pub(crate) fn joint_of(vm: &Vm, id: i32) -> Result<ObjId, torque_engine::ScriptError> {
-    let obj = ObjId::try_from(id).unwrap_or(0);
-    if is_class(vm, obj, CLASS) {
+    let obj = obj_id(id);
+    if vm.objects().is_class_named(obj, CLASS) {
         Ok(obj)
     } else {
         Err(torque_engine::ScriptError::new(format!(
@@ -133,7 +134,7 @@ pub(crate) fn make(vm: &mut Vm, props: &ServerProps, joint: Joint) -> Result<u32
     let made = vm
         .new_object(CLASS.as_bytes(), &[])
         .map_err(|e| e.to_string())?;
-    let Some(id) = made.filter(|&id| is_class(vm, id, CLASS)) else {
+    let Some(id) = made.filter(|&id| vm.objects().is_class_named(id, CLASS)) else {
         return Err("the joint object was not made".to_string());
     };
     let added = props.0.borrow_mut().world_mut(vm).add_joint(id, joint);
@@ -163,7 +164,7 @@ pub(crate) fn delete_objects(vm: &mut Vm, gone: &[(u32, u32)]) {
         if rope != 0 && vm.objects().contains(rope) {
             delete_logged(vm, rope);
         }
-        if is_class(vm, joint, CLASS) {
+        if vm.objects().is_class_named(joint, CLASS) {
             delete_logged(vm, joint);
         }
     }

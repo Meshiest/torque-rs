@@ -5,6 +5,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use torque_engine::args::{obj_id, vec3, vec3_text};
+use torque_engine::predict_ids::wire_id;
 use torque_engine::{EngineClass, Res, ScriptClass, ScriptError, VmMut, function};
 use torque_ts_text::atof;
 use torque_ts_vm::sim::ObjId;
@@ -127,17 +129,13 @@ const CLASS: &str = <NetRope as ScriptClass>::NAME;
 
 /// `"x y z"` as a point, every coordinate a finite number held to the world.
 fn parse_point(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    torque_engine::args::vec3(text, what).map(|p| crate::sim::point(p).to_array())
+    vec3(text, what).map(|p| crate::sim::point(p).to_array())
 }
 
 /// The networked rope `id`, if it is one.
 fn rope_of(vm: &Vm, id: i32) -> Result<ObjId, ScriptError> {
-    let obj = ObjId::try_from(id).unwrap_or(0);
-    let objects = vm.objects();
-    let is_rope = objects
-        .get(obj)
-        .is_some_and(|o| objects.classes.name(o.class()) == CLASS.as_bytes());
-    if is_rope {
+    let obj = obj_id(id);
+    if vm.objects().is_class_named(obj, CLASS) {
         Ok(obj)
     } else {
         Err(ScriptError::new(format!("{id} is not a networked rope")))
@@ -165,7 +163,7 @@ fn count(vm: &Vm) -> usize {
     let objects = vm.objects();
     objects
         .iter()
-        .filter(|(_, o)| objects.classes.name(o.class()) == CLASS.as_bytes())
+        .filter(|&(id, _)| objects.is_class_named(id, CLASS))
         .count()
 }
 
@@ -214,15 +212,12 @@ fn net_create(
     put(&mut vm, obj, "dataBlock", &db.to_string());
     for (p, at) in [("start", start), ("end", end)] {
         put(&mut vm, obj, &format!("{p}Mode"), "1");
-        put(
-            &mut vm,
-            obj,
-            &format!("{p}Point"),
-            &format!("{} {} {}", at[0], at[1], at[2]),
-        );
+        put(&mut vm, obj, &format!("{p}Point"), &vec3_text(at));
     }
-    let predict = predict_id.filter(|p| (1..=255).contains(p));
-    if let (Some(predict), Some(owner)) = (predict, owner) {
+    let predict = wire_id(predict_id);
+    if predict != 0
+        && let Some(owner) = owner
+    {
         put(&mut vm, obj, "predict", &predict.to_string());
         put(&mut vm, obj, "predictOwner", &owner.to_string());
     }
@@ -245,12 +240,7 @@ fn net_pin(mut vm: VmMut, rope: i32, end: &str, point: &str) -> Result<(), Scrip
     let (p, bit) = end_names(end)?;
     let at = parse_point(point, "the point")?;
     put(&mut vm, obj, &format!("{p}Mode"), "1");
-    put(
-        &mut vm,
-        obj,
-        &format!("{p}Point"),
-        &format!("{} {} {}", at[0], at[1], at[2]),
-    );
+    put(&mut vm, obj, &format!("{p}Point"), &vec3_text(at));
     mark(&vm, obj, bit);
     Ok(())
 }
@@ -276,12 +266,7 @@ fn attach_end(
     put(vm, obj, &format!("{p}Mode"), "2");
     put(vm, obj, &format!("{p}Object"), &target.to_string());
     put(vm, obj, &format!("{p}Node"), node);
-    put(
-        vm,
-        obj,
-        &format!("{p}Offset"),
-        &format!("{} {} {}", offset[0], offset[1], offset[2]),
-    );
+    put(vm, obj, &format!("{p}Offset"), &vec3_text(offset));
     mark(vm, obj, bit);
     Ok(())
 }
@@ -661,8 +646,9 @@ fn net_fx(
             }
         }
         let command = format!(
-            "commandToClient({target}, 'RopeFx', \"{} {} {}\", \"{} {} {}\", {db}, {seconds}, {bend});",
-            start[0], start[1], start[2], end[0], end[1], end[2]
+            "commandToClient({target}, 'RopeFx', \"{}\", \"{}\", {db}, {seconds}, {bend});",
+            vec3_text(start),
+            vec3_text(end)
         );
         if vm.eval(command.as_bytes()).is_ok() {
             sent += 1;

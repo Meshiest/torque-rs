@@ -10,6 +10,7 @@ use std::rc::Rc;
 
 use torque_collide::source::{CollisionShape, CollisionSource, ShapeKind, SourceHit};
 use torque_collide::types::STATIC_SHAPE;
+use torque_engine::args::obj_id;
 use torque_engine::permissions::{ConnectionSubjects, SubjectKey};
 use torque_engine::{EngineClass, Prefs, ScriptClass, ScriptError, VmPrefs};
 use torque_ts_vm::fields::Value as Field;
@@ -378,17 +379,10 @@ pub(crate) fn delete_logged(vm: &mut Vm, id: u32) {
     }
 }
 
-pub(crate) fn is_class(vm: &Vm, id: ObjId, class: &str) -> bool {
-    let objects = vm.objects();
-    objects
-        .get(id)
-        .is_some_and(|o| objects.classes.name(o.class()) == class.as_bytes())
-}
-
 /// The prop `id`, if it is one.
 pub(crate) fn prop_of(vm: &Vm, id: i32) -> Result<ObjId, ScriptError> {
-    let obj = ObjId::try_from(id).unwrap_or(0);
-    if is_class(vm, obj, CLASS) {
+    let obj = obj_id(id);
+    if vm.objects().is_class_named(obj, CLASS) {
         Ok(obj)
     } else {
         Err(ScriptError::new(format!("{id} is not a prop")))
@@ -464,7 +458,10 @@ pub(crate) fn spawn(
     owner: Option<Owner>,
     predict: u8,
 ) -> Result<u32, String> {
-    if !is_class(vm, data, <PropData as ScriptClass>::NAME) {
+    if !vm
+        .objects()
+        .is_class_named(data, <PropData as ScriptClass>::NAME)
+    {
         return Err(format!("{data} is not a PropData"));
     }
     let kind = PropData::read(vm, data).map_err(|e| e.to_string())?;
@@ -484,7 +481,7 @@ pub(crate) fn spawn(
     let made = vm
         .new_object(CLASS.as_bytes(), &[(b"dataBlock", datablock.as_bytes())])
         .map_err(|e| e.to_string())?;
-    let Some(id) = made.filter(|&id| is_class(vm, id, CLASS)) else {
+    let Some(id) = made.filter(|&id| vm.objects().is_class_named(id, CLASS)) else {
         return Err("the prop object was not made".to_string());
     };
     let half = params.shape.half_extents();

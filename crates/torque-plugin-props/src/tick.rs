@@ -12,7 +12,7 @@ use crate::hits::{self, Blast, Hit};
 use crate::joints::server as joint_server;
 use crate::natives::control_of;
 use crate::server::{
-    CLASS, PropPrefs, ServerProps, address_of, delete_logged, is_class, joint_limits_of, limits_of,
+    CLASS, PropPrefs, ServerProps, address_of, delete_logged, joint_limits_of, limits_of,
     owner_key, shot_push, write_back, write_record,
 };
 use crate::world::{Owner, OwnerKey, PlayerAt, PropEvent, PropWorld, Pusher, StaticPiece};
@@ -38,7 +38,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         let dropped: Vec<u32> = world
             .joints()
             .keys()
-            .filter(|&&id| !is_class(vm, id, joint_server::CLASS))
+            .filter(|&&id| !vm.objects().is_class_named(id, joint_server::CLASS))
             .copied()
             .collect();
         let mut gone_joints: Vec<(u32, u32)> = dropped
@@ -50,7 +50,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
         let gone: Vec<u32> = world
             .props()
             .keys()
-            .filter(|&&id| !is_class(vm, id, CLASS))
+            .filter(|&&id| !vm.objects().is_class_named(id, CLASS))
             .copied()
             .collect();
         for id in gone {
@@ -147,7 +147,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
     joint_server::delete_objects(vm, &gone_joints);
     // A callback that stops on an error is printed, and the ones after it still run.
     for id in broke {
-        if is_class(vm, id, joint_server::CLASS)
+        if vm.objects().is_class_named(id, joint_server::CLASS)
             && let Err(e) = vm.call_method(id, b"onBreak", &[])
         {
             vm.warn(format!("props: joint {id}'s onBreak: {e}"));
@@ -164,7 +164,7 @@ pub fn tick(vm: &mut Vm, props: &ServerProps) -> Result<(), String> {
             torque_game::sim::hosted::text3_fixed(h.normal),
         ];
         // A datablock deleted under its props has no callback to run.
-        if is_class(vm, h.prop, CLASS)
+        if vm.objects().is_class_named(h.prop, CLASS)
             && vm.objects().contains(h.data)
             && let Err(e) = vm.call_method(h.data, b"onCollision", &args)
         {
@@ -278,7 +278,7 @@ fn live_owner_keys(vm: &Vm) -> BTreeMap<OwnerKey, Option<u32>> {
     let conns: Vec<u32> = vm
         .objects()
         .iter()
-        .filter(|(_, o)| vm.objects().classes.name(o.class()) == b"GameConnection")
+        .filter(|&(id, _)| vm.objects().is_class_named(id, "GameConnection"))
         .map(|(id, _)| id)
         .collect();
     let mut keys: BTreeMap<OwnerKey, Option<u32>> = BTreeMap::new();

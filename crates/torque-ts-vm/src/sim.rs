@@ -1505,6 +1505,14 @@ impl Objects {
         self.live.contains_key(&id)
     }
 
+    /// Whether `id` is a live object whose own class is called `name` (spelled exactly; a subclass is not it, unlike
+    /// [`ClassRegistry::is_a`]).
+    #[must_use]
+    pub fn is_class_named(&self, id: ObjId, name: &str) -> bool {
+        self.get(id)
+            .is_some_and(|o| self.classes.name(o.class()) == name.as_bytes())
+    }
+
     /// The number of registered objects.
     pub fn len(&self) -> usize {
         self.live.len()

@@ -1116,7 +1116,7 @@ fn objects_of(s: &NetServer, class: &str) -> usize {
     let objects = s.vm.objects();
     objects
         .iter()
-        .filter(|(_, o)| objects.classes.name(o.class()) == class.as_bytes())
+        .filter(|&(id, _)| objects.is_class_named(id, class))
         .count()
 }
 

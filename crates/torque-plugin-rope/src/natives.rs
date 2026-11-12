@@ -2,6 +2,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+use torque_engine::args::vec3;
 use torque_engine::assets::Assets;
 use torque_engine::{Engine, Res, ScriptClass, ScriptError, VmMut, VmRef, function};
 use torque_ts_vm::vm::Vm;
@@ -25,11 +26,6 @@ impl RopeShared {
     pub fn lock(&self) -> MutexGuard<'_, RopeWorld> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
-}
-
-/// `"x y z"` as a point. Missing words are an error; a word that is not a number reads as 0, as TorqueScript's vectors do.
-fn parse_point(text: &str, what: &str) -> Result<[f32; 3], ScriptError> {
-    torque_engine::args::vec3(text, what)
 }
 
 fn parse_end(text: &str) -> Result<RopeEnd, ScriptError> {
@@ -108,8 +104,8 @@ fn rope_create(
     end: &str,
     datablock: &str,
 ) -> Result<i32, ScriptError> {
-    let start = parse_point(start, "the start")?;
-    let end = parse_point(end, "the end")?;
+    let start = vec3(start, "the start")?;
+    let end = vec3(end, "the end")?;
     let id = vm
         .objects()
         .find(datablock.as_bytes())
@@ -170,7 +166,7 @@ fn rope_pin(
     point: &str,
 ) -> Result<bool, ScriptError> {
     let end = parse_end(end)?;
-    let point = parse_point(point, "the point")?;
+    let point = vec3(point, "the point")?;
     Ok(ropes.lock().pin_point(rope_id(rope), end, point).is_ok())
 }
 
@@ -209,7 +205,7 @@ fn rope_release(ropes: Res<RopeShared>, rope: i32, end: &str) -> Result<bool, Sc
 /// gives the free part of a rope a velocity `"x y z"`, in units a second (at most 200)
 #[function(name = "ropeImpulse")]
 fn rope_impulse(ropes: Res<RopeShared>, rope: i32, velocity: &str) -> Result<bool, ScriptError> {
-    let velocity = parse_point(velocity, "the velocity")?;
+    let velocity = vec3(velocity, "the velocity")?;
     Ok(ropes.lock().impulse(rope_id(rope), velocity).is_ok())
 }
 
@@ -374,7 +370,7 @@ fn parse_tangent(text: &str) -> Result<Tangent, ScriptError> {
         return Ok(Tangent::Mount);
     }
     let bad = || ScriptError::new("a direction must be \"x y z\", \"mount\" or empty");
-    let direction = parse_point(text, "a direction").map_err(|_| bad())?;
+    let direction = vec3(text, "a direction").map_err(|_| bad())?;
     Tangent::fixed(direction).ok_or_else(bad)
 }
 

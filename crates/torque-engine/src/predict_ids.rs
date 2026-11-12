@@ -17,6 +17,12 @@ pub const PREDICT_TIMEOUT: f32 = 2.0;
 /// The seconds a prediction that was never confirmed fades out over.
 pub const PREDICT_FADE: f32 = 0.25;
 
+/// The predict id a script gave, as the wire carries it: 1 to 255 as given, 0 (no prediction) for none, 0 or anything else.
+#[must_use]
+pub fn wire_id(id: Option<i32>) -> u8 {
+    id.and_then(|id| u8::try_from(id).ok()).unwrap_or(0)
+}
+
 /// One prediction waiting for its ghost.
 #[derive(Debug, Clone, PartialEq)]
 struct Waiting<T> {
@@ -120,6 +126,22 @@ impl<T> PredictIds<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_script_predict_id_is_held_to_one_to_255() {
+        assert_eq!(wire_id(None), 0);
+        for (given, wire) in [
+            (-1, 0),
+            (0, 0),
+            (1, 1),
+            (255, 255),
+            (256, 0),
+            (i32::MIN, 0),
+            (i32::MAX, 0),
+        ] {
+            assert_eq!(wire_id(Some(given)), wire, "{given}");
+        }
+    }
 
     #[test]
     fn ids_run_from_one_skip_zero_and_those_in_use_and_stop_at_the_cap() {

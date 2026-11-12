@@ -255,3 +255,34 @@ fn sizes_gaps_and_padding_are_never_negative() {
         "a margin may be"
     );
 }
+
+#[test]
+fn layout_ignore_reads_like_every_torque_boolean() {
+    let mut vm = torque_ts_vm::vm::Vm::new();
+    let object = u32::try_from(torque_ts_vm::text::atoi(
+        &vm.eval(b"return new SimObject();").unwrap(),
+    ))
+    .unwrap();
+    let mut ignored = |value: &str| {
+        vm.set_object_member(object, b"layoutIgnore", b"", value.as_bytes());
+        crate::layout::ignored(&vm, object)
+    };
+    for (value, expected) in [
+        ("1", true),
+        ("true", true),
+        ("TRUE", true),
+        ("0.5", true),
+        ("-1", true),
+        ("0", false),
+        ("false", false),
+        ("", false),
+        ("wide", false),
+        // As dAtob: no trimming, the number read up to its first non-digit, an overflow or infinity true.
+        ("true ", false),
+        ("1abc", true),
+        ("inf", true),
+        ("1e40", true),
+    ] {
+        assert_eq!(ignored(value), expected, "{value:?}");
+    }
+}

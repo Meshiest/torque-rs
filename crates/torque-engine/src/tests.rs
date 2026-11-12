@@ -717,6 +717,14 @@ fn replay_server(engine: &Engine) -> Vm {
     vm
 }
 
+fn replay_client(engine: &Engine) -> Vm {
+    let mut vm = Vm::new();
+    for &stage in ClientStage::ALL {
+        engine.replay(stage, &mut vm).unwrap();
+    }
+    vm
+}
+
 #[test]
 fn recipes_replay_into_every_new_vm_with_fresh_state() {
     let engine = build_ok(EngineBuilder::new().add_plugins(counter()));
@@ -750,10 +758,7 @@ fn a_recipe_can_call_back_into_the_engine_and_replay_again() {
         });
     });
     let engine = build_ok(EngineBuilder::new().add_plugins((counter(), host)));
-    let mut client = Vm::new();
-    for &stage in ClientStage::ALL {
-        engine.replay(stage, &mut client).unwrap();
-    }
+    let mut client = replay_client(&engine);
     assert_eq!(client.eval(b"return count();").unwrap(), b"1");
     assert_eq!(client.eval(b"return hostServer();").unwrap(), b"2");
     assert_eq!(client.eval(b"return hostServer();").unwrap(), b"2");
@@ -769,10 +774,7 @@ fn a_server_replays_no_client_recipe() {
     assert_eq!(engine.recipes(ClientStage::Natives).count(), 1);
     assert_eq!(engine.recipes(ClientStage::Gui).count(), 0);
 
-    let mut client = Vm::new();
-    for &stage in ClientStage::ALL {
-        engine.replay(stage, &mut client).unwrap();
-    }
+    let client = replay_client(&engine);
     assert_eq!(client.global("$Client::Made").as_deref(), Some(&b"1"[..]));
     assert_eq!(client.native_listing(), Vm::new().native_listing());
 }

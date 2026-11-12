@@ -144,3 +144,18 @@ fn a_dynamic_read_is_charged_by_its_length_and_refused_without_a_copy() {
     let read = object.data_field_charged(&classes, b"dyn", b"", &|_| None, &mut |_| false);
     assert!(read.is_empty());
 }
+
+#[test]
+fn a_class_is_named_by_the_live_object_and_not_its_subclass() {
+    let mut objects = Objects::new();
+    let set = add(&mut objects, SIM_SET, "S");
+    assert!(objects.is_class_named(set, "SimSet"));
+    assert!(!objects.is_class_named(set, "SimObject"), "not an ancestor");
+    assert!(!objects.is_class_named(set, "SimSets"));
+    assert!(
+        !objects.is_class_named(set + 1000, "SimSet"),
+        "no such object"
+    );
+    objects.unregister(set);
+    assert!(!objects.is_class_named(set, "SimSet"), "gone");
+}

@@ -5,6 +5,7 @@
 
 use std::rc::Rc;
 
+use torque_engine::args::{obj_id, vec3_text};
 use torque_engine::{EngineBuilder, Res, ScriptError, VmMut, function};
 use torque_plugin_rope::{Drive, DriveEnd, RopeDriver, RopeDrivers};
 use torque_ts_vm::vm::Vm;
@@ -74,10 +75,7 @@ fn joint_rope(
         })
         .flatten()
         .ok_or_else(|| ScriptError::new(format!("{joint} is not a joint")))?;
-    let text = |p: Option<[f32; 3]>| {
-        let p = p.unwrap_or_default();
-        format!("{} {} {}", p[0], p[1], p[2]).into_bytes()
-    };
+    let text = |p: Option<[f32; 3]>| vec3_text(p.unwrap_or_default()).into_bytes();
     let made = vm
         .invoke(
             None,
@@ -86,7 +84,7 @@ fn joint_rope(
         )
         .map_err(|e| ScriptError::new(e.to_string()))?;
     let rope = torque_ts_vm::text::atoi(&made);
-    let rope_id = u32::try_from(rope).unwrap_or(0);
+    let rope_id = obj_id(rope);
     if rope_id == 0 {
         return Err(ScriptError::new("the rope was not made"));
     }

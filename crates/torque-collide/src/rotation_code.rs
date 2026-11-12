@@ -3,7 +3,7 @@
 //!
 //! Only IEEE operations (a square root, no transcendental), so the codes and what they decode to are the same bits on every
 //! target. [`pack`] settles a near tie between two components on the lowest index; a caller that wants a code that packs back to
-//! itself packs the decoded rotation again until the code stops changing (a round or two).
+//! itself uses [`pack_stable`].
 
 /// The middle of a component's range: the code of 0.
 pub const ROT_MID: i32 = 16_383;
@@ -51,6 +51,20 @@ pub fn pack(q: [f32; 4]) -> (u8, [u16; 3]) {
     (big as u8, out)
 }
 
+/// [`pack`], then the decoded rotation packed again until the code stops changing (at most four more rounds): a near tie of
+/// two components settles on one in a round or two, and a code that is stable is what a reader of the wire gets back.
+pub fn pack_stable(q: [f32; 4]) -> (u8, [u16; 3]) {
+    let mut code = pack(q);
+    for _ in 0..4 {
+        let next = pack(unpack(code.0, code.1));
+        if next == code {
+            break;
+        }
+        code = next;
+    }
+    code
+}
+
 /// The quaternion `x, y, z, w` of a code. A value past its range (a hostile record's) is held to it.
 pub fn unpack(index: u8, rot: [u16; 3]) -> [f32; 4] {
     let small = rot.map(|r| {
@@ -79,3 +93,7 @@ pub fn unpack(index: u8, rot: [u16; 3]) -> [f32; 4] {
     }
     q.map(|c| c as f32)
 }
+
+#[cfg(test)]
+#[path = "rotation_code_tests.rs"]
+mod tests;

@@ -9,6 +9,7 @@ use taffy::{LayoutOutput, compute_leaf_layout};
 use torque_engine::ScriptClass;
 use torque_gui::custom::ControlCx;
 use torque_gui::{Gui, MAX_TREE_DEPTH, flag, is_a, point};
+use torque_ts_vm::fields::atob;
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::Vm;
 
@@ -115,7 +116,7 @@ pub(crate) fn root_of(vm: &Vm, id: ObjId) -> Option<ObjId> {
         let Some(parent) = torque_gui::parent(vm, at) else {
             break;
         };
-        if !is_container(vm, parent) || parse_bool(&text(vm, at, "layoutIgnore")) {
+        if !is_container(vm, parent) || ignored(vm, at) {
             break;
         }
         chain.push(parent);
@@ -131,9 +132,9 @@ fn nests(level: usize) -> bool {
     level < MAX_NESTING
 }
 
-fn parse_bool(text: &str) -> bool {
-    let t = text.trim();
-    t.eq_ignore_ascii_case("true") || number(t).is_some_and(|v| v != 0.0)
+/// Whether `layoutIgnore` is set on `id`, read as every Torque field is (`dAtob`).
+pub(crate) fn ignored(vm: &Vm, id: ObjId) -> bool {
+    atob(text(vm, id, "layoutIgnore").as_bytes())
 }
 
 /// Whether a grid's template has an automatic repeat, whose count needs the grid's size.
@@ -379,7 +380,7 @@ impl Builder<'_> {
             {
                 continue;
             }
-            if parse_bool(&text(vm, child, "layoutIgnore")) {
+            if ignored(vm, child) {
                 self.ignored.push((child, id));
                 continue;
             }

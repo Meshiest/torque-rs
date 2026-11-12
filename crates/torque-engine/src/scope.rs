@@ -466,10 +466,7 @@ impl ScopeControl {
 
 /// Whether `obj` is a `GameConnection` of `vm`.
 fn is_connection(vm: &Vm, obj: ObjId) -> bool {
-    let objects = vm.objects();
-    objects
-        .get(obj)
-        .is_some_and(|o| objects.classes.name(o.class()) == CONNECTION_CLASS.as_bytes())
+    vm.objects().is_class_named(obj, CONNECTION_CLASS)
 }
 
 /// The marker that the recipe installing a control into each server is recorded.
