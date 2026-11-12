@@ -201,44 +201,16 @@ fn percent_decode(s: &str) -> Option<String> {
 
 /// Standard base64 (padding optional), at most `max` bytes out; the length is checked before anything is decoded.
 pub fn base64(text: &[u8], max: usize) -> Result<Vec<u8>, ImportError> {
-    let text = text
-        .strip_suffix(b"==")
-        .or_else(|| text.strip_suffix(b"="))
-        .unwrap_or(text);
-    let out_len = text.len() / 4 * 3 + (text.len() % 4).saturating_sub(1);
-    if out_len > max {
-        return Err(ImportError::TooLarge {
+    use torque_bytes::base64::{DecodeError, decode};
+    decode(text, max).map_err(|e| match e {
+        DecodeError::TooLarge { bytes, cap } => ImportError::TooLarge {
             what: "a data: URI",
-            bytes: out_len as u64,
-            cap: max as u64,
-        });
-    }
-    if text.len() % 4 == 1 {
-        return malformed("a base64 length");
-    }
-    let value = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => c - b'A',
-            b'a'..=b'z' => c - b'a' + 26,
-            b'0'..=b'9' => c - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let mut out = Vec::with_capacity(out_len);
-    for chunk in text.chunks(4) {
-        let mut word = 0u32;
-        for (k, &c) in chunk.iter().enumerate() {
-            let Some(v) = value(c) else {
-                return malformed("a base64 character");
-            };
-            word |= v << (18 - 6 * k);
-        }
-        let bytes = word.to_be_bytes();
-        out.extend_from_slice(&bytes[1..chunk.len()]);
-    }
-    Ok(out)
+            bytes,
+            cap,
+        },
+        DecodeError::Length => ImportError::Malformed("a base64 length".to_string()),
+        DecodeError::Character => ImportError::Malformed("a base64 character".to_string()),
+    })
 }
 
 /// The width and height a PNG's or a JPEG's header gives.

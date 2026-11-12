@@ -43,14 +43,7 @@ use crate::netstring::{NetStringEvent, SendStrings};
 use crate::protocol::Role;
 use crate::remote::RemoteCommandEvent;
 
-/// The work callback of a decoder: told how many units of work are about to be done (one unit is one byte of wire input, at least one
-/// for an element that takes fewer), it answers whether the per-tick network work budget can pay. A `false` stops the decode.
-pub type ChargeFn<'a> = dyn FnMut(u64) -> bool + 'a;
-
-/// A budget that pays for everything (tests, callers with none).
-pub fn free_charge() -> impl FnMut(u64) -> bool {
-    |_| true
-}
+pub use torque_bytes::{ChargeFn, free_charge};
 
 /// The bits of an ordered event's sequence on the wire.
 pub const SEQ_BITS: u8 = 7;

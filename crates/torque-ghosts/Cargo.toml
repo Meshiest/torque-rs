@@ -15,6 +15,7 @@ categories = ["network-programming", "game-development"]
 # views, the parent parts and the engine's own layouts. Std only beyond `torque-net`.
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 torque-net = { path = "../torque-net" }
 
 [lints]

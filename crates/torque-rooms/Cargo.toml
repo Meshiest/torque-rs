@@ -15,6 +15,8 @@ categories = ["game-development", "network-programming"]
 
 [dependencies]
 torque-server = { path = "../torque-server", features = ["web", "rooms"] }
+# The hex of an address in a TURN user name.
+torque-bytes = { path = "../torque-bytes" }
 # The datagram cap the web transport's buffers start from.
 torque-net = { path = "../torque-net" }
 # Room codes from the system's random source; the TURN credentials' HMAC-SHA1.

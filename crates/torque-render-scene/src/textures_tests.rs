@@ -16,20 +16,8 @@ fn a_missing_texture_is_looked_for_in_each_parent_folder() {
 
 /// A gray PNG of `w` x `h` with stored (uncompressed) deflate blocks.
 pub fn png(w: u32, h: u32, v: u8) -> Vec<u8> {
-    fn crc32(bytes: &[u8]) -> u32 {
-        let mut c = !0u32;
-        for b in bytes {
-            c ^= u32::from(*b);
-            for _ in 0..8 {
-                c = if c & 1 != 0 {
-                    (c >> 1) ^ 0xedb8_8320
-                } else {
-                    c >> 1
-                };
-            }
-        }
-        !c
-    }
+    use torque_bytes::crc32;
+
     fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
         out.extend_from_slice(&(data.len() as u32).to_be_bytes());
         let mut c = kind.to_vec();

@@ -13,6 +13,7 @@ categories = ["game-development", "compilers"]
 [dependencies]
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
+torque-bytes = { path = "../torque-bytes" }
 torque-ts-bytecode = { path = "../torque-ts-bytecode" }
 torque-ts-compiler = { path = "../torque-ts-compiler" }
 torque-ts-text = { path = "../torque-ts-text" }

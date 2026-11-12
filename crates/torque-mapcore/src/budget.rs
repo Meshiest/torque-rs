@@ -3,7 +3,7 @@
 //! work against them.
 
 /// A work budget: charges `units` and says whether there was room (false: the caller stops and gives up what it was making).
-pub type Charge<'a> = dyn FnMut(u64) -> bool + 'a;
+pub use torque_bytes::ChargeFn as Charge;
 
 /// The samples a side of every heightfield (the grid is square and wraps). A legacy `.ter` is 256; a format
 /// with another side adds it here first.

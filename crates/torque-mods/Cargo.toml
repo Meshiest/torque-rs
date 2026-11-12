@@ -15,6 +15,7 @@ categories = ["game-development", "filesystem"]
 # No drawing, GUI, audio or window crates: a dedicated server takes this crate too.
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 torque-engine = { path = "../torque-engine" }
 # The wire: the required-mods section of the handshake, the bulk channel and the server's hold on a joining client.
 torque-net = { path = "../torque-net" }

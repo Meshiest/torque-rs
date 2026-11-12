@@ -11,11 +11,12 @@ keywords = ["torque", "networking", "ghosting", "netcode", "gamedev"]
 categories = ["network-programming", "game-development"]
 
 # Torque-style networking, server side: the bit layer, the Huffman and string coders, the packet layer, the handshake, events,
-# commands and the ghost manager, as pure state machines over traits. Std only, no dependency at all: the glue that owns the
+# commands and the ghost manager, as pure state machines over traits. Std only, no dependency but `torque-bytes`: the glue that owns the
 # socket and the scripts, and the payload codecs of the objects, live in the host.
 # Every decoder reads hostile bytes: it returns a value or a `NetError`, never panics, and allocates only through `cap`.
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 
 [dev-dependencies]
 # The digests of the wire goldens.

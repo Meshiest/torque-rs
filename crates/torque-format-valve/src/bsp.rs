@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use torque_bytes::crc32;
 use torque_resource::zips::ZipMount;
 
 use crate::kv;
@@ -1969,22 +1970,6 @@ fn leaf_in(
         n = if d >= 0.0 { children[0] } else { children[1] };
     }
     None
-}
-
-/// The CRC-32 of a zip entry.
-fn crc32(b: &[u8]) -> u32 {
-    let mut c = 0xffff_ffffu32;
-    for &x in b {
-        c ^= u32::from(x);
-        for _ in 0..8 {
-            c = if c & 1 != 0 {
-                (c >> 1) ^ 0xedb8_8320
-            } else {
-                c >> 1
-            };
-        }
-    }
-    !c
 }
 
 /// A zip of one stored (uncompressed) file.

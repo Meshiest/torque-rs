@@ -1,6 +1,6 @@
 //! Torque-style networking, server side.
 //!
-//! Std only, no dependency. Pure state machines and codecs over bytes: nothing here opens a socket, runs a script or reads a file.
+//! Std only, and no dependency but `torque-bytes`. Pure state machines and codecs over bytes: nothing here opens a socket, runs a script or reads a file.
 //! What a game changes about the protocol (its event classes, its handshake strings and versions, its ghosting rules) it passes in
 //! through [`profile`] and the hooks named there; the defaults are plain Torque.
 //!
@@ -126,7 +126,10 @@ pub mod classes;
 pub mod client;
 pub mod connect;
 pub mod control;
-pub mod crc;
+pub mod crc {
+    //! CRC-32: the standard one and the running state ([`Crc32::raw`] has no final complement) the camera checksum uses.
+    pub use torque_bytes::{Crc32, crc32};
+}
 pub mod decode;
 pub mod engine;
 pub mod events;
@@ -135,7 +138,7 @@ pub mod gameevents;
 pub mod ghost;
 pub mod handshake;
 pub mod huffman;
-pub mod idhash;
+pub use torque_bytes::idhash;
 pub mod library;
 pub mod manifest;
 pub mod modsync;
@@ -182,3 +185,9 @@ impl fmt::Display for NetError {
 }
 
 impl std::error::Error for NetError {}
+
+impl From<torque_bytes::OutOfBudget> for NetError {
+    fn from(_: torque_bytes::OutOfBudget) -> NetError {
+        NetError::Invalid("work budget")
+    }
+}

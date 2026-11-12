@@ -24,20 +24,13 @@ use crate::bits::{BitReader, BitWriter};
 use crate::cap::{self, NET_PATH_ENTRIES};
 use crate::events::{ChargeFn, EventCtx, EventIds, WireEvent};
 use crate::library;
+use torque_bytes::pay;
 
 /// The scale of a `Sim3DAudioEvent`'s compressed position (`SoundPosAccuracy`).
 pub const AUDIO_POINT_SCALE: f32 = 0.5;
 
 /// `DataBlockObjectIdFirst`: the wire carries a profile id less this.
 pub const DATABLOCK_ID_FIRST: u32 = 3;
-
-fn pay(charge: &mut ChargeFn, units: u64) -> Result<(), NetError> {
-    if charge(units) {
-        Ok(())
-    } else {
-        Err(NetError::Invalid("work budget"))
-    }
-}
 
 /// The mask of a `bits`-wide field (at most 32 bits).
 fn mask(bits: u8) -> u32 {

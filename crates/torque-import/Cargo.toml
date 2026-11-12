@@ -16,6 +16,7 @@ categories = ["game-development", "parser-implementations", "rendering::data-for
 
 [dependencies]
 glam = { workspace = true }
+torque-bytes = { path = "../torque-bytes" }
 torque-modelcore = { path = "../torque-modelcore" }
 torque-shapes = { path = "../torque-shapes" }
 torque-shape-builder = { path = "../torque-shape-builder" }

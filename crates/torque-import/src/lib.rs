@@ -100,6 +100,12 @@ impl std::fmt::Display for ImportError {
 
 impl std::error::Error for ImportError {}
 
+impl From<torque_bytes::OutOfBudget> for ImportError {
+    fn from(_: torque_bytes::OutOfBudget) -> ImportError {
+        ImportError::OutOfBudget
+    }
+}
+
 impl From<modelcore::Invalid> for ImportError {
     fn from(e: modelcore::Invalid) -> ImportError {
         ImportError::Invalid(e.0)
@@ -119,14 +125,7 @@ pub(crate) fn cap(what: &'static str, count: usize, cap: usize) -> Result<(), Im
     }
 }
 
-/// Pays `units` before the work.
-pub(crate) fn pay(charge: &mut Charge, units: u64) -> Result<(), ImportError> {
-    if charge(units) {
-        Ok(())
-    } else {
-        Err(ImportError::OutOfBudget)
-    }
-}
+pub(crate) use torque_bytes::pay;
 
 /// How a reader turns a file into Torque's frame.
 #[derive(Debug, Clone, Copy, PartialEq)]

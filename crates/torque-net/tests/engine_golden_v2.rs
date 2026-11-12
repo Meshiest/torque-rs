@@ -11,6 +11,7 @@ use std::fmt::Write as _;
 
 use engine_common::{Pair, accept, connect};
 use sha2::{Digest, Sha256};
+use torque_bytes::hex;
 use torque_net::engine::{
     self as framing, Body, Control, Cookie, CookieValue, Disconnect, Fragment, Header, Hello,
     Reject, Unreliable, Versions,
@@ -19,15 +20,6 @@ use torque_net::engine::{Delivery, LinkFacts, RejectCode, StreamLane};
 
 const GOLDEN_FILE: &str = "tests/golden/engine_v2.txt";
 const GOLDEN: &str = include_str!("golden/engine_v2.txt");
-
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
-            let _ = write!(s, "{b:02x}");
-            s
-        })
-}
 
 fn messages() -> Vec<(&'static str, Vec<u8>)> {
     let cookie = CookieValue(*b"0123456789abcdef");

@@ -11,9 +11,10 @@ keywords = ["torque", "dts", "shape", "animation", "gamedev"]
 categories = ["game-development", "parser-implementations", "rendering::data-formats"]
 
 # Torque shapes: `.dts` and `.dsq` read as data, the preload facts of the datablocks that load a shape, collision meshes and
-# the animated pose. Std only, no dependency at all.
+# the animated pose. Std only, no external dependency (the path crate `torque-bytes` is std only too).
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 
 [lints]
 workspace = true

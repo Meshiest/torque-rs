@@ -14,6 +14,7 @@ categories = ["game-engines", "game-development"]
 # `torque-app` re-exports every module as its own.
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 torque-net = { path = "../torque-net" }
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"

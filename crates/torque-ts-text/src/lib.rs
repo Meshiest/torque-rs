@@ -682,19 +682,8 @@ pub fn f64_to_u32(x: f64) -> u32 {
     }
 }
 
-/// The standard CRC-32 (polynomial 0xEDB88320, start 0xFFFFFFFF, final complement), as zlib computes it.
-/// A script's file CRC (`getFileCRC`) is this value complemented.
-pub fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xFFFF_FFFFu32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    !crc
-}
+// The standard CRC-32 (zlib's). A script's file CRC (`getFileCRC`) is this value complemented.
+pub use torque_bytes::crc32;
 
 /// Torque's `FindMatch::isMatch(pattern, text, false)`, used by `export`,
 /// `deleteVariables` and the file searches: `?` is any one byte, other bytes compare ignoring ASCII case,

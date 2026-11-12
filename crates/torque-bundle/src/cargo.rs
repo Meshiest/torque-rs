@@ -233,7 +233,7 @@ impl Build {
     pub fn build_dir(&self) -> PathBuf {
         use sha2::{Digest, Sha256};
         let hash = Sha256::digest(self.cflags.join(" ").as_bytes());
-        let key: String = hash.iter().take(6).map(|b| format!("{b:02x}")).collect();
+        let key = torque_bytes::hex(&hash[..6]);
         self.target_dir.join(format!("c-{key}"))
     }
 

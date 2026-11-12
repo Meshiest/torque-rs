@@ -25,6 +25,8 @@ torque-collide = { path = "../torque-collide", optional = true }
 torque-mapcore = { path = "../torque-mapcore", optional = true }
 # The mesh verification's fixtures are written as glTF and OBJ files and read back through the readers.
 torque-import = { path = "../torque-import", optional = true }
+# The mesh fixtures' base64.
+torque-bytes = { path = "../torque-bytes", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -34,7 +36,7 @@ torque-mapcore = { path = "../torque-mapcore" }
 torque-import = { path = "../torque-import" }
 
 [features]
-verify = ["dep:torque-collide", "dep:torque-mapcore", "dep:torque-import"]
+verify = ["dep:torque-collide", "dep:torque-mapcore", "dep:torque-import", "dep:torque-bytes"]
 
 [[bench]]
 name = "builder"

@@ -70,23 +70,11 @@ pub use tge::{TgeClass, TgeGhosts, TgeRecord, tge_reps};
 pub use value::Value;
 pub use view::{Link, ObjectView, PackCtx, boolean, fld, id, int, raw, raws, text, word, xform};
 
-/// The work callback of a decoder: it is told how many units of work the decoder is about to do (one unit is one byte of wire input,
-/// and at least one for an element that takes fewer) and answers whether the per-tick network work budget can pay for them. A
-/// `false` stops the decode with an error.
-pub type ChargeFn<'a> = dyn FnMut(u64) -> bool + 'a;
+pub use torque_bytes::{ChargeFn, budget_charge, cell_charge, free_charge};
 
 /// Pays `units` to `charge`, or fails when the budget cannot.
 pub fn pay(charge: &mut ChargeFn, units: u64) -> Result<(), NetError> {
-    if charge(units) {
-        Ok(())
-    } else {
-        Err(NetError::Invalid("work budget"))
-    }
-}
-
-/// A charge callback that pays for everything: for tests and for callers with no budget.
-pub fn free_charge() -> impl FnMut(u64) -> bool {
-    |_| true
+    Ok(torque_bytes::pay(charge, units)?)
 }
 
 /// The work units a received datagram of `len` bytes may spend in a client's decoders: 8 a byte and a floor. An honest
@@ -98,29 +86,6 @@ pub fn datagram_budget(len: usize) -> u64 {
         .unwrap_or(u64::MAX)
         .saturating_mul(8)
         .saturating_add(256)
-}
-
-/// A charge callback that pays out of `units` and refuses once they are spent.
-pub fn budget_charge(units: u64) -> impl FnMut(u64) -> bool {
-    let budget = std::cell::Cell::new(Some(units));
-    move |cost| spend(&budget, cost)
-}
-
-/// A charge callback that pays out of `budget` (`None`: no bound) and refuses once it is spent. What is left stays in the
-/// cell, so the decoders of one datagram (its head, its events, its ghost records) can draw on one budget.
-pub fn cell_charge(budget: &std::cell::Cell<Option<u64>>) -> impl FnMut(u64) -> bool + '_ {
-    move |cost| spend(budget, cost)
-}
-
-/// Takes `cost` out of `budget`, or refuses (taking nothing) when it has less.
-fn spend(budget: &std::cell::Cell<Option<u64>>, cost: u64) -> bool {
-    match budget.get() {
-        None => true,
-        Some(left) => left.checked_sub(cost).is_some_and(|left| {
-            budget.set(Some(left));
-            true
-        }),
-    }
 }
 
 #[cfg(test)]

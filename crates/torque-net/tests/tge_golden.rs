@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
+use torque_bytes::hex;
 use torque_net::bits::BitWriter;
 use torque_net::client::{Client, ClientEvent};
 use torque_net::connect::{AuthProvider, BlockSource, ConnectBlock, ManifestGate, SharedSecret};
@@ -85,13 +86,6 @@ impl Recording {
         }
         hex(&h.finalize())
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 /// A server that holds clients to `manifest()`, takes the bulk channels and verifies tickets under `SECRET`.

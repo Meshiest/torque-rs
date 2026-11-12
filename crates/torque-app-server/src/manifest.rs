@@ -16,6 +16,7 @@
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use torque_bytes::{from_hex, hex};
 
 /// The list's file name, beside the page.
 pub const FILE_NAME: &str = "files.json";
@@ -202,7 +203,7 @@ fn entry(value: &Value) -> Result<ManifestFile, String> {
         .get("sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("{path}: no \"sha256\" string"))?;
-    let sha256 = unhex(hash)
+    let sha256 = from_hex(hash)
         .ok_or_else(|| format!("{path}: its \"sha256\" is not 64 lowercase hex digits"))?;
     Ok(ManifestFile {
         path: path.to_string(),
@@ -235,28 +236,6 @@ fn check_path(path: &str) -> Result<(), String> {
             "the list names the path {shown:?}, which a page may not fetch"
         ))
     }
-}
-
-fn hex(bytes: &[u8; 32]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// 64 lowercase hex digits as 32 bytes.
-fn unhex(text: &str) -> Option<[u8; 32]> {
-    let digits = text.as_bytes();
-    if digits.len() != 64 {
-        return None;
-    }
-    let digit = |d: u8| match d {
-        b'0'..=b'9' => Some(d - b'0'),
-        b'a'..=b'f' => Some(d - b'a' + 10),
-        _ => None,
-    };
-    let mut out = [0u8; 32];
-    for (i, pair) in digits.as_chunks::<2>().0.iter().enumerate() {
-        out[i] = digit(pair[0])? << 4 | digit(pair[1])?;
-    }
-    Some(out)
 }
 
 #[cfg(test)]

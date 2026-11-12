@@ -1,0 +1,18 @@
+[package]
+name = "torque-bytes"
+description = "Small byte-level helpers shared across torque-rs: CRC-32, hex, base64, work-budget callbacks and an id hasher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+keywords = ["torque", "crc32", "base64", "hex", "gamedev"]
+categories = ["game-development", "encoding"]
+
+# The helpers many crates would otherwise each write: a CRC-32, hex and base64 text, the callback that charges work against a
+# budget, a cap error and a hasher for id-keyed maps. Std only and no dependency: the format readers that take untrusted bytes
+# (`torque-maps`, `torque-shapes`) and the network layer depend on it, and they stay free of external crates.
+
+[lints]
+workspace = true

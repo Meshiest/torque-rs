@@ -111,7 +111,7 @@ pub mod geometry {
     };
 }
 pub mod host;
-pub mod idhash;
+pub use torque_bytes::idhash;
 pub mod listing;
 pub mod memory;
 pub mod namehash;

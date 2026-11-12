@@ -113,27 +113,12 @@ impl CacheOwner {
 
     /// The key as 16 lower-case hexadecimal digits: what an entry's name and a remembered choice are keyed by.
     pub fn to_hex(self) -> String {
-        self.hex()
-    }
-
-    fn hex(self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+        torque_bytes::hex(&self.0)
     }
 
     /// The key from its 16 lower-case hexadecimal digits ([`to_hex`](Self::to_hex)).
     pub fn parse_hex(text: &str) -> Option<CacheOwner> {
-        CacheOwner::from_hex(text)
-    }
-
-    fn from_hex(text: &str) -> Option<CacheOwner> {
-        if text.len() != 16 || !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-            return None;
-        }
-        let mut key = [0u8; 8];
-        for (slot, pair) in key.iter_mut().zip(text.as_bytes().chunks(2)) {
-            *slot = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-        }
-        Some(CacheOwner(key))
+        torque_bytes::from_hex(text).map(CacheOwner)
     }
 }
 
@@ -247,7 +232,7 @@ pub fn index_of(listed: &[Listed]) -> Vec<IndexEntry> {
             continue;
         };
         let (stem, owner) = match stem.split_once('.') {
-            Some((stem, owner)) => match CacheOwner::from_hex(owner) {
+            Some((stem, owner)) => match CacheOwner::parse_hex(owner) {
                 Some(owner) => (stem, Some(owner)),
                 None => continue,
             },
@@ -280,7 +265,7 @@ pub fn index_of(listed: &[Listed]) -> Vec<IndexEntry> {
 
 pub(crate) fn entry_name(hash: &Hash, owner: Option<CacheOwner>) -> String {
     match owner {
-        Some(owner) => format!("{}.{}{ENTRY_SUFFIX}", hex(hash), owner.hex()),
+        Some(owner) => format!("{}.{}{ENTRY_SUFFIX}", hex(hash), owner.to_hex()),
         None => format!("{}{ENTRY_SUFFIX}", hex(hash)),
     }
 }

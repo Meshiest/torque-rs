@@ -16,6 +16,7 @@ categories = ["game-development", "development-tools::build-utils"]
 [dependencies]
 aho-corasick = "1"
 # The no-follow, capped reader of a file (`--verify` reads a bundle from elsewhere).
+torque-bytes = { path = "../torque-bytes" }
 torque-resource = { path = "../torque-resource" }
 memchr = "2.7"
 serde = { version = "1.0.219", features = ["derive"] }

@@ -19,6 +19,8 @@ autotests = false
 # The clock: `std::time` natively, the browser's clock on the web.
 web-time = "1.1"
 torque-ts-vm = { path = "../torque-ts-vm" }
+# The WebSocket accept key's base64.
+torque-bytes = { path = "../torque-bytes" }
 # The packet layer: datagram caps, the server query's request types, the bit streams.
 torque-net = { path = "../torque-net" }
 # The plugin registry the channels are added to.

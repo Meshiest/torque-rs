@@ -7,6 +7,8 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use torque_bytes::crc32;
+
 use crate::tests::{grey_png, sample, uft};
 use crate::{Font, Glyph, TextColors};
 
@@ -68,21 +70,6 @@ fn seeds() -> Vec<Vec<u8>> {
             &[(0, i32::MAX), (0xffff, i32::MIN), (0x100, -2)],
         ),
     ]
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
 }
 
 /// Changes one byte inside a PNG chunk of the file and fixes that chunk's CRC.

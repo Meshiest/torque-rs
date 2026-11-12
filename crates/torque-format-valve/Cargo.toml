@@ -16,6 +16,7 @@ categories = ["game-development", "parser-implementations"]
 
 [dependencies]
 glam = { workspace = true }
+torque-bytes = { path = "../torque-bytes" }
 torque-engine = { path = "../torque-engine" }
 torque-modelcore = { path = "../torque-modelcore" }
 # The pak lump of a map is a zip: the resource layer's hardened reader.

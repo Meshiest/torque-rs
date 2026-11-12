@@ -10,5 +10,8 @@ publish.workspace = true
 keywords = ["torque", "torquescript", "atof", "printf"]
 categories = ["text-processing", "parser-implementations"]
 
+[dependencies]
+torque-bytes = { path = "../torque-bytes" }
+
 [lints]
 workspace = true

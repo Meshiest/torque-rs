@@ -508,24 +508,7 @@ pub fn accept_key(key: &str) -> String {
 }
 
 /// Standard base64 with padding.
-pub fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
-        for i in 0..4 {
-            if i <= chunk.len() {
-                out.push(char::from(ABC[(n >> (18 - 6 * i) & 63) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
+pub use torque_bytes::base64::encode as base64;
 
 /// A response head: the status line, the content type and length, no caching, no sniffing, and whether the connection
 /// stays open.

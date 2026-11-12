@@ -22,5 +22,9 @@ zip = { version = "9.4.1", default-features = false, features = ["deflate-flate2
 libc = "0.2"
 rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 
+[dev-dependencies]
+# The CRC-32 of the hand-made archives' entries.
+torque-bytes = { path = "../torque-bytes" }
+
 [lints]
 workspace = true

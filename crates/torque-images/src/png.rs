@@ -35,6 +35,8 @@
 
 use std::io::Cursor;
 
+use torque_bytes::crc32;
+
 use crate::{Bitmap, Format, ImageError};
 
 /// The most rows: `csgMaxRowPointers = 1 << (c_maxMipLevels - 1)`, 2,048 (`readPNG` asserts fatally above it).
@@ -212,22 +214,6 @@ fn trns(w: &Walked, have_plte: bool, data: &[u8]) -> Option<Trns> {
         }
         _ => None,
     }
-}
-
-/// CRC-32 of a chunk's name and data (the PNG polynomial).
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
 }
 
 /// The raw rows as the file stores them (big-endian samples, sub-byte samples packed), deinterlaced.

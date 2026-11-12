@@ -1,6 +1,7 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use serde_json::{Value, json};
+use torque_bytes::base64::encode as b64encode;
 use torque_modelcore::math::NO_TURN;
 use torque_modelcore::{
     Animation, Detail, Image, Material, Mesh, Model, Node, Primitive, Skin, Track,
@@ -206,19 +207,7 @@ fn a_gltf_with_data_uris_and_side_files_reads_like_its_glb() {
     )
     .unwrap();
     assert_eq!(asked, [("parts/sample data.bin".to_string(), bin.len())]);
-    let b64 = {
-        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut s = String::new();
-        for c in bin.chunks(3) {
-            let w = (u32::from(c[0]) << 16)
-                | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-                | u32::from(*c.get(2).unwrap_or(&0));
-            for k in 0..=c.len() {
-                s.push(T[((w >> (18 - 6 * k)) & 63) as usize] as char);
-            }
-        }
-        s
-    };
+    let b64 = b64encode(&bin);
     doc["buffers"] = json!([{ "byteLength": bin.len(), "uri": format!("data:application/octet-stream;base64,{b64}") }]);
     let inline = read_ok(&serde_json::to_vec(&doc).unwrap()).unwrap();
     assert_eq!(side.meshes, inline.meshes);
@@ -356,19 +345,7 @@ fn oversized_counts_are_refused_before_the_work() {
             "image size",
             Box::new(|d| {
                 let png = png_header(100_000, 4);
-                let b64: String = png
-                    .chunks(3)
-                    .flat_map(|c| {
-                        const T: &[u8; 64] =
-                            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-                        let w = (u32::from(c[0]) << 16)
-                            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-                            | u32::from(*c.get(2).unwrap_or(&0));
-                        (0..=c.len())
-                            .map(move |k| T[((w >> (18 - 6 * k)) & 63) as usize] as char)
-                            .collect::<Vec<_>>()
-                    })
-                    .collect();
+                let b64 = b64encode(&png);
                 d["images"][0] = json!({ "uri": format!("data:image/png;base64,{b64}") });
             }),
         ),

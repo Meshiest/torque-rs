@@ -577,10 +577,7 @@ fn write_archive(
     let partial = out.join(format!("{name}.{}.partial", format.extension()));
     std::fs::write(&partial, &bytes).map_err(|e| format!("{}: {e}", partial.display()))?;
     std::fs::rename(&partial, &path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let sha256 = Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let sha256 = torque_bytes::hex(&Sha256::digest(&bytes));
     Ok(ArchiveReport {
         path,
         bytes: bytes.len() as u64,

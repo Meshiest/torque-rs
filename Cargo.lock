@@ -4153,6 +4153,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "torque-bytes",
  "torque-collide",
  "torque-content",
  "torque-engine",
@@ -4196,9 +4197,14 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
+ "torque-bytes",
  "torque-resource",
  "zip",
 ]
+
+[[package]]
+name = "torque-bytes"
+version = "0.1.0"
 
 [[package]]
 name = "torque-client"
@@ -4493,6 +4499,7 @@ dependencies = [
  "js-sys",
  "miniz_oxide 0.8.9",
  "png",
+ "torque-bytes",
  "torque-images",
  "ttf-parser",
  "wasm-bindgen",
@@ -4505,6 +4512,7 @@ version = "0.1.0"
 dependencies = [
  "glam 0.34.2",
  "nanomp3",
+ "torque-bytes",
  "torque-collide",
  "torque-engine",
  "torque-mapcore",
@@ -4552,6 +4560,7 @@ dependencies = [
 name = "torque-ghosts"
 version = "0.1.0"
 dependencies = [
+ "torque-bytes",
  "torque-net",
 ]
 
@@ -4582,6 +4591,7 @@ name = "torque-images"
 version = "0.1.0"
 dependencies = [
  "png",
+ "torque-bytes",
 ]
 
 [[package]]
@@ -4591,6 +4601,7 @@ dependencies = [
  "glam 0.34.2",
  "gltf",
  "serde_json",
+ "torque-bytes",
  "torque-modelcore",
  "torque-resource",
  "torque-shape-builder",
@@ -4604,6 +4615,7 @@ dependencies = [
  "criterion",
  "glam 0.34.2",
  "png",
+ "torque-bytes",
  "torque-collide",
  "torque-images",
  "torque-import",
@@ -4649,11 +4661,15 @@ dependencies = [
 [[package]]
 name = "torque-mapcore"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-maps"
 version = "0.1.0"
 dependencies = [
+ "torque-bytes",
  "torque-images",
  "torque-mapcore",
 ]
@@ -4675,6 +4691,7 @@ dependencies = [
  "sha2",
  "toml",
  "torque",
+ "torque-bytes",
  "torque-engine",
  "torque-example-minimal-engine",
  "torque-net",
@@ -4695,6 +4712,7 @@ dependencies = [
  "criterion",
  "sha2",
  "stats_alloc",
+ "torque-bytes",
 ]
 
 [[package]]
@@ -4850,6 +4868,7 @@ dependencies = [
  "criterion",
  "glam 0.34.2",
  "torque-app",
+ "torque-bytes",
  "torque-client",
  "torque-collide",
  "torque-engine",
@@ -4926,6 +4945,7 @@ dependencies = [
  "criterion",
  "glam 0.34.2",
  "rayon",
+ "torque-bytes",
  "torque-collide",
  "torque-ghost-world",
  "torque-ghosts",
@@ -4948,6 +4968,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rustix 1.1.6",
+ "torque-bytes",
  "torque-ts-vm",
  "zip",
 ]
@@ -4958,6 +4979,7 @@ version = "0.1.0"
 dependencies = [
  "ring",
  "str0m",
+ "torque-bytes",
  "torque-net",
  "torque-server",
  "tungstenite",
@@ -4992,6 +5014,7 @@ dependencies = [
  "rustls",
  "sha1",
  "str0m",
+ "torque-bytes",
  "torque-collide",
  "torque-engine",
  "torque-example-assets",
@@ -5022,6 +5045,9 @@ dependencies = [
 [[package]]
 name = "torque-shapes"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-sim"
@@ -5099,6 +5125,7 @@ dependencies = [
  "stats_alloc",
  "torque",
  "torque-app-server",
+ "torque-bytes",
  "torque-client",
  "torque-collide",
  "torque-engine",
@@ -5144,12 +5171,16 @@ dependencies = [
 [[package]]
 name = "torque-ts-text"
 version = "0.1.0"
+dependencies = [
+ "torque-bytes",
+]
 
 [[package]]
 name = "torque-ts-vm"
 version = "0.1.0"
 dependencies = [
  "foldhash 0.2.0",
+ "torque-bytes",
  "torque-ts-bytecode",
  "torque-ts-compiler",
  "torque-ts-text",

@@ -43,31 +43,12 @@ pub struct ContentSummary {
 
 /// The lower-case hexadecimal text of a hash.
 pub fn hex(hash: &Hash) -> String {
-    use std::fmt::Write;
-    let mut text = String::with_capacity(64);
-    for byte in hash {
-        let _ = write!(text, "{byte:02x}");
-    }
-    text
+    torque_bytes::hex(hash)
 }
 
 /// The hash from its hexadecimal text (lower case, 64 digits).
 pub fn from_hex(text: &str) -> Option<Hash> {
-    let bytes = text.as_bytes();
-    if bytes.len() != 64 {
-        return None;
-    }
-    let digit = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    };
-    let mut hash = [0u8; 32];
-    let (pairs, _) = bytes.as_chunks::<2>();
-    for (slot, pair) in hash.iter_mut().zip(pairs) {
-        *slot = digit(pair[0])? << 4 | digit(pair[1])?;
-    }
-    Some(hash)
+    torque_bytes::from_hex(text)
 }
 
 /// The paths of `package` that are content, spelled as the package spells them, in the order the hash takes them. `hidden` are

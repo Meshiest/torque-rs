@@ -36,6 +36,8 @@ torque-scene = { path = "../torque-scene" }
 
 [dev-dependencies]
 criterion = { workspace = true }
+# The CRC-32 of the test PNGs' chunks.
+torque-bytes = { path = "../torque-bytes" }
 # The benches' interior (`benches/scene.rs`).
 torque-interior-builder = { path = "../torque-interior-builder" }
 # The shapes' material tests build their shapes.

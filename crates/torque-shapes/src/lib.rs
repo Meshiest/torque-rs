@@ -1,6 +1,6 @@
 //! Torque shapes: `.dts` shapes and `.dsq` sequence files read as data, with no GPU.
 //!
-//! This crate has no dependency. Collision, simulation and rendering can all build on it. Nothing here reads a file by itself:
+//! This crate has no external dependency. Collision, simulation and rendering can all build on it. Nothing here reads a file by itself:
 //! the caller hands it bytes.
 //!
 //! **What is here:**
@@ -61,7 +61,8 @@ pub mod write;
 pub use shape::{Model, Shape};
 
 /// A budget callback: asked to pay `units` of work before the work is done; false when it cannot (the run stops).
-pub type Charge<'a> = &'a mut dyn FnMut(u64) -> bool;
+pub use torque_bytes::Charge;
+pub(crate) use torque_bytes::pay;
 
 /// The largest `.dts` read.
 pub const MAX_DTS_BYTES: usize = 16 << 20;
@@ -152,6 +153,12 @@ impl std::fmt::Display for ShapeError {
 
 impl std::error::Error for ShapeError {}
 
+impl From<torque_bytes::OutOfBudget> for ShapeError {
+    fn from(_: torque_bytes::OutOfBudget) -> ShapeError {
+        ShapeError::OutOfBudget
+    }
+}
+
 /// The most bytes one request through `reserved` asks the allocator for (the readers never ask for more, whatever a count in a
 /// file claims; a vector still grows past it, a push at a time, as items are really read from bytes the file holds).
 pub const MAX_ALLOC_BYTES: usize = 64 << 20;
@@ -189,15 +196,6 @@ pub(crate) fn reserved<T>(count: usize, bytes_left: usize, min_item: usize) -> V
     LARGEST_REQUEST.fetch_max(n * item, std::sync::atomic::Ordering::Relaxed);
     REQUEST_MARK.with(|m| m.set(m.get().max(n * item)));
     Vec::with_capacity(n)
-}
-
-/// Pays `units` or fails the run.
-pub(crate) fn pay(charge: &mut dyn FnMut(u64) -> bool, units: u64) -> Result<(), ShapeError> {
-    if charge(units) {
-        Ok(())
-    } else {
-        Err(ShapeError::OutOfBudget)
-    }
 }
 
 /// A cap check: `value` against `cap`, as a [`ShapeError::Cap`].

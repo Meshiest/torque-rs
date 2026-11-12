@@ -418,25 +418,6 @@ fn generate(seed: u64) -> (Gen, usize) {
     (g, volumes)
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let w = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        for k in 0..4 {
-            if k <= c.len() {
-                out.push(B64[((w >> (18 - 6 * k)) & 63) as usize] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
-}
-
 /// Torque's frame into a y-up file's.
 fn y_up(p: V3) -> [f32; 3] {
     [p[0] as f32, p[2] as f32, -p[1] as f32]
@@ -562,7 +543,7 @@ fn write_gltf(g: &Gen) -> Vec<u8> {
         accessors.join(","),
         views.join(","),
         bin.len(),
-        base64(&bin)
+        torque_bytes::base64::encode(&bin)
     )
     .into_bytes()
 }

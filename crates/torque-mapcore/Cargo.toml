@@ -13,9 +13,10 @@ categories = ["game-development", "data-structures"]
 # The format-neutral map layer: what a map is once an importer has read its files
 # (geometry, materials, collision, lightmaps, instances, environment, spawns, entities, listing). Hosting, collision and drawing
 # read these types; the importers (`torque-maps` for Torque's legacy map files, others for other formats) write them.
-# Std only, no dependency at all.
+# Std only, no external dependency (the path crate `torque-bytes` is std only too).
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 
 [lints]
 workspace = true

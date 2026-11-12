@@ -18,6 +18,7 @@ categories = ["game-development"]
 [dependencies]
 glam = { workspace = true }
 torque-app = { path = "../torque-app", default-features = false }
+torque-bytes = { path = "../torque-bytes" }
 torque-engine = { path = "../torque-engine" }
 # The ghost record's field types, the codec they are written against, and marking a server object's groups dirty.
 torque-game = { path = "../torque-game" }

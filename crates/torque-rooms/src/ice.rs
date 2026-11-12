@@ -95,17 +95,12 @@ max-bps=262144
 /// own text.
 #[must_use]
 pub fn user_id(ip: std::net::IpAddr) -> String {
-    let mut id = String::new();
     match ip.to_canonical() {
-        std::net::IpAddr::V4(v4) => v4.octets().iter().for_each(|b| {
-            let _ = write!(id, "{b:02x}");
-        }),
-        std::net::IpAddr::V6(v6) => v6.octets().iter().for_each(|b| {
-            let _ = write!(id, "{b:02x}");
-        }),
+        std::net::IpAddr::V4(v4) => torque_bytes::hex(&v4.octets()),
+        std::net::IpAddr::V6(v6) => torque_bytes::hex(&v6.octets()),
     }
-    id
 }
+
 /// The longest lifetime of a TURN credential (a room's longest life).
 pub const MAX_TTL: Duration = Duration::from_secs(48 * 3600);
 

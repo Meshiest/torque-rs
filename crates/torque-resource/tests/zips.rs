@@ -4,6 +4,7 @@
 
 use std::io::Write;
 
+use torque_bytes::crc32;
 use torque_resource::zips::{
     MAX_DIRECTORY_BYTES, MAX_END_RECORDS, MAX_ENTRIES, MAX_ENTRY_BYTES, MAX_WASTED_INFLATE,
     MAX_ZIP_BYTES, MountError, Skip, ZipMount, entry_name_ok, served_name,
@@ -37,21 +38,6 @@ fn find_all(bytes: &[u8], sig: &[u8]) -> Vec<usize> {
 const LOCAL: &[u8] = b"PK\x03\x04";
 const CENTRAL: &[u8] = b"PK\x01\x02";
 const END: &[u8] = b"PK\x05\x06";
-
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &b in data {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
-}
 
 /// One entry of a hand-made archive; every header field a test may want to lie about is a field.
 struct Raw {

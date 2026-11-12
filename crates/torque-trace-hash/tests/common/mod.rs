@@ -10,6 +10,7 @@ use torque::app::files::GameFiles;
 use torque::app::server::GameServer;
 use torque::client::net::{DatagramQueue, MemoryDatagrams, NetPolicy};
 use torque::engine::Engine;
+use torque_bytes::hex;
 use torque_client::conn::ConnGame;
 use torque_client::conn::engine_wire::EngineNonceKey;
 use torque_server::net::NetGame;
@@ -91,13 +92,6 @@ pub fn client<C: ConnGame>(
         .vm_mut()
         .set_extension(Rc::new(EngineNonceKey(CHALLENGE_KEY)));
     (client, link)
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
 }
 
 fn digest(wire: &Wire, up: bool) -> String {

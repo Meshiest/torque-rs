@@ -10,12 +10,13 @@ publish.workspace = true
 keywords = ["torque", "interior", "terrain", "map", "gamedev"]
 categories = ["game-development", "parser-implementations"]
 
-# Torque's legacy map files: `.dif` interiors, `.ter` terrains and `.dml` material
-# lists read as data. Std only: these files come from servers and download sites, so the readers are
+# lists read as data. Std only, no external dependency: these files come from servers and download sites, so the readers are
+# lists read as data. Std only (and `torque-bytes`, std only too): these files come from servers and download sites, so the readers are
 # fuzzed alone. `legacy` is the importer that makes them into the format-neutral map layer (`torque-mapcore`, std only too),
 # which hosting, collision and drawing read.
 
 [dependencies]
+torque-bytes = { path = "../torque-bytes" }
 torque-mapcore = { path = "../torque-mapcore" }
 
 [dev-dependencies]

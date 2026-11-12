@@ -8,6 +8,8 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
+use torque_bytes::crc32;
+
 use crate::jpeg::{self, Limits};
 use crate::testenc::{Enc, Rng, coarse_script, full_script};
 
@@ -80,21 +82,6 @@ fn jpeg_seeds() -> Vec<Vec<u8>> {
         Enc::random(9, 13, &[(1, 1)], 33).baseline(&[vec![0]]),
         Enc::random(8, 8, &[(1, 2), (1, 1), (1, 1)], 34).baseline(&[vec![0, 1, 2]]),
     ]
-}
-
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffffu32;
-    for &b in bytes {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
 }
 
 /// The PNG's chunks as (start, data length).

@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use torque_bytes::base64::encode as b64;
 
 fn free(_: u64) -> bool {
     true
@@ -14,25 +15,6 @@ fn opts() -> Options {
 
 fn read_json(v: &Value) -> Result<Model, ImportError> {
     read(v.to_string().as_bytes(), &opts(), &mut free)
-}
-
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn b64(bytes: &[u8]) -> String {
-    let mut out = String::new();
-    for c in bytes.chunks(3) {
-        let w = (u32::from(c[0]) << 16)
-            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
-            | u32::from(*c.get(2).unwrap_or(&0));
-        for k in 0..4 {
-            out.push(if k <= c.len() {
-                B64[((w >> (18 - 6 * k)) & 63) as usize] as char
-            } else {
-                '='
-            });
-        }
-    }
-    out
 }
 
 /// A PNG's signature and header of `w` x `h` (the reader reads no further).

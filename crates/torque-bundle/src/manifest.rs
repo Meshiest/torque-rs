@@ -6,6 +6,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use torque_bytes::hex;
 use torque_resource::plain::{PlainError, is_link, read_plain};
 
 /// The manifest's path in a bundle.
@@ -42,10 +43,6 @@ impl Entry {
             sha256: hex(&Sha256::digest(bytes)),
         }
     }
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A TOML basic string.

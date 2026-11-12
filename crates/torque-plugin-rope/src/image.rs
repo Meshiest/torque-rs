@@ -110,25 +110,11 @@ pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     if width == 0 || height == 0 || rgba.len() != width as usize * height as usize * 4 {
         return None;
     }
-    let crc = |parts: &[&[u8]]| {
-        let mut c = 0xffff_ffffu32;
-        for byte in parts.iter().flat_map(|p| p.iter()) {
-            c ^= u32::from(*byte);
-            for _ in 0..8 {
-                c = if c & 1 != 0 {
-                    (c >> 1) ^ 0xedb8_8320
-                } else {
-                    c >> 1
-                };
-            }
-        }
-        !c
-    };
     let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
         out.extend((data.len() as u32).to_be_bytes());
         out.extend(kind);
         out.extend(data);
-        out.extend(crc(&[kind, data]).to_be_bytes());
+        out.extend(torque_bytes::crc32_parts(&[kind, data]).to_be_bytes());
     };
     let mut raw = Vec::with_capacity(rgba.len() + height as usize);
     for row in rgba.chunks(width as usize * 4) {

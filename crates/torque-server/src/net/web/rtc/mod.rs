@@ -1581,6 +1581,7 @@ fn event_of(peer: &mut Peer, event: Event, sink: &mut Sink<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use torque_bytes::crc32;
 
     #[test]
     fn a_host_checks_only_addresses_it_may() {
@@ -1788,22 +1789,6 @@ a=mid:0
             route(&mut sources, relayed, &ours, true, later),
             Routed::Peer(_)
         ));
-    }
-
-    /// CRC-32 (IEEE), for STUN's FINGERPRINT.
-    fn crc32(data: &[u8]) -> u32 {
-        let mut c = !0u32;
-        for &b in data {
-            c ^= u32::from(b);
-            for _ in 0..8 {
-                c = if c & 1 != 0 {
-                    (c >> 1) ^ 0xedb8_8320
-                } else {
-                    c >> 1
-                };
-            }
-        }
-        !c
     }
 
     /// A STUN message of `kind` with `attributes`, its MESSAGE-INTEGRITY under `key` and a FINGERPRINT (RFC 5389).

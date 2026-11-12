@@ -69,25 +69,3 @@ fn an_encoded_png_reads_back_and_decodes_to_its_pixels() {
     // A flat page is small.
     assert!(encode_rgb(256, 256, &[]).len() < 1_500);
 }
-
-#[test]
-fn the_crc_eight_bytes_a_step_is_the_crc_one_byte_a_step() {
-    let bytewise = |parts: &[&[u8]]| {
-        let mut c = 0xffff_ffffu32;
-        for part in parts {
-            for &b in *part {
-                c = CRC_TABLE[((c ^ u32::from(b)) & 0xff) as usize] ^ (c >> 8);
-            }
-        }
-        !c
-    };
-    let bytes: Vec<u8> = (0u32..300)
-        .map(|i| (i.wrapping_mul(0x9e37_79b1) >> 13) as u8)
-        .collect();
-    for len in 0..bytes.len() {
-        let all = &bytes[..len];
-        assert_eq!(crc32(&[all]), bytewise(&[all]), "{len} bytes");
-        let (a, b) = all.split_at(len / 3);
-        assert_eq!(crc32(&[a, b]), bytewise(&[all]), "{len} bytes in two parts");
-    }
-}

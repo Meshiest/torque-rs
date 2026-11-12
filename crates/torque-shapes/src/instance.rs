@@ -47,7 +47,7 @@ use crate::library;
 use crate::math::{self, IDENTITY, Matrix, quat16};
 use crate::shape::{IntSet, Sequence, Shape};
 use crate::swing;
-use crate::{Charge, ShapeError};
+use crate::{Charge, ShapeError, pay};
 
 /// Nodes a six-word set (`TSIntegerSet`) can name.
 pub const SET_BITS: usize = 192;
@@ -323,14 +323,6 @@ fn sequence_dirty(s: &Sequence) -> u32 {
         flags |= DIRTY_IFL;
     }
     flags
-}
-
-fn pay(charge: Charge, units: u64) -> Result<(), ShapeError> {
-    if charge(units) {
-        Ok(())
-    } else {
-        Err(ShapeError::OutOfBudget)
-    }
 }
 
 impl ShapeInstance {
