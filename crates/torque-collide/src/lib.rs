@@ -19,7 +19,8 @@
 //!   pointers).
 //! - [`poly`]: the polygon lists `Player::updatePos`, `findContact` and `step` use, and
 //!   `Polyhedron::buildBox`.
-//! - [`collision`]: `Collision` and the 64-entry `CollisionList`.
+//! - [`collision`]: `Collision` and the 64-entry `CollisionList`, and the 250 ms queue of collisions a mover keeps for its script
+//!   callbacks ([`queue_collision`]).
 //! - [`convex`]: the convex kinds (box, ortho box, hull), the `buildConvex` builders with the seam for a game's own classes
 //!   ([`convex::ConvexBuilder`]), and the mover's working set (`Convex::updateWorkingList`).
 //! - [`mesh`]: a collision mesh at a pose as plain arrays, its polygon feed (`TSShapeInstance::buildPolyList`) and its hull
@@ -27,7 +28,8 @@
 //! - [`map`]: a Torque map's terrain and interiors, their convexes, polygon lists and rays.
 //! - [`source`]: collision a plugin contributes (boxes and convex hulls at a pose, with a type bit of their own) that a host's
 //!   container and a predicting client's world both answer for.
-//! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]).
+//! - [`types`]: the object type bits and the masks the classes query with ([`TypeMasks`]), and the types the movers, the physics
+//!   and the prediction share: the tick ([`types::TICK_MS`], [`types::TICK_SECONDS`]), [`types::WORLD_REACH`] and [`types::Move`].
 //! - [`gjk`] and [`feature`]: `GjkCollisionState` (distance, closest points, 16-iteration limit), `ConvexFeature`, the state
 //!   list and `getCollisionInfo` (vehicles).
 //! - [`hash`]: the hash of the engine's own ids ([`hash::IdMap`]).
@@ -76,7 +78,9 @@ pub mod sat;
 pub mod source;
 pub mod types;
 
-pub use collision::{Collision, CollisionList, MAX_COLLISIONS};
+pub use collision::{
+    Collision, CollisionList, MAX_COLLISION_QUEUE, MAX_COLLISIONS, QueuedCollision, queue_collision,
+};
 pub use convex::{
     Convex, ConvexBuilder, ConvexKind, ConvexSource, HullClass, HullSlot, ObjectView, WorkingSet,
     World,

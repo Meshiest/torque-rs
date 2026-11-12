@@ -8,8 +8,9 @@
 use torque_collide::ObjectId;
 use torque_collide::math::{Box3, F3, IDENTITY, Matrix, affine_inverse, mul_box};
 
-/// The tick (`TickSec`), in seconds.
-pub const DT: f32 = 0.032;
+// `DT` is the tick (`TickSec`), in seconds.
+pub use torque_collide::types::TICK_SECONDS as DT;
+pub use torque_collide::{MAX_COLLISION_QUEUE, QueuedCollision, queue_collision};
 
 /// What `Container::castRay` answers (`RayInfo`: the object, the point and the normal) and the type mask the callers read from
 /// the object at the time.
@@ -97,52 +98,4 @@ impl SceneObject {
             collision_disabled: false,
         }
     }
-}
-
-/// The most entries a collision queue holds (the queue could otherwise grow by one entry per object for 250 ms).
-pub const MAX_COLLISION_QUEUE: usize = 64;
-
-/// One entry of the collision queue: the object, its id stamp, the expiry on the sim clock, the relative velocity.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QueuedCollision {
-    pub object: Option<ObjectId>,
-    pub id: ObjectId,
-    pub expiry: u32,
-    pub vec: F3,
-}
-
-/// `ShapeBase::queueCollision(obj, vec)`: the walk drops expired entries before the match; a match not expired keeps its
-/// old vector; an expired match is refreshed; no match adds an entry at the head, 250 ms from now.
-pub fn queue_collision(q: &mut Vec<QueuedCollision>, now: u32, obj: ObjectId, vec: F3) {
-    let mut i = 0;
-    while i < q.len() {
-        let e = q[i];
-        if e.id == obj {
-            if now <= e.expiry {
-                return;
-            }
-            let e = &mut q[i];
-            e.expiry = now.wrapping_add(250);
-            e.object = Some(obj);
-            e.vec = vec;
-            return;
-        }
-        if e.expiry < now {
-            q.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-    if q.len() >= MAX_COLLISION_QUEUE {
-        return;
-    }
-    q.insert(
-        0,
-        QueuedCollision {
-            object: Some(obj),
-            id: obj,
-            expiry: now.wrapping_add(250),
-            vec,
-        },
-    );
 }

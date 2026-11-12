@@ -309,8 +309,7 @@ impl Maps {
         charge: &mut dyn FnMut(u64) -> bool,
     ) -> Result<(), Error> {
         let mut list = Vec::new();
-        i.pieces(col, charge, &mut list)
-            .map_err(|_| Error::Exhausted)?;
+        i.pieces(col, charge, &mut list)?;
         if list.len() > MAP_QUERY_HULLS {
             self.stats.dropped += list.len() - MAP_QUERY_HULLS;
             list.truncate(MAP_QUERY_HULLS);

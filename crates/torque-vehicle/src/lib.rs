@@ -63,20 +63,4 @@ pub use rigid::Rigid;
 pub use solver::BodySolver;
 pub use state::VehicleState;
 pub use tick::{MAX_SUBSTEPS, Vehicle, process_tick};
-
-/// The triggers a move carries (`MaxTriggerKeys`).
-pub const MAX_TRIGGERS: usize = 6;
-
-/// One move as `processTick` reads it (the same fields as `torque_sim::Move`; `vehicle` does not depend on `sim`, so the host
-/// converts). The null move is `None` where a move is optional, as `processTick` compares the pointer.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Move {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub roll: f32,
-    pub free_look: bool,
-    pub triggers: [bool; MAX_TRIGGERS],
-}
+pub use torque_collide::types::{MAX_TRIGGERS, Move};

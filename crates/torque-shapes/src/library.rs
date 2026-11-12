@@ -7,7 +7,7 @@
 //! this crate's own code, plain `f32` arithmetic in the order Torque's source writes it and a stable sort; a host installs
 //! another table once, before its first query, with [`install`].
 
-use std::sync::OnceLock;
+use torque_scene::Seam;
 
 use crate::math::Matrix;
 
@@ -119,21 +119,18 @@ pub fn plain_sort_threads(v: &mut [usize], cmp: ThreadCompare<'_>) {
     v.sort_by(|a, b| cmp(a, b).cmp(&0));
 }
 
-static INSTALLED: OnceLock<&'static ShapeLibrary> = OnceLock::new();
+static SEAM: Seam<ShapeLibrary> = Seam::new(&PLAIN);
 
 /// The table in use: the installed one, else [`PLAIN`].
 #[inline]
 pub fn get() -> &'static ShapeLibrary {
-    match INSTALLED.get() {
-        Some(lib) => lib,
-        None => &PLAIN,
-    }
+    SEAM.get()
 }
 
 /// Installs `library` for the rest of the process. Only the first install takes; installing the same table again is a
 /// no-op. Returns false when another table was installed first.
 pub fn install(library: &'static ShapeLibrary) -> bool {
-    std::ptr::eq(*INSTALLED.get_or_init(|| library), library)
+    SEAM.install(library)
 }
 
 #[cfg(test)]

@@ -1023,3 +1023,10 @@ fn a_query_spoofed_with_a_connected_players_address_reflects_no_more_than_any_st
         answers.len()
     );
 }
+
+#[test]
+fn the_server_the_wire_and_the_movers_share_one_tick() {
+    assert_eq!(TICK_MS, torque_net::protocol::TICK_MS);
+    assert_eq!(TICK_MS, torque_collide::types::TICK_MS);
+    assert_eq!(TICK_MS as f32 / 1000.0, torque_collide::types::TICK_SECONDS);
+}

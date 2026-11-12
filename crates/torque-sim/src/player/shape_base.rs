@@ -13,7 +13,7 @@ use torque_collide::math::F3;
 
 use super::data::PlayerData;
 use super::host::PlayerHost;
-use super::{MAX_COLLISION_QUEUE, MAX_MOUNT_DEPTH, PlayerState, QueuedCollision, net_mask};
+use super::{MAX_MOUNT_DEPTH, PlayerState, net_mask};
 use crate::Move;
 
 /// The coverage above which image slot 0 is wet (`mWaterCoverage > 0.4`, compared as `f64`).
@@ -140,37 +140,7 @@ pub(super) fn energy_level(s: &PlayerState, inherit: bool, host: &mut dyn Player
 /// `ShapeBase::queueCollision(obj, vec)`: the walk drops expired entries before the match; a match not expired keeps
 /// its old vector; an expired match is refreshed; no match adds an entry at the head, 250 ms from now.
 pub fn queue_collision(s: &mut PlayerState, now: u32, obj: ObjectId, vec: F3) {
-    let mut i = 0;
-    while i < s.collisions.len() {
-        let e = s.collisions[i];
-        if e.id == obj {
-            if now <= e.expiry {
-                return;
-            }
-            let e = &mut s.collisions[i];
-            e.expiry = now.wrapping_add(250);
-            e.object = Some(obj);
-            e.vec = vec;
-            return;
-        }
-        if e.expiry < now {
-            s.collisions.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-    if s.collisions.len() >= MAX_COLLISION_QUEUE {
-        return;
-    }
-    s.collisions.insert(
-        0,
-        QueuedCollision {
-            object: Some(obj),
-            id: obj,
-            expiry: now.wrapping_add(250),
-            vec,
-        },
-    );
+    torque_collide::queue_collision(&mut s.collisions, now, obj, vec);
 }
 
 /// `ShapeBase::notifyCollision`: each entry queued this tick (expiry `now + 250`) with an object runs the two

@@ -4114,16 +4114,6 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
 
     fn tick_controlled(&mut self, _s: &mut PlayerState, control: ObjectId, mv: Option<&sim::Move>) {
         let sim_time = self.sim_time;
-        let mv = mv.map(|m| vehicle::Move {
-            x: m.x,
-            y: m.y,
-            z: m.z,
-            yaw: m.yaw,
-            pitch: m.pitch,
-            roll: m.roll,
-            free_look: m.free_look,
-            triggers: m.triggers,
-        });
         let Some(v) = self
             .vehicle
             .as_deref_mut()
@@ -4131,7 +4121,7 @@ impl<W: PredictWorld> PlayerHost for ClientPlayerHost<'_, W> {
         else {
             return;
         };
-        v.tick(mv.as_ref(), self.world, sim_time);
+        v.tick(mv, self.world, sim_time);
     }
 }
 

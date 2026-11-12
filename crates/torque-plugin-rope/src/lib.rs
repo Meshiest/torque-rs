@@ -238,7 +238,7 @@ pub use sim::{
 use torque_render_scene::hd::DynamicObject;
 
 /// The seconds one client tick advances the ropes by (the server's tick, 32 ms).
-pub const TICK_SECONDS: f32 = 0.032;
+pub const TICK_SECONDS: f32 = torque_collide::types::TICK_SECONDS;
 
 /// The most seconds one pass of the client's loop advances the ropes by (a stalled client does not run them on in one jump).
 const MAX_TICK_SECONDS: f32 = 0.25;

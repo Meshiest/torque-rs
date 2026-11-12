@@ -1,4 +1,5 @@
-//! `Collision` and `CollisionList`: 64 entries, then `t` and `maxHeight`.
+//! `Collision` and `CollisionList`: 64 entries, then `t` and `maxHeight`; and the 250 ms queue of collisions a `ShapeBase` keeps
+//! for its script callbacks ([`QueuedCollision`], [`queue_collision`]).
 
 use crate::ObjectId;
 use crate::math::F3;
@@ -70,4 +71,57 @@ impl CollisionList {
         self.count += 1;
         true
     }
+}
+
+/// The most entries a collision queue holds (the queue could otherwise grow by one entry per object for 250 ms).
+pub const MAX_COLLISION_QUEUE: usize = 64;
+
+/// How long, in sim milliseconds, a queued collision stays before the same object may queue again.
+const QUEUE_HOLD: u32 = 250;
+
+/// One entry of the collision queue: the object (cleared once notified), its id stamp, the expiry on the sim clock, the relative
+/// velocity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueuedCollision {
+    pub object: Option<ObjectId>,
+    pub id: ObjectId,
+    pub expiry: u32,
+    pub vec: F3,
+}
+
+/// `ShapeBase::queueCollision(obj, vec)`: the walk drops expired entries (expiry below `now`) before the match; a match not
+/// expired keeps its old vector; an expired match is refreshed; no match adds an entry at the head, 250 ms from now, unless the
+/// queue holds [`MAX_COLLISION_QUEUE`].
+pub fn queue_collision(q: &mut Vec<QueuedCollision>, now: u32, obj: ObjectId, vec: F3) {
+    let mut i = 0;
+    while i < q.len() {
+        let e = q[i];
+        if e.id == obj {
+            if now <= e.expiry {
+                return;
+            }
+            let e = &mut q[i];
+            e.expiry = now.wrapping_add(QUEUE_HOLD);
+            e.object = Some(obj);
+            e.vec = vec;
+            return;
+        }
+        if e.expiry < now {
+            q.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+    if q.len() >= MAX_COLLISION_QUEUE {
+        return;
+    }
+    q.insert(
+        0,
+        QueuedCollision {
+            object: Some(obj),
+            id: obj,
+            expiry: now.wrapping_add(QUEUE_HOLD),
+            vec,
+        },
+    );
 }

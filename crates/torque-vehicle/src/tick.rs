@@ -21,8 +21,8 @@ pub const MAX_SUBSTEPS: u32 = 64;
 /// Work units charged per sub-step (the collision queries charge their own).
 pub const SUBSTEP_WORK: u64 = 64;
 
-/// The tick (`TickSec`), in seconds.
-pub const DT: f32 = 0.032;
+// `DT` is the tick (`TickSec`), in seconds.
+pub use torque_collide::types::TICK_SECONDS as DT;
 
 /// A vehicle class: its datablock, its `updateMove` and its sub-step.
 pub trait Kind: Sized {

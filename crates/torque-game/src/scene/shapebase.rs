@@ -254,7 +254,7 @@ impl Default for Fade {
 pub const FADE_MASK: u32 = 0x100;
 
 /// The step `ShapeBase::processTick` adds to the elapsed time (0.032f as a double).
-const FADE_STEP: f32 = 0.032;
+const FADE_STEP: f32 = collide::types::TICK_SECONDS;
 
 /// `startFade(timeMS, delayMS, fadeOut)` (the console method): each time is `sscanf("%d")` read as an UNSIGNED number (a
 /// negative one is 2^32 more), made a float and divided by 1000; the flag is `dAtob`. The ghost is
@@ -520,7 +520,7 @@ fn put_state(vm: &mut Vm, id: ObjId, state: Box<ShapeBaseState>) {
 }
 
 /// The server's tick step (`TickSec`, the float 0.032).
-pub const THREAD_TICK_SEC: f32 = 0.032;
+pub const THREAD_TICK_SEC: f32 = collide::types::TICK_SECONDS;
 
 /// One slot of `ShapeBase::advanceThreads(dt)` (the first call of `ShapeBase::processTick`'s server branch): a
 /// thread on a sequence that does not cycle and has not ended ends when its position (the transition's while in one) reaches 1

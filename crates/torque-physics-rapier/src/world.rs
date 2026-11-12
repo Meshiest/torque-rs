@@ -165,6 +165,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl From<crate::Exhausted> for Error {
+    fn from(_: torque_collide::Exhausted) -> Self {
+        Error::Exhausted
+    }
+}
+
 /// What a step did.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StepReport {

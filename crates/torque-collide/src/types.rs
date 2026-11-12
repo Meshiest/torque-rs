@@ -1,5 +1,6 @@
 //! The object type bits (`mTypeMask`, the `SimObjectTypes` of Torque's `objectTypes.h`) and the masks the classes query the
-//! container with and test their hits against ([`TypeMasks`]).
+//! container with and test their hits against ([`TypeMasks`]), and the plain types the movers, the physics and the prediction
+//! share: the tick ([`TICK_MS`], [`TICK_SECONDS`]), the physics world's reach ([`WORLD_REACH`]) and one control [`Move`].
 //!
 //! The classes of this library test only the role bits below on what they hit (a Player, an Item, a trigger ...), and read
 //! every container and ray mask from the host's [`TypeMasks`]. A game that claims bits of its own for its classes, or queries
@@ -139,3 +140,36 @@ impl Default for TypeMasks {
         TypeMasks::TGE
     }
 }
+
+/// The server's tick, in milliseconds (TGE's 32 ms). The wire's own copy is torque-net's `protocol::TICK_MS`; torque-server's
+/// tests pin the two together.
+pub const TICK_MS: u32 = 32;
+/// The server's tick (`TickSec`), in seconds: the step every mover takes. It is the f32 nearest 0.032, which is also
+/// `TICK_MS as f32 / 1000.0`.
+pub const TICK_SECONDS: f32 = 0.032;
+
+/// The farthest from the origin along an axis a physics body or a prop may be, in world units. A pose translation has a wider
+/// limit of its own ([`source::MAX_COORD`](crate::source::MAX_COORD)).
+pub const WORLD_REACH: f32 = 100_000.0;
+
+/// The triggers a move carries (`MaxTriggerKeys`).
+pub const MAX_TRIGGERS: usize = 6;
+
+/// One move as `processTick` reads it: the floats the wire's raw values were turned into, the free-look flag and the triggers.
+/// The movers have no dependency on a protocol crate, so the host converts a wire move to this one. The null move is `None`
+/// where a move is optional, as `processTick` compares the pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Move {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub roll: f32,
+    pub free_look: bool,
+    pub triggers: [bool; MAX_TRIGGERS],
+}
+
+#[cfg(test)]
+#[path = "types_tests.rs"]
+mod tests;

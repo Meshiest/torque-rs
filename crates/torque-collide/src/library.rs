@@ -6,7 +6,7 @@
 //! entry of [`MathLibrary`] is called through [`get`]. [`PLAIN`] holds this crate's own code, plain `f32` arithmetic in the
 //! order Torque's source writes it; a host installs another table once, before its first query, with [`install`].
 
-use std::sync::OnceLock;
+pub use torque_scene::Seam;
 
 use crate::gjk::GjkState;
 use crate::math::{F3, Matrix, Plane};
@@ -105,21 +105,18 @@ pub static PLAIN: MathLibrary = MathLibrary {
     world_sphere: crate::math::plain::world_sphere,
 };
 
-static INSTALLED: OnceLock<&'static MathLibrary> = OnceLock::new();
+static SEAM: Seam<MathLibrary> = Seam::new(&PLAIN);
 
 /// The table in use: the installed one, else [`PLAIN`].
 #[inline]
 pub fn get() -> &'static MathLibrary {
-    match INSTALLED.get() {
-        Some(lib) => lib,
-        None => &PLAIN,
-    }
+    SEAM.get()
 }
 
 /// Installs `library` for the rest of the process. Only the first install takes; installing the same table again is a
 /// no-op. Returns false when another table was installed first.
 pub fn install(library: &'static MathLibrary) -> bool {
-    std::ptr::eq(*INSTALLED.get_or_init(|| library), library)
+    SEAM.install(library)
 }
 
 #[cfg(test)]

@@ -6,11 +6,10 @@
 //! the order Torque's source writes it and a stable sort; a host installs another table once, before its first query, with
 //! [`install`].
 
-use std::sync::OnceLock;
-
 use crate::bins::{self, BinGeometry, CellVisit};
 use crate::geometry::{self, Charge, Exhausted};
 use crate::query;
+use crate::seam::Seam;
 use crate::transform::{self, Matrix};
 
 /// A point or a vector.
@@ -85,21 +84,18 @@ pub static PLAIN: SceneLibrary = SceneLibrary {
     sort_by_distance: query::plain::sort_by_distance,
 };
 
-static INSTALLED: OnceLock<&'static SceneLibrary> = OnceLock::new();
+static SEAM: Seam<SceneLibrary> = Seam::new(&PLAIN);
 
 /// The table in use: the installed one, else [`PLAIN`].
 #[inline]
 pub fn get() -> &'static SceneLibrary {
-    match INSTALLED.get() {
-        Some(lib) => lib,
-        None => &PLAIN,
-    }
+    SEAM.get()
 }
 
 /// Installs `library` for the rest of the process. Only the first install takes; installing the same table again is a
 /// no-op. Returns false when another table was installed first.
 pub fn install(library: &'static SceneLibrary) -> bool {
-    std::ptr::eq(*INSTALLED.get_or_init(|| library), library)
+    SEAM.install(library)
 }
 
 #[cfg(test)]

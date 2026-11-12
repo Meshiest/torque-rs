@@ -4,9 +4,8 @@
 //! Every entry of [`VehicleLibrary`] is called through [`get`]. [`PLAIN`] holds this crate's own code, plain `f32` arithmetic
 //! in the order Torque's source writes it; a host installs another table once, before its first step, with [`install`].
 
-use std::sync::OnceLock;
-
 use torque_collide::CollisionList;
+use torque_collide::library::Seam;
 use torque_collide::math::{Box3, F3, Matrix};
 
 use crate::data::{FlyingVehicleData, VehicleData, WheeledVehicleData};
@@ -108,19 +107,16 @@ pub static PLAIN: VehicleLibrary = VehicleLibrary {
     set_angular_velocity: crate::state::plain_set_angular_velocity,
 };
 
-static INSTALLED: OnceLock<&'static VehicleLibrary> = OnceLock::new();
+static SEAM: Seam<VehicleLibrary> = Seam::new(&PLAIN);
 
 /// The table in use: the installed one, else [`PLAIN`].
 #[inline]
 pub fn get() -> &'static VehicleLibrary {
-    match INSTALLED.get() {
-        Some(lib) => lib,
-        None => &PLAIN,
-    }
+    SEAM.get()
 }
 
 /// Installs `library` for the rest of the process. Only the first install takes; installing the same table again is a
 /// no-op. Returns false when another table was installed first.
 pub fn install(library: &'static VehicleLibrary) -> bool {
-    std::ptr::eq(*INSTALLED.get_or_init(|| library), library)
+    SEAM.install(library)
 }

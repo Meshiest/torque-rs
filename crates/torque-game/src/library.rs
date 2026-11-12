@@ -9,8 +9,7 @@
 //! `T3D/camera.cpp` and `ts/tsThread.cpp` (Copyright (c) 2012 GarageGames, LLC); `T3D/player.cpp` and `T3D/shapeBase.cpp`
 //! (Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.). The code here is this crate's own.
 
-use std::sync::OnceLock;
-
+use torque_scene::Seam;
 use torque_scene::transform::Matrix;
 
 /// A point or a vector.
@@ -67,21 +66,18 @@ pub static PLAIN: GameLibrary = GameLibrary {
     box_differs: plain::box_differs,
 };
 
-static INSTALLED: OnceLock<&'static GameLibrary> = OnceLock::new();
+static SEAM: Seam<GameLibrary> = Seam::new(&PLAIN);
 
 /// The table in use: the installed one, else [`PLAIN`].
 #[inline]
 pub fn get() -> &'static GameLibrary {
-    match INSTALLED.get() {
-        Some(lib) => lib,
-        None => &PLAIN,
-    }
+    SEAM.get()
 }
 
 /// Installs `library` for the rest of the process. Only the first install takes; installing the same table again is a
 /// no-op. Returns false when another table was installed first.
 pub fn install(library: &'static GameLibrary) -> bool {
-    std::ptr::eq(*INSTALLED.get_or_init(|| library), library)
+    SEAM.install(library)
 }
 
 /// The rotation about x of `MatrixF::set(EulerF(angle, 0, 0))`, or the identity for an angle of 0.

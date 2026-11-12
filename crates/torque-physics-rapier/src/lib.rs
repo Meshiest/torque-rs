@@ -71,7 +71,7 @@ pub use world::{BodyDesc, BodyId, BodyState, Error, Motion, StepReport, World};
 pub use rapier3d;
 
 /// One server tick, in seconds (32 ms): the step every [`World`] takes.
-pub const TICK: f32 = 0.032;
+pub const TICK: f32 = torque_collide::types::TICK_SECONDS;
 
 /// The notice of the Apache-2.0 crates this crate builds on (the crate's `NOTICE` file).
 pub const NOTICE: &str = include_str!("../NOTICE");

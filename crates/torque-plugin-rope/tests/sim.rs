@@ -7,7 +7,7 @@ use torque_plugin_rope::{
     RopeError, RopeId, RopeParams, RopeStyle, RopeWorld,
 };
 
-const TICK: f32 = 0.032;
+const TICK: f32 = torque_collide::types::TICK_SECONDS;
 
 fn params(segments: usize, length: f32) -> RopeParams {
     RopeParams {

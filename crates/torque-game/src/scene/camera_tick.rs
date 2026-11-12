@@ -31,7 +31,7 @@ pub const MOVEMENT_SPEED_DEFAULT: f32 = 40.0;
 /// `MaxPitch`: how far the camera pitches up or down.
 pub const MAX_PITCH: f32 = 1.3962;
 /// `TickSec`: one tick in seconds.
-const TICK_SEC: f32 = 0.032;
+const TICK_SEC: f32 = collide::types::TICK_SECONDS;
 /// `CameraRadius`: how far the orbit eye stays off a surface in its way.
 pub const CAMERA_RADIUS: f32 = 0.05;
 /// The types `validateEyePoint`'s cast stops at.

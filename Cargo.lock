@@ -5060,6 +5060,7 @@ name = "torque-shapes"
 version = "0.1.0"
 dependencies = [
  "torque-bytes",
+ "torque-scene",
 ]
 
 [[package]]

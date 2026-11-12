@@ -8,7 +8,7 @@ use crate::pass::LinesPass;
 use crate::sim::Ropes;
 
 /// The seconds one client tick runs the ropes on by (the tick is 32 ms).
-const TICK: f32 = 0.032;
+const TICK: f32 = torque_collide::types::TICK_SECONDS;
 
 /// Ropes for a game's clients. Add it beside `DefaultPlugins`.
 #[derive(Clone, Copy, Default, PluginId)]

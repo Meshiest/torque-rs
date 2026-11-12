@@ -41,7 +41,7 @@ pub const TIME_ANIMATE_MASK: u32 = 1 << 1;
 /// ScatterSky's record bit.
 pub const SCATTER_UPDATE_MASK: u32 = 1 << 0;
 /// A tick's seconds.
-const TICK_SECONDS: f32 = 0.032;
+const TICK_SECONDS: f32 = collide::types::TICK_SECONDS;
 
 fn float(vm: &Vm, id: ObjId, name: &'static [u8], default: f32) -> f32 {
     match value_of(vm, id, name) {

@@ -127,7 +127,7 @@ mod tests {
         (0..3).map(|k| (a[k] - b[k]).powi(2)).sum::<f32>().sqrt()
     }
 
-    const DT: f32 = 0.032;
+    use crate::DT;
 
     #[test]
     fn a_hard_tether_ends_the_step_at_its_length_and_leaves_a_player_inside_it_alone() {

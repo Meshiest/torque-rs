@@ -48,6 +48,9 @@ pub use transform::{
     ImageMuzzle, affine_inverse, eye_transform, mount_transform, muzzle_transform,
 };
 pub use update_move::{JUMP_SKIP_CONTACTS_MAX, can_jump};
+// `DT` is the tick (`TickSec`), in seconds.
+pub use crate::DT;
+pub use torque_collide::{MAX_COLLISION_QUEUE, QueuedCollision};
 
 use crate::Move;
 
@@ -60,13 +63,8 @@ pub const MAX_POS_ITERATIONS: u32 = 5;
 pub const MAX_YAW_WRAPS: u32 = 64;
 /// The longest mount chain `getEnergyLevel` walks.
 pub const MAX_MOUNT_DEPTH: usize = 32;
-/// The most entries the collision queue holds (it could otherwise grow by one entry per object for 250 ms).
-pub const MAX_COLLISION_QUEUE: usize = 64;
 /// The touches `findContact` queues for the host in one search ([`PlayerHost::contact_touch`]); later ones are offered as full.
 pub const MAX_CONTACT_TOUCHES: usize = 10;
-
-/// The tick (`TickSec`), in seconds.
-pub const DT: f32 = 0.032;
 
 /// Net mask bits the step sets (`setMaskBits`).
 pub mod net_mask {
@@ -78,15 +76,6 @@ pub mod net_mask {
     pub const JUMP: u32 = 0x1000_0000;
     /// Image wet.
     pub const WET: u32 = 0x0010_0000;
-}
-
-/// One entry of the collision queue: the object, its id stamp, the expiry on the sim clock, the relative velocity.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QueuedCollision {
-    pub object: Option<ObjectId>,
-    pub id: ObjectId,
-    pub expiry: u32,
-    pub vec: F3,
 }
 
 /// The controlling client.

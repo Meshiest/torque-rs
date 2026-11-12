@@ -46,7 +46,7 @@ impl Default for Limits {
             max_compound_hulls: 64,
             max_contacts: 16_384,
             max_cells_per_query: 64,
-            max_coordinate: 100_000.0,
+            max_coordinate: torque_collide::types::WORLD_REACH,
             max_speed: 500.0,
             max_angular_speed: 200.0,
             max_half_extent: 512.0,

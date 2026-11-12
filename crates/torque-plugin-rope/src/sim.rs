@@ -50,7 +50,7 @@ pub const MAX_DRAWN_PIN_SPEED: f32 = 400.0;
 /// The ticks without a drawn frame after which a client's tick runs the ropes itself (a client that does not draw).
 pub const IDLE_TICKS: u32 = 8;
 /// The farthest from the origin a point may be (world units).
-pub const MAX_COORD: f32 = 100_000.0;
+pub const MAX_COORD: f32 = torque_collide::types::WORLD_REACH;
 /// The fastest a point may move (units a second).
 pub const MAX_SPEED: f32 = 200.0;
 /// The fastest a pinned end moves toward its anchor (units a second): an anchor that jumps is followed over a few ticks.

@@ -35,26 +35,10 @@ mod scene;
 mod testworld;
 
 pub use scene::{DT, MAX_COLLISION_QUEUE, QueuedCollision, RayHit, SceneObject, queue_collision};
+pub use torque_collide::types::{MAX_TRIGGERS, Move};
 
 /// An object's key in the process list: the id the scripts see.
 pub type ObjectKey = u32;
-
-/// The triggers a move carries (`MaxTriggerKeys`).
-pub const MAX_TRIGGERS: usize = 6;
-
-/// One move as `processTick` reads it: the floats the wire's raw values were turned into, the
-/// free-look flag and the triggers. This crate has no dependency on a protocol crate, so the host converts.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Move {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-    pub yaw: f32,
-    pub pitch: f32,
-    pub roll: f32,
-    pub free_look: bool,
-    pub triggers: [bool; MAX_TRIGGERS],
-}
 
 /// An object the process list ticks (`GameBase::processTick`). `Cx` is what a tick needs from the host (the script
 /// VM, the budget of the script calls): this crate stays std only, the host's adapters implement this over their own context type.

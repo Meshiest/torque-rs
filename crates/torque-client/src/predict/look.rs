@@ -38,7 +38,7 @@ use super::drive::{self, DrivenVehicle};
 /// The most FlyingVehicle ghosts warped at once.
 pub const MAX_FLYING: usize = 64;
 /// A tick (ms).
-const TICK_MS: f32 = 32.0;
+const TICK_MS: f32 = collide::types::TICK_MS as f32;
 
 /// A wheel's spin after `dt` seconds at `avel` (`advanceTime`: `apos = frac(avel * dt / 2pi + apos)`).
 pub fn spin(apos: f32, avel: f32, dt: f32) -> f32 {

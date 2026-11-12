@@ -17,7 +17,7 @@ pub const POS_SCALE: f64 = 1024.0;
 /// Steps a unit a second of speed (and a radian a second of spin).
 pub const VEL_SCALE: f64 = 256.0;
 /// The farthest a prop may be from the origin along an axis (the physics world's reach).
-pub const MAX_COORD: f32 = 100_000.0;
+pub const MAX_COORD: f32 = torque_collide::types::WORLD_REACH;
 /// The fastest a prop may move, units a second.
 pub const MAX_SPEED: f32 = 500.0;
 /// The fastest it may spin, radians a second.

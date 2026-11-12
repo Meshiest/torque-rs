@@ -53,20 +53,6 @@ use crate::scene::object as scene;
 /// The objects the scan of one sub-step looks at, at most (a bound on the callback list).
 pub const SIM_VEHICLE_SCAN: usize = 256;
 
-/// The `vehicle` form of a `sim` move.
-pub fn vehicle_move(m: &::sim::Move) -> Move {
-    Move {
-        x: m.x,
-        y: m.y,
-        z: m.z,
-        yaw: m.yaw,
-        pitch: m.pitch,
-        roll: m.roll,
-        free_look: m.free_look,
-        triggers: m.triggers,
-    }
-}
-
 /// A vehicle's entry in the process list.
 pub struct VehicleTicker {
     pub id: ObjId,
@@ -79,13 +65,12 @@ impl ::sim::Ticking<TickCx<'_>> for VehicleTicker {
         self.class
     }
 
-    fn process_tick(&mut self, cx: &mut TickCx<'_>, mv: Option<&::sim::Move>) {
+    fn process_tick(&mut self, cx: &mut TickCx<'_>, mv: Option<&Move>) {
         // The process-tick byte is clear while something controls the vehicle: its controller ticks it.
         if mv.is_none() && super::mount::controlling_object(cx.vm, self.id).is_some() {
             return;
         }
-        let mv = mv.map(vehicle_move);
-        let _ = tick(cx.vm, cx.calls, &self.env, self.id, mv.as_ref());
+        let _ = tick(cx.vm, cx.calls, &self.env, self.id, mv);
     }
 }
 
@@ -96,7 +81,7 @@ pub fn tick_controlled(
     vm: &mut Vm,
     calls: &mut dyn TriggerCalls,
     id: ObjId,
-    mv: Option<&::sim::Move>,
+    mv: Option<&Move>,
 ) -> Result<(), VmError> {
     if !super::vehicle::is_vehicle(vm, id) {
         return Ok(());
@@ -104,8 +89,7 @@ pub fn tick_controlled(
     let Some(env) = env_of(vm, id) else {
         return Ok(());
     };
-    let mv = mv.map(vehicle_move);
-    tick(vm, calls, &env, id, mv.as_ref())
+    tick(vm, calls, &env, id, mv)
 }
 
 /// The tires' and springs' fields of the wheels again (read through the datablocks every step).

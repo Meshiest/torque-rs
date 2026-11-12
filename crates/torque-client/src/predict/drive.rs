@@ -1136,7 +1136,7 @@ pub const AGE_MIN_SPEED: f32 = 1.0;
 pub const AGE_MAX_TRAVEL: f32 = 3.0;
 pub const AGE_MAX_TURN: f32 = 0.5;
 /// A tick (seconds).
-const TICK_S: f32 = 0.032;
+const TICK_S: f32 = collide::types::TICK_SECONDS;
 
 /// A vehicle the client runs on its own (a ghost of a vehicle it does not drive): its step's object, and the warp.
 #[derive(Debug, Clone)]

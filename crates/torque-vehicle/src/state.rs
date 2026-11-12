@@ -18,6 +18,8 @@ use torque_collide::{
     CollisionList, Convex, ConvexKind, Exhausted, HullClass, ObjectId, WorkingSet, types,
 };
 
+pub use torque_collide::{MAX_COLLISION_QUEUE, QueuedCollision};
+
 use crate::Move;
 use crate::data::{ShapeBaseData, VehicleData};
 use crate::host::VehicleHost;
@@ -28,8 +30,6 @@ use crate::rigid::Rigid;
 /// never bites) and at most 50 passes are made; the 50th pass ends the call with "no collision".
 pub const RESOLVE_ENTRIES: usize = 200;
 pub const RESOLVE_PASSES: u32 = 50;
-/// The cap on the entries of the collision queue (one entry per object for 250 ms; otherwise unbounded).
-pub const MAX_COLLISION_QUEUE: usize = 64;
 /// The id the vehicle's own body convex has in its state list (the working set numbers its entries from 1).
 pub const BODY_CONVEX: u64 = u64::MAX;
 
@@ -45,15 +45,6 @@ pub mod net_mask {
     pub const WHEELS: u32 = 0x80;
     /// `useCreateHeight`.
     pub const INITIAL: u32 = 0x2;
-}
-
-/// One entry of the collision queue: the object (cleared once notified), its id, the stamp, the vector.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct QueuedCollision {
-    pub object: Option<ObjectId>,
-    pub id: ObjectId,
-    pub expiry: u32,
-    pub vec: F3,
 }
 
 /// The vehicle's state. Plain data, so a run can start from any state.
@@ -502,40 +493,9 @@ pub fn update_move(
     s.set_energy_level(e2, &db.shape, host);
 }
 
-/// `queueCollision(obj, vec)`: the walk drops expired entries (stamp below now) before the match; a match not expired
-/// keeps its old vector; an expired match is refreshed; no match adds an entry at the head stamped `now + 250`.
+/// `queueCollision(obj, vec)` on the vehicle's queue (the rules are [`torque_collide::queue_collision`]'s).
 pub fn queue_collision(s: &mut VehicleState, now: u32, obj: ObjectId, vec: F3) {
-    let mut i = 0;
-    while i < s.collisions.len() {
-        let e = s.collisions[i];
-        if e.id == obj {
-            if now <= e.expiry {
-                return;
-            }
-            let e = &mut s.collisions[i];
-            e.expiry = now.wrapping_add(250);
-            e.object = Some(obj);
-            e.vec = vec;
-            return;
-        }
-        if e.expiry < now {
-            s.collisions.remove(i);
-        } else {
-            i += 1;
-        }
-    }
-    if s.collisions.len() >= MAX_COLLISION_QUEUE {
-        return;
-    }
-    s.collisions.insert(
-        0,
-        QueuedCollision {
-            object: Some(obj),
-            id: obj,
-            expiry: now.wrapping_add(250),
-            vec,
-        },
-    );
+    torque_collide::queue_collision(&mut s.collisions, now, obj, vec);
 }
 
 /// `ShapeBase::notifyCollision`: each entry stamped `now + 250` that still has its object runs the two

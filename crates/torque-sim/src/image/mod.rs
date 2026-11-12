@@ -57,7 +57,7 @@ pub const MAX_STATES: usize = 31;
 pub type DbId = u32;
 
 /// The step the object's tick gives every slot (`TickSec`), in seconds.
-pub const IMAGE_DT: f32 = 0.032;
+pub const IMAGE_DT: f32 = crate::DT;
 /// `setMaskBits(0x100000 << slot)`: the network mask bit of slot `slot`'s image block (bits 20..23).
 pub const fn slot_mask(slot: usize) -> u32 {
     0x10_0000u32 << (slot as u32 & 31)
