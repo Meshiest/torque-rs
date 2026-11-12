@@ -147,6 +147,7 @@ fn the_sun_rays_constants_are_the_scenes() {
         ("SUN_RAYS", c::SUN_RAYS),
         ("SUN_SEGMENTS", c::SUN_SEGMENTS),
         ("SUN_SEGMENT_STEPS", c::SUN_SEGMENT_STEPS),
+        ("REFINED_STEPS", c::REFINED_STEPS),
     ] {
         assert_eq!(constant("clouds.wgsl", name) as u32, value, "{name}");
     }
@@ -154,11 +155,14 @@ fn the_sun_rays_constants_are_the_scenes() {
 
 #[test]
 fn the_cloud_cubes_uniform_places_and_mips_are_the_shaders() {
-    use crate::clouds::{CLOUD_CUBE_MIPS, CLOUD_CUBE_SIZE, LAYER_VEC4S, LOD_VEC4, MARCH_VEC4};
+    use crate::clouds::{
+        CLOUD_CUBE_MIPS, CLOUD_CUBE_SIZE, LAYER_VEC4S, LOD_VEC4, MARCH_VEC4, UPPER_SCALE,
+        UPPER_VEC4,
+    };
     use torque_render_scene::hd::clouds::MAX_LAYERS;
     use torque_render_scene::hd::reflect::CAPTURE_SIZE;
-    // The cube's march changes the clouds' uniform's `march` and `lod` (clouds.rs): their places in clouds.wgsl's struct, the
-    // layers first and then a vec4 a field.
+    // The cube's march changes the clouds' uniform's `march`, `lod` and `upper` (clouds.rs): their places in clouds.wgsl's
+    // struct, the layers first and then a vec4 a field.
     let text = FILES.iter().find(|(n, _)| *n == "clouds.wgsl").unwrap().1;
     let body = text
         .split("struct Clouds {")
@@ -178,6 +182,12 @@ fn the_cloud_cubes_uniform_places_and_mips_are_the_shaders() {
     };
     assert_eq!(at("march"), MARCH_VEC4);
     assert_eq!(at("lod"), LOD_VEC4);
+    assert_eq!(at("upper"), UPPER_VEC4);
+    // The upper volumes' image is made at the size the march reads it at.
+    assert_eq!(
+        constant("clouds.wgsl", "UPPER_SCALE"),
+        f64::from(UPPER_SCALE)
+    );
     // reflect.wgsl reads the cube's mips as many levels down from the sky cube's as the sky cube is wider, and the cube has
     // the mips its reads take (the water's clouds and the reflections' fog).
     let shift = f64::from((CAPTURE_SIZE / CLOUD_CUBE_SIZE).ilog2());

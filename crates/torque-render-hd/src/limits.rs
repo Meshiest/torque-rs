@@ -1,10 +1,11 @@
 //! What the enhanced renderer's pipelines need of the device's limits, checked before they are made.
 //!
-//! The forward and water pipelines bind the frame, texture, sky and reflection groups together, and the volumetric pass the frame,
-//! its own and the sky group: more sampled textures in one stage than WebGPU's default of 16 (which an adapter in a browser
-//! reports). Each pipeline's groups are counted here from the same binding lists the layouts are made from, so the count cannot
-//! drift from them. [`check`] compares it with a device's limits and names each one that falls short; the renderer's
-//! constructors ([`crate::HdWorld::try_new`]) return that as an error so a caller can fall back to a renderer that needs less.
+//! The forward and water pipelines bind the frame, texture, sky and reflection groups together, and the volumetric pass and the
+//! clouds' march the frame, their own and the sky group: more sampled textures in one stage than WebGPU's default of 16 (which an
+//! adapter in a browser reports). Each pipeline's groups are counted here from the same binding lists the layouts are made from,
+//! so the count cannot drift from them. [`check`] compares it with a device's limits and names each one that falls short; the
+//! renderer's constructors ([`crate::HdWorld::try_new`]) return that as an error so a caller can fall back to a renderer that
+//! needs less.
 
 use std::fmt;
 
@@ -71,7 +72,15 @@ pub(crate) fn pipeline_groups() -> Vec<(&'static str, Vec<Vec<wgpu::BindGroupLay
         ),
         (
             "volumetric light",
-            vec![frame, crate::volumetric::layout_entries(), sky],
+            vec![
+                frame.clone(),
+                crate::volumetric::layout_entries(),
+                sky.clone(),
+            ],
+        ),
+        (
+            "clouds' march",
+            vec![frame, crate::clouds::march_entries(), sky],
         ),
     ]
 }

@@ -34,6 +34,16 @@
 //! - A stamped object whose stamp its run holds is not encoded or written again (bench `upload_loose 64 figures kept`).
 //! - The translucent draws are sorted as one flat list (no list an object); the opaque frame's copy is taken only when a draw
 //!   after it or an extension's pass may read it.
+//!
+//! The volumetric clouds' GPU time (the `clouds` mark of `track-profile --place crest` and `level-profile --view valley-sea`,
+//! under the bench lock; the `clouds` row of the `ghosting` example for their history, and the vehicle demo's `--cloud-shots`
+//! against main's for their look) rests on `clouds.wgsl`'s refined march looking for cloud in at most `REFINED_STEPS` long steps
+//! and finding its edge by halving, fine steps no shorter than a few texels' footprints that lengthen behind the first dense
+//! ones and end at `FINE_OPAQUE`, a light march of `LIGHT_SAMPLES` samples whatever its reach, the octaves' phases worked out
+//! once a ray, and the volumes over the lowest layer (a layer of elements: always the even march) drawn at a quarter of the
+//! march's texels (`UPPER_SCALE`). The shader's
+//! constants that the Rust side shares are held to it by `the_sun_rays_constants_are_the_scenes` and
+//! `the_cloud_cubes_uniform_places_and_mips_are_the_shaders`.
 
 use glam::Vec3;
 use torque_render_core::wgpu;

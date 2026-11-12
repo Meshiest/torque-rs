@@ -15,11 +15,14 @@
 // - fs_march: the view ray through the texel's centre (the unjittered camera, from the eye wherever it is: a segment that starts
 //   at the eye takes its steps closer near it), through each layer no farther than its reach, a volume's segment held to
 //   SEGMENT_MAX so the steps stay short, in the layer's steps, the start offset by the blue noise turned by the golden ratio each
-//   frame (the history averages it). A volume's
+//   frame (the history averages it); with the look's refined march, long steps that only look for cloud and fine ones through it
+//   (march_refined). The volumes over the lowest layer (the altocumulus) are drawn apart by fs_upper at a quarter of the march's
+//   texels and their image taken in their place (MARCH_LOWER). A volume's
 //   density: the weather map's coverage (puffs with clear sky between), its height profile, the Perlin-Worley shape eroded by its
 //   Worley fBm, a contrast curve that sharpens the edges more toward the tops, then the detail volume's erosion. The light: Beer's
-//   law toward the sun in multiple-scattering octaves (Wrenninge 2013: each octave's energy, extinction and eccentricity scaled
-//   down) of a dual-lobe Henyey-Greenstein phase, a powder term away from the sun, the sun's light through the atmosphere from the
+//   law toward the sun (a light march of at most LIGHT_SAMPLES samples over doubling strides, sun_depth) in multiple-scattering
+//   octaves (Wrenninge 2013: each octave's energy, extinction and eccentricity scaled down; their phases worked out once a ray) of
+//   a dual-lobe Henyey-Greenstein phase, a powder term away from the sun, the sun's light through the atmosphere from the
 //   layer's height (the transmittance table toward it, over its value overhead: a low sun lights them peach and pink, and a high
 //   layer keeps the sun after it has set for the low deck); the ambient from the sky above at the tops and the horizon and the
 //   ground below (the atmosphere's own sky: its light; the server's box: its mean colours), dimmed in the cloud's lower parts.
@@ -97,6 +100,8 @@ struct Clouds {
     // is the look's own sunlight (the air's transmittance dims it as well as coloring it); z: the refined march's fine step (units; 0
     // the even march), w: its most samples as a multiple of the layer's steps.
     weather: vec4<f32>,
+    // x: 1 when the march takes the upper volumes from their own image (fs_upper's) instead of marching them.
+    upper: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
@@ -107,6 +112,8 @@ struct Clouds {
 @group(1) @binding(4) var blue_tex: texture_2d<f32>;
 @group(1) @binding(5) var repeat_samp: sampler;
 @group(1) @binding(6) var cirrus_tex: texture_2d<f32>;
+// The upper volumes' image (fs_upper's: their light and transmittance).
+@group(1) @binding(7) var upper_tex: texture_2d<f32>;
 // The resolve's group (its own layout; bindings apart from the march's).
 @group(1) @binding(10) var<uniform> resolve_clouds: Clouds;
 @group(1) @binding(11) var current_tex: texture_2d<f32>;
@@ -147,8 +154,25 @@ const CIRRUS_VEIL: vec4<f32> = vec4<f32>(0.55, 0.9, 0.65, 0.5);
 const SPIN_EASE: f32 = 0.35;
 // The view's transmittance under which a sample's light march takes one step fewer, and under which two.
 const DEEP_SEEN: vec2<f32> = vec2<f32>(0.35, 0.12);
-// The refined march's fine steps in a row that find no cloud before it takes long steps again.
+// The refined march's fine steps in a row that find no cloud before it takes long steps again, and the least that may find
+// none from where it entered before the cloud is reached (at least the halved step's length).
 const FINE_EMPTY: u32 = 3u;
+const ENTRY_EMPTY: u32 = 4u;
+// The halvings of a long step that found cloud, back to where the cloud begins.
+const ENTRY_HALVINGS: u32 = 3u;
+// How much longer a fine step grows as the view's transmittance falls (1 + this times the share hidden): what lies behind the
+// first dense steps adds little to the light.
+const FINE_GROWTH: f32 = 5.0;
+// The refined march's most long steps through a layer (hd::clouds::REFINED_STEPS).
+const REFINED_STEPS: f32 = 40.0;
+// The refined march's fine step at least this many of the march's texels' footprints (finer detail than that is lost to the
+// texel and the history's averaging).
+const FINE_PIXELS: f32 = 6.0;
+// The view's transmittance under which the refined march ends (filling what is left with the last sample's light drew a contour
+// where the view crossed it).
+const FINE_OPAQUE: f32 = 0.01;
+// The light march's most samples toward the sun.
+const LIGHT_SAMPLES: u32 = 3u;
 // The altocumulus' rows: how many across a shape period, and how much of an element's density they set where it lies in rows.
 const ELEMENT_ROWS: f32 = 3.0;
 const ELEMENT_ROW_SHARE: f32 = 0.7;
@@ -200,7 +224,9 @@ fn cloud_density(li: u32, p: vec3<f32>, detail: bool, lod: f32, spread: f32) -> 
     var cov = clamp(l.shape.x + (w.r - 0.5) * l.domain.z, 0.0, 1.0);
     // Along a slanted ray that crosses many clouds' columns, each takes less of the sky so that together they cover what one
     // column overhead does (1 - (1 - c)^spread): the far field thins out (smaller, sparser puffs) instead of piling into a wall.
-    cov = 1.0 - pow(1.0 - cov, spread);
+    if spread != 1.0 {
+        cov = 1.0 - pow(1.0 - cov, spread);
+    }
     if cov < 0.02 {
         return vec2<f32>(0.0, h);
     }
@@ -318,34 +344,46 @@ fn shade_above(li: u32, p: vec3<f32>) -> f32 {
     return exp(-od * clouds.under.z);
 }
 
-// The optical depth from p toward the sun through layer `li`: the light march in doubling steps (no detail), until it leaves the
-// slab. Samples far from the eye (`dist`) take a step or two fewer (their light's detail is under a texel), and so do samples the
-// view sees only through cloud already (`seen`, the view's transmittance to them: their share of the light is small). Past the near steps
+// Where the light march's stride `k` of `n` starts (units over the first stride `first`: each doubles the last, the last is three
+// times as long); `k` = `n` its end.
+fn light_edge(k: u32, n: u32) -> f32 {
+    return select(exp2(f32(k)) - 1.0, exp2(f32(n + 1u)) - 1.0, k >= n);
+}
+
+// The optical depth from p toward the sun through layer `li`: the light march (no detail) along the layer's light steps' strides,
+// until a sample leaves the slab, in at most LIGHT_SAMPLES samples: the first stride, the last, and the ones between taken as one,
+// its sample at their middle and its noise read blurrier (a cone: the sample is their stretch's mean). Samples far from the eye
+// (`dist`) take a step or two fewer and one sample fewer (their light's detail is under a texel), and samples the view sees only
+// through cloud already (`seen`, the view's transmittance to them: their share of the light is small) a step or two fewer. Past the near steps
 // (the cloud's own shape) a low sun's long path through the deck shades less: the light scattered round the neighbours' edges
 // still arrives, so a low sun's sunlit sides stay bright instead of every cloud lying in another's shadow.
 fn sun_depth(li: u32, p: vec3<f32>, lod: f32, dist: f32, cos_sun: f32, spread: f32, seen: f32) -> f32 {
     let l = clouds.layers[li];
     let s = clouds.sun.xyz;
-    var od = 0.0;
-    var t = 0.0;
-    var stride = clouds.phase.w;
-    let fewer = u32(clamp(dist / 9000.0, 0.0, 2.0)) + select(0u, 1u, seen < DEEP_SEEN.x) + select(0u, 1u, seen < DEEP_SEEN.y);
+    let first = clouds.phase.w;
+    let far_off = u32(clamp(dist / 9000.0, 0.0, 2.0));
+    let fewer = far_off + select(0u, 1u, seen < DEEP_SEEN.x) + select(0u, 1u, seen < DEEP_SEEN.y);
     let n = max(u32(l.domain.w), 2u + fewer) - fewer;
+    // (A thin layer of elements: the sun's ray soon leaves it, one sample fewer. What the view has seen shortens the reach only:
+    // a sample fewer there would draw a contour where the view's transmittance crosses DEEP_SEEN.)
+    let m = min(n, LIGHT_SAMPLES - min(far_off + select(0u, 1u, l.form.w > 0.5), 1u));
     let far = mix(clouds.reach.x, 1.0, max(clamp(s.z, 0.0, 1.0), smoothstep(clouds.reach.z, clouds.reach.w, cos_sun)));
     let near = u32(clouds.reach.y);
-    for (var k = 0u; k < n; k = k + 1u) {
-        // The last step reaches as far as two more would have (one sample for the far part: cheaper, about the same shadow).
-        if k + 1u == n {
-            stride = stride * 3.0;
-        }
-        let q = p + s * (t + 0.5 * stride);
+    var od = 0.0;
+    for (var i = 0u; i < m; i = i + 1u) {
+        // The strides [a, b) this sample stands for.
+        let a = select(select(n - 1u, 1u, i == 1u), 0u, i == 0u);
+        let b = select(select(n - 1u, 1u, i == 0u), n, i + 1u == m);
+        let start = light_edge(a, n);
+        let len = (light_edge(b, n) - start) * first;
+        let q = p + s * (start * first + 0.5 * len);
         if q.z >= l.slab.y || q.z <= l.slab.x {
             break;
         }
-        let w = select(far, 1.0, k < near);
-        od = od + cloud_density(li, q, false, lod + f32(k) * 0.5, spread).x * stride * w;
-        t = t + stride;
-        stride = stride * 2.0;
+        // The strides before `near` (the cloud's own shape) shade wholly, the rest by `far`.
+        let shaded = max(light_edge(min(b, max(a, near)), n) - start, 0.0) * first;
+        let w = mix(far, 1.0, shaded / len);
+        od = od + cloud_density(li, q, false, lod + 0.25 * f32(a + b - 1u), spread).x * len * w;
     }
     return od;
 }
@@ -425,9 +463,23 @@ fn layer_lighting(li: u32, a: Ambient) -> Lighting {
     return o;
 }
 
+// The first four multiple-scattering octaves' phases at the cosine to the sun, each times its energy (the same along a ray: the
+// march works them out once, not at every sample).
+fn octave_phases(cos_sun: f32) -> vec4<f32> {
+    var e = vec4<f32>(0.0);
+    var a = 1.0;
+    var c = 1.0;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        e[i] = a * cloud_phase(cos_sun, c);
+        a = a * clouds.octaves.x;
+        c = c * clouds.octaves.z;
+    }
+    return e;
+}
+
 // The light a volume sample of extinction `sigma` at height `h` scatters toward the eye (per unit of its in-scatter); `above` the
-// share of the sun the layers above leave.
-fn cloud_light(li: u32, p: vec3<f32>, sigma: f32, h: f32, cos_sun: f32, lod: f32, dist: f32, lg: Lighting, above: f32, spread: f32, seen: f32) -> vec3<f32> {
+// share of the sun the layers above leave, `phases` the ray's octave_phases.
+fn cloud_light(li: u32, p: vec3<f32>, sigma: f32, h: f32, cos_sun: f32, phases: vec4<f32>, lod: f32, dist: f32, lg: Lighting, above: f32, spread: f32, seen: f32) -> vec3<f32> {
     let l = clouds.layers[li];
     var sun = vec3<f32>(0.0);
     let lit = lg.sun * above;
@@ -440,7 +492,13 @@ fn cloud_light(li: u32, p: vec3<f32>, sigma: f32, h: f32, cos_sun: f32, lod: f32
         var c = 1.0;
         let n = u32(clouds.sun_light.w);
         for (var i = 0u; i < n; i = i + 1u) {
-            ms = ms + a * cloud_phase(cos_sun, c) * exp(-od * b);
+            var e: f32;
+            if i < 4u {
+                e = phases[i];
+            } else {
+                e = a * cloud_phase(cos_sun, c);
+            }
+            ms = ms + e * exp(-od * b);
             a = a * clouds.octaves.x;
             b = b * clouds.octaves.y;
             c = c * clouds.octaves.z;
@@ -458,6 +516,18 @@ fn cloud_light(li: u32, p: vec3<f32>, sigma: f32, h: f32, cos_sun: f32, lod: f32
     let amb = mix(lg.bottom, lg.top, up) * (l.light.y * occl);
     return sun + amb;
 }
+
+// What a volume layer's samples along one ray share: its light, the sun the layers above leave at the segment's ends, the
+// slant's spread and thinning, the cosine to the sun and the octaves' phases there.
+struct LayerRay {
+    lit: Lighting,
+    above0: f32,
+    above1: f32,
+    spread: f32,
+    thin: f32,
+    cos_sun: f32,
+    phases: vec4<f32>,
+};
 
 struct Marched {
     // rgb: the light toward the eye (over what is behind it), a: the transmittance.
@@ -498,6 +568,7 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
     var out: Marched;
     let n = max(u32(l.slab.w), 1u);
     let cos_sun = dot(dir, clouds.sun.xyz);
+    let phases = octave_phases(cos_sun);
     let detail = clouds.march.w > 0.5;
     let footprint = clouds.lod.x * clouds.march.z;
     let lit = layer_lighting(li, a);
@@ -519,8 +590,9 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
     // segment that starts its own length or more away to 1 at the eye): the cloud about the eye is drawn in steps
     // as short as its features, the far part in longer ones. The same steps as before for an eye under the slab.
     let span = t1 - t0;
-    if clouds.weather.z > 0.0 {
-        return march_refined(li, o, dir, t0, t1, j, lit, above0, above1, spread, thin, cos_sun);
+    // (A layer of small elements has no deep sunlit shell to find: the even march.)
+    if clouds.weather.z > 0.0 && l.form.w < 0.5 {
+        return march_refined(li, o, dir, t0, t1, j, LayerRay(lit, above0, above1, spread, thin, cos_sun, phases));
     }
     let c = clamp(1.0 - t0 / max(span, 1e-3), 0.0, 1.0);
     for (var i = 0u; i < n; i = i + 1u) {
@@ -535,7 +607,7 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
         d.x = d.x * thin;
         if d.x > 0.0 {
             let k = 1.0 - exp(-d.x * dt);
-            light = light + tr * k * cloud_light(li, p, d.x, d.y, cos_sun, lod, t, lit, mix(above0, above1, f), spread, tr);
+            light = light + tr * k * cloud_light(li, p, d.x, d.y, cos_sun, phases, lod, t, lit, mix(above0, above1, f), spread, tr);
             at = at + tr * k * t;
             seen = seen + tr * k;
             tr = tr * (1.0 - k);
@@ -549,69 +621,94 @@ fn march_volume(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32,
     return out;
 }
 
-// The look's refined march (weather.z the fine step, units; weather.w the most samples as a multiple of the layer's steps): the
-// layer's steps through clear air, and where one finds cloud, back a step and on through the cloud in fine steps (no shorter than
-// the pixel's footprint there) until FINE_EMPTY in a row find none. The coarse march's first sample in a cloud lies a long step
-// deep, where the sun's light has gone: the sunlit shell, a few fine steps thick, is what gives a cumulus its lit side, its dark
-// side and its bright rim.
-fn march_refined(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32, lit: Lighting, above0: f32, above1: f32, spread: f32, thin: f32, cos_sun: f32) -> Marched {
+// The look's refined march (weather.z the fine step, units; weather.w the most samples as a multiple of the long steps): the
+// layer's steps (at most REFINED_STEPS) through clear air, and where one finds cloud, ENTRY_HALVINGS halvings of that step back
+// to where the cloud begins and on from there through the cloud in fine steps (no shorter than FINE_PIXELS texels' footprints
+// there, longer as the view's transmittance falls: FINE_GROWTH; each sample the ray's dither into its step) until FINE_EMPTY in a
+// row find none or the cloud is all but opaque (FINE_OPAQUE). The coarse march's first sample in a cloud lies a long step deep,
+// where the sun's light has gone: the sunlit shell, a few fine steps thick, is what gives a cumulus its lit side, its dark side
+// and its bright rim.
+fn march_refined(li: u32, o: vec3<f32>, dir: vec3<f32>, t0: f32, t1: f32, j: f32, r: LayerRay) -> Marched {
     let l = clouds.layers[li];
     var out: Marched;
     let n = max(u32(l.slab.w), 1u);
     let detail = clouds.march.w > 0.5;
     let footprint = clouds.lod.x * clouds.march.z;
     let span = t1 - t0;
-    let coarse = span / f32(n);
-    let budget = u32(f32(n) * max(clouds.weather.w, 1.0));
+    // (The long steps no shorter than a fine one: a steep ray's short segment.)
+    let steps = min(f32(n), REFINED_STEPS);
+    let coarse = max(span / steps, min(clouds.weather.z, span));
+    let budget = u32(steps * max(clouds.weather.w, 1.0));
     var tr = 1.0;
     var light = vec3<f32>(0.0);
     var seen = 0.0;
     var at = 0.0;
     var t = t0 + coarse * j;
+    // Where the last fine steps ended (the halvings search no farther back).
+    var after = t0;
     var fine_mode = false;
     var found = false;
     var empty = 0u;
+    var entry_empty = ENTRY_EMPTY;
     for (var i = 0u; i < budget; i = i + 1u) {
         if t >= t1 {
             break;
         }
-        let fine = clamp(max(clouds.weather.z, t * footprint), 1.0, coarse);
-        let p = o + dir * t;
+        let fine = clamp(max(clouds.weather.z, t * footprint * FINE_PIXELS), min(1.0, coarse), coarse);
         let lod = max(log2(max(t * footprint, 1e-3) / l.offset.w), 0.0);
-        var d = cloud_density(li, p, detail && t < l.far.y, lod, spread);
-        d.x = d.x * thin;
+        let near_detail = detail && t < l.far.y;
         if !fine_mode {
-            if d.x > 0.0 {
-                fine_mode = true;
-                found = false;
-                empty = 0u;
-                t = max(t - coarse + fine * j, t0);
-            } else {
+            if cloud_density(li, o + dir * t, near_detail, lod, r.spread).x * r.thin <= 0.0 {
                 t = t + coarse;
+                continue;
             }
+            // Back to where the cloud begins: the step halved toward it (the same density as the step's own).
+            var lo = max(t - coarse, after);
+            var hi = t;
+            for (var h = 0u; h < ENTRY_HALVINGS; h = h + 1u) {
+                let m = 0.5 * (lo + hi);
+                if cloud_density(li, o + dir * m, near_detail, lod, r.spread).x * r.thin > 0.0 {
+                    hi = m;
+                } else {
+                    lo = m;
+                }
+            }
+            fine_mode = true;
+            found = false;
+            empty = 0u;
+            // (Fine steps until the cloud is reached: as many as the halved step holds, and more.)
+            entry_empty = max(ENTRY_EMPTY, u32(ceil((hi - lo) / fine)) + 1u);
+            t = lo;
             continue;
         }
+        // Each step's sample lies the ray's dither into it (however long the step has grown: the history averages every step
+        // whole, no contour where the steps lengthen).
+        let step = min(fine * (1.0 + FINE_GROWTH * (1.0 - tr)), coarse);
+        let p = o + dir * (t + step * j);
+        var d = cloud_density(li, p, near_detail, lod, r.spread);
+        d.x = d.x * r.thin;
         if d.x > 0.0 {
             found = true;
             empty = 0u;
-            let dt = min(fine, t1 - t);
+            let dt = min(step, t1 - t);
             let k = 1.0 - exp(-d.x * dt);
             let f = clamp((t - t0) / max(span, 1e-3), 0.0, 1.0);
-            light = light + tr * k * cloud_light(li, p, d.x, d.y, cos_sun, lod, t, lit, mix(above0, above1, f), spread, tr);
+            let lp = cloud_light(li, p, d.x, d.y, r.cos_sun, r.phases, lod, t, r.lit, mix(r.above0, r.above1, f), r.spread, tr);
+            light = light + tr * k * lp;
             at = at + tr * k * t;
             seen = seen + tr * k;
             tr = tr * (1.0 - k);
-            if tr < 0.01 {
+            if tr < FINE_OPAQUE {
                 break;
             }
         } else {
-            // (Before the cloud is reached again, as many fine steps as the coarse one took.)
             empty = empty + 1u;
-            if empty >= select(u32(ceil(coarse / fine)) + 2u, FINE_EMPTY, found) {
+            if empty >= select(entry_empty, FINE_EMPTY, found) {
                 fine_mode = false;
+                after = t;
             }
         }
-        t = t + fine;
+        t = t + step;
     }
     out.dist = select(l.far.w, at / max(seen, 1e-6), seen > 1e-4);
     out.c = layer_air(li, light * clouds.tint.rgb, 1.0 - tr, out.dist, dir);
@@ -659,6 +756,8 @@ struct Composite {
     seen: f32,
     at: f32,
     moved: vec2<f32>,
+    // Whether the upper volumes' image is in it.
+    upper_done: bool,
 };
 
 // Layer `li` behind what `acc` holds.
@@ -706,16 +805,64 @@ fn add_layer(li: u32, acc: ptr<function, Composite>, o: vec3<f32>, dir: vec3<f32
     (*acc).tr = tr * m.c.a;
 }
 
+// Which layers a march draws: every one (MARCH_ALL), all but the upper volumes (the volumes over the lowest layer: MARCH_LOWER
+// takes their image in their place, drawn by MARCH_UPPER at a quarter of the march's texels: high and far, their elements are a
+// few texels across at most).
+const MARCH_ALL: u32 = 0u;
+const MARCH_LOWER: u32 = 1u;
+const MARCH_UPPER: u32 = 2u;
+// The upper volumes' image's texels: this many of the march's a side.
+const UPPER_SCALE: f32 = 2.0;
+
+fn upper_volume(li: u32) -> bool {
+    return li > 0u && clouds.layers[li].slab.z < 0.5;
+}
+
+// Layer `li` behind what `acc` holds as the march `mode` draws it (`texel`: the march's).
+fn take_layer(li: u32, acc: ptr<function, Composite>, o: vec3<f32>, dir: vec3<f32>, j: f32, a: Ambient, mode: u32, texel: vec2<f32>) {
+    let up = upper_volume(li);
+    if mode == MARCH_UPPER && !up {
+        return;
+    }
+    if mode == MARCH_LOWER && up {
+        // Their image goes in where the first of them is met: right while they lie next to each other in the order (a sheet
+        // between two upper volumes would be taken in front of both; no look has one).
+        if (*acc).upper_done || (*acc).tr < 0.01 {
+            return;
+        }
+        (*acc).upper_done = true;
+        // (Held within the texels' centers: the repeating sampler never wraps around the edge.)
+        let dims = vec2<f32>(textureDimensions(upper_tex));
+        let uv = clamp((texel + 0.5) / (UPPER_SCALE * dims), 0.5 / dims, 1.0 - 0.5 / dims);
+        let c = textureSampleLevel(upper_tex, repeat_samp, uv, 0.0);
+        // The reprojection's distance and motion: where the ray crosses this layer's middle, and its drift.
+        let l = clouds.layers[li];
+        var t = l.far.w;
+        if abs(dir.z) > 1e-4 {
+            t = clamp((0.5 * (l.slab.x + l.slab.y) - o.z) / dir.z, 0.0, l.far.w);
+        }
+        let tr = (*acc).tr;
+        let w = tr * (1.0 - c.a);
+        (*acc).light = (*acc).light + tr * c.rgb;
+        (*acc).at = (*acc).at + w * t;
+        (*acc).moved = (*acc).moved + w * l.motion.xy;
+        (*acc).seen = (*acc).seen + w;
+        (*acc).tr = tr * c.a;
+        return;
+    }
+    add_layer(li, acc, o, dir, j, a);
+}
+
 struct MarchOut {
     @location(0) c: vec4<f32>,
     // r: the distance over DIST_SCALE, gb: the layers' motion since the last frame (seen-weighted).
     @location(1) dist: vec4<f32>,
 };
 
-@fragment
-fn fs_march(@builtin(position) frag: vec4<f32>) -> MarchOut {
-    let texel = floor(frag.xy);
-    let px = (texel + 0.5) * clouds.march.z;
+// The march `mode` through texel `texel` (`scale`: internal pixels a texel): the layers' light and transmittance, and the
+// seen-weighted distance and motion.
+fn march_texel(texel: vec2<f32>, scale: f32, mode: u32) -> MarchOut {
+    let px = (texel + 0.5) * scale;
     let ndc = vec2<f32>(px.x * frame.screen.z * 2.0 - 1.0, 1.0 - px.y * frame.screen.w * 2.0);
     let far = frame.inv_unjit_view_proj * vec4<f32>(ndc, 1e-6, 1.0);
     let eye = frame.eye.xyz;
@@ -727,6 +874,7 @@ fn fs_march(@builtin(position) frag: vec4<f32>) -> MarchOut {
     acc.seen = 0.0;
     acc.at = 0.0;
     acc.moved = vec2<f32>(0.0);
+    acc.upper_done = false;
     // (A ray down from under the lowest layer meets none.)
     if dir.z > 0.0 || o.z > clouds.layers[0].slab.x {
         let b = textureLoad(blue_tex, vec2<i32>(texel) % vec2<i32>(textureDimensions(blue_tex)), 0).r;
@@ -738,23 +886,23 @@ fn fs_march(@builtin(position) frag: vec4<f32>) -> MarchOut {
         // loop over the layers down cost 0.1 ms more on every ray).
         if dir.z >= 0.0 {
             if n > 0u {
-                add_layer(0u, &acc, o, dir, j, a);
+                take_layer(0u, &acc, o, dir, j, a, mode, texel);
             }
             if n > 1u {
-                add_layer(1u, &acc, o, dir, j, a);
+                take_layer(1u, &acc, o, dir, j, a, mode, texel);
             }
             if n > 2u {
-                add_layer(2u, &acc, o, dir, j, a);
+                take_layer(2u, &acc, o, dir, j, a, mode, texel);
             }
         } else {
             if n > 2u {
-                add_layer(2u, &acc, o, dir, j, a);
+                take_layer(2u, &acc, o, dir, j, a, mode, texel);
             }
             if n > 1u {
-                add_layer(1u, &acc, o, dir, j, a);
+                take_layer(1u, &acc, o, dir, j, a, mode, texel);
             }
             if n > 0u {
-                add_layer(0u, &acc, o, dir, j, a);
+                take_layer(0u, &acc, o, dir, j, a, mode, texel);
             }
         }
     }
@@ -781,6 +929,17 @@ fn fs_march(@builtin(position) frag: vec4<f32>) -> MarchOut {
     out.c = cur;
     out.dist = vec4<f32>(dist / DIST_SCALE, moved, 1.0);
     return out;
+}
+
+@fragment
+fn fs_march(@builtin(position) frag: vec4<f32>) -> MarchOut {
+    return march_texel(floor(frag.xy), clouds.march.z, select(MARCH_ALL, MARCH_LOWER, clouds.upper.x > 0.5));
+}
+
+// The upper volumes alone at a quarter of the march's texels: their light and transmittance.
+@fragment
+fn fs_upper(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    return march_texel(floor(frag.xy), clouds.march.z * UPPER_SCALE, MARCH_UPPER).c;
 }
 
 // The Catmull-Rom weights of a fraction (each axis).

@@ -1,7 +1,10 @@
 //! The volumetric clouds on the GPU (the data, the layers, the ladder and the noise are `torque_render_scene::hd::clouds`;
 //! `clouds.wgsl`): the noise volumes and the cirrus plane uploaded once with their mips, then each frame the cloud shadow map (256²
-//! around the eye on the lowest base's plane), the march of the quality's layers at its reduced size (their light, the distance and
-//! their motion; it reads the sky's group for the atmosphere's tables), the resolve into one of two histories (each frame reads the
+//! around the eye on the lowest base's plane), the volumes over the lowest layer marched into their own image at a quarter of the
+//! march's texels (the altocumulus: high and far, its elements a few texels across; always the even march, the refined one being
+//! for the deck's sunlit shells), the march of the quality's layers at its
+//! reduced size taking that image in their place (their light, the distance and their motion; both read the sky's group for the
+//! atmosphere's tables), the resolve into one of two histories (each frame reads the
 //! other: the temporal reprojection, held within the march's neighbourhood), and the history copied into the image the sky pass
 //! composites (`sky.wgsl`'s `fs_clouds`, in front of the server's flat cloud layers). The image and the shadow map are in the sky
 //! group (bindings 6 and 7): the forward pass reads the shadow at Ultra (the clouds' shadows on the ground) and the volumetric light
@@ -29,9 +32,9 @@ use crate::shaders::Permutation;
 pub const CLOUD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// The march's distance target (r the distance over the shader's DIST_SCALE, gb the layers' motion since the last frame).
 const DIST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-/// The clouds' uniform (`clouds.wgsl`'s `Clouds`: [`MAX_LAYERS`] layers of 8 vec4, then 16 vec4).
+/// The clouds' uniform (`clouds.wgsl`'s `Clouds`: [`MAX_LAYERS`] layers of 8 vec4, then 17 vec4).
 pub(crate) const LAYER_VEC4S: usize = 8;
-const UNIFORM_BYTES: u64 = ((MAX_LAYERS * LAYER_VEC4S + 16) * 16) as u64;
+const UNIFORM_BYTES: u64 = ((MAX_LAYERS * LAYER_VEC4S + 17) * 16) as u64;
 /// The clouds' shadows on the ground at the qualities that cast them (the share of the sun a full cloud takes away).
 pub const GROUND_SHADOW: f32 = 0.4;
 /// The clouds' cube: its faces' side (texels) and mips (down to the blurriest its reads take: the reflections' fog's).
@@ -46,12 +49,27 @@ const CLOUD_CUBE_FACES: [usize; 5] = [0, 1, 2, 3, 4];
 /// texel) and the pixel's angle.
 pub(crate) const MARCH_VEC4: usize = MAX_LAYERS * LAYER_VEC4S + 7;
 pub(crate) const LOD_VEC4: usize = MAX_LAYERS * LAYER_VEC4S + 10;
+/// The vec4 that says whether the march takes the upper volumes from their own image (the cube's march draws them itself).
+pub(crate) const UPPER_VEC4: usize = MAX_LAYERS * LAYER_VEC4S + 16;
+/// The upper volumes' image: the march's texels a side to one of its (`clouds.wgsl`'s UPPER_SCALE).
+pub(crate) const UPPER_SCALE: u32 = 2;
 
-/// The noise volumes on the GPU and the march's group (the uniform, the volumes, their sampler).
+/// The noise volumes on the GPU and the march's group over them (the uniform, the volumes, their sampler) with a blank in the
+/// upper volumes' image's place: the group the shadow map, the sun's rays and the upper volumes' own pass bind.
 struct Noise {
     group: wgpu::BindGroup,
     /// The same over the cube's uniform.
     cube_group: wgpu::BindGroup,
+    views: NoiseViews,
+}
+
+/// The noise's textures as the march's groups bind them.
+struct NoiseViews {
+    shape: wgpu::TextureView,
+    detail: wgpu::TextureView,
+    weather: wgpu::TextureView,
+    blue: wgpu::TextureView,
+    cirrus: wgpu::TextureView,
 }
 
 /// The clouds' cube (see the module's docs): its faces and mips, the march's distance target (unread), the uniforms (the march's
@@ -66,13 +84,16 @@ struct CloudCube {
     drawn: u32,
 }
 
-/// The per-size targets: the march's light and distance, the two histories, the image the sky pass reads, the resolve's groups
-/// (one per history written).
+/// The per-size targets: the march's light and distance, the upper volumes' (a quarter of the march's texels), the two
+/// histories, the image the sky pass reads, the march's group (over the upper volumes' image) and the resolve's groups (one per
+/// history written).
 struct Targets {
     key: (u32, u32),
     low: u32,
     current_view: wgpu::TextureView,
     dist_view: wgpu::TextureView,
+    upper_view: wgpu::TextureView,
+    march_group: wgpu::BindGroup,
     history: [wgpu::Texture; 2],
     views: [wgpu::TextureView; 2],
     /// The image with its box-filtered mips (the fog takes the clouds without their detail from a low one).
@@ -101,8 +122,11 @@ pub struct Clouds {
     march_layout: wgpu::BindGroupLayout,
     resolve_layout: wgpu::BindGroupLayout,
     module: wgpu::ShaderModule,
-    /// The march reads the sky's group: made once its layout is known ([`Clouds::set_sky_layout`]).
+    /// The march and the upper volumes' march read the sky's group: made once its layout is known ([`Clouds::set_sky_layout`]).
     march: Option<wgpu::RenderPipeline>,
+    upper: Option<wgpu::RenderPipeline>,
+    /// Whether this frame draws the upper volumes into their own image.
+    upper_drawn: bool,
     resolve: wgpu::RenderPipeline,
     shadow: wgpu::RenderPipeline,
     /// The sun's transmittance through the clouds as the eye sees it: the rays' parts, then their mean (one texel, in the sky
@@ -325,6 +349,20 @@ fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
     })
 }
 
+/// The march's group: the uniform, the noise volumes and maps, their sampler, and the upper volumes' image.
+pub(crate) fn march_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+    vec![
+        uniform_entry(0),
+        texture_entry(1, wgpu::TextureViewDimension::D3),
+        texture_entry(2, wgpu::TextureViewDimension::D3),
+        texture_entry(3, wgpu::TextureViewDimension::D2),
+        texture_entry(4, wgpu::TextureViewDimension::D2),
+        sampler_entry(5),
+        texture_entry(6, wgpu::TextureViewDimension::D2),
+        texture_entry(7, wgpu::TextureViewDimension::D2),
+    ]
+}
+
 impl Clouds {
     /// `frame_bytes`: the frame uniform's size (the cube's face camera's).
     pub fn new(
@@ -335,15 +373,7 @@ impl Clouds {
     ) -> Clouds {
         let march_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd clouds"),
-            entries: &[
-                uniform_entry(0),
-                texture_entry(1, wgpu::TextureViewDimension::D3),
-                texture_entry(2, wgpu::TextureViewDimension::D3),
-                texture_entry(3, wgpu::TextureViewDimension::D2),
-                texture_entry(4, wgpu::TextureViewDimension::D2),
-                sampler_entry(5),
-                texture_entry(6, wgpu::TextureViewDimension::D2),
-            ],
+            entries: &march_entries(),
         });
         let resolve_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd clouds resolve"),
@@ -501,6 +531,8 @@ impl Clouds {
             resolve_layout,
             module,
             march: None,
+            upper: None,
+            upper_drawn: false,
             resolve,
             shadow,
             sun_rays,
@@ -534,17 +566,26 @@ impl Clouds {
         cache: Option<&wgpu::PipelineCache>,
         sky_layout: &wgpu::BindGroupLayout,
     ) {
+        let layouts = [
+            Some(&self.frame_layout),
+            Some(&self.march_layout),
+            Some(sky_layout),
+        ];
         self.march = Some(pipeline(
             device,
             cache,
             &self.module,
             "fs_march",
-            &[
-                Some(&self.frame_layout),
-                Some(&self.march_layout),
-                Some(sky_layout),
-            ],
+            &layouts,
             &[target(CLOUD_FORMAT), target(DIST_FORMAT)],
+        ));
+        self.upper = Some(pipeline(
+            device,
+            cache,
+            &self.module,
+            "fs_upper",
+            &layouts,
+            &[target(CLOUD_FORMAT)],
         ));
     }
 
@@ -661,34 +702,52 @@ impl Clouds {
         );
         let cirrus = noise_texture(device, queue, "hd clouds cirrus", &n.cirrus, CIRRUS_SIZE, 1);
         let blue = blue.create_view(&wgpu::TextureViewDescriptor::default());
-        let group = |uniform: &wgpu::Buffer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("hd clouds"),
-                layout: &self.march_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform.as_entire_binding(),
-                    },
-                    crate::tv(1, &shape),
-                    crate::tv(2, &detail),
-                    crate::tv(3, &weather),
-                    crate::tv(4, &blue),
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: wgpu::BindingResource::Sampler(&self.repeat),
-                    },
-                    crate::tv(6, &cirrus),
-                ],
-            })
+        let views = NoiseViews {
+            shape,
+            detail,
+            weather,
+            blue,
+            cirrus,
         };
         self.noise = Some(Noise {
-            group: group(&self.uniform),
-            cube_group: group(&self.cube.uniform),
+            group: self.march_group(device, &views, &self.uniform, None),
+            cube_group: self.march_group(device, &views, &self.cube.uniform, None),
+            views,
         });
     }
 
-    /// The targets at the march's size `key`, the image's mips down to level `low`.
+    /// The march's group over `uniform` and the upper volumes' image (blank without).
+    fn march_group(
+        &self,
+        device: &wgpu::Device,
+        n: &NoiseViews,
+        uniform: &wgpu::Buffer,
+        upper: Option<&wgpu::TextureView>,
+    ) -> wgpu::BindGroup {
+        let upper = upper.unwrap_or(&self.blank);
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("hd clouds"),
+            layout: &self.march_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                crate::tv(1, &n.shape),
+                crate::tv(2, &n.detail),
+                crate::tv(3, &n.weather),
+                crate::tv(4, &n.blue),
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&self.repeat),
+                },
+                crate::tv(6, &n.cirrus),
+                crate::tv(7, upper),
+            ],
+        })
+    }
+
+    /// The targets at the march's size `key`, the image's mips down to level `low` (once the noise is made).
     fn ensure_targets(&mut self, device: &wgpu::Device, key: (u32, u32), low: u32) {
         if self
             .targets
@@ -697,6 +756,9 @@ impl Clouds {
         {
             return;
         }
+        let Some(noise) = self.noise.as_ref() else {
+            return;
+        };
         let attach = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
         let current = plain_texture(device, "hd clouds march", key, CLOUD_FORMAT, attach);
         let dist = plain_texture(device, "hd clouds distance", key, DIST_FORMAT, attach);
@@ -719,6 +781,10 @@ impl Clouds {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let current_view = current.create_view(&wgpu::TextureViewDescriptor::default());
         let dist_view = dist.create_view(&wgpu::TextureViewDescriptor::default());
+        let upper_key = (key.0.div_ceil(UPPER_SCALE), key.1.div_ceil(UPPER_SCALE));
+        let upper_view = plain_texture(device, "hd clouds upper", upper_key, CLOUD_FORMAT, attach)
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let march_group = self.march_group(device, &noise.views, &self.uniform, Some(&upper_view));
         // The resolve writing history k reads the other.
         let group = |prev: &wgpu::TextureView| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -745,6 +811,8 @@ impl Clouds {
             low,
             current_view,
             dist_view,
+            upper_view,
+            march_group,
             history,
             views,
             out,
@@ -1037,6 +1105,12 @@ impl Clouds {
                 look.fine_budget,
             ],
         );
+        // The volumes over the lowest layer are drawn into their own image at a quarter of the march's texels.
+        self.upper_drawn = layers.iter().skip(1).any(|l| l.form == LayerForm::Volume);
+        push_f32(
+            &mut b,
+            &[if self.upper_drawn { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        );
         debug_assert_eq!(b.len() as u64, UNIFORM_BYTES);
         queue.write_buffer(&self.uniform, 0, &b);
         if self.cube_wanted == CubeWanted::Draw {
@@ -1068,6 +1142,7 @@ impl Clouds {
             let mut set = |vec4: usize, k: usize, v: f32| set(&mut b, vec4, k, v);
             set(MARCH_VEC4, 0, 0.0);
             set(MARCH_VEC4, 2, 1.0);
+            set(UPPER_VEC4, 0, 0.0);
             set(
                 LOD_VEC4,
                 0,
@@ -1176,6 +1251,23 @@ impl Clouds {
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
         }
+        if let (true, Some(upper)) = (self.upper_drawn, self.upper.as_ref()) {
+            crate::count_pass();
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hd clouds upper"),
+                color_attachments: &[Some(crate::colour(&t.upper_view))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(upper);
+            pass.set_bind_group(0, frame_group, &[]);
+            pass.set_bind_group(1, &n.group, &[]);
+            pass.set_bind_group(2, sky_group, &[]);
+            pass.draw(0..3, 0..1);
+            crate::count_draws(1);
+        }
         {
             crate::count_pass();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1191,7 +1283,7 @@ impl Clouds {
             });
             pass.set_pipeline(march);
             pass.set_bind_group(0, frame_group, &[]);
-            pass.set_bind_group(1, &n.group, &[]);
+            pass.set_bind_group(1, &t.march_group, &[]);
             pass.set_bind_group(2, sky_group, &[]);
             pass.draw(0..3, 0..1);
             crate::count_draws(1);

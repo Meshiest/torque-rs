@@ -255,6 +255,10 @@ pub const FAIR_WEATHER: [CloudLayerDef; 3] = [CUMULUS, CIRRUS, ALTOCUMULUS];
 /// The most layers the GPU takes.
 pub const MAX_LAYERS: usize = 3;
 
+/// The most long steps the refined march ([`CloudLook::fine_step`]) takes through a layer to look for cloud: the fine steps find
+/// a cloud's shape, more long steps only find smaller clouds (a quality's steps past it are the even march's).
+pub const REFINED_STEPS: u32 = 40;
+
 /// The cirrus sheet's noise (2D, RGBA8: r its fibres, g its patches, b a second set of fibres): texels a side and its period (units).
 pub const CIRRUS_SIZE: usize = 512;
 pub const CIRRUS_PERIOD: f32 = 60000.0;
@@ -472,9 +476,10 @@ impl CloudQuality {
 /// share). With `sun` the clouds take that sunlight (linear) through the air at each layer's height, dimmed and reddened as the
 /// atmosphere's transmittance has it (a sunset's clouds glow orange); without it, or under the moon, the scene's sun's light, its
 /// color taken from the air but its strength the ground's. With a `fine_step` the march is refined: through clear air in the
-/// quality's steps, through cloud in steps of that many units (no shorter than a pixel there), at most `fine_budget` times the
-/// quality's samples a layer; the even march's first sample in a cloud lies a long step deep, where the sun's light has gone, so
-/// the sunlit shell that gives a cumulus its lit side, its dark side and its bright rim is only found by the fine steps.
+/// quality's steps (at most [`REFINED_STEPS`] a layer), back to where a cloud begins and through it in steps of that many units
+/// (no shorter than a few pixels there, longer behind its first dense steps), at most `fine_budget` times those steps' samples a
+/// layer; the even march's first sample in a cloud lies a long step deep, where the sun's light has gone, so the sunlit shell
+/// that gives a cumulus its lit side, its dark side and its bright rim is only found by the fine steps.
 ///
 /// A scene names a look ([`crate::hd::HdScene::cloud_look`]); without one the engine's ([`CloudLook::DEFAULT`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -533,7 +538,7 @@ impl CloudLook {
         fine_budget: 3.0,
     };
 
-    /// The most samples a layer the refined march takes, as a multiple of the quality's.
+    /// The most samples a layer the refined march takes, as a multiple of its long steps.
     pub const MAX_FINE_BUDGET: f32 = 8.0;
 
     /// This look with every value the renderer can take: non-finite numbers the engine's (or none), the coverage within the
