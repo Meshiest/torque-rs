@@ -107,7 +107,7 @@ use std::rc::Rc;
 
 use torque_ts_vm::idhash::IdMap;
 use torque_ts_vm::sim::ObjId;
-use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use torque_ts_vm::vm::{Native, Vm, VmError};
 
 pub mod backdrop;
 pub mod canvas;
@@ -707,32 +707,8 @@ pub(crate) fn name_of(vm: &Vm, id: ObjId) -> String {
         .unwrap_or_default()
 }
 
-/// The object of a method call (`%this`), if it exists.
-pub(crate) fn this(vm: &Vm, c: &NativeCall) -> Option<ObjId> {
-    c.this_object.filter(|id| vm.objects().contains(*id))
-}
-
-/// Argument `i` of a call (`argv[i]`), "" when absent.
-pub(crate) fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&[][..], Vec::as_slice)
-}
-
-/// C `atoi` as the engine's runtime does it (`torque_ts_vm::text::atoi`: white space, a sign, digits, saturating): one pass.
-pub(crate) fn atoi(text: &[u8]) -> i32 {
-    torque_ts_vm::text::atoi(text)
-}
-
-/// `dAtof`: C's `atof` as the runtime reads it (`torque_ts_vm::text::atof`: white space, a sign, `inf`, `nan`, hex, or
-/// digits with an optional `.` and an exponent that counts only with a digit). The text is scanned once and the number parsed once,
-/// so its cost is linear in the input (a hostile megabyte of digits included).
-pub(crate) fn atof(text: &[u8]) -> f64 {
-    torque_ts_vm::text::atof(text)
-}
-
-/// `dAtob` (`torque_ts_vm::fields::atob`): "true" in any case, or a number that is not zero as a float.
-pub(crate) fn atob(text: &[u8]) -> bool {
-    torque_ts_vm::fields::atob(text)
-}
+pub(crate) use torque_ts_vm::fields::atob;
+pub(crate) use torque_ts_vm::text::{atof, atoi};
 
 /// A native's result for a script error that ends the run.
 pub(crate) fn done(result: Result<(), VmError>) -> Native {

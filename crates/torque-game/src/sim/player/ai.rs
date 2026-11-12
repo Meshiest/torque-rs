@@ -10,10 +10,9 @@
 
 use ::sim::ai::{AiOp, AiState};
 use collide::ObjectId;
-use ts_vm::fields::atob;
 use ts_vm::vm::{Native, NativeCall, Vm};
 
-use super::methods::{arg, f, text3, vec3};
+use super::methods::text3;
 use super::state_mut;
 use crate::methods::register_method;
 use crate::scene::camera::is_class;
@@ -49,24 +48,24 @@ pub fn register(vm: &mut Vm) {
         apply(vm, c, AiOp::ClearAim)
     });
     register_method(vm, "AIPlayer", "setMoveSpeed", |vm, c| {
-        apply(vm, c, AiOp::SetMoveSpeed(f(c, 2)))
+        apply(vm, c, AiOp::SetMoveSpeed(c.float(2)))
     });
     register_method(vm, "AIPlayer", "getMoveSpeed", |vm, c| {
         Native::Float(f64::from(read(vm, c, |ai| ai.move_speed)))
     });
     register_method(vm, "AIPlayer", "setMoveTolerance", |vm, c| {
-        apply(vm, c, AiOp::SetMoveTolerance(f(c, 2)))
+        apply(vm, c, AiOp::SetMoveTolerance(c.float(2)))
     });
     // `setMoveDestination(goal, slowdown = true)`.
     register_method(vm, "AIPlayer", "setMoveDestination", |vm, c| {
-        let slowdown = c.argv.len() <= 3 || atob(arg(c, 3));
-        apply(vm, c, AiOp::SetMoveDestination(vec3(c, 2), slowdown))
+        let slowdown = c.argc() <= 3 || c.boolean(3);
+        apply(vm, c, AiOp::SetMoveDestination(c.vec3(2), slowdown))
     });
     register_method(vm, "AIPlayer", "getMoveDestination", |vm, c| {
         Native::Str(text3(read(vm, c, AiState::move_destination), false))
     });
     register_method(vm, "AIPlayer", "setAimLocation", |vm, c| {
-        apply(vm, c, AiOp::SetAimLocation(vec3(c, 2)))
+        apply(vm, c, AiOp::SetAimLocation(c.vec3(2)))
     });
     register_method(vm, "AIPlayer", "getAimLocation", |vm, c| {
         Native::Str(text3(read(vm, c, AiState::aim_location), false))
@@ -75,10 +74,10 @@ pub fn register(vm: &mut Vm) {
     register_method(vm, "AIPlayer", "setAimObject", |vm, c| {
         let target = vm
             .objects()
-            .find(arg(c, 2))
+            .find(c.arg(2))
             .filter(|t| is_class(vm, *t, "GameBase"))
             .map(ObjectId);
-        apply(vm, c, AiOp::SetAimObject(target, vec3(c, 3)))
+        apply(vm, c, AiOp::SetAimObject(target, c.vec3(3)))
     });
     // `getAimObject()`: the id, -1 for none (or one that is gone).
     register_method(vm, "AIPlayer", "getAimObject", |vm, c| {

@@ -408,7 +408,7 @@ pub fn register(vm: &mut Vm) {
         3,
         "removeDataBlock(datablock [, fallback | \"deleteUsers\"]) - removes a datablock no object or datablock uses; with a fallback datablock of its class moves its users and references to that first; with \"deleteUsers\" deletes its users first. False, with the reason printed, when it stays",
         |vm, c| {
-            let text = c.argv.get(1).map_or(&b""[..], Vec::as_slice);
+            let text = c.arg(1);
             let Some(db) = vm.objects().find(text) else {
                 vm.error(format!(
                     "removeDataBlock: \"{}\" is not a datablock",

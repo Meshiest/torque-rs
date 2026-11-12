@@ -1385,10 +1385,6 @@ pub fn method(
     });
 }
 
-pub fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&[][..], Vec::as_slice))
-}
-
 fn cut(b: &[u8]) -> Vec<u8> {
     b[..b.len().min(MAX_ARG)].to_vec()
 }
@@ -1430,7 +1426,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         let Some(obj) = c.this_object else {
             return Native::Void;
         };
-        let args: Vec<Vec<u8>> = (2..7).map(|i| cut(arg(c, i))).collect();
+        let args: Vec<Vec<u8>> = (2..7).map(|i| cut(c.cstr(i))).collect();
         let mut s = st.borrow_mut();
         if s.conn.pending.len() < MAX_PENDING || s.conn.pending.contains_key(&obj) {
             s.conn.pending.entry(obj).or_default().args = args;
@@ -1442,7 +1438,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         if let Some(obj) = c.this_object {
             let mut s = st.borrow_mut();
             if s.conn.pending.len() < MAX_PENDING || s.conn.pending.contains_key(&obj) {
-                s.conn.pending.entry(obj).or_default().password = cut(arg(c, 2));
+                s.conn.pending.entry(obj).or_default().password = cut(c.cstr(2));
             }
         }
         Native::Void
@@ -1462,7 +1458,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         if !file_gate::<G>(&root, c.file.as_deref()) {
             return Native::Void;
         }
-        connect(vm, &st, obj, arg(c, 2))
+        connect(vm, &st, obj, c.cstr(2))
     });
     let st = Rc::clone(client);
     method(vm, "connectLocal", move |vm, c, _| {
@@ -1474,7 +1470,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
     let st = Rc::clone(client);
     method(vm, "delete", move |vm, c, prev| {
         if is_conn(&st, c) {
-            let reason = c.argv.get(2).map_or(&[][..], |r| until_nul(r)).to_vec();
+            let reason = c.cstr(2).to_vec();
             drop_conn(&st, Some(&reason));
         }
         if let Some(obj) = c.this_object {
@@ -1597,7 +1593,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
     let st = Rc::clone(client);
     method(vm, "resolveGhostID", move |vm, c, prev| {
         if is_conn(&st, c) {
-            let index = ts_vm::text::atoi(arg(c, 2));
+            let index = c.int(2);
             let obj = u32::try_from(index)
                 .ok()
                 .and_then(|i| crate::net::ghost_objects::object_of(&st, i));
@@ -1611,7 +1607,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
     method(vm, "getGhostID", move |vm, c, prev| {
         if is_conn(&st, c) {
             let objects = vm.objects();
-            let net_object = objects.find(arg(c, 2)).filter(|o| {
+            let net_object = objects.find(c.cstr(2)).filter(|o| {
                 let class = objects.classes.find(b"NetObject");
                 matches!((class, objects.get(*o)), (Some(k), Some(ob)) if objects.classes.is_a(ob.class(), k))
             });
@@ -1655,7 +1651,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         2,
         "(bool isLocked)Lock the mouse (or not, depending on the argument's value) to the window.",
         move |_, c| {
-            st.borrow_mut().mouse_locked = ts_vm::fields::atob(arg(c, 1));
+            st.borrow_mut().mouse_locked = c.boolean(1);
             Native::Void
         },
     );
@@ -1679,7 +1675,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>, 
         if bytes > 0 && !vm.charge_work(u64::try_from(bytes).unwrap_or(u64::MAX)) {
             return Native::Fail(VmError::StepLimit);
         }
-        command_to_server(vm, &st, c.argv.get(1..).unwrap_or(&[]))
+        command_to_server(vm, &st, c.rest(1))
     });
     G::register_natives(vm, client, gui);
 }

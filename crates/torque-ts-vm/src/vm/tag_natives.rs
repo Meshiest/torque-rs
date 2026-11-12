@@ -2,13 +2,9 @@
 //! (Copyright (c) 2012 GarageGames, LLC):
 //! `addTaggedString`, `removeTaggedString`, `getTaggedString`, `getTag`, `detag`.
 
-use super::{Native, NativeCall, Vm, VmError};
+use super::{Native, Vm, VmError};
 use crate::tags::tag_text;
 use crate::text::atoi;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
 
 /// The text after a leading 0x01, if any (`getTaggedString` skips only a real tag byte).
 fn without_tag_byte(text: &[u8]) -> &[u8] {
@@ -24,7 +20,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "addTaggedString(text) - the tag of the text, kept until removed",
         |vm, c| {
-            let Some(id) = vm.tags.add_string(arg(c, 1)) else {
+            let Some(id) = vm.tags.add_string(c.arg(1)) else {
                 return Native::Fail(VmError::TagTableFull);
             };
             if let Err(message) = vm.tags.add_script_ref(id) {
@@ -44,7 +40,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "removeTaggedString(tag) - releases a tag addTaggedString made",
         |vm, c| {
-            let id = atoi(arg(c, 1).get(1..).unwrap_or_default()) as u32;
+            let id = atoi(c.arg(1).get(1..).unwrap_or_default()) as u32;
             if let Some(message) = vm.tags.remove_string(id, true) {
                 vm.error(message);
             }
@@ -57,7 +53,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "getTaggedString(tag) - the text of a tag",
         |vm, c| {
-            let id = atoi(without_tag_byte(arg(c, 1))) as u32;
+            let id = atoi(without_tag_byte(c.arg(1))) as u32;
             match vm.tags.lookup_checked(id) {
                 Ok(found) => Native::Str(found.unwrap_or_default().to_vec()),
                 Err(message) => {
@@ -74,7 +70,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "getTag(taggedText) - the tag's id",
         |_, c| {
-            let text = arg(c, 1);
+            let text = c.arg(1);
             match text.strip_prefix(&[1u8]) {
                 Some(rest) => {
                     let end = rest.iter().position(|&b| b == b' ').unwrap_or(rest.len());
@@ -91,7 +87,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "detag(taggedText) - the text after a tag",
         |_, c| {
-            let text = arg(c, 1);
+            let text = c.arg(1);
             if text.first() != Some(&1) {
                 return Native::Str(text.to_vec());
             }

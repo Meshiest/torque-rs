@@ -157,13 +157,3 @@ pub mod view;
 pub mod zoom;
 
 pub use input::{Key, MouseButton};
-
-/// The object a method native was called on, if it still exists.
-pub fn this(vm: &ts_vm::vm::Vm, c: &ts_vm::vm::NativeCall) -> Option<ts_vm::sim::ObjId> {
-    c.this_object.filter(|id| vm.objects().contains(*id))
-}
-
-/// A native's argument `i` (empty past the last).
-pub fn arg(c: &ts_vm::vm::NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&[][..], Vec::as_slice)
-}

@@ -12,9 +12,7 @@ use torque_ts_vm::fields::{FieldType, Value};
 use torque_ts_vm::sim::{ObjId, Objects, SimObject};
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
-use crate::{
-    Control, Gui, MAX_CHILDREN_WALKED, MAX_TREE_DEPTH, arg, atob, atoi, classes, done, this,
-};
+use crate::{Control, Gui, MAX_CHILDREN_WALKED, MAX_TREE_DEPTH, atob, atoi, classes, done};
 
 /// What one visit of a walk costs (`Vm::charge_work` units).
 const VISIT_WORK: u64 = 64;
@@ -597,17 +595,12 @@ fn reg(
     f: impl Fn(&mut Vm, &Gui, ObjId, &NativeCall) -> Native + 'static,
 ) {
     let gui = gui.clone();
-    vm.register_in(
-        "GuiControl",
-        name,
-        min,
-        max,
-        usage,
-        move |vm, c| match this(vm, c) {
+    vm.register_in("GuiControl", name, min, max, usage, move |vm, c| {
+        match c.this(vm) {
             Some(id) if gui.is_control(id) => f(vm, &gui, id, c),
             _ => Native::Void,
-        },
-    );
+        }
+    });
 }
 
 fn ints(p: (i32, i32)) -> Native {
@@ -627,7 +620,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(string value)",
         |vm, gui, id, c| {
-            classes::set_value(vm, gui, id, arg(c, 2));
+            classes::set_value(vm, gui, id, c.arg(2));
             Native::Void
         },
     );
@@ -643,7 +636,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(bool active)",
         // `mActive`; false also clears the first responder.
         |vm, gui, id, c| {
-            let on = atob(arg(c, 2));
+            let on = c.boolean(2);
             gui.with_mut(id, |s| s.active = on);
             if !on {
                 crate::input::clear_first_responder(vm, gui, id);
@@ -662,12 +655,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(bool visible)",
         |vm, _, id, c| {
-            vm.set_object_field(
-                id,
-                b"visible",
-                b"",
-                if atob(arg(c, 2)) { b"1" } else { b"0" },
-            );
+            vm.set_object_field(id, b"visible", b"", if c.boolean(2) { b"1" } else { b"0" });
             Native::Void
         },
     );
@@ -686,7 +674,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(bool isFirst)",
         |vm, gui, id, c| {
-            if atob(arg(c, 2)) {
+            if c.boolean(2) {
                 done(crate::input::set_first_responder(vm, gui, id))
             } else {
                 crate::input::clear_first_responder(vm, gui, id);
@@ -702,7 +690,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(GuiControlProfile p)",
         |vm, _, id, c| {
-            let name = arg(c, 2).to_vec();
+            let name = c.arg(2).to_vec();
             if vm
                 .objects()
                 .find(&name)
@@ -721,8 +709,8 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         6,
         "(int x, int y, int w, int h)",
         |vm, gui, id, c| {
-            let position = (atoi(arg(c, 2)), atoi(arg(c, 3)));
-            let extent = (atoi(arg(c, 4)), atoi(arg(c, 5)));
+            let position = (c.int(2), c.int(3));
+            let extent = (c.int(4), c.int(5));
             resize(vm, gui, id, position, extent);
             Native::Void
         },
@@ -748,7 +736,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(bool val)",
         |_, gui, id, c| {
             if let Some(control) = gui.0.borrow_mut().controls.get_mut(&id) {
-                control.has_rendered = atob(arg(c, 2));
+                control.has_rendered = c.boolean(2);
             }
             Native::Void
         },
@@ -762,7 +750,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         0,
         "(SimObject obj, ...)",
         |vm, gui, id, c| {
-            for text in c.argv.iter().skip(2) {
+            for text in c.rest(2) {
                 match vm.objects().find(text) {
                     Some(child) if gui.is_control(child) => {
                         if let Err(e) = add_child(vm, gui, id, child) {
@@ -793,7 +781,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         0,
         "(SimObject obj, ...)",
         |vm, gui, id, c| {
-            for text in c.argv.iter().skip(2) {
+            for text in c.rest(2) {
                 let removed = match vm.objects().find(text) {
                     Some(child) => match remove_child(vm, gui, id, child) {
                         Ok(removed) => removed,

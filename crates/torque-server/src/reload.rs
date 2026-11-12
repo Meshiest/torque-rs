@@ -204,7 +204,7 @@ fn reload_native(vm: &mut Vm, call: &NativeCall) -> Native {
         return Native::Str(Vec::new());
     }
     let file = call.argv.get(1).map(|a| until_nul(a)).unwrap_or_default();
-    let remove_missing = call.argv.get(2).is_some_and(|a| atob(a));
+    let remove_missing = call.boolean(2);
     match reload(vm, file, remove_missing) {
         Ok(Some(done)) => Native::Str(done.line().into_bytes()),
         Ok(None) => Native::Str(Vec::new()),

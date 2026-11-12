@@ -18,7 +18,7 @@ use ::sim::player::PlayerState;
 use collide::ObjectId;
 use collide::math::{F3, Matrix};
 use ts_vm::sim::ObjId;
-use ts_vm::text::{atof, format_fixed, format_g, scan_floats, to_f32};
+use ts_vm::text::{format_fixed, format_g};
 use ts_vm::vm::{Native, NativeCall, Vm};
 
 use super::{state, state_mut};
@@ -28,19 +28,22 @@ use crate::scene::ext;
 use crate::scene::ghost as ghosts;
 use crate::scene::shapebase::{self, is_player};
 
+/// Argument `i` of a call.
+#[deprecated(note = "use `NativeCall::arg`")]
 pub fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
+    c.arg(i)
 }
 
 /// `sscanf(s, "%f %f %f")` into zeros.
+#[deprecated(note = "use `NativeCall::vec3`")]
 pub fn vec3(c: &NativeCall, i: usize) -> F3 {
-    let mut v = [0.0f32; 3];
-    scan_floats(arg(c, i), &mut v);
-    v
+    c.vec3(i)
 }
 
+/// A float argument.
+#[deprecated(note = "use `NativeCall::float`")]
 pub fn f(c: &NativeCall, i: usize) -> f32 {
-    c.argv.get(i).map_or(0.0, |a| to_f32(atof(a)))
+    c.float(i)
 }
 
 pub fn text3(v: F3, fixed: bool) -> Vec<u8> {
@@ -228,7 +231,7 @@ pub fn register(vm: &mut Vm) {
     crate::scene::hitboxes::register(vm);
     register_method(vm, "ShapeBase", "setVelocity", |vm, c| {
         if let Some(id) = c.this_object {
-            let v = (crate::library::get().set_velocity)(vec3(c, 2));
+            let v = (crate::library::get().set_velocity)(c.vec3(2));
             if crate::sim::item::is_item(vm, id) {
                 crate::sim::item::set_velocity(vm, id, v);
             } else if crate::sim::vehicle::is_vehicle(vm, id) {
@@ -247,13 +250,13 @@ pub fn register(vm: &mut Vm) {
     });
     register_method(vm, "ShapeBase", "applyImpulse", |vm, c| {
         if let Some(id) = c.this_object {
-            let pos = vec3(c, 2);
+            let pos = c.vec3(2);
             if crate::sim::item::is_item(vm, id) {
-                crate::sim::item::apply_impulse(vm, id, vec3(c, 3));
+                crate::sim::item::apply_impulse(vm, id, c.vec3(3));
             } else if crate::sim::vehicle::is_vehicle(vm, id) {
-                crate::sim::vehicle::apply_impulse(vm, id, pos, vec3(c, 3));
+                crate::sim::vehicle::apply_impulse(vm, id, pos, c.vec3(3));
             } else {
-                apply_impulse(vm, id, vec3(c, 3));
+                apply_impulse(vm, id, c.vec3(3));
             }
         }
         Native::Bool(true)
@@ -293,7 +296,7 @@ pub fn register(vm: &mut Vm) {
         };
         let target = vm
             .objects()
-            .find(arg(c, 2))
+            .find(c.arg(2))
             .filter(|t| is_class(vm, *t, "ShapeBase"));
         set_control_object(vm, id, target);
         Native::Bool(target.is_some())
@@ -421,7 +424,7 @@ fn register_extras(vm: &mut Vm) {
         let Some(id) = c.this_object else {
             return Native::Bool(false);
         };
-        let (old, pos) = (vec3(c, 2), vec3(c, 3));
+        let (old, pos) = (c.vec3(2), c.vec3(3));
         Native::Bool(check_dismount_point(vm, id, old, pos))
     });
     // `setDamageFlash(v)`: below 0 is 0, above 1 is 1 (a NaN is kept).
@@ -429,7 +432,7 @@ fn register_extras(vm: &mut Vm) {
         let Some(id) = c.this_object else {
             return Native::Void;
         };
-        let v = f(c, 2);
+        let v = c.float(2);
         // `f32::clamp` keeps a NaN, as the two compares do.
         let v = v.clamp(0.0, 1.0);
         if let Some(s) = state_mut(vm, id) {
@@ -460,7 +463,7 @@ fn register_extras(vm: &mut Vm) {
         };
         let Some(profile) = vm
             .objects()
-            .find(arg(c, 3))
+            .find(c.arg(3))
             .filter(|p| is_class(vm, *p, "AudioProfile"))
         else {
             return Native::Bool(false);
@@ -486,7 +489,7 @@ fn register_extras(vm: &mut Vm) {
 
 /// The sound slot argument of `playAudio` and `stopAudio` (`dAtoi(argv[2])`), when it is one of the four.
 fn sound_slot(c: &NativeCall) -> Option<usize> {
-    let slot = c.argv.get(2).map_or(0, |a| ts_vm::text::atoi(a));
+    let slot = c.int(2);
     usize::try_from(slot)
         .ok()
         .filter(|s| *s < shapebase::SOUND_THREADS)

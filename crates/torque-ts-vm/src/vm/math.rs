@@ -17,16 +17,7 @@
 //! `mSolveQuartic` print 0 for roots they did not find.
 
 use super::{Native, NativeCall, Vm};
-use crate::text::{atof, atoi, format_fixed, format_g, to_f32, to_f64, until_nul};
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
-
-/// `dAtof`: the C runtime's `atof`, rounded to a float.
-fn float_arg(c: &NativeCall, i: usize) -> f32 {
-    to_f32(atof(arg(c, i)))
-}
+use crate::text::{format_fixed, format_g, to_f32, to_f64};
 
 /// A float native's result: the float, widened exactly for the interpreter.
 fn float(x: f32) -> Native {
@@ -288,9 +279,9 @@ impl Vm {
     /// integer from 0 to `a`, or 0 without a draw when `a` is negative. Two: an integer between them, in
     /// either order. Integers come back as floats, so values above 2^24 lose their low bits.
     fn get_random(&mut self, c: &NativeCall) -> f32 {
-        match c.argv.len() {
+        match c.argc() {
             2 => {
-                let a = atoi(arg(c, 1));
+                let a = c.int(1);
                 if a < 0 {
                     return 0.0;
                 }
@@ -298,7 +289,7 @@ impl Vm {
                 r as i32 as f32
             }
             n if n >= 3 => {
-                let (a, b) = (atoi(arg(c, 1)), atoi(arg(c, 2)));
+                let (a, b) = (c.int(1), c.int(2));
                 let (lo, hi) = (a.min(b), a.max(b));
                 let r = self.random_next();
                 // hi - lo + 1 wraps to 0 only for the whole i32 range, where a division by zero would
@@ -314,10 +305,10 @@ impl Vm {
 
 pub(super) fn register(vm: &mut Vm) {
     vm.register("mFloor", 2, 2, "mFloor(x) - x rounded down", |_, c| {
-        Native::Int(ftoi(to_f64(float_arg(c, 1)).floor()))
+        Native::Int(ftoi(to_f64(c.float(1)).floor()))
     });
     vm.register("mCeil", 2, 2, "mCeil(x) - x rounded up", |_, c| {
-        Native::Int(ftoi(to_f64(float_arg(c, 1)).ceil()))
+        Native::Int(ftoi(to_f64(c.float(1)).ceil()))
     });
     // The low bound wins when the bounds are crossed (min with the high bound first).
     vm.register(
@@ -326,7 +317,7 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         "mClamp(value, low, high) - the value kept between low and high",
         |_, c| {
-            let (v, lo, hi) = (atoi(arg(c, 1)), atoi(arg(c, 2)), atoi(arg(c, 3)));
+            let (v, lo, hi) = (c.int(1), c.int(2), c.int(3));
             let m = if v > hi { hi } else { v };
             Native::Int(if m > lo { m } else { lo })
         },
@@ -337,7 +328,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "getMin(a, b) - the smaller number",
         |_, c| {
-            let (a, b) = (float_arg(c, 1), float_arg(c, 2));
+            let (a, b) = (c.float(1), c.float(2));
             float(if a > b { b } else { a })
         },
     );
@@ -347,12 +338,12 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "getMax(a, b) - the larger number",
         |_, c| {
-            let (a, b) = (float_arg(c, 1), float_arg(c, 2));
+            let (a, b) = (c.float(1), c.float(2));
             float(if a > b { a } else { b })
         },
     );
     vm.register("mAbs", 2, 2, "mAbs(x) - the absolute value", |_, c| {
-        float(f32::from_bits(float_arg(c, 1).to_bits() & 0x7fff_ffff))
+        float(f32::from_bits(c.float(1).to_bits() & 0x7fff_ffff))
     });
     let unaries: [Unary; 8] = [
         ("mSqrt", "mSqrt(x) - the square root", f64::sqrt),
@@ -369,37 +360,35 @@ pub(super) fn register(vm: &mut Vm) {
         ),
     ];
     for (name, usage, f) in unaries {
-        vm.register(name, 2, 2, usage, move |_, c| {
-            float(unary(float_arg(c, 1), f))
-        });
+        vm.register(name, 2, 2, usage, move |_, c| float(unary(c.float(1), f)));
     }
     vm.register(
         "mDegToRad",
         2,
         2,
         "mDegToRad(degrees) - the angle in radians",
-        |_, c| float(unary(float_arg(c, 1), |x| x * std::f64::consts::PI / 180.0)),
+        |_, c| float(unary(c.float(1), |x| x * std::f64::consts::PI / 180.0)),
     );
     vm.register(
         "mPow",
         3,
         3,
         "mPow(base, exponent) - base raised to the exponent",
-        |_, c| float(binary(float_arg(c, 1), float_arg(c, 2), f64::powf)),
+        |_, c| float(binary(c.float(1), c.float(2), f64::powf)),
     );
     vm.register(
         "mAtan",
         3,
         3,
         "mAtan(y, x) - the angle of the point (x, y), in radians",
-        |_, c| float(atan2(float_arg(c, 1), float_arg(c, 2))),
+        |_, c| float(atan2(c.float(1), c.float(2))),
     );
     vm.register(
         "mFloatLength",
         3,
         3,
         "mFloatLength(x, decimals) - x printed with that many decimals",
-        |_, c| Native::Str(float_length(float_arg(c, 1), atoi(arg(c, 2)))),
+        |_, c| Native::Str(float_length(c.float(1), c.int(2))),
     );
     // The usage text has a blank line before "@returns" (the manifest shows the two newlines as spaces).
     vm.register(
@@ -408,7 +397,7 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         "mSolveQuadratic(a, b, c) - the real roots of a*x^2 + b*x + c: their count, then the roots",
         |_, c| {
-            let (n, x) = solve_quadratic(float_arg(c, 1), float_arg(c, 2), float_arg(c, 3));
+            let (n, x) = solve_quadratic(c.float(1), c.float(2), c.float(3));
             let text = format!("{n} {} {}", format_g(to_f64(x[0])), format_g(to_f64(x[1])));
             Native::Str(text.into_bytes())
         },
@@ -419,7 +408,7 @@ pub(super) fn register(vm: &mut Vm) {
         5,
         "mSolveCubic(a, b, c, d) - the real roots of a*x^3 + b*x^2 + c*x + d: their count, then the roots",
         |_, c| {
-            let (n, x) = solve_cubic(float_arg(c, 1), float_arg(c, 2), float_arg(c, 3), float_arg(c, 4));
+            let (n, x) = solve_cubic(c.float(1), c.float(2), c.float(3), c.float(4));
             let roots: Vec<String> = x.iter().map(|r| format_g(to_f64(*r))).collect();
             Native::Str(format!("{n} {}", roots.join(" ")).into_bytes())
         },
@@ -431,11 +420,11 @@ pub(super) fn register(vm: &mut Vm) {
         "mSolveQuartic(a, b, c, d, e) - the real roots of a*x^4 + b*x^3 + c*x^2 + d*x + e: their count, then the roots",
         |_, c| {
             let (n, x) = solve_quartic(
-                float_arg(c, 1),
-                float_arg(c, 2),
-                float_arg(c, 3),
-                float_arg(c, 4),
-                float_arg(c, 5),
+                c.float(1),
+                c.float(2),
+                c.float(3),
+                c.float(4),
+                c.float(5),
             );
             let roots: Vec<String> = x.iter().map(|r| format_g(to_f64(*r))).collect();
             Native::Str(format!("{n} {}", roots.join(" ")).into_bytes())
@@ -446,14 +435,14 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "atoi(text) - the integer the text starts with",
-        |_, c| Native::Int(atoi(arg(c, 1))),
+        |_, c| Native::Int(c.int(1)),
     );
     vm.register(
         "atof",
         2,
         2,
         "atof(text) - the number the text starts with",
-        |_, c| float(float_arg(c, 1)),
+        |_, c| float(c.float(1)),
     );
     vm.register(
         "getRandom",
@@ -476,8 +465,8 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "setRandomSeed([seed]) - sets the random generator's state (the real-time counter without a seed)",
         |vm, c| {
-            vm.random_seed = if c.argv.len() >= 2 {
-                atoi(arg(c, 1))
+            vm.random_seed = if c.argc() >= 2 {
+                c.int(1)
             } else {
                 vm.clock.real_time_ms() as i32
             };

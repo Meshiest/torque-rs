@@ -465,7 +465,7 @@ pub fn register_join_natives_with<G: ConnGame>(
         2,
         "checkJoinAddress(text);",
         move |_, c| {
-            let text = String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice));
+            let text = String::from_utf8_lossy(c.arg(1));
             let by_player = st.borrow().user_input;
             Native::Str(running.borrow_mut().check(&text, by_player).into_bytes())
         },
@@ -509,7 +509,7 @@ pub fn register_join_natives_with<G: ConnGame>(
         2,
         "armPublicJoin(address);",
         move |vm, c| {
-            let text = String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice));
+            let text = String::from_utf8_lossy(c.arg(1));
             let (Ok(address), now) = (parse_join_address(&text), vm.sim_time()) else {
                 return Native::Void;
             };

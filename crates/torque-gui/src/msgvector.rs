@@ -25,7 +25,7 @@ use torque_ts_vm::memory::{MemoryAccount, MemoryCharge};
 use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
-use crate::{Gui, arg, atoi, this};
+use crate::Gui;
 
 /// The most lines a vector keeps (a safety cap: TGE's grows without a bound; a script that pushes more loses the oldest).
 pub const MAX_LINES: usize = 1 << 16;
@@ -126,7 +126,7 @@ fn is_vector(vm: &Vm, id: ObjId) -> bool {
 
 /// `argv[i]` as an unsigned index (`atoi` read as a `U32`).
 fn index(c: &NativeCall, i: usize) -> usize {
-    atoi(arg(c, i)) as u32 as usize
+    c.int(i) as u32 as usize
 }
 
 fn insert(vm: &mut Vm, id: ObjId, at: usize, text: &[u8], tag: i32) {
@@ -149,15 +149,11 @@ fn method(
         min,
         max,
         usage,
-        move |vm, c| match this(vm, c) {
+        move |vm, c| match c.this(vm) {
             Some(id) if is_vector(vm, id) => f(vm, id, c),
             _ => Native::Void,
         },
     );
-}
-
-fn tag_arg(c: &NativeCall, i: usize) -> i32 {
-    if c.argv.len() > i { atoi(arg(c, i)) } else { 0 }
 }
 
 pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
@@ -173,7 +169,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(string msg, int tag=0)",
         |vm, id, c| {
             let n = lines(vm, id, |l| l.len()).unwrap_or(0);
-            insert(vm, id, n, arg(c, 2), tag_arg(c, 3));
+            insert(vm, id, n, c.arg(2), c.int(3));
             Native::Void
         },
     );
@@ -193,7 +189,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         4,
         "(string msg, int tag=0)",
         |vm, id, c| {
-            insert(vm, id, 0, arg(c, 2), tag_arg(c, 3));
+            insert(vm, id, 0, c.arg(2), c.int(3));
             Native::Void
         },
     );
@@ -217,7 +213,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
             if at > lines(vm, id, |l| l.len()).unwrap_or(0) {
                 return Native::Bool(false);
             }
-            insert(vm, id, at, arg(c, 3), tag_arg(c, 4));
+            insert(vm, id, at, c.arg(3), c.int(4));
             Native::Bool(true)
         },
     );
@@ -250,7 +246,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         }
     });
     method(vm, "getLineTextByTag", 3, 3, "(int tag)", |vm, id, c| {
-        let tag = atoi(arg(c, 2));
+        let tag = c.int(2);
         let text = lines(vm, id, |l| {
             l.iter().find(|x| x.1 == tag).map(|x| x.0.clone())
         })
@@ -259,7 +255,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         Native::Str(text)
     });
     method(vm, "getLineIndexByTag", 3, 3, "(int tag)", |vm, id, c| {
-        let tag = atoi(arg(c, 2));
+        let tag = c.int(2);
         let at = lines(vm, id, |l| l.iter().position(|x| x.1 == tag)).flatten();
         Native::Int(at.map_or(-1, |i| i as i32))
     });
@@ -272,11 +268,11 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(MessageVector item)",
         |vm, gui, id, c| {
-            let vector = vm.objects().find(arg(c, 2)).filter(|v| is_vector(vm, *v));
+            let vector = vm.objects().find(c.arg(2)).filter(|v| is_vector(vm, *v));
             let Some(vector) = vector else {
                 vm.error(format!(
                     "Could not find MessageVector: {}",
-                    String::from_utf8_lossy(arg(c, 2))
+                    String::from_utf8_lossy(c.arg(2))
                 ));
                 return Native::Bool(false);
             };

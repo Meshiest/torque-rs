@@ -124,7 +124,8 @@ pub fn rules() -> &'static dyn TextRules {
     RULES.get().copied().unwrap_or(&DefaultRules)
 }
 
-fn is_c_space(b: u8) -> bool {
+/// C's `isspace` in the "C" locale: space, tab, newline, vertical tab, form feed and carriage return.
+pub fn is_c_space(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | 0x0b | 0x0c | b'\r')
 }
 

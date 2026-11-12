@@ -8,7 +8,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use crate::control::{self, children, is_a};
-use crate::{Gui, MAX_CHILDREN_WALKED, arg, atob, atoi, done};
+use crate::{Gui, MAX_CHILDREN_WALKED, atoi, done};
 
 /// The window's size before the preferences say otherwise (1280 by 720, 16:9; a game's extension may name another,
 /// [`crate::GuiExtension::default_canvas_size`]).
@@ -230,8 +230,8 @@ fn invalid_control(vm: &mut Vm, c: &NativeCall) {
     vm.print(
         format!(
             "{}(): Invalid control: {}",
-            String::from_utf8_lossy(arg(c, 0)),
-            String::from_utf8_lossy(arg(c, 2))
+            String::from_utf8_lossy(c.arg(0)),
+            String::from_utf8_lossy(c.arg(2))
         )
         .as_bytes(),
     );
@@ -403,10 +403,10 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(GuiControl ctrl)",
         |vm, gui, c| {
-            if arg(c, 2).is_empty() {
+            if c.arg(2).is_empty() {
                 return Native::Void;
             }
-            match find_control(vm, gui, arg(c, 2)) {
+            match find_control(vm, gui, c.arg(2)) {
                 Some(content) => done(set_content(vm, gui, content)),
                 None => {
                     invalid_control(vm, c);
@@ -422,13 +422,9 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         4,
         "(GuiControl ctrl, int layer)",
-        |vm, gui, c| match find_control(vm, gui, arg(c, 2)) {
+        |vm, gui, c| match find_control(vm, gui, c.arg(2)) {
             Some(dialog) => {
-                let layer = if c.argv.len() == 4 {
-                    atoi(arg(c, 3))
-                } else {
-                    0
-                };
+                let layer = if c.argc() == 4 { c.int(3) } else { 0 };
                 done(push_dialog(vm, gui, dialog, layer))
             }
             None => {
@@ -445,8 +441,8 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(GuiControl ctrl=NULL)",
         |vm, gui, c| {
-            if c.argv.len() == 3 {
-                match find_control(vm, gui, arg(c, 2)) {
+            if c.argc() == 3 {
+                match find_control(vm, gui, c.arg(2)) {
                     Some(dialog) => done(pop_dialog(vm, gui, Some(dialog))),
                     None => {
                         invalid_control(vm, c);
@@ -459,11 +455,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         },
     );
     reg(vm, gui, "popLayer", 2, 3, "(int layer)", |vm, gui, c| {
-        let layer_no = if c.argv.len() == 3 {
-            atoi(arg(c, 2))
-        } else {
-            0
-        };
+        let layer_no = if c.argc() == 3 { c.int(2) } else { 0 };
         let Some(canvas) = gui.canvas() else {
             return Native::Void;
         };
@@ -511,7 +503,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(bool visible)",
         |vm, gui, c| {
-            let text = arg(c, 2);
+            let text = c.arg(2);
             let cursor = if text.is_empty() {
                 None
             } else {
@@ -541,7 +533,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(bool enable)",
         |_, gui, c| {
-            gui.0.borrow_mut().render_front = atob(arg(c, 2));
+            gui.0.borrow_mut().render_front = c.boolean(2);
             Native::Void
         },
     );
@@ -562,10 +554,10 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         4,
         "(Point2I pos)",
         |_, gui, c| {
-            let pos = if c.argv.len() == 4 {
-                (atoi(arg(c, 2)), atoi(arg(c, 3)))
+            let pos = if c.argc() == 4 {
+                (c.int(2), c.int(3))
             } else {
-                let text = arg(c, 2);
+                let text = c.arg(2);
                 let mut words = text
                     .split(|b| *b == b' ')
                     .filter(|w| !w.is_empty())

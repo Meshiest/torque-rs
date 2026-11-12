@@ -59,11 +59,9 @@ fn shared(vm: &Vm) -> Option<Rc<RefCell<SharedLogic>>> {
     vm.extension::<Handle>().map(|h| h.0.clone())
 }
 
+/// Argument `i` as text (invalid UTF-8 replaced).
 fn arg(c: &NativeCall, i: usize) -> String {
-    c.argv
-        .get(i)
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .unwrap_or_default()
+    String::from_utf8_lossy(c.arg(i)).into_owned()
 }
 
 /// The map's logic plugin ([module docs](self)).
@@ -94,11 +92,10 @@ pub fn register(vm: &mut Vm) {
             let Some(s) = shared(vm) else {
                 return Native::Int(0);
             };
-            let n = match c.argv.get(1) {
-                Some(_) => {
-                    crate::value::atoi(&arg(c, 1)).clamp(0, MAX_TICKS_PER_CALL as i64) as u64
-                }
-                None => 1,
+            let n = if c.argc() > 1 {
+                crate::value::atoi(&arg(c, 1)).clamp(0, MAX_TICKS_PER_CALL as i64) as u64
+            } else {
+                1
             };
             {
                 let mut g = s.borrow_mut();

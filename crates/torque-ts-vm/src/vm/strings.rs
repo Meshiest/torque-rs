@@ -13,13 +13,9 @@
 //! is this crate's own.
 
 use super::words::ByteSet;
-use super::{Native, NativeCall, Vm, VmError};
-use crate::text::{atoi, collapse_escape, expand_escape_capped, find, until_nul};
+use super::{Native, Vm, VmError};
+use crate::text::{collapse_escape, expand_escape_capped, find, until_nul};
 use crate::vm::MAX_STRING_BYTES;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
 
 /// The sign of a comparison, as the C runtime's `strcmp` family returns it (-1, 0 or 1).
 fn sign(o: std::cmp::Ordering) -> Native {
@@ -264,21 +260,21 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         3,
         "strcmp(a, b) - -1, 0 or 1 as a sorts before, with or after b",
-        |_, c| sign(arg(c, 1).cmp(arg(c, 2))),
+        |_, c| sign(c.cstr(1).cmp(c.cstr(2))),
     );
     vm.register(
         "stricmp",
         3,
         3,
         "stricmp(a, b) - strcmp ignoring case",
-        |_, c| compare(arg(c, 1), arg(c, 2), usize::MAX, lower),
+        |_, c| compare(c.cstr(1), c.cstr(2), usize::MAX, lower),
     );
     vm.register(
         "strlen",
         2,
         2,
         "strlen(text) - the length in bytes",
-        |_, c| Native::Int(i32::try_from(arg(c, 1).len()).unwrap_or(i32::MAX)),
+        |_, c| Native::Int(i32::try_from(c.cstr(1).len()).unwrap_or(i32::MAX)),
     );
     vm.register(
         "strstr",
@@ -286,7 +282,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "strstr(text, needle) - where the needle first occurs, or -1",
         |_, c| {
-            let at = find(arg(c, 1), arg(c, 2), 0, false);
+            let at = find(c.cstr(1), c.cstr(2), 0, false);
             Native::Int(at.map_or(-1, |at| i32::try_from(at).unwrap_or(-1)))
         },
     );
@@ -295,7 +291,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         4,
         "strpos(text, needle [, offset]) - where the needle first occurs at or after offset, or -1",
-        |_, c| position(arg(c, 1), arg(c, 2), atoi(arg(c, 3))),
+        |_, c| position(c.cstr(1), c.cstr(2), c.int(3)),
     );
     vm.register(
         "strreplace",
@@ -303,7 +299,7 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         "strreplace(text, from, to) - the text with every from replaced by to",
         |vm, c| {
-            result(replace(arg(c, 1), arg(c, 2), arg(c, 3), |written| {
+            result(replace(c.cstr(1), c.cstr(2), c.cstr(3), |written| {
                 vm.objects.add_work(written as u64);
                 vm.ensure_budget()
             }))
@@ -315,14 +311,14 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "strupr(text) - the text in upper case",
-        |_, c| Native::Str(arg(c, 1).to_ascii_uppercase()),
+        |_, c| Native::Str(c.cstr(1).to_ascii_uppercase()),
     );
     vm.register(
         "strlwr",
         2,
         2,
         "strlwr(text) - the text in lower case",
-        |_, c| Native::Str(arg(c, 1).to_ascii_lowercase()),
+        |_, c| Native::Str(c.cstr(1).to_ascii_lowercase()),
     );
     // The text from the first occurrence of the second argument's first byte; "" when there is none
     // (an empty second argument finds the terminator: "").
@@ -332,8 +328,9 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "strchr(text, char) - the text from the first occurrence of the character",
         |_, c| {
-            let s = arg(c, 1);
-            let rest = arg(c, 2)
+            let s = c.cstr(1);
+            let rest = c
+                .cstr(2)
                 .first()
                 .and_then(|b| s.iter().position(|x| x == b))
                 .and_then(|at| s.get(at..))
@@ -347,8 +344,8 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         "getSubStr(text, start, count) - count bytes of the text from start",
         |vm, c| {
-            let s = arg(c, 1);
-            let (start, count) = (atoi(arg(c, 2)), atoi(arg(c, 3)));
+            let s = c.cstr(1);
+            let (start, count) = (c.int(2), c.int(3));
             let (Ok(from), Ok(count)) = (usize::try_from(start), usize::try_from(count)) else {
                 vm.error(format!(
                     "getSubStr(...): error, starting position and desired length must be >= 0: ({start}, {count})"
@@ -368,7 +365,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "ltrim(text) - the text without leading white space",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             let start = s.iter().take_while(|b| is_trim(b)).count();
             Native::Str(s.get(start..).unwrap_or_default().to_vec())
         },
@@ -379,7 +376,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "rtrim(text) - the text without trailing white space",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             let end = s.iter().rposition(|b| !is_trim(b)).map_or(0, |i| i + 1);
             Native::Str(s.get(..end).unwrap_or_default().to_vec())
         },
@@ -390,7 +387,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "trim(text) - the text without leading and trailing white space",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             let start = s.iter().take_while(|b| is_trim(b)).count();
             let end = s.iter().rposition(|b| !is_trim(b)).map_or(start, |i| i + 1);
             Native::Str(s.get(start..end.max(start)).unwrap_or_default().to_vec())
@@ -402,9 +399,9 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "stripChars(text, chars) - the text without any of the characters",
         |_, c| {
-            let set = ByteSet::new(arg(c, 2));
+            let set = ByteSet::new(c.cstr(2));
             Native::Str(
-                arg(c, 1)
+                c.cstr(1)
                     .iter()
                     .copied()
                     .filter(|&b| !set.contains(b))
@@ -419,7 +416,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "stripTrailingSpaces(text) - the text without trailing spaces and underscores",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             let end = s
                 .iter()
                 .rposition(|b| *b != b' ' && *b != b'_')
@@ -433,18 +430,18 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "expandEscape(text) - the text with its control bytes and quotes escaped",
         |_, c| {
-            result(expand_escape_capped(arg(c, 1), MAX_STRING_BYTES).ok_or(VmError::StringTooLong))
+            result(expand_escape_capped(c.cstr(1), MAX_STRING_BYTES).ok_or(VmError::StringTooLong))
         },
     );
     vm.register("collapseEscape", 2, 2, "collapseEscape(text) - the text with its escape sequences turned into the bytes they stand for", |_, c| {
-        Native::Str(collapse_escape(arg(c, 1)))
+        Native::Str(collapse_escape(c.cstr(1)))
     });
     vm.register(
         "StripMLControlChars",
         2,
         2,
         "StripMLControlChars(text) - the text without its markup tags and control bytes",
-        |vm, c| result(vm.strip_ml_control_chars(arg(c, 1))),
+        |vm, c| result(vm.strip_ml_control_chars(c.cstr(1))),
     );
     // `strToPlayerName(string)`: the leading spaces and underscores dropped ("" if nothing is left), then at most 16
     // bytes kept, skipping control bytes and `,` `.` `'` `` ` `` and every space or underscore right after another; the
@@ -455,7 +452,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "strToPlayerName(text) - the text as a short display name",
         |vm, c| {
-            let text = arg(c, 1);
+            let text = c.cstr(1);
             let start = text
                 .iter()
                 .position(|b| *b != b' ' && *b != b'_')

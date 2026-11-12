@@ -894,3 +894,35 @@ fn a_text_is_charged_by_its_length_before_it_is_copied() {
         b"5"
     );
 }
+
+#[test]
+fn atob_is_true_for_true_and_nonzero_numbers() {
+    assert!(atob(b"TRUE") && atob(b"1") && atob(b"0.5") && atob(b"nan"));
+    assert!(!atob(b"false") && !atob(b"0") && !atob(b"") && !atob(b"yes"));
+}
+
+#[test]
+fn atob_converts_the_number_through_a_float() {
+    // A bool argument is `(F32)atof(s) != 0`, as a bool field's.
+    for (text, want) in [
+        (&b"1e-50"[..], false),
+        (b"-1e-50", false),
+        (b"7e-46", false),
+        (b"7.1e-46", true),
+        (b"1e-45", true),
+        (b"0x1p-200", false),
+        (b"1e-300", false),
+        (b"1", true),
+        (b"0", false),
+        (b"true", true),
+    ] {
+        assert_eq!(atob(text), want, "{}", String::from_utf8_lossy(text));
+    }
+}
+
+#[test]
+fn scan_ints_skips_c_white_space() {
+    let mut out = [0; 2];
+    assert_eq!(scan_ints(b"\x0b\x0c 4\r\n-5", &mut out), 2);
+    assert_eq!(out, [4, -5]);
+}

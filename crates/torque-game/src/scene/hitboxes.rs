@@ -278,7 +278,7 @@ pub fn register(vm: &mut Vm) {
             return Native::Str(Vec::new());
         };
         let mut pos = [0.0f32; 3];
-        scan_floats(c.argv.get(2).map_or(&b""[..], Vec::as_slice), &mut pos);
+        scan_floats(c.arg(2), &mut pos);
         match damage_location(vm, id, pos) {
             Ok(name) => Native::Str(name),
             Err(e) => Native::Fail(e),

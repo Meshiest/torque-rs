@@ -29,7 +29,6 @@ use torque_ts_vm::vm::{Native, NativeCall, Vm};
 
 use super::NetGame;
 use super::NetShared;
-use super::commands::arg;
 
 /// What a connection is held by (its permissions, its props): its auth identity, else the connection.
 pub fn subject_key_of_conn<G: NetGame>(shared: &NetShared<G>, conn: ConnId) -> SubjectKey {
@@ -55,7 +54,7 @@ fn target<G: NetGame>(
 }
 
 fn text(call: &NativeCall, at: usize) -> String {
-    String::from_utf8_lossy(arg(call, at)).into_owned()
+    String::from_utf8_lossy(call.cstr(at)).into_owned()
 }
 
 /// The answer of a change: 1 when it changed something, 0 when it did not or was refused (the reason is printed).

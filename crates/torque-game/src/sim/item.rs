@@ -637,8 +637,10 @@ impl EngineClass for ItemClass {
     }
 }
 
+/// Argument `i` of a call.
+#[deprecated(note = "use `NativeCall::arg`")]
 pub fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
+    c.arg(i)
 }
 
 /// `%g %g %g`.
@@ -678,7 +680,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         };
         let Some(other) = vm
             .objects()
-            .find(arg(c, 2))
+            .find(c.arg(2))
             .filter(|o| is_class(vm, *o, "ShapeBase"))
         else {
             return Native::Bool(false);

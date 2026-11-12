@@ -12,11 +12,11 @@ use std::rc::Rc;
 
 use torque_ts_bytecode::DsoFile;
 
-use super::{COMPILE_BASE_WORK, MAX_LOG_LINE, Mode, Native, NativeCall, Vm, VmError, lossy};
+use super::{COMPILE_BASE_WORK, MAX_LOG_LINE, Mode, Native, Vm, VmError, lossy};
 use crate::code::CodeBlock;
 use crate::host::{Compiled, FileRead, Purpose, Refusal};
 use crate::sim::{ObjId, SimObject};
-use crate::text::{atoi, fold, until_nul};
+use crate::text::{fold, until_nul};
 use crate::vm::{Level, LogLine};
 
 /// Extra call-depth units charged for the BackTrace of a refused path (see `refusal_backtrace`).
@@ -100,10 +100,6 @@ impl std::fmt::Debug for EvalReportSlot {
     }
 }
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
 pub(super) fn register(vm: &mut Vm) {
     // Running a file or a text is code; `compile` writes the compiled file beside the script.
     vm.add_native_effects("", "exec", crate::effects::Effects::CODE);
@@ -120,8 +116,8 @@ pub(super) fn register(vm: &mut Vm) {
         "exec(file [, noCalls]) - compiles and runs a script file",
         |vm, c| {
             // The third argument (journals) does nothing here.
-            let no_calls = c.argv.len() >= 3 && atoi(arg(c, 2)) != 0;
-            match vm.exec_file(arg(c, 1), no_calls) {
+            let no_calls = c.argc() >= 3 && c.int(2) != 0;
+            match vm.exec_file(c.arg(1), no_calls) {
                 Ok(done) => Native::Bool(done),
                 Err(e) => Native::Fail(e),
             }
@@ -132,7 +128,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "compile(file) - compiles a script without running it",
-        |vm, c| match vm.compile_file(arg(c, 1)) {
+        |vm, c| match vm.compile_file(c.arg(1)) {
             Ok(ok) => Native::Bool(ok),
             Err(e) => Native::Fail(e),
         },
@@ -150,7 +146,7 @@ pub(super) fn register(vm: &mut Vm) {
             } else {
                 via_call.then_some(1)
             };
-            match vm.eval_with(arg(c, 1), slot) {
+            match vm.eval_with(c.arg(1), slot) {
                 Ok(result) => Native::Str(result),
                 Err(e) => Native::Fail(e),
             }
@@ -161,7 +157,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "expandFilename(name) - the name with ./ and ~/ resolved against the running script",
-        |vm, c| Native::Str(vm.expand_or_report(arg(c, 1))),
+        |vm, c| Native::Str(vm.expand_or_report(c.arg(1))),
     );
 }
 

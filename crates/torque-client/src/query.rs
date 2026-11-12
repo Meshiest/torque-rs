@@ -51,7 +51,7 @@ use net::serverquery::{
     GAME_INFO_REQUEST, GAME_INFO_RESPONSE, GAME_PING_REQUEST, GAME_PING_RESPONSE,
 };
 use ts_vm::text::atoi;
-use ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use ts_vm::vm::{Native, Vm, VmError};
 
 use crate::conn::ConnGame;
 use crate::game::client_game;
@@ -671,10 +671,6 @@ pub fn tick<G: ConnGame>(
     run_out(vm, out)
 }
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&[][..], Vec::as_slice)
-}
-
 /// The favourites (`$pref::Client::ServerFavoriteCount`, `$Pref::Client::ServerFavorite<N>` as `name TAB address`): a negative
 /// count is set to 0 and none is pushed; an address that does not parse is skipped (engine-only: TGE pushes its unparsed copy).
 fn favorites(vm: &mut Vm) -> Vec<(Vec<u8>, SocketAddrV4)> {
@@ -738,7 +734,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         move |vm, c| {
             // The console wrapper parses every argument; only the engine reaches the query (the filters are never applied to a
             // LAN answer: the filter type is Offline).
-            let port = atoi(arg(c, 1)) as u16;
+            let port = c.int(1) as u16;
             let favs = favorites(vm);
             let now = vm.sim_time();
             let mut out = Vec::new();
@@ -816,7 +812,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         2,
         "setServerInfo(index);",
         move |vm, c| {
-            let index = atoi(arg(c, 1));
+            let index = c.int(1);
             let rec = usize::try_from(index)
                 .ok()
                 .and_then(|i| state.borrow().query.servers.get(i).cloned());

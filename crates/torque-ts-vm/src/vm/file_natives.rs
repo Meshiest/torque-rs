@@ -30,16 +30,12 @@
 //! Follows Torque3D's MIT-licensed `console/fileSystemFunctions.cpp` (Copyright (c) 2012 GarageGames, LLC); the code
 //! here is this crate's own.
 
-use super::{Native, NativeCall, Vm, VmError, WORK_PER_STEP, lossy};
+use super::{Native, Vm, VmError, WORK_PER_STEP, lossy};
 use crate::classes::file_object::Flush;
 use crate::host::{CivilTime, FileStat, civil_time, safe_write_path};
 use crate::policy::WRITE_WINDOW_MS;
 use crate::sim::ObjId;
-use crate::text::{crc32, is_match, match_cost, until_nul};
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
+use crate::text::{crc32, is_match, match_cost};
 
 /// What the host costs when a script opens a file for writing, writes a line, or copies a file, besides the
 /// bytes it moves and the name's own length: one step. Making a file or finding its place in the searches'
@@ -504,7 +500,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "isFile(file) - whether the file exists",
         |vm, c| {
-            let path = vm.expand_or_report(arg(c, 1));
+            let path = vm.expand_or_report(c.cstr(1));
             match vm.stat_file(&path) {
                 Ok(stat) => Native::Bool(matches!(stat, FileStat::Found { .. })),
                 Err(e) => Native::Fail(e),
@@ -519,7 +515,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "getFileCRC(file) - the file's checksum",
         |vm, c| {
-            let path = vm.expand_or_report(arg(c, 1));
+            let path = vm.expand_or_report(c.cstr(1));
             if vm.policies.files.is_zero(&path) {
                 vm.note_lookup(&path);
                 return Native::Int(-1);
@@ -542,21 +538,21 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "findFirstFile(pattern) - the first file whose path matches",
-        |vm, c| found(vm.find_file_from(arg(c, 1), true)),
+        |vm, c| found(vm.find_file_from(c.cstr(1), true)),
     );
     vm.register(
         "findNextFile",
         2,
         2,
         "findNextFile(pattern) - the next file of the search findFirstFile began",
-        |vm, c| found(vm.find_file_from(arg(c, 1), false)),
+        |vm, c| found(vm.find_file_from(c.cstr(1), false)),
     );
     vm.register(
         "getFileCount",
         2,
         2,
         "getFileCount(pattern) - how many files match",
-        |vm, c| counted(vm.count_files(arg(c, 1))),
+        |vm, c| counted(vm.count_files(c.cstr(1))),
     );
     // TGE then asks the OS whether it could open the file for writing; this answers from
     // the name alone.
@@ -566,7 +562,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "isWriteableFileName(file) - whether a script may write that file",
         |vm, c| {
-            let path = vm.expand_or_report(arg(c, 1));
+            let path = vm.expand_or_report(c.cstr(1));
             match vm.check_write_path(&path) {
                 Ok(ok) => Native::Bool(ok),
                 Err(e) => Native::Fail(e),
@@ -579,7 +575,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "fileDelete(path) - deletes a file",
         |vm, c| {
-            let path = vm.expand_or_report(arg(c, 1));
+            let path = vm.expand_or_report(c.cstr(1));
             // The file is looked up first (printing a refusal), then deleted whatever the lookup said.
             if let Err(e) = vm.stat_file(&path) {
                 return Native::Fail(e);
@@ -596,14 +592,14 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "fileExt(path) - the extension, from the last dot",
-        |_, c| Native::Str(file_ext(arg(c, 1)).to_vec()),
+        |_, c| Native::Str(file_ext(c.cstr(1)).to_vec()),
     );
     vm.register(
         "fileBase",
         2,
         2,
         "fileBase(path) - the file name without its folder and extension",
-        |_, c| Native::Str(file_base(arg(c, 1)).to_vec()),
+        |_, c| Native::Str(file_base(c.cstr(1)).to_vec()),
     );
     // The name after the last slash, copied whole.
     vm.register(
@@ -611,14 +607,14 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "fileName(path) - the file name without its folder",
-        |_, c| Native::Str(file_name(arg(c, 1)).to_vec()),
+        |_, c| Native::Str(file_name(c.cstr(1)).to_vec()),
     );
     vm.register(
         "filePath",
         2,
         2,
         "filePath(path) - the folder part of the path",
-        |_, c| Native::Str(file_path(arg(c, 1)).to_vec()),
+        |_, c| Native::Str(file_path(c.cstr(1)).to_vec()),
     );
 }
 

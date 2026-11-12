@@ -13,12 +13,8 @@
 //! bytes were charged when the call collected them). Where the text has fewer numbers than a function reads, the
 //! missing ones are 0.
 
-use super::{Native, NativeCall, Vm};
-use crate::text::{atof, format_g, scan_floats, to_f32, to_f64, until_nul};
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
+use super::{Native, Vm};
+use crate::text::{format_g, scan_floats, to_f32, to_f64};
 
 pub type V3 = [f32; 3];
 /// A 4x4 matrix, row by row.
@@ -260,10 +256,10 @@ fn vector_len(v: V3) -> f32 {
 
 pub(super) fn register(vm: &mut Vm) {
     vm.register("VectorAdd", 3, 3, "VectorAdd(a, b) - a + b", |_, c| {
-        Native::Str(add_text(arg(c, 1), arg(c, 2)))
+        Native::Str(add_text(c.cstr(1), c.cstr(2)))
     });
     vm.register("VectorSub", 3, 3, "VectorSub(a, b) - a - b", |_, c| {
-        Native::Str(print(&each(floats(arg(c, 1)), floats(arg(c, 2)), fsub)))
+        Native::Str(print(&each(floats(c.cstr(1)), floats(c.cstr(2)), fsub)))
     });
     // The scale is `atof`'s double rounded to a float (not `sscanf`'s direct float).
     vm.register(
@@ -272,8 +268,8 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "VectorScale(v, s) - v times s",
         |_, c| {
-            let s = to_f32(atof(arg(c, 2)));
-            Native::Str(print(&each(floats(arg(c, 1)), [s; 3], fmul)))
+            let s = c.float(2);
+            Native::Str(print(&each(floats(c.cstr(1)), [s; 3], fmul)))
         },
     );
     vm.register(
@@ -282,7 +278,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "VectorNormalize(v) - v scaled to length 1",
         |_, c| {
-            let v: V3 = floats(arg(c, 1));
+            let v: V3 = floats(c.cstr(1));
             // A vector whose float length is 0 (the zero vector, or one too small to square) is
             // returned as it is; NaN counts as not 0.
             let v = if vector_len(v) != 0.0 {
@@ -299,7 +295,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "VectorDot(a, b) - the dot product of a and b",
         |_, c| {
-            let (a, b): (V3, V3) = (floats(arg(c, 1)), floats(arg(c, 2)));
+            let (a, b): (V3, V3) = (floats(c.cstr(1)), floats(c.cstr(2)));
             let dot = fadd(
                 fadd(fmul(d(a[0]), d(b[0])), fmul(d(a[1]), d(b[1]))),
                 fmul(d(a[2]), d(b[2])),
@@ -313,7 +309,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "VectorCross(a, b) - the cross product of a and b",
         |_, c| {
-            let (a, b): (V3, V3) = (floats(arg(c, 1)), floats(arg(c, 2)));
+            let (a, b): (V3, V3) = (floats(c.cstr(1)), floats(c.cstr(2)));
             let cross = |i: usize, j: usize| {
                 let (ai, aj, bi, bj) = (a[i], a[j], b[i], b[j]);
                 fl(fsub(fmul(d(ai), d(bj)), fmul(d(aj), d(bi))))
@@ -326,7 +322,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "VectorLen(v) - the length of v",
-        |_, c| Native::Float(d(vector_len(floats(arg(c, 1))))),
+        |_, c| Native::Float(d(vector_len(floats(c.cstr(1))))),
     );
     // The difference is argv[2] - argv[1], each component a float.
     vm.register(
@@ -335,7 +331,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "VectorDist(a, b) - the distance from a to b",
         |_, c| {
-            let diff = each(floats(arg(c, 2)), floats(arg(c, 1)), fsub);
+            let diff = each(floats(c.cstr(2)), floats(c.cstr(1)), fsub);
             Native::Float(d(vector_len(diff)))
         },
     );
@@ -345,7 +341,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "VectorOrthoBasis(axisAngle) - the three axes of the rotation, one after another",
         |_, c| {
-            let [x, y, z, angle] = floats::<4>(arg(c, 1));
+            let [x, y, z, angle] = floats::<4>(c.cstr(1));
             let m = matrix_from_quat(quat_from_axis_angle([x, y, z], angle));
             // The transpose, row by row (the matrix is stored by columns there).
             let mut out = [0.0; 9];
@@ -361,8 +357,8 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "MatrixCreate(position, axisAngle) - a transform from a position and an axis-angle rotation",
         |_, c| {
-            let [px, py, pz] = floats::<3>(arg(c, 1));
-            let [ax, ay, az, degrees] = floats::<4>(arg(c, 2));
+            let [px, py, pz] = floats::<3>(c.cstr(1));
+            let [ax, ay, az, degrees] = floats::<4>(c.cstr(2));
             let angle = fl(fdiv(fmul(d(degrees), std::f64::consts::PI), 180.0));
             Native::Str(print(&[px, py, pz, ax, ay, az, angle]))
         },
@@ -374,7 +370,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "MatrixCreateFromEuler(euler) - a transform from Euler angles",
         |_, c| {
-            let ([x, y, z], angle) = axis_angle_from_quat(quat_from_euler(floats(arg(c, 1))));
+            let ([x, y, z], angle) = axis_angle_from_quat(quat_from_euler(floats(c.cstr(1))));
             let mut text = b"0 0 0 ".to_vec();
             text.extend_from_slice(&print(&[x, y, z, angle]));
             Native::Str(text)
@@ -386,7 +382,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "MatrixMultiply(left, right) - the product of two transforms",
         |_, c| {
-            let m = multiply(&transform(arg(c, 1)), &transform(arg(c, 2)));
+            let m = multiply(&transform(c.cstr(1)), &transform(c.cstr(2)));
             let (axis, angle) = axis_angle_from_quat(quat_from_matrix(&m));
             let [x, y, z] = normalize(axis);
             Native::Str(print(&[m[0][3], m[1][3], m[2][3], x, y, z, angle]))
@@ -398,7 +394,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "MatrixMulVector(transform, vector) - the vector rotated by the transform",
         |_, c| {
-            let r = mul_vector(&transform(arg(c, 1)), floats(arg(c, 2)), false);
+            let r = mul_vector(&transform(c.cstr(1)), floats(c.cstr(2)), false);
             Native::Str(print(&r))
         },
     );
@@ -408,7 +404,7 @@ pub(super) fn register(vm: &mut Vm) {
         3,
         "MatrixMulPoint(transform, point) - the point transformed",
         |_, c| {
-            let r = mul_vector(&transform(arg(c, 1)), floats(arg(c, 2)), true);
+            let r = mul_vector(&transform(c.cstr(1)), floats(c.cstr(2)), true);
             Native::Str(print(&r))
         },
     );
@@ -419,7 +415,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "getBoxCenter(box) - the middle of a box given by its two corners",
         |_, c| {
-            let [x0, y0, z0, x1, y1, z1] = floats::<6>(arg(c, 1));
+            let [x0, y0, z0, x1, y1, z1] = floats::<6>(c.cstr(1));
             let mid = |lo: f32, hi: f32| fl(fmul(fadd(d(lo), d(hi)), 0.5));
             Native::Str(print(&[mid(x0, x1), mid(y0, y1), mid(z0, z1)]))
         },

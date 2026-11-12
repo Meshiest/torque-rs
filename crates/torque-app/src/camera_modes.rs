@@ -76,7 +76,6 @@ use std::rc::Rc;
 
 use torque_engine::{ClientStage, EngineBuilder, Plugin};
 use torque_render_scene::source::Eye;
-use torque_ts_text as ts_text;
 use torque_ts_vm::vm::{Native, Vm};
 
 pub use builtin::{FirstPerson, OrbitMode, Rig, ThirdPerson};
@@ -308,10 +307,7 @@ fn register_natives(vm: &mut Vm, modes: &Rc<CameraModes>) {
         2,
         "(name) - Use the camera mode called name (see getCameraModes); 1 if there is one, else 0.",
         move |vm, call| {
-            let name = String::from_utf8_lossy(ts_text::until_nul(
-                call.argv.get(1).map_or(&[][..], Vec::as_slice),
-            ))
-            .into_owned();
+            let name = String::from_utf8_lossy(call.cstr(1)).into_owned();
             let found = m.set(name.trim());
             if !found {
                 vm.warn(format!("setCameraMode: no camera mode called \"{name}\"."));

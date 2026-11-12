@@ -27,8 +27,8 @@ use torque_fonts::ttf::{MAX_TTF_BYTES, SharedFace, TtfFace};
 use torque_ts_vm::host::{FileRead, FileStat};
 use torque_ts_vm::vm::{Native, Vm};
 
+use crate::Gui;
 use crate::ext::FontSource;
-use crate::{Gui, arg};
 
 /// The longest `path` taken.
 pub const MAX_PATH_BYTES: usize = 255;
@@ -319,7 +319,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(string face, string path) - registers the TrueType file at path (a .ttf below the game's folder) as the font face, for \
          profiles' fontType; 1 when it was, else 0 with a console line saying why (a face name the game's fonts have is refused)",
         move |vm, c| {
-            let (face, path) = (arg(c, 1), arg(c, 2));
+            let (face, path) = (c.arg(1), c.arg(2));
             let calls = {
                 let mut state = gui.0.borrow_mut();
                 state.faces.attempts = state.faces.attempts.saturating_add(1);

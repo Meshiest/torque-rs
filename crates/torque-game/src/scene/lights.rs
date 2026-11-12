@@ -19,8 +19,8 @@
 
 use ts_vm::fields::Value;
 use ts_vm::sim::ObjId;
-use ts_vm::text::{atof, format_g};
-use ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use ts_vm::text::format_g;
+use ts_vm::vm::{Native, Vm, VmError};
 
 use torque_scene::time_of_day::{DayFields, DayNote, TimeOfDay};
 
@@ -43,21 +43,11 @@ pub const SCATTER_UPDATE_MASK: u32 = 1 << 0;
 /// A tick's seconds.
 const TICK_SECONDS: f32 = 0.032;
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
 fn float(vm: &Vm, id: ObjId, name: &'static [u8], default: f32) -> f32 {
     match value_of(vm, id, name) {
         Some(Value::Float(f)) => f,
         _ => default,
     }
-}
-
-/// `dAtob`: `true` in any case, else a number other than 0.
-fn truth(s: &[u8]) -> bool {
-    let s = ts_vm::text::until_nul(s);
-    s.eq_ignore_ascii_case(b"true") || atof(s) != 0.0
 }
 
 /// Whether `id` is a SpotLight.
@@ -169,7 +159,7 @@ fn fail(r: Result<(), VmError>) -> Native {
 pub fn register(vm: &mut Vm) {
     register_method(vm, "SpotLight", "setLightEnabled", |vm, c| {
         if let Some(this) = c.this_object {
-            set_field(vm, this, b"isEnabled", Value::Bool(truth(arg(c, 2))));
+            set_field(vm, this, b"isEnabled", Value::Bool(c.boolean(2)));
             ghosts::mark(vm, this, SPOT_ENABLED_MASK);
         }
         Native::Void
@@ -194,14 +184,14 @@ pub fn register(vm: &mut Vm) {
         let Some(this) = c.this_object else {
             return Native::Void;
         };
-        let time = atof(arg(c, 2)) as f32;
+        let time = c.float(2);
         let notes = with_day(vm, this, |d| d.set_time(time)).unwrap_or_default();
         day_changed(vm, this);
         fail(notify(vm, this, notes))
     });
     register_method(vm, "TimeOfDay", "setPlay", |vm, c| {
         if let Some(this) = c.this_object {
-            let on = truth(arg(c, 2));
+            let on = c.boolean(2);
             with_day(vm, this, |d| d.fields.play = on);
             day_changed(vm, this);
         }
@@ -209,7 +199,7 @@ pub fn register(vm: &mut Vm) {
     });
     register_method(vm, "TimeOfDay", "setDayLength", |vm, c| {
         if let Some(this) = c.this_object {
-            let length = atof(arg(c, 2)) as f32;
+            let length = c.float(2);
             if length != 0.0 {
                 with_day(vm, this, |d| d.fields.day_length = length);
                 day_changed(vm, this);
@@ -219,8 +209,8 @@ pub fn register(vm: &mut Vm) {
     });
     register_method(vm, "TimeOfDay", "addTimeOfDayEvent", |vm, c| {
         if let Some(this) = c.this_object {
-            let elevation = atof(arg(c, 2)) as f32;
-            let name = String::from_utf8_lossy(ts_vm::text::until_nul(arg(c, 3))).into_owned();
+            let elevation = c.float(2);
+            let name = String::from_utf8_lossy(c.cstr(3)).into_owned();
             with_day(vm, this, |d| d.add_event(elevation, &name));
         }
         Native::Void
@@ -229,7 +219,7 @@ pub fn register(vm: &mut Vm) {
         let Some(this) = c.this_object else {
             return Native::Void;
         };
-        let (elevation, speed) = (atof(arg(c, 2)) as f32, atof(arg(c, 3)) as f32);
+        let (elevation, speed) = (c.float(2), c.float(3));
         if with_day(vm, this, |d| d.animate(elevation, speed)) == Some(true) {
             ghosts::mark(vm, this, TIME_ANIMATE_MASK);
             return fail(vm.call_method(this, b"onAnimateStart", &[]).map(|_| ()));

@@ -11,7 +11,6 @@
 //! the code here is this crate's own.
 
 use super::{Native, NativeCall, Vm, VmError};
-use crate::text::{atoi, until_nul};
 use crate::vm::MAX_STRING_BYTES;
 
 /// Words are separated by any of these bytes, fields by tab or newline, records by newline.
@@ -21,10 +20,6 @@ pub const RECORDS: &[u8] = b"\n";
 
 /// The `endIndex` of `getWords(text, index)` without one (TGE's "INF").
 const NO_END: i32 = 1_000_000;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
 
 /// `strcspn`: the length of the run at the start of `s` that holds no byte of `set`. For the natives' own short sets;
 /// a set a script passes goes through [`ByteSet`].
@@ -217,11 +212,7 @@ fn result(r: Result<Vec<u8>, VmError>) -> Native {
 
 /// `getWords`/`getFields`/`getRecords`: the end index is `dAtoi` of the third argument when there is one.
 fn end_index(c: &NativeCall) -> i32 {
-    if c.argv.len() >= 4 {
-        atoi(arg(c, 3))
-    } else {
-        NO_END
-    }
+    if c.argc() >= 4 { c.int(3) } else { NO_END }
 }
 
 /// The three families of unit functions: the name part, the separators and the usage texts of `get<Unit>`,
@@ -265,36 +256,30 @@ pub const FAMILIES: [(&str, &[u8], [&str; 5]); 3] = [
 pub(super) fn register(vm: &mut Vm) {
     for (unit_name, set, usage) in FAMILIES {
         vm.register(&format!("get{unit_name}"), 3, 3, usage[0], move |_, c| {
-            Native::Str(unit(arg(c, 1), atoi(arg(c, 2)), set))
+            Native::Str(unit(c.cstr(1), c.int(2), set))
         });
         vm.register(&format!("get{unit_name}s"), 3, 4, usage[1], move |_, c| {
-            Native::Str(units(arg(c, 1), atoi(arg(c, 2)), end_index(c), set))
+            Native::Str(units(c.cstr(1), c.int(2), end_index(c), set))
         });
         vm.register(&format!("set{unit_name}"), 4, 4, usage[2], move |vm, c| {
-            result(set_unit(
-                arg(c, 1),
-                atoi(arg(c, 2)),
-                arg(c, 3),
-                set,
-                |pad| {
-                    vm.objects.add_work(pad as u64);
-                    vm.ensure_budget()
-                },
-            ))
+            result(set_unit(c.cstr(1), c.int(2), c.cstr(3), set, |pad| {
+                vm.objects.add_work(pad as u64);
+                vm.ensure_budget()
+            }))
         });
         vm.register(
             &format!("remove{unit_name}"),
             3,
             3,
             usage[3],
-            move |_, c| Native::Str(remove_unit(arg(c, 1), atoi(arg(c, 2)), set)),
+            move |_, c| Native::Str(remove_unit(c.cstr(1), c.int(2), set)),
         );
         vm.register(
             &format!("get{unit_name}Count"),
             2,
             2,
             usage[4],
-            move |_, c| Native::Int(unit_count(arg(c, 1), set)),
+            move |_, c| Native::Int(unit_count(c.cstr(1), set)),
         );
     }
     // `firstWord`/`restWords` split at the first space only (tabs and newlines are part of the word).
@@ -304,7 +289,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "firstWord(text) - the text up to its first space",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             Native::Str(s.get(..span(s, b" ")).unwrap_or_default().to_vec())
         },
     );
@@ -314,7 +299,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         "restWords(text) - the text after its first space",
         |_, c| {
-            let s = arg(c, 1);
+            let s = c.cstr(1);
             let n = span(s, b" ");
             Native::Str(s.get(n + 1..).unwrap_or_default().to_vec())
         },
@@ -324,7 +309,7 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         4,
         "nextToken(text, tokenVariable, delimiters) - stores the first token, returns the rest",
-        |vm, c| Native::Str(vm.next_token(arg(c, 1), arg(c, 2), arg(c, 3))),
+        |vm, c| Native::Str(vm.next_token(c.cstr(1), c.cstr(2), c.cstr(3))),
     );
     // It stores its token in the variable its second argument names.
     vm.add_native_effects("", "nextToken", crate::effects::Effects::VARIABLES);

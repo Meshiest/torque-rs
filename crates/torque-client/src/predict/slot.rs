@@ -1015,7 +1015,7 @@ impl PredictionSlot {
             2,
             "(id) - Runs the client's control object with the predictor registered as id, from the next tick.",
             |vm, c| {
-                let id = String::from_utf8_lossy(crate::arg(c, 1)).trim().to_owned();
+                let id = String::from_utf8_lossy(c.arg(1)).trim().to_owned();
                 let Some(slot) = PredictionSlot::of(vm) else {
                     return Native::Bool(false);
                 };

@@ -16,19 +16,13 @@
 
 use collide::ObjectId;
 use collide::math::F3;
-use ts_vm::fields::atob;
 use ts_vm::sim::ObjId;
-use ts_vm::text::{atof, atoi, to_f32};
 use ts_vm::vm::{Native, NativeCall, Vm};
 use vehicle::wheeled;
 
 use super::vehicle::{Body, Data, data, ext_of, state, tire_data, with_body};
 use crate::methods::register_method;
 use crate::scene::camera::is_class;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
 
 /// The datablock's hub count (0 without a WheeledVehicleData).
 fn hubs(vm: &Vm, id: ObjId) -> usize {
@@ -40,7 +34,7 @@ fn hubs(vm: &Vm, id: ObjId) -> usize {
 
 /// The wheel argument: `atoi`, refused below 0 and at or past the hub count (with a warning that names `method`).
 pub fn wheel_index(vm: &mut Vm, id: ObjId, c: &NativeCall, method: &str) -> Option<usize> {
-    let i = atoi(arg(c, 2));
+    let i = c.int(2);
     let n = hubs(vm, id);
     match usize::try_from(i).ok().filter(|i| *i < n) {
         Some(i) => Some(i),
@@ -75,7 +69,7 @@ pub fn register(vm: &mut Vm) {
         let Some(i) = wheel_index(vm, id, c, "setWheelSteering") else {
             return Native::Bool(false);
         };
-        let value = to_f32(atof(arg(c, 3)));
+        let value = c.float(3);
         Native::Bool(on_wheeled(vm, id, |v, d| {
             wheeled::set_wheel_steering(v, d, i, value)
         }))
@@ -87,7 +81,7 @@ pub fn register(vm: &mut Vm) {
         let Some(i) = wheel_index(vm, id, c, "setWheelPowered") else {
             return Native::Bool(false);
         };
-        let on = atob(arg(c, 3));
+        let on = c.boolean(3);
         Native::Bool(on_wheeled(vm, id, |v, d| {
             wheeled::set_wheel_powered(v, d, i, on)
         }))
@@ -99,12 +93,12 @@ pub fn register(vm: &mut Vm) {
         };
         let Some(tire) = vm
             .objects()
-            .find(arg(c, 3))
+            .find(c.arg(3))
             .filter(|t| is_class(vm, *t, "WheeledVehicleTire"))
         else {
             vm.warn(format!(
                 "setWheelTire: {} datablock does not exist (or is not a tire)",
-                String::from_utf8_lossy(ts_vm::text::until_nul(arg(c, 3)))
+                String::from_utf8_lossy(c.cstr(3))
             ));
             return Native::Bool(false);
         };
@@ -122,12 +116,12 @@ pub fn register(vm: &mut Vm) {
         };
         let Some(spring) = vm
             .objects()
-            .find(arg(c, 3))
+            .find(c.arg(3))
             .filter(|t| is_class(vm, *t, "WheeledVehicleSpring"))
         else {
             vm.warn(format!(
                 "setWheelSpring: {} datablock does not exist (or is not a spring)",
-                String::from_utf8_lossy(ts_vm::text::until_nul(arg(c, 3)))
+                String::from_utf8_lossy(c.cstr(3))
             ));
             return Native::Bool(false);
         };
@@ -145,7 +139,7 @@ pub fn register(vm: &mut Vm) {
     });
     register_method(vm, "FlyingVehicle", "useCreateHeight", |vm, c| {
         if let Some(id) = c.this_object {
-            let on = atob(arg(c, 2));
+            let on = c.boolean(2);
             with_body(vm, id, |b, _| {
                 if let Body::Flying(v) = b {
                     vehicle::flying::use_create_height(v, on);

@@ -33,7 +33,6 @@ use std::rc::Rc;
 use shapes::instance::{ShapeInstance, ThreadId, find_sequence};
 use shapes::math as fpu;
 use ts_vm::classes::EngineClass;
-use ts_vm::fields::atob;
 use ts_vm::sim::ObjId;
 use ts_vm::text::atoi;
 use ts_vm::vm::{Native, NativeCall, Vm, VmError};
@@ -349,10 +348,6 @@ pub fn ctor_type_mask(vm: &Vm, id: ObjId) -> Option<u32> {
     } else {
         None
     }
-}
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
 }
 
 fn type_mask(vm: &Vm, id: ObjId) -> u32 {
@@ -740,17 +735,17 @@ fn play_thread(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(id) = c.this_object else {
         return Native::Bool(false);
     };
-    let slot = atoi(arg(c, 2));
+    let slot = c.int(2);
     let Ok(slot) = usize::try_from(slot) else {
         return Native::Bool(false);
     };
     if slot >= SCRIPT_THREADS {
         return Native::Bool(false);
     }
-    if c.argv.len() == 4 {
+    if c.argc() == 4 {
         let index = state(vm, id)
             .and_then(|s| s.body.as_ref())
-            .and_then(|b| find_sequence(b.shape(), arg(c, 3)));
+            .and_then(|b| find_sequence(b.shape(), c.arg(3)));
         let Some(index) = index else {
             return Native::Bool(false);
         };
@@ -781,7 +776,7 @@ fn set_thread_state(vm: &mut Vm, c: &NativeCall, to: u8) -> Native {
     let Some(id) = c.this_object else {
         return Native::Bool(false);
     };
-    let slot = atoi(arg(c, 2));
+    let slot = c.int(2);
     let Some(slot) = usize::try_from(slot).ok().filter(|s| *s < SCRIPT_THREADS) else {
         return Native::Bool(false);
     };
@@ -808,11 +803,11 @@ fn set_thread_dir(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(id) = c.this_object else {
         return Native::Bool(false);
     };
-    let slot = atoi(arg(c, 2));
+    let slot = c.int(2);
     let Some(slot) = usize::try_from(slot).ok().filter(|s| *s < SCRIPT_THREADS) else {
         return Native::Bool(false);
     };
-    let forward = atob(arg(c, 3));
+    let forward = c.boolean(3);
     let Some(mut st) = ext::get_mut(vm.objects_mut(), id).and_then(|e| e.shape.take()) else {
         return Native::Bool(false);
     };
@@ -864,7 +859,7 @@ fn get_slot_transform(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(id) = c.this_object else {
         return Native::Str(Vec::new());
     };
-    let slot = atoi(arg(c, 2)) as u32;
+    let slot = c.int(2) as u32;
     let m = if slot <= 3 {
         mount_transform(vm, id, slot as usize)
     } else {
@@ -955,7 +950,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
     let w = Rc::clone(container);
     register_method(vm, "ShapeBase", "setHidden", move |vm, c| {
         if let Some(id) = c.this_object {
-            set_hidden(vm, &w, id, ts_vm::fields::atob(arg(c, 2)));
+            set_hidden(vm, &w, id, c.boolean(2));
         }
         Native::Void
     });
@@ -968,8 +963,8 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
     });
     register_method(vm, "ShapeBase", "startFade", |vm, c| {
         if let Some(id) = c.this_object {
-            let fade_out = c.argv.get(4).is_some_and(|a| atob(a));
-            start_fade(vm, id, arg(c, 2), arg(c, 3), fade_out);
+            let fade_out = c.boolean(4);
+            start_fade(vm, id, c.arg(2), c.arg(3), fade_out);
         }
         Native::Void
     });
@@ -1441,7 +1436,7 @@ fn set_arm_thread(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(mut st) = ext::get_mut(vm.objects_mut(), id).and_then(|e| e.shape.take()) else {
         return Native::Bool(false);
     };
-    let name = arg(c, 2);
+    let name = c.arg(2);
     let found = st.player.as_ref().and_then(|p| {
         p.actions
             .iter()
@@ -1467,12 +1462,12 @@ fn set_action_thread(vm: &mut Vm, c: &NativeCall) -> Native {
         return Native::Bool(false);
     };
     // The wrapper's defaults: not held, and the first-person flag on unless the fifth argument says otherwise.
-    let (hold, fsp) = if c.argv.len() >= 4 {
-        (atob(arg(c, 3)), c.argv.len() <= 4 || atob(arg(c, 4)))
+    let (hold, fsp) = if c.argc() >= 4 {
+        (c.boolean(3), c.argc() <= 4 || c.boolean(4))
     } else {
         (false, true)
     };
-    let name = arg(c, 2);
+    let name = c.arg(2);
     let found = st.player.as_ref().and_then(|p| {
         p.actions
             .iter()
@@ -1645,7 +1640,7 @@ pub fn set_shape_name(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(id) = c.this_object else {
         return Native::Void;
     };
-    if let Err(e) = set_name(vm, id, arg(c, 2), false) {
+    if let Err(e) = set_name(vm, id, c.arg(2), false) {
         return Native::Fail(e);
     }
     ghosts::mark(vm, id, 0x10);
@@ -1657,7 +1652,7 @@ fn set_skin_name(vm: &mut Vm, c: &NativeCall) -> Native {
     let Some(id) = c.this_object else {
         return Native::Void;
     };
-    if let Err(e) = set_name(vm, id, arg(c, 2), true) {
+    if let Err(e) = set_name(vm, id, c.arg(2), true) {
         return Native::Fail(e);
     }
     ghosts::mark(vm, id, 0x800);

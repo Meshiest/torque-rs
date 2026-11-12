@@ -234,8 +234,8 @@ pub fn register_command_drops<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetSh
         move |vm, call| {
             let count = (|| {
                 let shared = weak.upgrade()?;
-                let client = super::commands::find_net_connection(vm, super::commands::arg(call, 1))?;
-                let command = String::from_utf8_lossy(super::commands::arg(call, 2)).into_owned();
+                let client = super::commands::find_net_connection(vm, call.cstr(1))?;
+                let command = String::from_utf8_lossy(call.cstr(2)).into_owned();
                 let sh = shared.borrow();
                 sh.conns.get(&client).map(|rec| rec.plugin_cmds.drops(&command))
             })()

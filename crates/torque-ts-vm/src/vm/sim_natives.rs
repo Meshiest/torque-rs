@@ -7,18 +7,6 @@
 
 use super::{Native, NativeCall, Vm, VmError, lossy};
 use crate::sim::{Members, ObjId, SimObject};
-use crate::text::atoi;
-
-/// Argument `i`, or the empty string.
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
-/// The object a method native was called on. None for a plain call made outside any method: the
-/// TGE crashes there; the methods below give their neutral value.
-fn this(vm: &Vm, c: &NativeCall) -> Option<ObjId> {
-    c.this_object.filter(|id| vm.objects.contains(*id))
-}
 
 pub(super) fn register_globals(vm: &mut Vm) {
     // "0" and "" are never objects; anything else is looked up as `Sim::findObject` does.
@@ -28,7 +16,7 @@ pub(super) fn register_globals(vm: &mut Vm) {
         2,
         "isObject(object) - whether the object exists",
         |vm, c| {
-            let text = arg(c, 1);
+            let text = c.arg(1);
             Native::Bool(text != b"0" && !text.is_empty() && vm.objects.find(text).is_some())
         },
     );
@@ -37,7 +25,7 @@ pub(super) fn register_globals(vm: &mut Vm) {
         2,
         2,
         "nameToID(name) - the id of the object of that name",
-        |vm, c| Native::Int(vm.objects.find(arg(c, 1)).map_or(-1, |id| id as i32)),
+        |vm, c| Native::Int(vm.objects.find(c.arg(1)).map_or(-1, |id| id as i32)),
     );
 }
 
@@ -233,7 +221,7 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         2,
         2,
         "object.dump() - prints the object's fields and methods",
-        |vm, c| match this(vm, c).map(|id| dump(vm, id)) {
+        |vm, c| match c.this(vm).map(|id| dump(vm, id)) {
             Some(Err(error)) => Native::Fail(error),
             _ => Native::Void,
         },
@@ -244,7 +232,7 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         2,
         2,
         "object.getId() - the object's id",
-        |vm, c| Native::Int(this(vm, c).map_or(0, |id| id as i32)),
+        |vm, c| Native::Int(c.this(vm).map_or(0, |id| id as i32)),
     );
     vm.register_in(
         "SimObject",
@@ -253,7 +241,8 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         2,
         "object.getName() - the object's name",
         |vm, c| {
-            let name = this(vm, c)
+            let name = c
+                .this(vm)
                 .and_then(|id| vm.objects.get(id))
                 .and_then(SimObject::name);
             Native::Str(name.unwrap_or_default().to_vec())
@@ -266,9 +255,9 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         3,
         "object.setName(name) - renames the object",
         |vm, c| {
-            if let Some(id) = this(vm, c) {
+            if let Some(id) = c.this(vm) {
                 // `assignName`: the name through the string table (the first spelling of it the table holds).
-                let name = arg(c, 2);
+                let name = c.arg(2);
                 let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
                 let name = vm.strings.intern(&name[..end]);
                 vm.objects.set_name(id, &name);
@@ -283,7 +272,8 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         2,
         "object.getClassName() - the object's class",
         |vm, c| {
-            let class = this(vm, c)
+            let class = c
+                .this(vm)
                 .and_then(|id| vm.objects.get(id))
                 .map(SimObject::class);
             Native::Str(
@@ -300,7 +290,8 @@ pub(super) fn register_object_methods(vm: &mut Vm) {
         2,
         "object.getGroup() - the group that holds the object",
         |vm, c| {
-            let group = this(vm, c)
+            let group = c
+                .this(vm)
                 .and_then(|id| vm.objects.get(id))
                 .and_then(SimObject::group);
             Native::Int(group.map_or(-1, |g| g as i32))
@@ -325,7 +316,7 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         2,
         "object.delete() - deletes the object",
         |vm, c| {
-            let Some(id) = this(vm, c) else {
+            let Some(id) = c.this(vm) else {
                 return Native::Void;
             };
             match vm.delete_object(id) {
@@ -341,10 +332,10 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         0,
         "set.add(objects...) - adds objects to the set",
         |vm, c| {
-            let Some(set) = this(vm, c) else {
+            let Some(set) = c.this(vm) else {
                 return Native::Void;
             };
-            for text in c.argv.iter().skip(2) {
+            for text in c.rest(2) {
                 match vm.objects.find(text) {
                     // A set may hold itself: TGE has no check.
                     Some(id) => {
@@ -365,10 +356,10 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         0,
         "set.remove(objects...) - removes objects from the set",
         |vm, c| {
-            let Some(set) = this(vm, c) else {
+            let Some(set) = c.this(vm) else {
                 return Native::Void;
             };
-            for text in c.argv.iter().skip(2) {
+            for text in c.rest(2) {
                 let removed = vm
                     .objects
                     .find(text)
@@ -393,7 +384,7 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         2,
         "set.clear() - removes every object from the set",
         |vm, c| {
-            if let Some(set) = this(vm, c) {
+            if let Some(set) = c.this(vm) {
                 vm.objects.clear(set);
             }
             Native::Void
@@ -406,7 +397,8 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         2,
         "set.getCount() - how many objects the set holds",
         |vm, c| {
-            let count = this(vm, c)
+            let count = c
+                .this(vm)
                 .and_then(|set| vm.objects.members(set))
                 .map_or(0, Members::len);
             Native::Int(i32::try_from(count).unwrap_or(i32::MAX))
@@ -419,10 +411,10 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         3,
         "set.getObject(index) - the object at that index",
         |vm, c| {
-            let Some(set) = this(vm, c) else {
+            let Some(set) = c.this(vm) else {
                 return Native::Int(-1);
             };
-            let index = atoi(arg(c, 2));
+            let index = c.int(2);
             let members = vm.objects.members(set);
             match usize::try_from(index).ok().and_then(|i| members?.get(i)) {
                 Some(id) => Native::Int(id as i32),
@@ -440,13 +432,13 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         3,
         "set.isMember(object) - whether the set holds the object",
         |vm, c| {
-            let Some(set) = this(vm, c) else {
+            let Some(set) = c.this(vm) else {
                 return Native::Bool(false);
             };
-            match vm.objects.find(arg(c, 2)) {
+            match vm.objects.find(c.arg(2)) {
                 Some(id) => Native::Bool(vm.objects.is_member(set, id)),
                 None => {
-                    let line = vm.messages().is_member_no_object(&lossy(arg(c, 2)));
+                    let line = vm.messages().is_member_no_object(&lossy(c.arg(2)));
                     vm.print(line.as_bytes());
                     Native::Bool(false)
                 }
@@ -476,7 +468,7 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
         2,
         "set.listObjects() - prints the set's objects",
         |vm, c| {
-            let Some(set) = this(vm, c) else {
+            let Some(set) = c.this(vm) else {
                 return Native::Void;
             };
             let members: Vec<ObjId> = vm
@@ -505,7 +497,7 @@ pub(super) fn register_set_methods(vm: &mut Vm) {
 
 /// `bringToFront` / `pushToBack`: an unknown object or a non-member changes nothing.
 fn move_member(vm: &mut Vm, c: &NativeCall, to_front: bool) -> Native {
-    if let (Some(set), Some(id)) = (this(vm, c), vm.objects.find(arg(c, 2))) {
+    if let (Some(set), Some(id)) = (c.this(vm), vm.objects.find(c.arg(2))) {
         vm.objects.move_member(set, id, to_front);
     }
     Native::Void

@@ -17,7 +17,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use crate::control::{flag, is_a};
-use crate::{Gui, MAX_LIST_ROWS, MAX_TEXT_BYTES, arg, atob, atof, atoi, done, this};
+use crate::{Gui, MAX_LIST_ROWS, MAX_TEXT_BYTES, atob, atof, atoi, done};
 
 /// TGE's `GuiTextCtrl::MAX_STRING_LENGTH`: `mText` keeps 255 bytes.
 pub const TEXT_CTRL_MAX: usize = 255;
@@ -487,28 +487,7 @@ pub fn color_f_text(vm: &Vm, id: ObjId, field: &[u8]) -> String {
 /// `sscanf(s, "%d %d %d %d")`: the ints it converts in order (it stops at the first that does not convert), the others 0.
 pub fn scan_ints4(s: &[u8]) -> [i32; 4] {
     let mut out = [0i32; 4];
-    let mut at = 0usize;
-    for slot in out.iter_mut() {
-        while s
-            .get(at)
-            .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
-        {
-            at += 1;
-        }
-        let start = at;
-        if matches!(s.get(at), Some(b'+' | b'-')) {
-            at += 1;
-        }
-        let digits = s[at.min(s.len())..]
-            .iter()
-            .take_while(|b| b.is_ascii_digit())
-            .count();
-        if digits == 0 {
-            break;
-        }
-        at += digits;
-        *slot = atoi(&s[start..at]);
-    }
+    torque_ts_vm::fields::scan_ints(s, &mut out);
     out
 }
 
@@ -605,7 +584,7 @@ pub fn reg(
 ) {
     let gui = gui.clone();
     vm.register_in(class, name, min, max, usage, move |vm, c| {
-        match this(vm, c) {
+        match c.this(vm) {
             Some(id) if gui.is_control(id) => f(vm, &gui, id, c),
             _ => Native::Void,
         }
@@ -614,7 +593,7 @@ pub fn reg(
 
 /// Sets field `field` from argument 2 (`setBitmap`, `setColor`).
 fn set_field_from(vm: &mut Vm, id: ObjId, field: &[u8], c: &NativeCall) -> Native {
-    vm.set_object_field(id, field, b"", arg(c, 2));
+    vm.set_object_field(id, field, b"", c.arg(2));
     Native::Void
 }
 
@@ -816,9 +795,9 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         // The script method clears the width the last render kept: `getPixelWidth` is 0 until the next frame draws it.
         |vm, gui, id, c| {
             if is_a(vm, id, "GuiTextEditCtrl") {
-                crate::input::text_edit::set_text(vm, gui, id, arg(c, 2));
+                crate::input::text_edit::set_text(vm, gui, id, c.arg(2));
             } else {
-                set_text(vm, gui, id, arg(c, 2));
+                set_text(vm, gui, id, c.arg(2));
             }
             gui.with_mut(id, |c| c.pixel_width = 0);
             Native::Void
@@ -845,7 +824,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(string text)",
         |vm, gui, id, c| {
-            set_text(vm, gui, id, arg(c, 2));
+            set_text(vm, gui, id, c.arg(2));
             Native::Void
         },
     );
@@ -869,7 +848,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(string text, bool reformat)",
         // The text so far and the new piece are copied: both paid for.
         |vm, gui, id, c| {
-            crate::mltext::add_text(vm, gui, id, arg(c, 2), atob(arg(c, 3)));
+            crate::mltext::add_text(vm, gui, id, c.arg(2), c.boolean(3));
             Native::Void
         },
     );
@@ -884,7 +863,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         "(int newPos)",
         |_, gui, id, c| {
             let len = text_of(gui, id).len() as i32;
-            let want = atoi(arg(c, 2));
+            let want = c.int(2);
             let (pos, clamped) = if want < 0 {
                 (0, true)
             } else if want >= len {
@@ -913,7 +892,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
             else {
                 return Native::Void;
             };
-            let want = atoi(arg(c, 2)) as u32;
+            let want = c.int(2) as u32;
             let y = crate::mltext::state(gui, id)
                 .and_then(|s| s.layout.tags.iter().find(|t| t.0 == want).map(|t| t.1));
             match y {
@@ -972,7 +951,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "",
         |_, gui, id, c| {
-            let a = atof(arg(c, 2)) as f32;
+            let a = c.float(2);
             gui.with_mut(id, |c| {
                 if let Some(s) = c.ml.as_deref_mut() {
                     s.alpha = a;
@@ -1000,7 +979,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "",
         |_, gui, id, c| {
-            crate::input::text_edit::set_cursor(gui, id, atoi(arg(c, 2)));
+            crate::input::text_edit::set_cursor(gui, id, c.int(2));
             Native::Void
         },
     );
@@ -1075,7 +1054,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
             3,
             "(color)",
             |vm, _, id, c| {
-                let text = color_i_text(float_color(arg(c, 2)));
+                let text = color_i_text(float_color(c.arg(2)));
                 vm.set_object_field(id, b"mColor", b"", text.as_bytes());
                 Native::Void
             },
@@ -1165,12 +1144,12 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         5,
         "(int id, string text, int index=0)",
         |vm, gui, id, c| {
-            let text = arg(c, 3);
+            let text = c.arg(3);
             if !vm.charge_work(ROW_WORK.saturating_add(text.len() as u64)) {
                 return Native::Fail(VmError::StepLimit);
             }
-            let row = (atoi(arg(c, 2)), text.to_vec(), true);
-            let at = (c.argv.len() >= 5).then(|| usize::try_from(atoi(arg(c, 4))).unwrap_or(0));
+            let row = (c.int(2), text.to_vec(), true);
+            let at = (c.argc() >= 5).then(|| usize::try_from(c.int(4)).unwrap_or(0));
             let len = gui.with(id, |c| c.rows.len()).unwrap_or(0);
             // An insert moves the rows after it: paid for like a scan.
             if at.is_some() && !vm.charge_work(rows_work(len)) {
@@ -1201,8 +1180,8 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         4,
         "(int id, string text)",
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
-            let text = arg(c, 3);
+            let row_id = c.int(2);
+            let text = c.arg(3);
             if !vm.charge_work(text.len() as u64) {
                 return Native::Fail(VmError::StepLimit);
             }
@@ -1268,7 +1247,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int index)",
         |_, gui, id, c| {
-            let index = usize::try_from(atoi(arg(c, 2))).ok();
+            let index = usize::try_from(c.int(2)).ok();
             Native::Int(
                 gui.with(id, |c| {
                     index.and_then(|i| c.rows.get(i)).map_or(-1, |r| r.0)
@@ -1286,7 +1265,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int id)",
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
+            let row_id = c.int(2);
             text_result(
                 vm,
                 scan(vm, gui, id, |rows| {
@@ -1304,7 +1283,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int id)",
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
+            let row_id = c.int(2);
             int_result(
                 scan(vm, gui, id, |rows| {
                     rows.iter()
@@ -1324,7 +1303,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int index)",
         |vm, gui, id, c| {
-            let index = usize::try_from(atoi(arg(c, 2))).ok();
+            let index = usize::try_from(c.int(2)).ok();
             let text = gui.with(id, |c| {
                 index.and_then(|i| c.rows.get(i)).map(|r| r.1.clone())
             });
@@ -1340,7 +1319,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int id)",
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
+            let row_id = c.int(2);
             match scan(vm, gui, id, |rows| rows.iter().position(|r| r.0 == row_id)) {
                 Ok(Some(Some(at))) => remove_row(vm, gui, id, at),
                 Ok(_) => {}
@@ -1358,7 +1337,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int index)",
         |vm, gui, id, c| {
-            let Ok(at) = usize::try_from(atoi(arg(c, 2))) else {
+            let Ok(at) = usize::try_from(c.int(2)) else {
                 return Native::Void;
             };
             let len = gui.with(id, |c| c.rows.len()).unwrap_or(0);
@@ -1390,7 +1369,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(int id)",
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
+            let row_id = c.int(2);
             match scan(vm, gui, id, |rows| rows.iter().position(|r| r.0 == row_id)) {
                 Ok(Some(Some(r))) => {
                     done(crate::textlist::set_selected(vm, gui, id, r as i32, true))
@@ -1408,15 +1387,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         3,
         "(int rowNum)",
-        |vm, gui, id, c| {
-            done(crate::textlist::set_selected(
-                vm,
-                gui,
-                id,
-                atoi(arg(c, 2)),
-                true,
-            ))
-        },
+        |vm, gui, id, c| done(crate::textlist::set_selected(vm, gui, id, c.int(2), true)),
     );
     reg(
         vm,
@@ -1438,7 +1409,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         3,
         "(string needle)",
         |vm, gui, id, c| {
-            let needle = arg(c, 2);
+            let needle = c.arg(2);
             int_result(
                 scan(vm, gui, id, |rows| {
                     rows.iter()
@@ -1459,8 +1430,8 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         "(int rowNum, bool active)",
         // The row by id; making the selected row inactive clears the selection.
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
-            let active = atob(arg(c, 3));
+            let row_id = c.int(2);
+            let active = c.boolean(3);
             if !vm.charge_work(rows_work(gui.with(id, |c| c.rows.len()).unwrap_or(0))) {
                 return Native::Fail(VmError::StepLimit);
             }
@@ -1490,7 +1461,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         "(int rowNum)",
         // The row by id.
         |vm, gui, id, c| {
-            let row_id = atoi(arg(c, 2));
+            let row_id = c.int(2);
             match scan(vm, gui, id, |rows| {
                 rows.iter().find(|r| r.0 == row_id).is_some_and(|r| r.2)
             }) {
@@ -1509,7 +1480,7 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
         "(int rowNum)",
         // The row's cell scrolled into a scroll parent's view.
         |vm, gui, id, c| {
-            let row = atoi(arg(c, 2));
+            let row = c.int(2);
             if row >= 0
                 && let Some(p) =
                     crate::control::parent(vm, id).filter(|p| is_a(vm, *p, "GuiScrollCtrl"))
@@ -1535,8 +1506,8 @@ fn register_text_list(vm: &mut Vm, gui: &Gui) {
             4,
             "(int columnID, bool increasing=false)",
             move |vm, gui, id, c| {
-                let col = atoi(arg(c, 2));
-                let increasing = c.argv.len() < 4 || atob(arg(c, 3));
+                let col = c.int(2);
+                let increasing = c.argc() < 4 || c.boolean(3);
                 match sort_rows(vm, gui, id, col, numeric, increasing) {
                     Ok(()) => Native::Void,
                     Err(e) => Native::Fail(e),
@@ -1558,7 +1529,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
             5,
             "(string name, int idNum, int scheme=0)",
             move |vm, gui, id, c| {
-                let text = arg(c, 2);
+                let text = c.arg(2);
                 let len = gui.with(id, |c| c.rows.len()).unwrap_or(0);
                 // `addFront` moves every entry: paid for like a scan.
                 let work = ROW_WORK
@@ -1567,7 +1538,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
                 if !vm.charge_work(work) {
                     return Native::Fail(VmError::StepLimit);
                 }
-                let entry = (atoi(arg(c, 3)), text.to_vec(), true);
+                let entry = (c.int(3), text.to_vec(), true);
                 gui.with_mut(id, |control| {
                     if control.rows.len() < MAX_LIST_ROWS {
                         if front {
@@ -1595,7 +1566,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
         // order. Each refusal is a warning: `failed to locate class rep for '%s'`, `failed to locate field '%s' for class '%s'`,
         // `field '%s' is not an enumeration for class '%s'`.
         |vm, gui, id, c| {
-            let (class, field) = (arg(c, 2).to_vec(), arg(c, 3).to_vec());
+            let (class, field) = (c.arg(2).to_vec(), c.arg(3).to_vec());
             let shown = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
             let classes = &vm.objects().classes;
             let Some(def) = classes.find(&class).and_then(|k| classes.get(k)) else {
@@ -1642,7 +1613,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
         3,
         "(string text)",
         |vm, gui, id, c| {
-            set_text(vm, gui, id, arg(c, 2));
+            set_text(vm, gui, id, c.arg(2));
             Native::Void
         },
     );
@@ -1695,7 +1666,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
         3,
         3,
         "(int id)",
-        |vm, gui, id, c| done(popup_select(vm, gui, id, atoi(arg(c, 2)))),
+        |vm, gui, id, c| done(popup_select(vm, gui, id, c.int(2))),
     );
     reg(
         vm,
@@ -1706,7 +1677,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
         3,
         "(int id)",
         |vm, gui, id, c| {
-            let entry = atoi(arg(c, 2));
+            let entry = c.int(2);
             text_result(
                 vm,
                 scan(vm, gui, id, |rows| {
@@ -1724,7 +1695,7 @@ fn register_popup(vm: &mut Vm, gui: &Gui) {
         3,
         "(string text)",
         |vm, gui, id, c| {
-            let needle = arg(c, 2);
+            let needle = c.arg(2);
             int_result(
                 scan(vm, gui, id, |rows| {
                     rows.iter().find(|r| r.1 == needle).map_or(-1, |r| r.0)
@@ -1762,7 +1733,7 @@ fn register_profile(vm: &mut Vm, gui: &Gui) {
         2,
         "()",
         move |vm, c| {
-            let Some(id) = crate::this(vm, c) else {
+            let Some(id) = c.this(vm) else {
                 return Native::Void;
             };
             let face = vm.objects().field(id, b"fontType", b"").unwrap_or_default();

@@ -296,7 +296,7 @@ pub fn install(vm: &mut Vm) {
     vm.register("callPage", 2, max, "callPage(name, args...);", |vm, c| {
         let text = |a: &Vec<u8>| String::from_utf8_lossy(a).into_owned();
         let name = c.argv.get(1).map(text).unwrap_or_default();
-        let args: Vec<String> = c.argv.iter().skip(2).map(text).collect();
+        let args: Vec<String> = c.rest(2).iter().map(text).collect();
         match call_page(&name, &args) {
             Ok(out) => Native::Str(out.into_bytes()),
             // an event no page listens to
@@ -313,8 +313,7 @@ pub fn install(vm: &mut Vm) {
         2,
         "setRenderQuality(low|medium|high|ultra);",
         |vm, c| {
-            let name =
-                String::from_utf8_lossy(c.argv.get(1).map_or(&[][..], Vec::as_slice)).into_owned();
+            let name = String::from_utf8_lossy(c.arg(1)).into_owned();
             match crate::web_page::request_quality(&name) {
                 Ok(()) => Native::Bool(true),
                 Err(e) => {

@@ -12,7 +12,9 @@
 use std::rc::Rc;
 
 use crate::sim::ObjId;
-use crate::text::{atof, atoi, format_fixed, format_g, scan_floats, to_f32, to_f64, until_nul};
+use crate::text::{
+    atof, atoi, format_fixed, format_g, is_c_space, scan_floats, to_f32, to_f64, until_nul,
+};
 use crate::vm::Level;
 pub use crate::vm::vectors::Mat4;
 use crate::vm::vectors::{
@@ -221,14 +223,14 @@ pub fn zero(ty: FieldType) -> Value {
 }
 
 /// `sscanf(s, "%d %d ...")` into the slots of `out`: fills the slots it converts, leaves the others, and
-/// returns how many it converted. A conversion is optional white space, a sign and at least one digit; a number
+/// returns how many it converted. A conversion is optional white space (C's `isspace`), a sign and at least one digit; a number
 /// outside the `i32` range saturates at its end.
 pub fn scan_ints(s: &[u8], out: &mut [i32]) -> usize {
     let s = until_nul(s);
     let mut at = 0;
     let mut count = 0;
     for slot in out.iter_mut() {
-        while s.get(at).is_some_and(|b| b.is_ascii_whitespace()) {
+        while s.get(at).copied().is_some_and(is_c_space) {
             at += 1;
         }
         let negative = s.get(at) == Some(&b'-');

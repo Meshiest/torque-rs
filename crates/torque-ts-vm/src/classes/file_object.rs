@@ -462,10 +462,6 @@ impl EngineClass for FileObjectClass {
     }
 }
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&b""[..], Vec::as_slice))
-}
-
 /// The object a method runs on, when it is a `FileObject` (of the class or a subclass).
 fn file_object(vm: &Vm, c: &NativeCall, class: ClassId) -> Option<ObjId> {
     let id = c.this_object?;
@@ -502,7 +498,7 @@ pub(crate) fn register(vm: &mut Vm) {
             let Some(id) = file_object(vm, c, class) else {
                 return Native::Bool(false);
             };
-            match open_for_read(vm, id, arg(c, 2)) {
+            match open_for_read(vm, id, c.cstr(2)) {
                 Ok(opened) => Native::Bool(opened),
                 Err(e) => Native::Fail(e),
             }
@@ -519,7 +515,7 @@ pub(crate) fn register(vm: &mut Vm) {
                 let Some(id) = file_object(vm, c, class) else {
                     return Native::Bool(false);
                 };
-                match open_for_write(vm, id, arg(c, 2), append) {
+                match open_for_write(vm, id, c.cstr(2), append) {
                     Ok(opened) => Native::Bool(opened),
                     Err(e) => Native::Fail(e),
                 }
@@ -564,7 +560,7 @@ pub(crate) fn register(vm: &mut Vm) {
             let Some(id) = file_object(vm, c, class) else {
                 return Native::Void;
             };
-            match vm.write_line(id, arg(c, 2)) {
+            match vm.write_line(id, c.cstr(2)) {
                 Ok(()) => Native::Void,
                 Err(e) => Native::Fail(e),
             }

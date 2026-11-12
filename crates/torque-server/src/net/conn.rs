@@ -31,7 +31,7 @@ use torque_net::handshake::ConnId;
 use torque_net::remote::SendError;
 use torque_ts_vm::classes::EngineClass;
 use torque_ts_vm::sim::{ObjId, SimObject};
-use torque_ts_vm::text::{atoi, until_nul};
+use torque_ts_vm::text::until_nul;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use super::NetGame;
@@ -330,7 +330,7 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             let Some(obj) = c.this_object else {
                 return Native::Void;
             };
-            let seq = c.argv.get(2).map_or(0, |t| atoi(until_nul(t)));
+            let seq = c.int(2);
             let (conn, layer) = {
                 let sh = s.borrow();
                 (

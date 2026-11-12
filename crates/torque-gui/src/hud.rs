@@ -25,7 +25,7 @@ use torque_ts_vm::sim::ObjId;
 use torque_ts_vm::vm::{Native, Vm};
 
 use crate::classes::reg;
-use crate::{Gui, arg, atof, atoi};
+use crate::{Gui, atoi};
 
 /// The named-shape list's size (an update past it adds nothing).
 pub const MAX_NAMED_SHAPES: usize = 1024;
@@ -193,8 +193,8 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         4,
         "(int plotID, float v)",
         |vm, gui, id, c| {
-            if let Some(p) = plot_id(vm, arg(c, 2)) {
-                let v = atof(arg(c, 3)) as f32;
+            if let Some(p) = plot_id(vm, c.arg(2)) {
+                let v = c.float(3);
                 with_graph(gui, id, |g| g.add(p, v));
             }
             Native::Void
@@ -209,10 +209,10 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         4,
         "(int plotID, int samples)",
         |vm, gui, id, c| {
-            let Some(p) = plot_id(vm, arg(c, 2)) else {
+            let Some(p) = plot_id(vm, c.arg(2)) else {
                 return Native::Float(0.0);
             };
-            let s = atoi(arg(c, 3));
+            let s = c.int(3);
             if s > GRAPH_SAMPLES as i32 {
                 vm.error("Invalid sample.".to_string());
                 return Native::Float(0.0);
@@ -236,9 +236,9 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         5,
         "(int plotID, string variable, int update)",
         |vm, gui, id, c| {
-            if let Some(p) = plot_id(vm, arg(c, 2)) {
-                let name = vm.intern_string(arg(c, 3)).to_vec();
-                let delay = atoi(arg(c, 4)) as u32;
+            if let Some(p) = plot_id(vm, c.arg(2)) {
+                let name = vm.intern_string(c.arg(3)).to_vec();
+                let delay = c.int(4) as u32;
                 with_graph(gui, id, |g| g.plots[p].auto = Some((name, delay)));
             }
             Native::Void
@@ -253,7 +253,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         3,
         "(int plotID)",
         |vm, gui, id, c| {
-            if let Some(p) = plot_id(vm, arg(c, 2)) {
+            if let Some(p) = plot_id(vm, c.arg(2)) {
                 with_graph(gui, id, |g| g.plots[p].auto = None);
             }
             Native::Void
@@ -268,8 +268,8 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         4,
         "(int plotID, string graphType)",
         |vm, gui, id, c| {
-            if let Some(p) = plot_id(vm, arg(c, 2)) {
-                let t = arg(c, 3);
+            if let Some(p) = plot_id(vm, c.arg(2)) {
+                let t = c.arg(3);
                 let kind = if t.eq_ignore_ascii_case(b"Bar") {
                     Some(GraphType::Bar)
                 } else if t.eq_ignore_ascii_case(b"Filled") {
@@ -299,8 +299,8 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         |vm, gui, id, c| {
             // Every id checked first (one past the plots refuses the whole call), then the largest scale given to all.
             let mut ids = Vec::new();
-            for i in 2..c.argv.len() {
-                match scale_id(vm, arg(c, i)) {
+            for i in 2..c.argc() {
+                match scale_id(vm, c.arg(i)) {
                     Some(Some(p)) => ids.push(p),
                     Some(None) => {}
                     None => return Native::Void,

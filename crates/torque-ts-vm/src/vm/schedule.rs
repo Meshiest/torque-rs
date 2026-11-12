@@ -23,15 +23,10 @@ use std::collections::BTreeMap;
 use super::{Native, NativeCall, Vm, VmError};
 use crate::events::{Event, EventKind, EventLimits, EventQueue};
 use crate::sim::{ObjId, ROOT_GROUP_ID};
-use crate::text::atoi;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
 
 /// The event id a native was given (`dAtoi`).
 fn seq_arg(c: &NativeCall) -> u32 {
-    atoi(arg(c, 1)) as u32
+    c.int(1) as u32
 }
 
 /// What one [`Vm::advance_time_counted`] did: the errors of the events that failed (as
@@ -390,14 +385,14 @@ impl Vm {
         if counted && self.alloc_refuses_schedule() {
             return u32::MAX;
         }
-        let target = arg(c, 2);
+        let target = c.arg(2);
         let dest = match self.objects.find(target) {
             Some(id) => id,
             None if target.first() == Some(&b'0') => ROOT_GROUP_ID,
             None => return 0,
         };
-        let argv = c.argv.get(3..).unwrap_or_default().to_vec();
-        let seq = self.post_call(atoi(arg(c, 1)), dest, argv, false);
+        let argv = c.rest(3).to_vec();
+        let seq = self.post_call(c.int(1), dest, argv, false);
         if counted && seq != 0 {
             self.alloc_schedule_taken(seq);
         }
@@ -416,8 +411,8 @@ impl Vm {
         let Some(object) = c.this_object.filter(|id| self.objects.contains(*id)) else {
             return 0;
         };
-        let argv = c.argv.get(3..).unwrap_or_default().to_vec();
-        let seq = self.post_call(atoi(arg(c, 2)), object, argv, true);
+        let argv = c.rest(3).to_vec();
+        let seq = self.post_call(c.int(2), object, argv, true);
         if counted && seq != 0 {
             self.alloc_schedule_taken(seq);
         }

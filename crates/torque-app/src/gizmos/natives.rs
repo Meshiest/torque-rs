@@ -14,40 +14,29 @@ use torque_ts_vm::vm::{Native, NativeCall, Vm};
 use super::NATIVE_SPECS;
 use super::state::{Gizmos, Style};
 
-/// A native's argument `i` (empty past the last).
-fn arg(call: &NativeCall, i: usize) -> &[u8] {
-    call.argv.get(i).map_or(&[][..], Vec::as_slice)
-}
-
-fn float(call: &NativeCall, i: usize) -> f32 {
-    ts_text::atof(arg(call, i)) as f32
-}
-
 fn vector(call: &NativeCall, i: usize) -> Vec3 {
-    let mut v = [0.0f32; 3];
-    ts_text::scan_floats(arg(call, i), &mut v);
-    Vec3::from(v)
+    Vec3::from(call.vec3(i))
 }
 
 /// The color of argument `i`, with the time and depth switch of the arguments after it.
 fn style(call: &NativeCall, i: usize) -> Style {
     let mut color = [0.0, 0.0, 0.0, 1.0];
-    if ts_text::scan_floats(arg(call, i), &mut color) < 1 {
+    if ts_text::scan_floats(call.arg(i), &mut color) < 1 {
         color = [1.0; 4];
     }
-    let seconds = if call.argv.len() > i + 1 {
-        float(call, i + 1)
+    let seconds = if call.argc() > i + 1 {
+        call.float(i + 1)
     } else {
         0.0
     };
-    let depth = call.argv.len() <= i + 2 || ts_text::atoi(arg(call, i + 2)) != 0;
+    let depth = call.argc() <= i + 2 || call.int(i + 2) != 0;
     Style::new(color).seconds(seconds).depth(depth)
 }
 
 /// The rotation `"x y z angle"` names (none for an axis of no length).
 fn rotation(call: &NativeCall, i: usize) -> Quat {
     let mut v = [0.0f32; 4];
-    ts_text::scan_floats(arg(call, i), &mut v);
+    ts_text::scan_floats(call.arg(i), &mut v);
     let axis = Vec3::new(v[0], v[1], v[2]);
     if axis.length_squared() > 0.0 && v[3].is_finite() {
         Quat::from_axis_angle(axis.normalize(), v[3])
@@ -66,11 +55,11 @@ fn draw(name: &str, g: &Gizmos, call: &NativeCall) {
             rotation(call, 3),
             style(call, 4),
         ),
-        "drawDebugSphere" => g.sphere(vector(call, 1), float(call, 2), style(call, 3)),
+        "drawDebugSphere" => g.sphere(vector(call, 1), call.float(2), style(call, 3)),
         "drawDebugArrow" => g.arrow(vector(call, 1), vector(call, 2), style(call, 3)),
-        "drawDebugCross" => g.cross(vector(call, 1), float(call, 2), style(call, 3)),
+        "drawDebugCross" => g.cross(vector(call, 1), call.float(2), style(call, 3)),
         "drawDebugText" => {
-            let text = String::from_utf8_lossy(ts_text::until_nul(arg(call, 2)));
+            let text = String::from_utf8_lossy(call.cstr(2));
             g.label(vector(call, 1), &text, style(call, 3));
         }
         _ => g.clear(),

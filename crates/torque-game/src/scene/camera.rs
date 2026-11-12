@@ -26,10 +26,9 @@ use crate::geometry::Geometry;
 use net::control::{FovTarget, clamp_fov as clamp_camera_fov};
 use net::moves::Move;
 use torque_scene::transform::{self as grid, Matrix};
-use ts_vm::fields::atob;
 use ts_vm::sim::ObjId;
-use ts_vm::text::{atof, format_g, scan_floats, to_f32, to_f64};
-use ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use ts_vm::text::{format_g, scan_floats, to_f32, to_f64};
+use ts_vm::vm::{Native, Vm, VmError};
 
 use super::access::matrix_of;
 use super::camera_tick::{self, TriggerCalls};
@@ -350,14 +349,6 @@ pub fn new_datablock(vm: &mut Vm, id: ObjId) {
     }
 }
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
-fn float_arg(c: &NativeCall, i: usize) -> f32 {
-    c.argv.get(i).map_or(0.0, |a| to_f32(atof(a)))
-}
-
 fn id_value(id: Option<ObjId>) -> i32 {
     id.map_or(0, |id| i32::try_from(id).unwrap_or(0))
 }
@@ -513,16 +504,16 @@ pub fn register(vm: &mut Vm) {
         };
         let target = vm
             .objects()
-            .find(arg(c, 2))
+            .find(c.arg(2))
             .filter(|t| is_class(vm, *t, "GameBase"));
         let Some(target) = target else {
             vm.warn("Cannot orbit non-existing object.".to_string());
             fly_mode(vm, id);
             return Native::Void;
         };
-        let (_, axis, angle) = orbit_transform(arg(c, 3));
-        let distances = [float_arg(c, 4), float_arg(c, 5), float_arg(c, 6)];
-        let own = c.argv.len() > 7 && atob(arg(c, 7));
+        let (_, axis, angle) = orbit_transform(c.arg(3));
+        let distances = [c.float(4), c.float(5), c.float(6)];
+        let own = c.argc() > 7 && c.boolean(7);
         orbit_mode(vm, id, target, axis, angle, distances, own);
         Native::Void
     });

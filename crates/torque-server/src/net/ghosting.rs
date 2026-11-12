@@ -31,7 +31,6 @@ use torque_engine::scope::ScopeControl;
 use torque_net::handshake::ConnId;
 use torque_ts_vm::classes::EngineClass;
 use torque_ts_vm::sim::ObjId;
-use torque_ts_vm::text::until_nul;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use super::conn::{post_events, register};
@@ -130,7 +129,7 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
     });
     register(vm, "NetConnection", "getGhostID", shared, |vm, c, s| {
         let index = this_conn(s, c).and_then(|(_, conn, hub)| {
-            let target = c.argv.get(2).map_or(&b""[..], |a| until_nul(a));
+            let target = c.cstr(2);
             hub.ghost_index(conn, vm.objects().find(target)?)
         });
         Native::Int(index.map_or(-1, |i| i32::try_from(i).unwrap_or(-1)))
@@ -144,7 +143,7 @@ pub fn install<G: NetGame>(vm: &mut Vm, shared: &Rc<RefCell<NetShared<G>>>) {
             let Some((_, conn, hub)) = this_conn(s, c) else {
                 return Native::Bool(false);
             };
-            let target = c.argv.get(2).map_or(&b""[..], |a| until_nul(a));
+            let target = c.cstr(2);
             let Some(obj) = vm
                 .objects()
                 .find(target)

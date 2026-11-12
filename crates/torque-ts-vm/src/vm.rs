@@ -21,6 +21,7 @@ use crate::tags::TagTable;
 use crate::text::until_nul;
 use crate::vars::{Dictionary, Entry};
 
+mod call;
 mod console;
 mod file_natives;
 mod files;
@@ -593,8 +594,8 @@ impl Vm {
             0,
             "call(function, args...) - calls a global function by name",
             |vm, c| {
-                let args = c.argv.get(2..).unwrap_or_default();
-                let name = c.argv.get(1).map_or(&b""[..], Vec::as_slice);
+                let args = c.rest(2);
+                let name = c.arg(1);
                 vm.quirks.eval_via_call = c.from_bytecode && name.eq_ignore_ascii_case(b"eval");
                 let called = vm.invoke(None, name, args);
                 vm.quirks.eval_via_call = false;
@@ -624,7 +625,7 @@ impl Vm {
             2,
             "activatePackage(name) - puts the package on top of the active ones",
             |vm, c| {
-                vm.activate_package(c.argv.get(1).map_or(&b""[..], Vec::as_slice));
+                vm.activate_package(c.arg(1));
                 Native::Void
             },
         );
@@ -634,7 +635,7 @@ impl Vm {
             2,
             "deactivatePackage(name) - takes the package and the ones above it off the active stack",
             |vm, c| {
-                vm.deactivate_package(c.argv.get(1).map_or(&b""[..], Vec::as_slice));
+                vm.deactivate_package(c.arg(1));
                 Native::Void
             },
         );
@@ -643,12 +644,7 @@ impl Vm {
             2,
             2,
             "isPackage(name) - whether a package of that name exists",
-            |vm, c| {
-                Native::Bool(
-                    vm.namespaces
-                        .is_package(c.argv.get(1).map_or(&b""[..], Vec::as_slice)),
-                )
-            },
+            |vm, c| Native::Bool(vm.namespaces.is_package(c.arg(1))),
         );
         // `isFunction(name)` looks the bare name up in the global namespace chain only
         // (`isFunction("Ns::bar")` is 0); `isFunction(namespace, name)` looks in that namespace.
@@ -658,11 +654,10 @@ impl Vm {
             3,
             "isFunction([namespace,] name) - whether a function of that name exists",
             |vm, c| {
-                let arg = |i: usize| c.argv.get(i).map_or(&b""[..], Vec::as_slice);
-                let found = if c.argv.len() >= 3 {
-                    vm.namespaces.lookup(arg(1), arg(2))
+                let found = if c.argc() >= 3 {
+                    vm.namespaces.lookup(c.arg(1), c.arg(2))
                 } else {
-                    vm.namespaces.lookup(b"", arg(1))
+                    vm.namespaces.lookup(b"", c.arg(1))
                 };
                 Native::Bool(found.is_some())
             },

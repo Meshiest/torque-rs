@@ -77,12 +77,8 @@ impl EngineClass for HttpClass {
 
 /// Charges the bytes of a method's arguments; false when the run cannot pay.
 fn charge_args(vm: &Vm, call: &NativeCall) -> bool {
-    let bytes: usize = call.argv.iter().skip(2).map(Vec::len).sum();
+    let bytes: usize = call.rest(2).iter().map(Vec::len).sum();
     vm.charge_work(bytes as u64)
-}
-
-fn arg(call: &NativeCall, i: usize) -> &[u8] {
-    call.argv.get(i).map_or(&[][..], Vec::as_slice)
 }
 
 /// Registers TCPObject and HTTPObject, their behaviours and methods in `vm`, with `host` as the engine's extension.
@@ -119,7 +115,7 @@ fn register_tcp_methods(vm: &mut Vm, host: &Rc<TcpHost>) {
                 return Native::Fail(VmError::StepLimit);
             }
             if let Some(obj) = c.this_object {
-                h.connect(vm, obj, arg(c, 2), false);
+                h.connect(vm, obj, c.arg(2), false);
             }
             Native::Void
         },
@@ -134,7 +130,7 @@ fn register_tcp_methods(vm: &mut Vm, host: &Rc<TcpHost>) {
         move |vm, c| {
             if let Some(obj) = c.this_object {
                 // TGE keeps a port number's low 16 bits (`U16(dAtoi(..))`).
-                let port = (id_number(arg(c, 2)) & 0xFFFF) as u16;
+                let port = (id_number(c.arg(2)) & 0xFFFF) as u16;
                 h.listen(vm, obj, port);
             }
             Native::Void
@@ -152,7 +148,7 @@ fn register_tcp_methods(vm: &mut Vm, host: &Rc<TcpHost>) {
                 return Native::Fail(VmError::StepLimit);
             }
             if let Some(obj) = c.this_object {
-                for data in c.argv.iter().skip(2) {
+                for data in c.rest(2) {
                     h.queue(vm, obj, data);
                 }
             }
@@ -194,12 +190,12 @@ fn register_http_methods(vm: &mut Vm, host: &Rc<TcpHost>) {
                 return Native::Void;
             };
             let request = Request {
-                host: host_header(arg(c, 2)),
-                path: arg(c, 3).to_vec(),
+                host: host_header(c.arg(2)),
+                path: c.arg(3).to_vec(),
                 query: c.argv.get(4).cloned(),
                 post: None,
             };
-            h.request(vm, obj, arg(c, 2), request);
+            h.request(vm, obj, c.arg(2), request);
             Native::Void
         },
     );
@@ -217,14 +213,14 @@ fn register_http_methods(vm: &mut Vm, host: &Rc<TcpHost>) {
             let Some(obj) = c.this_object else {
                 return Native::Void;
             };
-            let query = arg(c, 4);
+            let query = c.arg(4);
             let request = Request {
-                host: host_header(arg(c, 2)),
-                path: arg(c, 3).to_vec(),
+                host: host_header(c.arg(2)),
+                path: c.arg(3).to_vec(),
                 query: (!query.is_empty()).then(|| query.to_vec()),
-                post: Some(arg(c, 5).to_vec()),
+                post: Some(c.arg(5).to_vec()),
             };
-            h.request(vm, obj, arg(c, 2), request);
+            h.request(vm, obj, c.arg(2), request);
             Native::Void
         },
     );

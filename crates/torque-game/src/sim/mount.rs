@@ -14,8 +14,7 @@
 //! crate's own.
 
 use ts_vm::sim::ObjId;
-use ts_vm::text::atoi;
-use ts_vm::vm::{Native, NativeCall, Vm, VmError};
+use ts_vm::vm::{Native, Vm, VmError};
 
 use crate::methods::register_method;
 use crate::scene::camera::is_class;
@@ -193,26 +192,10 @@ pub fn removed(vm: &mut Vm, id: ObjId) -> Result<(), VmError> {
     Ok(())
 }
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
 /// `sscanf(s, "%d")`: the number when the text starts (after blanks and a sign) with a digit, else nothing.
 pub fn scan_int(s: &[u8]) -> Option<i32> {
-    let s = ts_vm::text::until_nul(s);
-    let start = s
-        .iter()
-        .position(|b| !b.is_ascii_whitespace())
-        .unwrap_or(s.len());
-    let t = &s[start..];
-    let digits = match t.first() {
-        Some(b'+' | b'-') => &t[1..],
-        _ => t,
-    };
-    digits
-        .first()
-        .is_some_and(u8::is_ascii_digit)
-        .then(|| atoi(s))
+    let mut v = [0];
+    (ts_vm::fields::scan_ints(s, &mut v) == 1).then_some(v[0])
 }
 
 pub fn id_value(id: Option<ObjId>) -> i32 {
@@ -239,13 +222,13 @@ pub fn register(vm: &mut Vm) {
             return Native::Bool(false);
         };
         // A SpotLight (the engine's own, after Torque3D's `SceneObject::mountObject`) rides the node; nothing of the shape changes.
-        if let Some(light) = vm.objects().find(arg(c, 2))
+        if let Some(light) = vm.objects().find(c.arg(2))
             && crate::scene::lights::is_spot(vm, light)
         {
             if crate::scene::links::mount_refused(vm, this, light) {
                 return Native::Bool(false);
             }
-            let node = scan_int(arg(c, 3)).unwrap_or(-1);
+            let node = scan_int(c.arg(3)).unwrap_or(-1);
             if let Ok(node) = u32::try_from(node)
                 && node < MOUNT_NODES
             {
@@ -253,13 +236,13 @@ pub fn register(vm: &mut Vm) {
             }
             return Native::Bool(true);
         }
-        let Some(obj) = shape_base(vm, arg(c, 2)) else {
+        let Some(obj) = shape_base(vm, c.arg(2)) else {
             return Native::Bool(false);
         };
         if crate::scene::links::mount_refused(vm, this, obj) {
             return Native::Bool(false);
         }
-        let node = scan_int(arg(c, 3)).unwrap_or(-1);
+        let node = scan_int(c.arg(3)).unwrap_or(-1);
         if let Ok(node) = u32::try_from(node)
             && node < MOUNT_NODES
             && let Some(f) = fail(mount_object(vm, this, obj, node))
@@ -273,7 +256,7 @@ pub fn register(vm: &mut Vm) {
         let Some(this) = c.this_object else {
             return Native::Bool(false);
         };
-        if let Some(light) = vm.objects().find(arg(c, 2))
+        if let Some(light) = vm.objects().find(c.arg(2))
             && crate::scene::lights::is_spot(vm, light)
         {
             if crate::scene::lights::spot_mount(vm, light).is_some_and(|(on, _)| on == this) {
@@ -281,7 +264,7 @@ pub fn register(vm: &mut Vm) {
             }
             return Native::Bool(true);
         }
-        let Some(obj) = shape_base(vm, arg(c, 2)) else {
+        let Some(obj) = shape_base(vm, c.arg(2)) else {
             return Native::Bool(false);
         };
         if let Some(f) = fail(unmount_object(vm, this, obj)) {
@@ -311,7 +294,7 @@ pub fn register(vm: &mut Vm) {
     });
     // `getMountedObject(i)`: the i-th of the list (a negative index 0), 0 past its end.
     register_method(vm, "ShapeBase", "getMountedObject", |vm, c| {
-        let i = atoi(arg(c, 2));
+        let i = c.int(2);
         let found = c.this_object.and_then(|id| {
             let i = usize::try_from(i).ok()?;
             riders(vm, id).get(i).copied()
@@ -320,7 +303,7 @@ pub fn register(vm: &mut Vm) {
     });
     // `getMountedObjectNode(i)`: its node, -1 past the end or for a negative index.
     register_method(vm, "ShapeBase", "getMountedObjectNode", |vm, c| {
-        let i = atoi(arg(c, 2));
+        let i = c.int(2);
         let found = c.this_object.and_then(|id| {
             let i = usize::try_from(i).ok()?;
             let r = riders(vm, id).get(i).copied()?;
@@ -330,7 +313,7 @@ pub fn register(vm: &mut Vm) {
     });
     // `getMountNodeObject(node)`: the first object of the list on that node.
     register_method(vm, "ShapeBase", "getMountNodeObject", |vm, c| {
-        let node = atoi(arg(c, 2));
+        let node = c.int(2);
         let Some(id) = c.this_object else {
             return Native::Int(0);
         };

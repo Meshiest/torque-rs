@@ -68,7 +68,7 @@ use super::NetGame;
 use super::NetShared;
 use super::channels::{ChannelHub, ClientChannels};
 use super::command_rpc::{COMMAND_RPC, COMMAND_TO_CLIENT_RPC, CommandMessage, take_bodies};
-use super::commands::{arg, find_net_connection};
+use super::commands::find_net_connection;
 use super::conn::{DeleteMode, connection_of, delete_connection};
 use super::permissions::subject_key_of_conn;
 
@@ -707,13 +707,13 @@ pub fn register_server_natives(vm: &mut Vm, rpc: &Rc<ServerRpc>) {
                 let Some(rpc) = weak.upgrade() else {
                     return Native::Str(b"no RPCs".to_vec());
                 };
-                let Some(conn) = find_net_connection(vm, arg(call, 1))
+                let Some(conn) = find_net_connection(vm, call.cstr(1))
                     .and_then(|obj| rpc.host.conn_of(obj))
                 else {
                     return Native::Str(b"no such client".to_vec());
                 };
-                let name = String::from_utf8_lossy(arg(call, 2)).into_owned();
-                let args: Vec<Vec<u8>> = call.argv.iter().skip(3).cloned().collect();
+                let name = String::from_utf8_lossy(call.cstr(2)).into_owned();
+                let args: Vec<Vec<u8>> = call.rest(3).to_vec();
                 let ghosts = HostGhosts(rpc.host.as_ref());
                 let sent = rpc.with_link(conn, |link| link.send_script(&name, &args, &ghosts));
                 Native::Str(match sent {
@@ -732,8 +732,8 @@ pub fn register_server_natives(vm: &mut Vm, rpc: &Rc<ServerRpc>) {
         move |vm, call| {
             let drops = (|| {
                 let rpc = weak.upgrade()?;
-                let conn = find_net_connection(vm, arg(call, 1)).and_then(|o| rpc.host.conn_of(o))?;
-                Some(rpc.drops(conn, &String::from_utf8_lossy(arg(call, 2))))
+                let conn = find_net_connection(vm, call.cstr(1)).and_then(|o| rpc.host.conn_of(o))?;
+                Some(rpc.drops(conn, &String::from_utf8_lossy(call.cstr(2))))
             })()
             .unwrap_or(0);
             Native::Str(drops.to_string().into_bytes())
@@ -1069,8 +1069,8 @@ pub fn register_client_natives(vm: &mut Vm, rpc: &Rc<ClientRpc>) {
             let Some(rpc) = weak.upgrade() else {
                 return Native::Str(b"no RPCs".to_vec());
             };
-            let name = String::from_utf8_lossy(arg(call, 1)).into_owned();
-            let args: Vec<Vec<u8>> = call.argv.iter().skip(2).cloned().collect();
+            let name = String::from_utf8_lossy(call.cstr(1)).into_owned();
+            let args: Vec<Vec<u8>> = call.rest(2).to_vec();
             let host = rpc.host.borrow().clone();
             let ghosts = host.as_deref().map(ClientGhosts);
             let sent = rpc.with_link(|link| {

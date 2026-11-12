@@ -366,7 +366,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         let Some(id) = c.this_object else {
             return Native::Bool(false);
         };
-        let name = c.argv.get(2).map_or(&b""[..], Vec::as_slice);
+        let name = c.arg(2);
         // A retiring datablock is found by neither its name nor its id.
         let found = vm.objects().find(name).filter(|&db| {
             camera::is_class(vm, db, "GameBaseData") && !vm.objects().is_retiring(db)
@@ -416,7 +416,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
         let Some(current) = matrix_of(vm, id) else {
             return Native::Void;
         };
-        let text = c.argv.get(2).map_or(&b""[..], Vec::as_slice);
+        let text = c.arg(2);
         let matrix = matrix_from_text(crate::geometry::of(vm), &current, text);
         set_transform(vm, id, matrix);
         check_bins(vm, &w, id);
@@ -431,7 +431,7 @@ pub fn register(vm: &mut Vm, container: &Rc<Container>) {
             return Native::Void;
         };
         let mut scale = [0.0f32; 3];
-        scan_floats(c.argv.get(2).map_or(&b""[..], Vec::as_slice), &mut scale);
+        scan_floats(c.arg(2), &mut scale);
         set_field(vm, id, b"scale", Value::Floats3(grid::clamp_scale(scale)));
         // The transform is set again with the matrix it has (a registered class sees it again), and the world box
         // follows the new scale through it.

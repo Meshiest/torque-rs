@@ -239,7 +239,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         2,
         "(bool on) - turns on or off scrolling the nearest scroll control to show the control that takes the key focus",
         |vm, c| {
-            vm.set_global(REVEAL_PREF, if atob(crate::arg(c, 1)) { "1" } else { "0" });
+            vm.set_global(REVEAL_PREF, if c.boolean(1) { "1" } else { "0" });
             Native::Void
         },
     );
@@ -257,7 +257,7 @@ pub(crate) fn register(vm: &mut Vm, gui: &Gui) {
         2,
         "(bool on) - turns smooth scrolling on or off: with it on, the scroll controls draw their content gliding to where the wheel puts it",
         move |vm, c| {
-            set_enabled(vm, &gui, atob(crate::arg(c, 1)));
+            set_enabled(vm, &gui, c.boolean(1));
             Native::Void
         },
     );

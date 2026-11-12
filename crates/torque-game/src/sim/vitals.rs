@@ -17,7 +17,7 @@
 
 use ts_vm::fields::Value;
 use ts_vm::sim::ObjId;
-use ts_vm::text::{atof, format_fixed, to_f32};
+use ts_vm::text::format_fixed;
 use ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use crate::methods::register_method;
@@ -356,7 +356,7 @@ pub fn energy_value(vm: &Vm, id: ObjId) -> f32 {
 }
 
 fn arg_f(c: &NativeCall, i: usize) -> Option<f32> {
-    c.argv.get(i).map(|a| to_f32(atof(a)))
+    (c.argc() > i).then(|| c.float(i))
 }
 
 fn fail(r: Result<(), VmError>) -> Native {
@@ -440,7 +440,7 @@ pub fn register(vm: &mut Vm) {
         let Some(id) = c.this_object else {
             return Native::Bool(false);
         };
-        let name = ts_vm::text::until_nul(c.argv.get(2).map_or(&b""[..], Vec::as_slice));
+        let name = c.cstr(2);
         let Some(state) = STATE_NAMES
             .iter()
             .position(|n| n.as_bytes().eq_ignore_ascii_case(name))

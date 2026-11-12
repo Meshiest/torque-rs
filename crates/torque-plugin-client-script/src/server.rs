@@ -14,7 +14,7 @@ use std::rc::Rc;
 
 use torque_client_script_format::Value;
 use torque_net::handshake::ConnId;
-use torque_server::net::commands::{arg, find_net_connection};
+use torque_server::net::commands::find_net_connection;
 use torque_server::net::rpc::ServerRpc;
 use torque_ts_vm::vm::{Native, Vm};
 
@@ -252,10 +252,10 @@ pub(crate) fn register_natives(vm: &mut Vm) {
         3,
         "clientScriptSend(client, text) - sends a client's server-script realm a string; answers the reason it was not queued, or nothing",
         |vm, call| {
-            let Some(conn) = conn_of(vm, arg(call, 1)) else {
+            let Some(conn) = conn_of(vm, call.cstr(1)) else {
                 return Native::Str(b"no such client".to_vec());
             };
-            let value = Value::String(arg(call, 2).to_vec());
+            let value = Value::String(call.cstr(2).to_vec());
             Native::Str(match send_down(vm, conn, &value) {
                 Ok(()) => Vec::new(),
                 Err(why) => why.into_bytes(),
@@ -268,7 +268,7 @@ pub(crate) fn register_natives(vm: &mut Vm) {
         2,
         "clientScriptOffer(client) - tells a client about this server's client scripts again; answers the reason it was not queued, or nothing",
         |vm, call| {
-            let Some(conn) = conn_of(vm, arg(call, 1)) else {
+            let Some(conn) = conn_of(vm, call.cstr(1)) else {
                 return Native::Str(b"no such client".to_vec());
             };
             let offer = current_offer(vm);

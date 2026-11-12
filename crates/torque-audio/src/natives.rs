@@ -313,20 +313,6 @@ impl SoundFiles for VmFiles<'_> {
     }
 }
 
-fn atoi(b: &[u8]) -> u32 {
-    ts_text::atoi(b) as u32
-}
-
-fn atof(b: &[u8]) -> f32 {
-    ts_text::atof(b) as f32
-}
-
-fn xyz(text: &[u8]) -> [f32; 3] {
-    let mut v = [0f32; 3];
-    ts_text::scan_floats(text, &mut v);
-    v
-}
-
 fn class_is(vm: &Vm, id: ObjId, class: &str) -> bool {
     let objects = vm.objects();
     match (objects.get(id), objects.classes.find(class.as_bytes())) {
@@ -511,11 +497,6 @@ mod usage {
     pub const SET_CHANNEL: &str = "(int channel_id, float volume)\n\n@param channel_id  ID of channel to set volume on.\n@param volume      New volume of channel, from 0.0f-1.0f";
 }
 
-/// A native's argument `i` (empty past the last).
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&[][..], Vec::as_slice)
-}
-
 /// Registers the `alx` functions and the client side of `AudioProfile` over the [`AudioHost`] in `state` (reached through
 /// `access`), with `profile`'s differences from TGE's registration.
 pub fn register<S: 'static>(
@@ -560,10 +541,10 @@ pub fn register<S: 'static>(
         |_, _, _| Native::Void,
     );
     reg(vm, "alGetString", 2, 2, usage::GET_STRING, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 1), al::MASK_GET_STRING) else {
+        let Some(e) = al::lookup(c.arg(1), al::MASK_GET_STRING) else {
             vm.error(format!(
                 "alGetString: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 1))
+                String::from_utf8_lossy(c.arg(1))
             ));
             return Native::Str(Vec::new());
         };
@@ -591,7 +572,7 @@ pub fn register<S: 'static>(
         Native::Str(text.as_bytes().to_vec())
     });
     reg(vm, "alxGetWaveLen", 2, 2, usage::WAVE_LEN, |vm, c, h| {
-        let found = h.cache.find(&mut VmFiles(vm), arg(c, 1));
+        let found = h.cache.find(&mut VmFiles(vm), c.arg(1));
         flush_messages(vm, h);
         match found {
             Found::Missing => Native::Int(0),
@@ -604,13 +585,12 @@ pub fn register<S: 'static>(
         }
     });
     reg(vm, "alxCreateSource", 2, 6, usage::CREATE, |vm, c, h| {
-        let name = arg(c, 1);
+        let name = c.arg(1);
         if let Some(p) = find_as(vm, name, "AudioProfile") {
             let Some((desc, file)) = profile_parts(vm, p) else {
                 return Native::Int(0);
             };
-            let position =
-                (c.argv.len() != 2).then(|| [atof(arg(c, 2)), atof(arg(c, 3)), atof(arg(c, 4))]);
+            let position = (c.argc() != 2).then(|| [c.float(2), c.float(3), c.float(4)]);
             return handle(create(vm, h, &desc, &file, position));
         }
         let Some(d) = find_as(vm, name, "AudioDescription") else {
@@ -624,31 +604,30 @@ pub fn register<S: 'static>(
             return Native::Int(0);
         };
         let desc = description(vm, d);
-        let file = arg(c, 2).to_vec();
-        let position =
-            (c.argv.len() != 3).then(|| [atof(arg(c, 3)), atof(arg(c, 4)), atof(arg(c, 5))]);
+        let file = c.arg(2).to_vec();
+        let position = (c.argc() != 3).then(|| [c.float(3), c.float(4), c.float(5)]);
         handle(create(vm, h, &desc, &file, position))
     });
     reg(vm, "alxPlay", 2, 5, usage::PLAY, |vm, c, h| {
-        if c.argv.len() == 2 {
-            let handle = atoi(arg(c, 1));
+        if c.argc() == 2 {
+            let handle = c.int(1) as u32;
             if handle != 0 {
                 return Native::Int(h.lock().play(handle) as i32);
             }
         }
-        let Some(p) = find_as(vm, arg(c, 1), "AudioProfile") else {
+        let Some(p) = find_as(vm, c.arg(1), "AudioProfile") else {
             vm.print(
                 format!(
                     "Unable to locate audio profile '{}'",
-                    String::from_utf8_lossy(arg(c, 1))
+                    String::from_utf8_lossy(c.arg(1))
                 )
                 .as_bytes(),
             );
             return Native::Int(0);
         };
-        let position = match c.argv.len() {
-            3 => Some(xyz(arg(c, 2))),
-            5 => Some([atof(arg(c, 2)), atof(arg(c, 3)), atof(arg(c, 4))]),
+        let position = match c.argc() {
+            3 => Some(c.vec3(2)),
+            5 => Some([c.float(2), c.float(3), c.float(4)]),
             // TGE passes a transform in every form, the bare profile's and four arguments' at (0, 0, 0): the source is positioned.
             _ => Some([0.0; 3]),
         };
@@ -665,7 +644,7 @@ pub fn register<S: 'static>(
         Native::Int(h.lock().play(hnd) as i32)
     });
     reg(vm, "alxStop", 2, 2, "(int handle)", |_, c, h| {
-        let handle = atoi(arg(c, 1));
+        let handle = c.int(1) as u32;
         if handle != 0 {
             h.lock().stop(handle);
         }
@@ -682,7 +661,7 @@ pub fn register<S: 'static>(
         2,
         "alxGetStreamPosition(handle)",
         |_, c, h| {
-            let handle = atoi(arg(c, 1));
+            let handle = c.int(1) as u32;
             float(if handle == 0 {
                 -1.0
             } else {
@@ -697,7 +676,7 @@ pub fn register<S: 'static>(
         2,
         "alxGetStreamDuration(handle)",
         |_, c, h| {
-            let handle = atoi(arg(c, 1));
+            let handle = c.int(1) as u32;
             float(if handle == 0 {
                 -1.0
             } else {
@@ -706,18 +685,18 @@ pub fn register<S: 'static>(
         },
     );
     reg(vm, "alxIsPlaying", 2, 5, usage::IS_PLAYING, |_, c, h| {
-        let handle = atoi(arg(c, 1));
+        let handle = c.int(1) as u32;
         Native::Bool(handle != 0 && h.lock().is_playing(handle))
     });
     reg(vm, "alxListenerf", 3, 3, usage::LISTENER, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 1), al::MASK_LISTENER_F) else {
+        let Some(e) = al::lookup(c.arg(1), al::MASK_LISTENER_F) else {
             vm.error(format!(
                 "alxListenerf: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 1))
+                String::from_utf8_lossy(c.arg(1))
             ));
             return Native::Void;
         };
-        h.lock().listener_f(e, atof(arg(c, 2)));
+        h.lock().listener_f(e, c.float(2));
         Native::Void
     });
     reg(
@@ -727,10 +706,10 @@ pub fn register<S: 'static>(
         2,
         "alxGetListenerf(Alenum)",
         |vm, c, h| {
-            let Some(e) = al::lookup(arg(c, 1), al::MASK_GET_LISTENER_F) else {
+            let Some(e) = al::lookup(c.arg(1), al::MASK_GET_LISTENER_F) else {
                 vm.error(format!(
                     "alxGetListenerf: invalid enum name '{}'",
-                    String::from_utf8_lossy(arg(c, 1))
+                    String::from_utf8_lossy(c.arg(1))
                 ));
                 return float(0.0);
             };
@@ -738,16 +717,16 @@ pub fn register<S: 'static>(
         },
     );
     reg(vm, "alListener3f", 3, 5, usage::LISTENER3, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 1), al::MASK_LISTENER_3F) else {
+        let Some(e) = al::lookup(c.arg(1), al::MASK_LISTENER_3F) else {
             vm.error(format!(
                 "alListener3f: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 1))
+                String::from_utf8_lossy(c.arg(1))
             ));
             return Native::Void;
         };
-        let v = match c.argv.len() {
-            3 => xyz(arg(c, 2)),
-            5 => [atof(arg(c, 2)), atof(arg(c, 3)), atof(arg(c, 4))],
+        let v = match c.argc() {
+            3 => c.vec3(2),
+            5 => [c.float(2), c.float(3), c.float(4)],
             _ => {
                 vm.error("alListener3f: wrong number of arguments".to_string());
                 return Native::Void;
@@ -763,10 +742,10 @@ pub fn register<S: 'static>(
         2,
         "alGetListener3f(Alenum)",
         |vm, c, _| {
-            if al::lookup(arg(c, 1), al::MASK_GET_LISTENER_3F).is_none() {
+            if al::lookup(c.arg(1), al::MASK_GET_LISTENER_3F).is_none() {
                 vm.error(format!(
                     "alGetListener3f: invalid enum name '{}'",
-                    String::from_utf8_lossy(arg(c, 1))
+                    String::from_utf8_lossy(c.arg(1))
                 ));
                 return Native::Str(b"0 0 0".to_vec());
             }
@@ -782,87 +761,87 @@ pub fn register<S: 'static>(
         2,
         "alGetListeneri(Alenum)",
         |vm, c, _| {
-            if al::lookup(arg(c, 1), al::MASK_GET_LISTENER_I).is_none() {
+            if al::lookup(c.arg(1), al::MASK_GET_LISTENER_I).is_none() {
                 vm.error(format!(
                     "alGetListeneri: invalid enum name '{}'",
-                    String::from_utf8_lossy(arg(c, 1))
+                    String::from_utf8_lossy(c.arg(1))
                 ));
             }
             Native::Int(0)
         },
     );
     reg(vm, "alxSourcef", 4, 4, usage::SET, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 2), al::MASK_SOURCE_F) else {
+        let Some(e) = al::lookup(c.arg(2), al::MASK_SOURCE_F) else {
             vm.error(format!(
                 "cAudio_alxSourcef: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return Native::Void;
         };
-        h.lock().source_f(atoi(arg(c, 1)), e, atof(arg(c, 3)));
+        h.lock().source_f(c.int(1) as u32, e, c.float(3));
         Native::Void
     });
     reg(vm, "alxSource3f", 3, 6, usage::SET3, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 2), al::MASK_SOURCE_3F) else {
+        let Some(e) = al::lookup(c.arg(2), al::MASK_SOURCE_3F) else {
             vm.error(format!(
                 "cAudio_alxSource3f: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return Native::Void;
         };
-        let v = match c.argv.len() {
-            4 => xyz(arg(c, 3)),
-            6 => [atof(arg(c, 3)), atof(arg(c, 4)), atof(arg(c, 5))],
+        let v = match c.argc() {
+            4 => c.vec3(3),
+            6 => [c.float(3), c.float(4), c.float(5)],
             _ => {
                 vm.error("cAudio_alxSource3f: wrong number of args".to_string());
                 return Native::Void;
             }
         };
-        h.lock().source_3f(atoi(arg(c, 1)), e, v);
+        h.lock().source_3f(c.int(1) as u32, e, v);
         Native::Void
     });
     reg(vm, "alxSourcei", 4, 4, usage::SET, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 2), al::MASK_SOURCE_I) else {
+        let Some(e) = al::lookup(c.arg(2), al::MASK_SOURCE_I) else {
             vm.error(format!(
                 "cAudio_alxSourcei: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return Native::Void;
         };
         h.lock()
-            .source_i(atoi(arg(c, 1)), e, atoi(arg(c, 3)) as i32);
+            .source_i(c.int(1) as u32, e, (c.int(3) as u32) as i32);
         Native::Void
     });
     reg(vm, "alxGetSourcef", 3, 3, usage::GET, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 2), al::MASK_GET_SOURCE_F) else {
+        let Some(e) = al::lookup(c.arg(2), al::MASK_GET_SOURCE_F) else {
             vm.error(format!(
                 "cAudio_alxGetSourcef: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return float(0.0);
         };
         // An unknown handle: 0.
-        float(h.lock().get_source_f(atoi(arg(c, 1)), e).unwrap_or(0.0))
+        float(h.lock().get_source_f(c.int(1) as u32, e).unwrap_or(0.0))
     });
     reg(vm, "alxGetSource3f", 3, 3, usage::GET, |vm, c, _| {
-        if al::lookup(arg(c, 2), al::MASK_GET_SOURCE_3F).is_none() {
+        if al::lookup(c.arg(2), al::MASK_GET_SOURCE_3F).is_none() {
             vm.error(format!(
                 "cAudio_alxGetSource3f: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return Native::Str(b"0 0 0".to_vec());
         }
         Native::Str(format!("{:7.3}  ", 0.0f32).into_bytes())
     });
     reg(vm, "alxGetSourcei", 3, 3, usage::GET, |vm, c, h| {
-        let Some(e) = al::lookup(arg(c, 2), al::MASK_GET_SOURCE_I) else {
+        let Some(e) = al::lookup(c.arg(2), al::MASK_GET_SOURCE_I) else {
             vm.error(format!(
                 "cAudio_alxGetSourcei: invalid enum name '{}'",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             ));
             return Native::Int(0);
         };
-        Native::Int(h.lock().get_source_i(atoi(arg(c, 1)), e).unwrap_or(0))
+        Native::Int(h.lock().get_source_i(c.int(1) as u32, e).unwrap_or(0))
     });
     reg(
         vm,
@@ -871,7 +850,7 @@ pub fn register<S: 'static>(
         2,
         usage::GET_CHANNEL,
         |vm, c, h| {
-            let ch = atoi(arg(c, 1));
+            let ch = c.int(1) as u32;
             if ch > 31 {
                 vm.error(format!(
                     "alxGetChannelVolume: invalid channel '{}'",
@@ -889,7 +868,7 @@ pub fn register<S: 'static>(
         3,
         usage::SET_CHANNEL,
         |vm, c, h| {
-            let ch = atoi(arg(c, 1));
+            let ch = c.int(1) as u32;
             if ch > 31 {
                 vm.error(format!(
                     "alxSetChannelVolume: channel '{}' out of range [0, {}]",
@@ -898,7 +877,7 @@ pub fn register<S: 'static>(
                 ));
                 return Native::Bool(false);
             }
-            Native::Bool(h.lock().set_channel_volume(ch, atof(arg(c, 2))))
+            Native::Bool(h.lock().set_channel_volume(ch, c.float(2)))
         },
     );
     vm.set_class_behaviour(

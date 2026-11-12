@@ -42,7 +42,6 @@ use ts_vm::vm::{Native, NativeCall, Vm, VmError};
 use crate::conn::ConnGame;
 use crate::game::client_game;
 use crate::state::ClientState;
-use crate::{arg, this};
 
 /// The game's key tables.
 fn key_tables(vm: &Vm) -> keys::KeyTables {
@@ -306,27 +305,27 @@ fn process_bind_cmd<G: ConnGame>(
     id: ObjId,
     c: &NativeCall,
 ) -> Result<bool, VmError> {
-    let Some((kind, inst)) = keys::device_type_and_instance(arg(c, 2)) else {
+    let Some((kind, inst)) = keys::device_type_and_instance(c.arg(2)) else {
         vm.print(
             format!(
                 "processBindCmd: unknown device: {}",
-                String::from_utf8_lossy(arg(c, 2))
+                String::from_utf8_lossy(c.arg(2))
             )
             .as_bytes(),
         );
         return Ok(false);
     };
-    let Some(desc) = parse_descriptor(vm, arg(c, 3)) else {
+    let Some(desc) = parse_descriptor(vm, c.arg(3)) else {
         vm.print(
             format!(
                 "Could not create a description for binding: {}",
-                String::from_utf8_lossy(arg(c, 3))
+                String::from_utf8_lossy(c.arg(3))
             )
             .as_bytes(),
         );
         return Ok(false);
     };
-    let (make, brk) = (arg(c, 4).to_vec(), arg(c, 5).to_vec());
+    let (make, brk) = (c.arg(4).to_vec(), c.arg(5).to_vec());
     let mut state = client.borrow_mut();
     let maps = state.binds.entry(id).or_default();
     if !vm.charge_work(
@@ -357,8 +356,8 @@ fn lookup<R, G: ConnGame>(
     f: impl FnOnce(&Node) -> R,
 ) -> Result<Option<R>, VmError> {
     let found = match (
-        keys::device_type_and_instance(arg(c, 2)),
-        parse_descriptor(vm, arg(c, 3)),
+        keys::device_type_and_instance(c.arg(2)),
+        parse_descriptor(vm, c.arg(3)),
     ) {
         (Some((kind, inst)), Some(d)) => with_maps(vm, client, id, |maps| {
             find_node(maps, kind, inst, d.modifiers, d.code).map(f)
@@ -368,8 +367,8 @@ fn lookup<R, G: ConnGame>(
     if found.is_none() && message {
         vm.error(format!(
             "The input event specified by {} {} is not in this action map!",
-            String::from_utf8_lossy(arg(c, 2)),
-            String::from_utf8_lossy(arg(c, 3))
+            String::from_utf8_lossy(c.arg(2)),
+            String::from_utf8_lossy(c.arg(3))
         ));
     }
     Ok(found)
@@ -600,17 +599,12 @@ fn reg<G: ConnGame>(
     f: impl Fn(&mut Vm, &Rc<RefCell<ClientState<G>>>, ObjId, &NativeCall) -> Native + 'static,
 ) {
     let client = Rc::clone(client);
-    vm.register_in(
-        "ActionMap",
-        name,
-        min,
-        max,
-        usage,
-        move |vm, c| match this(vm, c) {
+    vm.register_in("ActionMap", name, min, max, usage, move |vm, c| {
+        match c.this(vm) {
             Some(id) => f(vm, &client, id, c),
             None => Native::Void,
-        },
-    );
+        }
+    });
 }
 
 /// `bind`, `bindCmd` and `unbind` are void (`ConsoleMethod(ActionMap, bind, void, ...)`): a script that uses the result gets the
@@ -634,7 +628,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         10,
         "actionMap.bind( device, action, [modifier spec, mod...], command )",
         |vm, client, id, c| {
-            let args: Vec<Vec<u8>> = c.argv.iter().skip(2).cloned().collect();
+            let args: Vec<Vec<u8>> = c.rest(2).to_vec();
             done_void(process_bind(vm, client, id, &args))
         },
     );
@@ -656,8 +650,8 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         "actionMap.unbind( device, action )",
         |vm, client, id, c| {
             let (Some((kind, inst)), Some(d)) = (
-                keys::device_type_and_instance(arg(c, 2)),
-                parse_descriptor(vm, arg(c, 3)),
+                keys::device_type_and_instance(c.arg(2)),
+                parse_descriptor(vm, c.arg(3)),
             ) else {
                 return Native::Void;
             };
@@ -685,7 +679,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         3,
         "actionMap.getBinding( command )",
         |vm, client, id, c| {
-            let command = arg(c, 2);
+            let command = c.arg(2);
             let t = key_tables(vm);
             let text = with_maps(vm, client, id, |maps| {
                 for dev in maps {
@@ -800,7 +794,7 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
         "actionMap.save( [fileName], [append] )",
         |vm, client, id, c| {
             // A file gets the commands escaped, the console as they are.
-            let saved = match save_text(vm, client, id, c.argv.len() >= 3) {
+            let saved = match save_text(vm, client, id, c.argc() >= 3) {
                 Ok(s) => s,
                 Err(e) => return Native::Fail(e),
             };
@@ -813,16 +807,16 @@ pub fn register<G: ConnGame>(vm: &mut Vm, client: &Rc<RefCell<ClientState<G>>>) 
                 return Native::Void;
             };
             warn_refused(vm, &saved);
-            if c.argv.len() < 3 {
+            if c.argc() < 3 {
                 for line in &saved.lines {
                     vm.print(line);
                 }
                 return Native::Void;
             }
-            let append = c.argv.len() >= 4 && ts_vm::fields::atob(arg(c, 3));
+            let append = c.argc() >= 4 && c.boolean(3);
             let file = vm
-                .expand_script_filename(arg(c, 2))
-                .unwrap_or_else(|_| arg(c, 2).to_vec());
+                .expand_script_filename(c.arg(2))
+                .unwrap_or_else(|_| c.arg(2).to_vec());
             let mut out = Vec::new();
             if !append {
                 out.extend_from_slice(b"// Torque Input Map File\n");

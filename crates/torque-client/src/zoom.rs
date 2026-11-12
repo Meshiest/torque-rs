@@ -176,7 +176,7 @@ pub fn register<G: crate::conn::ConnGame>(
         2,
         "(fov) - Set the FOV of the camera.",
         move |_, c| {
-            let v = ts_text::atof(crate::arg(c, 1)) as f32;
+            let v = c.float(1);
             state.borrow_mut().zoom.target = clamp_fov(v);
             Native::Void
         },
@@ -188,7 +188,7 @@ pub fn register<G: crate::conn::ConnGame>(
         2,
         "(defaultFov) - Set the default FOV for a camera.",
         move |_, c| {
-            let v = clamp_fov(ts_text::atof(crate::arg(c, 1)) as f32);
+            let v = clamp_fov(c.float(1));
             let mut st = state.borrow_mut();
             st.zoom.default = v;
             if st.zoom.camera == st.zoom.target {
@@ -204,7 +204,7 @@ pub fn register<G: crate::conn::ConnGame>(
         2,
         "(speed) - Set the zoom speed of the camera, in ms per 90deg FOV change.",
         move |vm, c| {
-            let i = ts_text::atoi(crate::arg(c, 1)) as i64;
+            let i = i64::from(c.int(1));
             state.borrow_mut().zoom.speed = zoom_speed(i, zoom_rules(vm).min_speed());
             Native::Void
         },

@@ -1,7 +1,7 @@
 //! The server container (`Container`, `gServerContainer`) and its queries: `initContainerRadiusSearch`,
 //! `initContainerBoxSearch`, `containerSearchNext`, `containerSearchCurrDist`, `containerSearchCurrRadiusDist`,
 //! `containerBoxEmpty`, `containerFindFirst`, `containerFindNext`, `containerRayCast`, `calcExplosionCoverage`. A host adds
-//! its own queries with [`collect`] and the argument readers ([`vec3_arg`], [`mask_arg`], [`radii_args`]).
+//! its own queries with [`collect`] and the argument readers ([`mask_arg`], [`radii_args`]).
 //!
 //! **What the container holds**: every scene object in the server scene graph, in the bins of [`torque_scene::bins`] (their
 //! grid is the [`ContainerConfig`]'s: TGE's 16 x 16 cells of 64 units by default)
@@ -43,7 +43,7 @@ use torque_scene::query::{
 };
 use torque_scene::{Charge, Exhausted, NO_HIT, ray_point};
 use ts_vm::sim::{ObjId, Objects};
-use ts_vm::text::{atof, atoi, format_g, scan_floats, to_f64};
+use ts_vm::text::{format_g, to_f64};
 use ts_vm::vm::{Level, Native, NativeCall, Vm, VmError};
 
 use super::access::{matrix_of, scale_of};
@@ -259,25 +259,15 @@ impl torque_scene::Geometry for SceneView<'_> {
 
 type State = Rc<RefCell<ContainerState>>;
 
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
-/// A `Point3F` argument (`sscanf "%f %f %f"` into floats: what the text does not give is 0, the
-/// engine reads it as 0).
+/// A `Point3F` argument.
+#[deprecated(note = "use `NativeCall::vec3`")]
 pub fn vec3_arg(c: &NativeCall, i: usize) -> [f32; 3] {
-    let mut v = [0.0f32; 3];
-    scan_floats(arg(c, i), &mut v);
-    v
-}
-
-fn float_arg(c: &NativeCall, i: usize) -> f32 {
-    atof(arg(c, i)) as f32
+    c.vec3(i)
 }
 
 /// A bitset argument: `atoi`, as an unsigned number (`-1` is every bit).
 pub fn mask_arg(c: &NativeCall, i: usize) -> u32 {
-    atoi(arg(c, i)) as u32
+    c.int(i) as u32
 }
 
 /// Registers a global function with its spec's argument counts, charging the bytes of its arguments first (as every host
@@ -370,7 +360,7 @@ fn pay(vm: &Vm, units: u64) -> Result<(), VmError> {
 /// sorted by the distance to their box's centre.
 fn init_radius_search(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
     super::links::resolve(vm);
-    let (pos, radius, mask) = (vec3_arg(c, 1), float_arg(c, 2), mask_arg(c, 3));
+    let (pos, radius, mask) = (c.vec3(1), c.float(2), mask_arg(c, 3));
     state.borrow_mut().search.clear();
     let found = match collect(vm, container, radius_box(pos, radius), mask) {
         Ok(found) => found,
@@ -392,7 +382,7 @@ fn init_radius_search(vm: &mut Vm, container: &Container, state: &State, c: &Nat
 /// `initContainerBoxSearch(pos, size, mask)`: the objects the box of `size` around `pos` reaches, sorted.
 fn init_box_search(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
     super::links::resolve(vm);
-    let (pos, size, mask) = (vec3_arg(c, 1), vec3_arg(c, 2), mask_arg(c, 3));
+    let (pos, size, mask) = (c.vec3(1), c.vec3(2), mask_arg(c, 3));
     state.borrow_mut().search.clear();
     match collect(vm, container, size_box(pos, size), mask) {
         Ok(found) => start_search(vm, state, pos, found),
@@ -417,10 +407,10 @@ fn start_search(vm: &Vm, state: &State, pos: [f32; 3], found: Vec<Found>) -> Nat
 /// The y and z radii of `containerBoxEmpty` (arguments 3 to 5): one radius is all three, two give z the x radius again,
 /// three are three.
 pub fn radii_args(c: &NativeCall) -> [f32; 3] {
-    let x = float_arg(c, 3);
-    let argc = c.argv.len();
-    let y = if argc > 4 { float_arg(c, 4) } else { x };
-    let z = if argc > 5 { float_arg(c, 5) } else { x };
+    let x = c.float(3);
+    let argc = c.argc();
+    let y = if argc > 4 { c.float(4) } else { x };
+    let z = if argc > 5 { c.float(5) } else { x };
     [x, y, z]
 }
 
@@ -430,7 +420,7 @@ pub fn radii_args(c: &NativeCall) -> [f32; 3] {
 /// ([`SpatialIndex::box_blocked`]: an index for its own objects), then the bins' objects are asked for their polygon
 fn box_empty(vm: &mut Vm, container: &Container, shapes: &Shapes, c: &NativeCall) -> Native {
     super::links::resolve(vm);
-    let query = radii_box(vec3_arg(c, 2), radii_args(c));
+    let query = radii_box(c.vec3(2), radii_args(c));
     let found = match collect(vm, container, query, mask_arg(c, 1)) {
         Ok(found) => found,
         Err(e) => return Native::Fail(e),
@@ -481,8 +471,8 @@ fn box_list(query: [f32; 6]) -> collide::EarlyOutPolyList {
 /// objects the box of the absolute radii around `pos` reaches, unsorted, one id per call and an empty string at the end.
 fn find_first(vm: &mut Vm, container: &Container, state: &State, c: &NativeCall) -> Native {
     super::links::resolve(vm);
-    let radii = [float_arg(c, 3), float_arg(c, 4), float_arg(c, 5)];
-    let (query, mask) = (find_box(vec3_arg(c, 2), radii), mask_arg(c, 1));
+    let radii = [c.float(3), c.float(4), c.float(5)];
+    let (query, mask) = (find_box(c.vec3(2), radii), mask_arg(c, 1));
     let found = match collect(vm, container, query, mask) {
         Ok(found) => found,
         Err(e) => return Native::Fail(e),
@@ -633,9 +623,9 @@ pub fn enable_collision(vm: &mut Vm, id: ObjId) {
 /// no object) and, when it is a scene object, has its collision disabled for the cast (the count goes up before and down after,
 /// in the order given, so a repeated id counts twice). A segment with a coordinate that is not a finite number is nothing.
 fn ray_cast(vm: &mut Vm, container: &Container, shapes: &Shapes, c: &NativeCall) -> Native {
-    let (start, end, mask) = (vec3_arg(c, 1), vec3_arg(c, 2), mask_arg(c, 3));
-    let exempt: Vec<u32> = (4..c.argv.len())
-        .filter_map(|i| u32::try_from(atoi(arg(c, i))).ok())
+    let (start, end, mask) = (c.vec3(1), c.vec3(2), mask_arg(c, 3));
+    let exempt: Vec<u32> = (4..c.argc())
+        .filter_map(|i| u32::try_from(c.int(i)).ok())
         .filter(|id| is_class(vm, *id, "SceneObject"))
         .collect();
     for &id in &exempt {
@@ -791,9 +781,9 @@ fn explosion_coverage(
     shapes: &Shapes,
     c: &NativeCall,
 ) -> Native {
-    let source = vec3_arg(c, 1);
+    let source = c.vec3(1);
     let mask = mask_arg(c, 3);
-    let id = u32::try_from(atoi(arg(c, 2)))
+    let id = u32::try_from(c.int(2))
         .ok()
         .filter(|id| is_class(vm, *id, "SceneObject"));
     let Some(id) = id else {
@@ -801,7 +791,7 @@ fn explosion_coverage(
             Level::Warning,
             &[
                 &b"calcExplosionCoverage: couldn't find object: "[..],
-                arg(c, 2),
+                c.arg(2),
             ]
             .concat(),
         );

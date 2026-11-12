@@ -420,9 +420,9 @@ pub fn register<G: ConnGame>(vm: &mut Vm, gui: &Gui, client: &Rc<RefCell<ClientS
         let rules = client_game(vm).screen_rules();
         let (min, max, usage) = rules.usage();
         vm.register("setScreenMode", min, max, usage, move |vm, c| {
-            let a = |i: usize| crate::arg(c, i);
+            let a = |i: usize| c.arg(i);
             // A sixth argument, where the rules take one, is the refresh.
-            let hz = if c.argv.len() == 6 { int(a(5)) } else { 60 };
+            let hz = if c.argc() == 6 { int(a(5)) } else { 60 };
             let full = ts_vm::fields::atob(a(4));
             let (w, h, bpp) = (int(a(1)), int(a(2)), int(a(3)));
             if let Some(line) = rules.call_line(w, h, bpp, full) {

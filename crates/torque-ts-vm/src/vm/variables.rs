@@ -4,9 +4,9 @@
 //! Follows Torque3D's MIT-licensed `console/consoleInternal.cpp` (`Dictionary::exportVariables`, `deleteVariables`)
 //! (Copyright (c) 2012 GarageGames, LLC); the code here is this crate's own.
 
-use super::{Native, NativeCall, Vm, VmError, lossy};
+use super::{Native, Vm, VmError, lossy};
 use crate::host::FileStat;
-use crate::text::{atof, expand_escape, fold, is_match, match_cost, to_f32};
+use crate::text::{expand_escape, fold, is_match, match_cost};
 use crate::vars::Entry;
 
 /// TGE's line buffer (`char buffer[1024]` with `dSprintf`). TGE cuts a longer line, which leaves an unterminated string
@@ -17,16 +17,6 @@ const MAX_LINE: usize = 1023;
 
 /// The most bytes one byte of a string becomes once escaped (`\xNN`).
 const MAX_ESCAPED: usize = 4;
-
-fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    c.argv.get(i).map_or(&b""[..], Vec::as_slice)
-}
-
-/// `dAtob`: "true" in any case, or a number that is not 0 once `atof`'s double has been converted to a float
-/// (NaN counts as true: `export(..., "1e-50")` does not append, `"1e-45"` does).
-fn atob(text: &[u8]) -> bool {
-    text.eq_ignore_ascii_case(b"true") || to_f32(atof(text)) != 0.0
-}
 
 /// `_stricmp` on two names.
 fn cmp_ignoring_case(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
@@ -44,14 +34,14 @@ pub(super) fn register(vm: &mut Vm) {
         4,
         "export(pattern [, file [, append]]) - writes the matching global variables as script",
         |vm, c| {
-            let append = c.argv.len() == 4 && atob(arg(c, 3));
+            let append = c.argc() == 4 && c.boolean(3);
             // A name that does not expand (its error is printed) sends the lines to the console.
-            let file = if c.argv.len() >= 3 {
-                vm.expand_or_console(arg(c, 2))
+            let file = if c.argc() >= 3 {
+                vm.expand_or_console(c.arg(2))
             } else {
                 None
             };
-            match vm.export_variables(arg(c, 1), file.as_deref(), append) {
+            match vm.export_variables(c.arg(1), file.as_deref(), append) {
                 Ok(()) => Native::Void,
                 Err(e) => Native::Fail(e),
             }
@@ -62,7 +52,7 @@ pub(super) fn register(vm: &mut Vm) {
         2,
         2,
         "deleteVariables(pattern) - deletes the global variables whose names match",
-        |vm, c| match vm.delete_variables(arg(c, 1)) {
+        |vm, c| match vm.delete_variables(c.arg(1)) {
             Ok(()) => Native::Void,
             Err(e) => Native::Fail(e),
         },

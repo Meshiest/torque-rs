@@ -35,7 +35,7 @@ use torque_net::handshake::ConnId;
 use torque_net::remote::SendError;
 use torque_net::remote::body::BodyError;
 use torque_ts_vm::sim::ObjId;
-use torque_ts_vm::text::{atoi, until_nul};
+use torque_ts_vm::text::atoi;
 use torque_ts_vm::vm::{Native, NativeCall, Vm, VmError};
 
 use super::Engine;
@@ -72,10 +72,6 @@ pub fn register_charged(
         }
         f(vm, c)
     });
-}
-
-pub fn arg(c: &NativeCall, i: usize) -> &[u8] {
-    until_nul(c.argv.get(i).map_or(&[][..], Vec::as_slice))
 }
 
 /// `Sim::findObject` cast to `NetConnection`, and the host's record of it (a command can only be sent on a connection the host
@@ -287,17 +283,10 @@ pub fn register_always<G: NetGame>(vm: &mut Vm, engine: &Engine<G>) {
             let Some((shared, layer)) = host_of(&engine) else {
                 return Native::Void;
             };
-            let Some(target) = connection_target(vm, &shared, arg(c, 1)) else {
+            let Some(target) = connection_target(vm, &shared, c.cstr(1)) else {
                 return Native::Void;
             };
-            done(send_one(
-                vm,
-                &shared,
-                &layer,
-                target,
-                PLAIN,
-                c.argv.get(2..).unwrap_or(&[]),
-            ))
+            done(send_one(vm, &shared, &layer, target, PLAIN, c.rest(2)))
         });
     }
     // commandToServer(tag, ...): a server has no ServerConnection, so there is nothing to send to.
@@ -307,13 +296,13 @@ pub fn register_always<G: NetGame>(vm: &mut Vm, engine: &Engine<G>) {
 
 fn register_build_tagged(vm: &mut Vm) {
     register_charged(vm, "buildTaggedString", 2, 11, |vm, c| {
-        let fmt = arg(c, 1);
+        let fmt = c.cstr(1);
         let fmt = fmt.strip_prefix(&[1u8][..]).unwrap_or(fmt);
         let id = atoi(fmt) as u32;
         let Some(text) = vm.tags().lookup(id).map(<[u8]>::to_vec) else {
             return Native::Str(Vec::new());
         };
-        let args: Vec<&[u8]> = (2..c.argv.len()).map(|i| arg(c, i)).collect();
+        let args: Vec<&[u8]> = (2..c.argc()).map(|i| c.cstr(i)).collect();
         Native::Str(build_tagged(&text, &args))
     });
 }
