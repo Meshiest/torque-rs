@@ -299,7 +299,7 @@ deny:
 # `--server` for the dedicated-server variant, which must link no renderer, window or audio crate and import no GPU, window or
 # audio system library (the `server-deps` recipe is the crate check for torque-app-server); `--archive` also writes a zip (Windows)
 # or a gzipped tar; `--twice` builds two archives from clean folders and compares their SHA-256, to check that a game builds
-# reproducibly;
+# reproducibly (`--compare <out> <out>` compares the archives of two bundles, as `bundle-repro-check` does for two checkouts);
 # `just bundle --verify <bundle folder>` checks a bundle against its manifest; every file of the game folder is opened by its
 # loader first and a refused one fails the bundle (`--no-validate` skips that; `just bundle --validate <game crate>` does only
 # that, with nothing built); `--precompile` ships the `.cs` and `.gui` scripts compiled in place of their source, in TGE 1.4's format with `--classic-scripts`);
@@ -316,6 +316,20 @@ bundle-web-check:
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
     cargo run -p torque-bundle --release -- examples/mods-demo --web
     cargo run -p torque-bundle --release -- --verify "{{web_target}}/bundles/mods-demo-web"
+
+# The mods demo bundled from two checkouts of one commit in different folders, and the two archives compared byte for byte (the
+# files that differ are listed when they are not equal). `other` is the second checkout, made if it is missing as a detached
+# git worktree of this commit (in the git-ignored `.claude/worktrees`; `git worktree remove` it afterwards, never with `--force`);
+# one that exists must be at this commit with nothing changed in it. Each bundle gets a build folder of its own, under the build
+# folder's `repro` (emptied at the start of the next run)
+bundle-repro-check other=(justfile_directory() / ".claude" / "worktrees" / "bundle-repro-checkout"):
+    if (-not (Test-Path "{{other}}")) { git worktree add --detach "{{other}}" HEAD; if ($LASTEXITCODE -ne 0) { exit 1 } }
+    if ((git -C "{{other}}" rev-parse HEAD) -ne (git rev-parse HEAD)) { Write-Error "{{other}} is not at this checkout's commit"; exit 1 }
+    if (git -C "{{other}}" status --porcelain) { Write-Error "{{other}} has changes in it; it must be a clean checkout"; exit 1 }
+    if (Test-Path "{{web_target}}/repro") { Remove-Item -Recurse -Force "{{web_target}}/repro" }
+    cargo run -p torque-bundle --release -- examples/mods-demo --archive --no-check --out "{{web_target}}/repro/a/out" --target-dir "{{web_target}}/repro/a/build"
+    cargo run --manifest-path "{{other}}/Cargo.toml" -p torque-bundle --release -- "{{other}}/examples/mods-demo" --archive --no-check --out "{{web_target}}/repro/b/out" --target-dir "{{web_target}}/repro/b/build"
+    cargo run -p torque-bundle --release -- --compare "{{web_target}}/repro/a/out" "{{web_target}}/repro/b/out"
 
 # The checks on a game's assets and compiled scripts: the mods demo's game folder opens with nothing refused, a planted bad
 # asset is reported, and the trace world run from a compiled script hashes as it does from its source

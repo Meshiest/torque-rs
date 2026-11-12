@@ -10,7 +10,9 @@
 //! extension; `--allow <dir>` (repeatable) lets `[[extension]]` and `[web].lua` name files in another folder.
 //! `--classic-scripts` says the game's executor reads TGE 1.4's script format, not Torque3D's.
 //! `torque-bundle --validate <game crate folder> [--precompile]` only opens the game folder's files (nothing is built), and
-//! `torque-bundle --verify <bundle folder>` checks a bundle against its manifest.
+//! `torque-bundle --verify <bundle folder>` checks a bundle against its manifest, and `torque-bundle --compare <bundle folder>
+//! <bundle folder>` compares the archives beside two bundle folders (made with `--archive`, such as from two checkouts) and names
+//! the files that differ.
 //!
 //! The build folder is `--target-dir`, else `CARGO_TARGET_DIR`, else the workspace's `target`; the bundle goes in `--out`,
 //! else `<build folder>/bundles`.
@@ -19,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use torque_bundle::{
-    ArchiveReport, Options, Report, bundle, manifest, own_folder, precompile,
+    ArchiveReport, Options, Report, bundle, compare, manifest, own_folder, precompile,
     precompile::ScriptFormat, remove_owned_folder, scan, validate, validate_game,
 };
 
@@ -45,7 +47,8 @@ macro_rules! say_err {
     ($($arg:tt)*) => { emit(&format!($($arg)*), true) };
 }
 
-const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--web] [--scripts <dir>] [--lua <Cargo.toml>] [--allow <dir>] [--archive] [--twice] [--max-inflated <MiB>] [--no-validate] [--precompile] [--classic-scripts]\n       torque-bundle --validate <game crate folder> [--precompile] [--classic-scripts]\n       torque-bundle --verify <bundle folder>";
+const USAGE: &str = "usage: torque-bundle <game crate folder> [--out <dir>] [--target-dir <dir>] [--no-check] [--server] [--web] [--scripts <dir>] [--lua <Cargo.toml>] [--allow <dir>] [--archive] [--twice] [--max-inflated <MiB>] [--no-validate] [--precompile] [--classic-scripts]\n       torque-bundle --validate <game crate folder> [--precompile] [--classic-scripts]\n       torque-bundle --verify <bundle folder>
+       torque-bundle --compare <bundle or out folder> <bundle or out folder>";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
@@ -84,6 +87,11 @@ fn run() -> Result<(), String> {
                 }
                 return Err(problems.join("\n"));
             }
+            "--compare" => {
+                let one = value("--compare")?;
+                let two = value("--compare")?;
+                return compare_bundles(&one, &two);
+            }
             "--validate" => only_validate = true,
             "--no-validate" => mode.validate = false,
             "--precompile" => mode.precompile = true,
@@ -107,6 +115,10 @@ fn run() -> Result<(), String> {
             }
             "-h" | "--help" => {
                 say!("{USAGE}");
+                say!(
+                    "
+The builds run under this program as cargo's rustc wrapper, so a RUSTC_WRAPPER of yours (a compile cache) is not used."
+                );
                 return Ok(());
             }
             flag if flag.starts_with('-') => return Err(format!("unknown option {flag}\n{USAGE}")),
@@ -166,6 +178,26 @@ fn validate_only(
     ))
 }
 
+/// `--compare`: the archives beside two bundle folders, equal or the files that differ.
+fn compare_bundles(one: &Path, two: &Path) -> Result<(), String> {
+    let found = compare::compare(one, two)?;
+    let [(a, a_bytes), (b, b_bytes)] = &found.archives;
+    say!("archive sha256 of {}: {a}", one.display());
+    say!("archive sha256 of {}: {b}", two.display());
+    if found.identical() {
+        say!("the two archives are byte-identical ({a_bytes} bytes)");
+        return Ok(());
+    }
+    Err(format!(
+        "the two archives differ ({a_bytes} and {b_bytes} bytes); files that differ:
+  {}",
+        found.differing.join(
+            "
+  "
+        )
+    ))
+}
+
 /// Two bundles of the same inputs, each from a build folder of its own that is removed after it (so nothing carries over, and a
 /// path of the build folder in a binary shows as a difference). Fails unless the archives' SHA-256 are equal, naming the files
 /// whose hashes differ.
@@ -196,33 +228,14 @@ fn build_twice(options: &Options) -> Result<(), String> {
         say!("the two archives are byte-identical ({} bytes)", a.bytes);
         return Ok(());
     }
-    let differing = differing_files(&first.folder, &second.folder);
+    let differing =
+        compare::differing_files(&first.folder, &second.folder).unwrap_or_else(|e| vec![e]);
     Err(format!(
         "the two archives differ ({} and {} bytes); files that differ:\n  {}",
         a.bytes,
         b.bytes,
         differing.join("\n  ")
     ))
-}
-
-/// The paths whose size or hash differs between two bundle folders' manifests, or that only one has.
-fn differing_files(one: &Path, two: &Path) -> Vec<String> {
-    let read = |dir: &Path| {
-        std::fs::read_to_string(dir.join(manifest::FILE))
-            .ok()
-            .and_then(|text| manifest::parse(&text).ok())
-            .unwrap_or_default()
-    };
-    let (a, b) = (read(one), read(two));
-    let mut paths: Vec<&str> = a.iter().chain(&b).map(|e| e.path.as_str()).collect();
-    paths.sort_unstable();
-    paths.dedup();
-    let find = |list: &[manifest::Entry], path: &str| list.iter().find(|e| e.path == path).cloned();
-    paths
-        .into_iter()
-        .filter(|path| find(&a, path) != find(&b, path))
-        .map(String::from)
-        .collect()
 }
 
 fn print_report(report: &Report) {
@@ -301,6 +314,10 @@ fn print_report(report: &Report) {
 }
 
 fn main() -> ExitCode {
+    // Cargo runs this program in place of rustc in the builds the tool starts (`torque_bundle::wrapper`).
+    if std::env::var_os(torque_bundle::wrapper::ENV).is_some() {
+        return torque_bundle::wrapper::run();
+    }
     // An interrupt stops what the bundle is running (a build, a headless browser) before this program ends.
     let _ = ctrlc::set_handler(|| {
         torque_bundle::kill_running();

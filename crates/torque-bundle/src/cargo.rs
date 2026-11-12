@@ -232,7 +232,23 @@ impl Build {
     /// build script that does not declare `CFLAGS` would keep C compiled with other flags.
     pub fn build_dir(&self) -> PathBuf {
         use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(self.cflags.join(" ").as_bytes());
+        // The folders the flags remap say where the checkout is, not how the C is built: only what they become counts.
+        let flags: Vec<&str> = self
+            .cflags
+            .iter()
+            .map(|flag| match flag.rsplit_once('=') {
+                Some((_, to))
+                    if flag.starts_with("/pathmap:") || flag.starts_with("-ffile-prefix-map=") =>
+                {
+                    to
+                }
+                _ => flag.as_str(),
+            })
+            .collect();
+        // The wrapper's version too: a change to what it produces must not reuse crates built under the old one.
+        let hash = Sha256::digest(
+            format!("{} wrapper {}", flags.join(" "), crate::wrapper::VERSION).as_bytes(),
+        );
         let key = torque_bytes::hex(&hash[..6]);
         self.target_dir.join(format!("c-{key}"))
     }
@@ -255,6 +271,17 @@ impl Build {
         command
             .env("CARGO_TARGET_DIR", self.build_dir())
             .env("CARGO_ENCODED_RUSTFLAGS", self.rustflags.join("\u{1f}"));
+        // A wrapper of the user's (a compile cache) is not run: this tool's replaces it (`crate::wrapper`).
+        for name in [
+            "RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+            "CARGO_BUILD_RUSTC_WRAPPER",
+        ] {
+            command.env_remove(name);
+        }
+        command
+            .env("RUSTC_WRAPPER", crate::wrapper::program()?)
+            .env(crate::wrapper::ENV, "1");
         for (name, value) in build_env(&self.target) {
             command.env(name, value);
         }

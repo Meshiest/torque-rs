@@ -52,6 +52,28 @@
 //! escapes. The loaders are the engine's own and are fuzzed, so a hostile file is an error value, not a panic. The errors of
 //! this crate stay `String`s, as the rest of it, rather than an enum: nothing matches on them.
 //!
+//! **Reproducible from any folder.** Two checkouts of one commit in different folders give byte-identical archives
+//! (`just bundle-repro-check`, which bundles from both and runs `torque-bundle --compare <out> <out>`: the archives' SHA-256, and
+//! when they differ the files whose manifest entries differ). What had to be held equal, and where:
+//! - Paths in the output: every folder of the computer is remapped to a neutral name for rustc (`--remap-path-prefix`) and for C
+//!   and C++ (`/pathmap` under `/experimental:deterministic`, `-ffile-prefix-map`) in `cargo::rustflags` and `cargo::cflags`; the
+//!   leak scan fails a bundle that still holds one.
+//! - The crate identity: cargo hashes a path dependency that lies outside the build's workspace root (the extensions, which are
+//!   their own workspaces) by its absolute path, so rustc named and ordered the symbols by the checkout's folder. The builds run
+//!   under this program as `RUSTC_WRAPPER` (`wrapper`), which replaces each `-C metadata` with a hash of the command line with
+//!   the remapped folders and cargo's file name hashes taken out (`wrapper::tests`). A wrapper in the user's environment (`RUSTC_WRAPPER`, a compile
+//!   cache) is not run, and `--help` says so. `@file` arguments are expanded as rustc reads them (one argument per line) before the
+//!   rewrite, and a form that cannot be expanded faithfully fails the build; non-Unicode arguments are passed on as they were.
+//!   `wrapper::VERSION` is part of the build folder's key: raise it with any change to what the rewrite produces. A build that does not go through `Build::run` (the web scripts) is not covered.
+//! - The build folder's key (`Build::build_dir`) is a hash of the C flags with the remapped folders left out, since it is part of
+//!   the paths rustc is given.
+//! - Time and order: the MSVC link has `/Brepro` (its time stamp is a hash of the content, so a file that differs in any byte
+//!   differs there too) and no PDB, `SOURCE_DATE_EPOCH` is [`archive::EPOCH`], and the archive and manifest are sorted with fixed
+//!   times, owner and modes.
+//!
+//! A new source of difference shows as `--compare`'s list of files; the bytes to look at are `cmp -l` of the two files, and
+//! `llvm-objdump -d` for code (a function order that differs means the crate identity does, as above).
+//!
 //! **Nothing printed holds a control character.** `main` prints only through `emit`, which makes each line printable, so a
 //! message that forgot to is still safe (`tests/main.rs::nothing_printed_holds_a_control_character`); `select` and the reads
 //! of `bundle` also make theirs printable where they are built
@@ -203,6 +225,7 @@ pub const PLUGINS_ENV: &str = "TORQUE_BUNDLE_PLUGINS";
 
 pub mod archive;
 pub mod cargo;
+pub mod compare;
 pub mod features;
 pub mod licenses;
 pub mod manifest;
@@ -213,6 +236,7 @@ pub mod server;
 pub mod spec;
 pub mod validate;
 pub mod web;
+pub mod wrapper;
 
 use std::collections::BTreeMap;
 use std::io::Read;

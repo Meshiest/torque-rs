@@ -52,6 +52,9 @@ rustix = { version = "1", default-features = false, features = ["process", "std"
 [dev-dependencies]
 torque-app-server = { path = "../torque-app-server" }
 torque-mods = { path = "../torque-mods" }
+# The synthetic files the tests open (`synth`), which the crates build only with `testing`.
+torque-maps = { path = "../torque-maps", features = ["testing"] }
+torque-shapes = { path = "../torque-shapes", features = ["testing"] }
 
 [lints]
 workspace = true

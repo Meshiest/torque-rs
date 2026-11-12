@@ -183,3 +183,63 @@ fn a_file_and_a_link_named_with_an_escape_are_reported_without_it() {
         "{error:?}"
     );
 }
+
+/// A folder with a manifest of `files` and the archive `bytes` beside it, as `--archive` leaves them.
+fn bundle_with_archive(out: &Path, files: &[(&str, &[u8])], archive: &[u8]) -> PathBuf {
+    use torque_bundle::manifest::{Entry, Header, write};
+
+    let folder = out.join("game-windows-x86_64");
+    std::fs::create_dir_all(&folder).unwrap();
+    let entries: Vec<Entry> = files
+        .iter()
+        .map(|(path, bytes)| Entry::of(path, bytes))
+        .collect();
+    let header = Header {
+        name: "game".into(),
+        version: "0.1.0".into(),
+        target: "x86_64-pc-windows-msvc".into(),
+        mode: "compiled".into(),
+        features: Vec::new(),
+        rustc: "rustc".into(),
+    };
+    std::fs::write(folder.join("manifest.toml"), write(&header, &entries)).unwrap();
+    std::fs::write(out.join("game-windows-x86_64.zip"), archive).unwrap();
+    folder
+}
+
+#[test]
+fn compare_names_the_files_that_differ_when_the_archives_do() {
+    let dir = tmp("compare");
+    let same = [("a.txt", &b"one"[..]), ("b.exe", &b"two"[..])];
+    let one = dir.join("one");
+    let two = dir.join("two");
+    bundle_with_archive(&one, &same, b"archive");
+    bundle_with_archive(&two, &same, b"archive");
+    let run = |a: &Path, b: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_torque-bundle"))
+            .arg("--compare")
+            .arg(a)
+            .arg(b)
+            .output()
+            .unwrap()
+    };
+    // An out folder stands for the one bundle in it.
+    let output = run(&one, &two);
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("byte-identical"));
+
+    let three = dir.join("three");
+    bundle_with_archive(&three, &[("a.txt", b"one"), ("b.exe", b"2")], b"other");
+    let output = run(&one, &three);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("differ"), "{error}");
+    assert!(error.contains("b.exe"), "{error}");
+    assert!(!error.contains("a.txt"), "{error}");
+
+    // A bundle with no archive beside it is an error, not a pass.
+    std::fs::remove_file(three.join("game-windows-x86_64.zip")).unwrap();
+    let output = run(&one, &three);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no archive"));
+}
