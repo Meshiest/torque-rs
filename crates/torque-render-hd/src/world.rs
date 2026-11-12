@@ -5611,6 +5611,7 @@ impl<E: HdExtension> HdWorld<E> {
         self.refl.reset();
         self.exposure.reset();
         self.clouds.reset();
+        self.irradiance.reset(&self.queue);
     }
 
     /// Adds `pass` at `stage` of every frame from the next, after the passes already there ([`crate::passes`]).

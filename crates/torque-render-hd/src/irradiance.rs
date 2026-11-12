@@ -168,7 +168,8 @@ impl IrradiancePipe {
             OUTPUT_BYTES,
             wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::UNIFORM
-                | wgpu::BufferUsages::COPY_SRC,
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("hd irradiance"),
@@ -200,6 +201,14 @@ impl IrradiancePipe {
             last: None,
             projected: 0,
         }
+    }
+
+    /// Forgets every projection and clears the coefficients, as a new pipe has them: the next frame projects every face again, and
+    /// the secondary views drawn before it read a zero ambient, not the last picture's.
+    pub fn reset(&mut self, queue: &wgpu::Queue) {
+        self.last = None;
+        self.projected = 0;
+        queue.write_buffer(&self.output, 0, &[0; OUTPUT_BYTES as usize]);
     }
 
     /// Projects the faces `faces` names (bits 0-5 the sky cube's, 6-11 the capture's: the faces drawn before this in
