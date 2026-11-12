@@ -32,6 +32,7 @@ pub mod settings;
 pub mod sh;
 pub mod shadow;
 pub mod sky;
+pub mod sprites;
 pub mod sync;
 pub mod view_cull;
 pub mod view_scene;

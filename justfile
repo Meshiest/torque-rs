@@ -335,6 +335,12 @@ bench-script allocator="":
     cargo run --release --jobs 4 {{ if allocator == "mimalloc" { "--manifest-path crates/torque-ts-vm/bench-alloc/Cargo.toml" } else { "-p torque-ts-vm --example bench" } }} -- --classic
     cargo bench --jobs 4 -p torque-plugin-loader --bench native_call
 
+# The particles' cost a frame through the GPU particle pool (`--cpu`: the CPU path's quads instead) at `--count` particles alive,
+# `--quality` and `--size` (100,000 at High and 1920x1080 by default): the pool's pass, the draws' GPU time, the scene side's CPU
+# and the draw's `begin: particles` mark. A timing run: take the bench lock (see the agents' rules)
+particles-profile *args:
+    cargo run --release --jobs 4 -p torque-render-hd --example particles-profile -- {{args}}
+
 # The VM bench with the system allocator and then with mimalloc, one after the other, in the `dist` profile, to see what
 # mimalloc gives (adopt it in the examples' and the benches' binaries at 20% or better on the strings or objects workloads).
 # Takes the bench lock

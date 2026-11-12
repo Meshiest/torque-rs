@@ -16,13 +16,14 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>] [--trace]`: `--audit` draws each scene again with each pass's history off on its own
+//! [--max-trail <percent>] [--trace] [--gpu-particles]`: `--audit` draws each scene again with each pass's history off on its own
 //! (`HdWorld::histories`) and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its
 //! reference and their difference (`--frame <n>`: that frame too); `--trace` prints each frame's share off. Each row ends with
 //! the run's GPU time a frame (ms, the whole frame, the sun mask's pass and the anti-aliasing's; with the device's timestamps).
 //! The command fails when a gated scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to settle
 //! and a `ghosting::MAX_TRAIL` % trail); the cloud, mirror and thin-far scenes report their numbers without gating (their
-//! histories are measured here before they are worked on).
+//! histories are measured here before they are worked on). `--gpu-particles` draws the smoke through the GPU particle pool
+//! (`HdFeatures::gpu_particles`: each frame's puffs handed over afresh, camera-facing) instead of the CPU path's quads.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,6 +38,7 @@ use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdLight, HdMode, HdScene, Quality, material,
 };
+use torque_render_scene::particles::{GpuSpawn, SpriteFrame, SpriteLook};
 use torque_render_scene::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 
 const SIZE: (u32, u32) = (384, 216);
@@ -468,8 +470,8 @@ fn water(half: f32) -> Draw {
     }
 }
 
-/// The smoke at `age` frames: puffs rising and spreading from behind the buggy, each at its eye distance.
-fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
+/// The smoke's puffs at `age` frames: each one's center, half size and alpha.
+fn puffs(age: f32) -> Vec<([f32; 3], f32, f32)> {
     let mut rng = Lcg::new(11);
     let mut out = Vec::new();
     for k in 0..24 {
@@ -479,7 +481,6 @@ fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
         if life < 0.0 {
             continue;
         }
-        let s = 0.02 * life;
         let c = [
             -1.8 - 0.03 * life + dx,
             1.0 + dy + 0.01 * life,
@@ -487,18 +488,72 @@ fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
         ];
         let half = 0.35 + 0.012 * life;
         let alpha = (0.7 * (1.0 - life / 60.0)).clamp(0.0, 1.0);
+        out.push((c, half, alpha));
+    }
+    out
+}
+
+/// The smoke's color.
+const SMOKE: [u8; 3] = [150, 140, 125];
+
+/// The smoke at `age` frames for the GPU particle pool: the pool's particles dropped and the puffs handed over, each a sprite
+/// of the puff texture facing the camera (still: the pool steps them by nothing).
+fn smoke_sprites(age: Option<f32>, texture: usize) -> SpriteFrame {
+    let look = SpriteLook {
+        label: "smoke".into(),
+        colors: [[1.0; 4]; 4],
+        sizes: [1.0; 4],
+        times: [0.0, 1.0, 2.0, 2.0],
+        drag: 0.0,
+        gravity: 0.0,
+        wind: 0.0,
+        blend: Blend::Alpha,
+        frames: vec![texture],
+        fps: 0,
+        hidden: false,
+    };
+    let spawns = age
+        .map(puffs)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(c, half, alpha)| GpuSpawn {
+            pos: c,
+            age_ms: 0,
+            vel: [0.0; 3],
+            life_ms: 1 << 20,
+            acc: [0.0; 3],
+            spin: 0.0,
+            look: 0,
+            fresh: false,
+            color: [
+                f32::from(SMOKE[0]) / 255.0,
+                f32::from(SMOKE[1]) / 255.0,
+                f32::from(SMOKE[2]) / 255.0,
+                f32::from((alpha * 255.0) as u8) / 255.0,
+            ],
+            size: 2.0 * half,
+        })
+        .collect();
+    SpriteFrame {
+        looks: vec![look],
+        spawns,
+        steps: Vec::new(),
+        clear: true,
+    }
+}
+
+/// The smoke at `age` frames: puffs rising and spreading from behind the buggy, each at its eye distance.
+fn smoke(age: f32, eye: [f32; 3], texture: usize) -> Vec<(f32, HdDraw)> {
+    let mut out = Vec::new();
+    for (c, half, alpha) in puffs(age) {
         // Faced to the eye about the vertical.
         let (fx, fy) = (c[0] - eye[0], c[1] - eye[1]);
         let l = fx.hypot(fy).max(1e-3);
         let side = [-fy / l * half, fx / l * half];
         let corner = |a: f32, b: f32, u: f32, v: f32| Vertex {
-            position: [
-                c[0] + a * side[0],
-                c[1] + a * side[1],
-                c[2] + b * half + s * 0.0,
-            ],
+            position: [c[0] + a * side[0], c[1] + a * side[1], c[2] + b * half],
             normal: [0.0, 0.0, 1.0],
-            color: [150, 140, 125, (alpha * 255.0) as u8],
+            color: [SMOKE[0], SMOKE[1], SMOKE[2], (alpha * 255.0) as u8],
             uv: [u, v],
         };
         let (a, b, cc, d) = (
@@ -548,6 +603,8 @@ struct Stage {
     scene: PlainScene,
     puff: usize,
     poles: bool,
+    /// The smoke through the GPU particle pool.
+    sprites: bool,
     table: &'static ScatterTable,
     look: ScatterLook,
     /// The state last put in.
@@ -555,7 +612,7 @@ struct Stage {
 }
 
 impl Stage {
-    fn new(shot: &Shot) -> Stage {
+    fn new(shot: &Shot, sprites: bool) -> Stage {
         let mut frame = HdScene::new(StaticCells::default());
         frame.atmosphere = true;
         frame.sun_radius = 0.27;
@@ -586,6 +643,7 @@ impl Stage {
             },
             puff,
             poles: shot.poles,
+            sprites,
             table: ScatterTable::earth(),
             look: look(),
             last: None,
@@ -637,11 +695,15 @@ impl Stage {
             .last
             .is_none_or(|l| l.smoke != st.smoke || l.eye != st.eye)
         {
-            s.particles = st
-                .smoke
-                .map(|age| smoke(age, st.eye, self.puff))
-                .unwrap_or_default();
-            s.particles_generation += 1;
+            if self.sprites {
+                s.push_sprites(&smoke_sprites(st.smoke, self.puff));
+            } else {
+                s.particles = st
+                    .smoke
+                    .map(|age| smoke(age, st.eye, self.puff))
+                    .unwrap_or_default();
+                s.particles_generation += 1;
+            }
         }
         s.generation += 1;
         self.last = Some(*st);
@@ -665,9 +727,11 @@ struct Drawer {
 }
 
 impl Drawer {
-    fn new(gpu: &Gpu) -> Result<Drawer, String> {
+    fn new(gpu: &Gpu, sprites: bool) -> Result<Drawer, String> {
+        let mut world = HdWorld::new(gpu);
+        world.features.gpu_particles = sprites;
         Ok(Drawer {
-            world: HdWorld::new(gpu),
+            world,
             target: gpu.offscreen(SIZE.0, SIZE.1).map_err(|e| e.to_string())?,
         })
     }
@@ -689,9 +753,9 @@ impl Drawer {
 }
 
 /// The references of `shot`, one a frame (a frame whose state is the last one's shares its image).
-fn references(gpu: &Gpu, shot: &Shot) -> Result<Vec<Arc<Image>>, String> {
-    let mut stage = Stage::new(shot);
-    let mut d = Drawer::new(gpu)?;
+fn references(gpu: &Gpu, shot: &Shot, sprites: bool) -> Result<Vec<Arc<Image>>, String> {
+    let mut stage = Stage::new(shot, sprites);
+    let mut d = Drawer::new(gpu, sprites)?;
     let mut out: Vec<Arc<Image>> = Vec::with_capacity(shot.frames);
     let mut last: Option<State> = None;
     for f in 0..shot.frames {
@@ -729,6 +793,7 @@ struct Args {
     out: Option<PathBuf>,
     max_settle: Option<usize>,
     max_trail: Option<f64>,
+    gpu_particles: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -740,6 +805,7 @@ fn args() -> Result<Args, String> {
         out: None,
         max_settle: Some(MAX_SETTLE),
         max_trail: Some(MAX_TRAIL),
+        gpu_particles: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -747,6 +813,7 @@ fn args() -> Result<Args, String> {
         match arg.as_str() {
             "--audit" => a.audit = true,
             "--trace" => a.trace = true,
+            "--gpu-particles" => a.gpu_particles = true,
             "--frame" => a.frame = Some(value()?.parse().map_err(|e| format!("{e}"))?),
             "--shot" => a.shot = Some(value()?),
             "--out" => a.out = Some(PathBuf::from(value()?)),
@@ -774,10 +841,10 @@ fn main() -> Result<(), String> {
         if args.shot.as_deref().is_some_and(|s| s != shot.name) {
             continue;
         }
-        let refs = references(&gpu, &shot)?;
+        let refs = references(&gpu, &shot, args.gpu_particles)?;
         for (name, set) in ghosting::settings::<NoExtension>(args.audit) {
-            let mut stage = Stage::new(&shot);
-            let mut d = Drawer::new(&gpu)?;
+            let mut stage = Stage::new(&shot, args.gpu_particles);
+            let mut d = Drawer::new(&gpu, args.gpu_particles)?;
             set(&mut d.world);
             let mut areas = Vec::with_capacity(shot.frames);
             let mut frames: Vec<Image> = Vec::new();

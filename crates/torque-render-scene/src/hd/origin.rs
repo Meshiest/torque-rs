@@ -19,6 +19,7 @@
 use std::collections::BTreeMap;
 
 use crate::hd::cells::{CELL_SIZE, Cell, StaticCells};
+use crate::hd::sprites::GpuSprites;
 use crate::hd::{DynamicObject, HdDraw, HdLight, HdScene, HdSpot, NodePlace, WaterZone, material};
 use crate::math::Mat;
 use crate::source::Eye;
@@ -273,6 +274,17 @@ impl<X> Shift for Cell<X> {
     }
 }
 
+impl Shift for GpuSprites {
+    fn shift(&mut self, by: [f32; 3]) {
+        for s in &mut self.spawns {
+            s.pos.shift(by);
+        }
+        for (o, b) in self.offset.iter_mut().zip(by) {
+            *o += f64::from(b);
+        }
+    }
+}
+
 impl<X> Shift for StaticCells<X> {
     fn shift(&mut self, by: [f32; 3]) {
         let StaticCells { cells, slots: _ } = self;
@@ -324,6 +336,7 @@ impl<G: Shift> Shift for HdScene<G> {
             particles,
             particles_generation: _,
             particle_light: _,
+            sprites,
             textures_pending: _,
             lights,
             spots,
@@ -352,6 +365,7 @@ impl<G: Shift> Shift for HdScene<G> {
         coronas.shift(by);
         flare.shift(by);
         particles.shift(by);
+        sprites.shift(by);
         lights.shift(by);
         spots.shift(by);
     }

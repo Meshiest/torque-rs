@@ -111,6 +111,10 @@ use crate::{
 #[path = "reflect.rs"]
 pub(crate) mod reflect;
 
+#[path = "gpu_particles.rs"]
+mod gpu_particles;
+pub use gpu_particles::{SpriteCounts, sprite_capacity};
+
 /// The most bytes of the levels' block meshes a live window's upload puts in (at least one block).
 pub const LOD_BYTES_A_FRAME: u64 = 4 << 20;
 /// The most static cell bytes a live window's upload writes ([`HdWorld::upload_budget`]).
@@ -289,6 +293,8 @@ pub(crate) struct DrawRef {
     motion: u32,
     /// In the particles' buffers ([`Particles`]), not the loose ones.
     particle: bool,
+    /// A bucket of the GPU particle pool's ([`gpu_particles`]): one indirect draw of its sprites, no buffer of vertices.
+    sprites: Option<u8>,
     /// A late object's or a dying shape's: drawn after the TAA resolve where the frame has one.
     late: bool,
     /// Drawn into the shadow maps only (`torque_render_scene::hd::material::SHADOW_ONLY`: the client's own Player in its first-person
@@ -802,6 +808,9 @@ pub struct HdFeatures {
     /// The clouds' cube (`clouds::CLOUD_CUBE_SIZE`, a face a frame where the water is drawn): the water reflects the clouds
     /// off screen and the reflections' fog takes them; off: the main view's image alone, its edge stretched past it, as before.
     pub cloud_cube: bool,
+    /// The particles handed over to the GPU particle pool are stepped and drawn there (where the device runs it:
+    /// [`HdWorld::gpu_particles_on`]); off by default: the pool is not made, and the CPU path's particles are all there is.
+    pub gpu_particles: bool,
 }
 
 impl Default for HdFeatures {
@@ -827,6 +836,7 @@ impl Default for HdFeatures {
             fog_sky_mean: true,
             cloud_from_eye: true,
             cloud_cube: true,
+            gpu_particles: false,
         }
     }
 }
@@ -853,6 +863,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
+        gpu_particles: false,
     };
     /// No anti-aliasing and no AO.
     pub const NO_POST: HdFeatures = HdFeatures {
@@ -876,6 +887,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
+        gpu_particles: false,
     };
     /// No reflections.
     pub const NO_REFLECTIONS: HdFeatures = HdFeatures {
@@ -899,6 +911,7 @@ impl HdFeatures {
         fog_sky_mean: true,
         cloud_from_eye: true,
         cloud_cube: true,
+        gpu_particles: false,
     };
 }
 
@@ -1120,6 +1133,12 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     oversize_uploads: u64,
     buffer_cap: Option<u64>,
     particles: Particles,
+    /// The GPU particle pool, made the first frame [`HdFeatures::gpu_particles`] is on ([`gpu_particles`]), and whether the
+    /// device runs it.
+    sprites: Option<gpu_particles::GpuParticles>,
+    sprites_supported: bool,
+    /// The most particles the pool holds ([`HdWorld::set_gpu_particle_cap`]).
+    sprite_cap: u32,
     /// The last upload's table of mesh places in bytes (its room kept).
     node_bytes: Vec<u8>,
     /// The forward passes' frame groups made in the last frames, by what they bind ([`GroupCache`]).
@@ -1322,6 +1341,7 @@ pub(crate) fn trans_pipeline(
     module: &wgpu::ShaderModule,
     cull: Cull,
     stage: Stage,
+    vertices: Vertices,
 ) -> wgpu::RenderPipeline {
     let (cull_mode, front_face) = match cull {
         Cull::None => (None, wgpu::FrontFace::Cw),
@@ -1380,18 +1400,7 @@ pub(crate) fn trans_pipeline(
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("hd translucent"),
         layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: HD_VERTEX_BYTES as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x3, 1 => Snorm16x2, 2 => Float32x2, 3 => Unorm8x4, 4 => Uint32, 5 => Uint32
-                ],
-            })],
-        },
+        vertex: vertex_state(module, vertices),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
@@ -1460,16 +1469,47 @@ fn make_pipeline(
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
     key: PipelineKey,
+    vertices: Vertices,
 ) -> wgpu::RenderPipeline {
+    let forward = |entry| forward_pipeline_of(device, cache, layout, module, key, entry, vertices);
     match key.stage {
-        Stage::Main if key.blend == Blend::Modulate2x => {
-            forward_pipeline(device, cache, layout, module, key, "fs_modulate2x")
-        }
-        Stage::Main | Stage::Over => {
-            forward_pipeline(device, cache, layout, module, key, "fs_main")
-        }
-        Stage::Particle => forward_pipeline(device, cache, layout, module, key, "fs_particle"),
-        s => trans_pipeline(device, cache, layout, module, key.cull, s),
+        Stage::Main if key.blend == Blend::Modulate2x => forward("fs_modulate2x"),
+        Stage::Main | Stage::Over => forward("fs_main"),
+        Stage::Particle => forward("fs_particle"),
+        s => trans_pipeline(device, cache, layout, module, key.cull, s, vertices),
+    }
+}
+
+/// Where a forward-pass pipeline's vertices come from: the vertex buffers ([`HdVertex`], `vs_main`), or the GPU particle
+/// pool's sprites (`vs_gpu_sprite`: no buffer, six vertices a particle of its instance list).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Vertices {
+    Mesh,
+    Sprites,
+}
+
+/// The vertex buffer layout of an [`HdVertex`].
+const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
+    0 => Float32x3, 1 => Snorm16x2, 2 => Float32x2, 3 => Unorm8x4, 4 => Uint32, 5 => Uint32
+];
+const MESH_BUFFERS: [Option<wgpu::VertexBufferLayout<'static>>; 1] =
+    [Some(wgpu::VertexBufferLayout {
+        array_stride: HD_VERTEX_BYTES as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &MESH_ATTRIBUTES,
+    })];
+
+/// A forward-pass pipeline's vertex stage of `module` for `vertices`.
+fn vertex_state(module: &wgpu::ShaderModule, vertices: Vertices) -> wgpu::VertexState<'_> {
+    let (entry, buffers): (&str, &[Option<wgpu::VertexBufferLayout<'static>>]) = match vertices {
+        Vertices::Mesh => ("vs_main", &MESH_BUFFERS),
+        Vertices::Sprites => ("vs_gpu_sprite", &[]),
+    };
+    wgpu::VertexState {
+        module,
+        entry_point: Some(entry),
+        compilation_options: wgpu::PipelineCompilationOptions::default(),
+        buffers,
     }
 }
 
@@ -1545,6 +1585,19 @@ pub(crate) fn forward_pipeline(
     key: PipelineKey,
     entry: &str,
 ) -> wgpu::RenderPipeline {
+    forward_pipeline_of(device, cache, layout, module, key, entry, Vertices::Mesh)
+}
+
+/// [`forward_pipeline`] of `vertices`.
+fn forward_pipeline_of(
+    device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    key: PipelineKey,
+    entry: &str,
+    vertices: Vertices,
+) -> wgpu::RenderPipeline {
     let (cull_mode, front_face) = match key.cull {
         Cull::None => (None, wgpu::FrontFace::Cw),
         Cull::BackCw => (Some(wgpu::Face::Back), wgpu::FrontFace::Cw),
@@ -1553,18 +1606,7 @@ pub(crate) fn forward_pipeline(
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("hd forward"),
         layout: Some(layout),
-        vertex: wgpu::VertexState {
-            module,
-            entry_point: Some("vs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: HD_VERTEX_BYTES as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![
-                    0 => Float32x3, 1 => Snorm16x2, 2 => Float32x2, 3 => Unorm8x4, 4 => Uint32, 5 => Uint32
-                ],
-            })],
-        },
+        vertex: vertex_state(module, vertices),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
@@ -2126,6 +2168,7 @@ impl<E: HdExtension> HdWorld<E> {
             "the shaders were composed with another extension before this one was registered"
         );
         let timestamps = device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let sprites_supported = gpu_particles::sprites_supported(&device);
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("hd frame"),
             entries: &frame_entries(),
@@ -2663,6 +2706,9 @@ impl<E: HdExtension> HdWorld<E> {
             oversize_uploads: 0,
             buffer_cap: None,
             particles: Particles::default(),
+            sprites: None,
+            sprites_supported,
+            sprite_cap: torque_render_scene::particles::MAX_PARTICLES as u32,
             node_bytes: Vec::new(),
             frame_groups: std::sync::Mutex::new(GroupCache::default()),
             tonemap_groups: std::sync::Mutex::new(GroupCache::default()),
@@ -3189,6 +3235,7 @@ impl<E: HdExtension> HdWorld<E> {
             &self.forward_layout,
             module,
             key,
+            Vertices::Mesh,
         );
         self.pipelines.insert(key, pipeline);
         self.pipelines_made += 1;
@@ -3237,7 +3284,14 @@ impl<E: HdExtension> HdWorld<E> {
                         let module = &modules[&(k.clustered, k.front_layer)];
                         (
                             k,
-                            make_pipeline(&device, cache.as_ref(), &layout, module, k),
+                            make_pipeline(
+                                &device,
+                                cache.as_ref(),
+                                &layout,
+                                module,
+                                k,
+                                Vertices::Mesh,
+                            ),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -4374,6 +4428,7 @@ impl<E: HdExtension> HdWorld<E> {
                     depth_write: d.depth_write,
                     motion: 0,
                     particle: true,
+                    sprites: None,
                     // A dying shape among the particles.
                     late: d.vertices.first().is_some_and(|v| {
                         (v.material >> torque_render_scene::hd::material::KIND_SHIFT) & 3
@@ -4501,6 +4556,7 @@ impl<E: HdExtension> HdWorld<E> {
                 depth_write: d.depth_write,
                 motion: 0,
                 particle: false,
+                sprites: None,
                 late: false,
                 shadow_only: d
                     .vertices
@@ -5541,6 +5597,7 @@ impl<E: HdExtension> HdWorld<E> {
         self.ext.fill_slots(&mut self.ext_slots);
         self.refl.set_ext(&self.ext_slots.reflect);
         self.upload_particles(scene);
+        self.prepare_sprites(scene);
         // The glow lights switched on or off since the lights went up.
         if self.uploaded_glow != self.features.glow_lights {
             self.upload_lights(scene);
@@ -5868,6 +5925,8 @@ impl<E: HdExtension> HdWorld<E> {
                 .filter(|(_, c)| !(taa && c.late))
                 .map(|(d, c)| (*d, *c)),
         );
+        // The pool's buckets nearest (each holds particles anywhere: weighted or added, their order does not matter).
+        sorted.extend(self.sprite_draws(scene).map(|d| (0.0, d)));
         let mut over_sorted: Vec<(f32, DrawRef)> = Vec::new();
         if taa {
             over_sorted.extend(
@@ -5984,6 +6043,13 @@ impl<E: HdExtension> HdWorld<E> {
             if n >= over_start {
                 key.stage = Stage::Over;
             }
+            if let Item::Loose(d) = it
+                && d.sprites.is_some()
+            {
+                self.ensure_sprites(key, wboit, tex, s);
+                prepared.push((key, (tex, s)));
+                continue;
+            }
             self.ensure_pipeline(key);
             // An alpha-blended translucent draw's weighted-blend passes.
             if wboit
@@ -6088,6 +6154,9 @@ impl<E: HdExtension> HdWorld<E> {
             };
         }
         mark!("begin");
+        if self.encode_sprites(&mut encoder) {
+            mark!("particles");
+        }
         // The passes from outside the renderer at `$stage`, drawing with `$camera` into targets of `$size` (the world in
         // `$viewport` of the color target), the stage's targets set after the rest are None. Nothing without one.
         let pass_scene = PassScene {
@@ -6851,6 +6920,14 @@ impl<E: HdExtension> HdWorld<E> {
                         crate::count_draws(1);
                         *draw_calls += 1;
                     }
+                    bound = None;
+                    continue;
+                }
+                // A bucket of the GPU particle pool: its own pipeline and group.
+                if let Item::Loose(d) = it
+                    && let Some(bucket) = d.sprites
+                {
+                    *draw_calls += self.draw_sprites(pass, key, group, bucket);
                     bound = None;
                     continue;
                 }

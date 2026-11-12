@@ -41,7 +41,7 @@ use torque_render_scene::moving::{
     Cull, Hooks, ImageFrames, LiveAsk, ShapeBudget, ShapeSelect, draws_culled, with_budget,
     with_shadow_body,
 };
-use torque_render_scene::particles::{Emitter, Rng};
+use torque_render_scene::particles::{Emitter, Rng, SpriteFrame};
 use torque_render_scene::ribbons::{Ribbon, projectile_ribbon};
 use torque_render_scene::shapecache::{self, Store, with_cache};
 use torque_render_scene::shapes::DetailPolicy;
@@ -76,6 +76,8 @@ type World = ClientWorld<TgeClientSet>;
 pub const DEFAULT_MAX_LOOK: f32 = 1.4;
 /// The most a frame advances a Player's animation (seconds: a stall or a clock that jumped).
 const MAX_FRAME_STEP: f32 = 0.25;
+/// The most steps kept for the GPU particle pool between two drawn frames (a longer stall's are summed into the last).
+const MAX_SPRITE_STEPS: usize = torque_render_scene::hd::sprites::MAX_STEPS;
 
 /// The own Player's steady eye between poses: after a change of pose the view eases from where it stood to the new pose's eye
 /// over the body's blend ([`pose_blend`]), what is left of the way kept in the Player's own frame so a turn meanwhile carries it.
@@ -892,6 +894,10 @@ pub struct GhostScene<S = Plain> {
     live: usize,
     /// The frame time the trails have not run yet (ms, under one).
     trail_ms: f32,
+    /// The trails' steps since the last frame handed particles to the GPU particle pool (the pool's steps), and whether the
+    /// pool drops what it holds at the next (the ghosts were forgotten).
+    sprite_steps: Vec<u32>,
+    sprite_clear: bool,
     own: Option<OwnView>,
     own_muzzle: Option<[f32; 3]>,
     /// The other Players as the last frame placed them: ghost, feet, yaw.
@@ -952,6 +958,8 @@ impl<S: GhostStyle> GhostScene<S> {
             rng: Rng::new(0x5eed),
             live: 0,
             trail_ms: 0.0,
+            sprite_steps: Vec::new(),
+            sprite_clear: false,
             own: None,
             own_muzzle: None,
             others: Vec::new(),
@@ -1001,6 +1009,8 @@ impl<S: GhostStyle> GhostScene<S> {
             rng: self.rng,
             live: self.live,
             trail_ms: self.trail_ms,
+            sprite_steps: self.sprite_steps,
+            sprite_clear: _,
             own: self.own,
             own_muzzle: self.own_muzzle,
             others: self.others,
@@ -1020,6 +1030,7 @@ impl<S: GhostStyle> GhostScene<S> {
         } = GhostScene::new(self.options.clone());
         self.tracks = tracks;
         self.dust = dust;
+        self.sprite_clear = true;
         self.resting.forget();
     }
 
@@ -1613,6 +1624,13 @@ impl<S: GhostStyle> GhostScene<S> {
         self.trail_ms += dt * 1000.0;
         let ms = self.trail_ms.floor().clamp(0.0, 1000.0) as u32;
         self.trail_ms = (self.trail_ms - ms as f32).clamp(0.0, 1.0);
+        if ms > 0 {
+            if self.sprite_steps.len() < MAX_SPRITE_STEPS {
+                self.sprite_steps.push(ms);
+            } else if let Some(last) = self.sprite_steps.last_mut() {
+                *last += ms;
+            }
+        }
         for e in &mut self.fading {
             e.advance(ms, &mut self.live);
         }
@@ -1875,28 +1893,53 @@ impl<S: GhostStyle> GhostScene<S> {
         let mut set = TextureSet::new(assets);
         let mut draws = Vec::new();
         self.trail_particles = 0;
-        let images = self
-            .held
-            .values()
-            .flat_map(|h| h.emitters.iter().map(|(e, _)| e));
-        let trails = self
-            .bolts
-            .values()
-            .filter_map(|b| b.trail.as_ref())
-            .chain(&self.fading)
-            .chain(images);
         let dist = |c: [f32; 3]| {
             (0..3)
                 .map(|k| (c[k] - eye.position[k]).powi(2))
                 .sum::<f32>()
                 .sqrt()
         };
-        for e in trails {
-            let (Some(center), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail")) else {
-                continue;
-            };
-            self.trail_particles += e.particles.len();
-            draws.push((dist(center), d));
+        // With the GPU particle pool the particles made since the last frame go to it; the emitters keep none.
+        let pool = view.gpu_particles();
+        let mut sprites = SpriteFrame {
+            steps: std::mem::take(&mut self.sprite_steps),
+            clear: std::mem::take(&mut self.sprite_clear),
+            ..SpriteFrame::default()
+        };
+        if pool {
+            let images = self
+                .held
+                .values_mut()
+                .flat_map(|h| h.emitters.iter_mut().map(|(e, _)| e));
+            let trails = self
+                .bolts
+                .values_mut()
+                .filter_map(|b| b.trail.as_mut())
+                .chain(&mut self.fading)
+                .chain(images);
+            for e in trails {
+                self.trail_particles += e.particles.len();
+                e.hand_over(&mut sprites, &mut set, "trail", &mut self.live);
+            }
+        } else {
+            let images = self
+                .held
+                .values()
+                .flat_map(|h| h.emitters.iter().map(|(e, _)| e));
+            let trails = self
+                .bolts
+                .values()
+                .filter_map(|b| b.trail.as_ref())
+                .chain(&self.fading)
+                .chain(images);
+            for e in trails {
+                let (Some(center), Some(d)) = (e.centre(), e.draw(right, up, &mut set, "trail"))
+                else {
+                    continue;
+                };
+                self.trail_particles += e.particles.len();
+                draws.push((dist(center), d));
+            }
         }
         self.ribbons_drawn = 0;
         let ribbons = self
@@ -1932,7 +1975,11 @@ impl<S: GhostStyle> GhostScene<S> {
             muzzles: &muzzles,
         };
         draws.extend(self.style.effects(&frame, &mut set));
-        draws.extend(self.dust.draws(eye.position, right, up, &mut set));
+        if pool {
+            self.dust.hand_over(&mut sprites, &mut set);
+        } else {
+            draws.extend(self.dust.draws(eye.position, right, up, &mut set));
+        }
         // The plugins' emitter kinds beside TGE's emitters.
         view.emitter_draws(
             &crate::render::EmitterFrame {
@@ -1947,7 +1994,7 @@ impl<S: GhostStyle> GhostScene<S> {
         if let Some(tracks) = &self.tracks {
             decals.extend(tracks.draws(eye.position, &mut set));
         }
-        view.set_particles_and_decals(&draws, &decals, set);
+        view.set_particles_decals_and_sprites(&draws, &decals, pool.then_some(&sprites), set);
     }
 }
 

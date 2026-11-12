@@ -29,7 +29,7 @@ use ghost_world::world::{ClientWorld, VehicleLook};
 use ghosts::Value;
 
 use crate::Draw;
-use crate::particles::{Emitter, Rng};
+use crate::particles::{Emitter, Rng, SpriteFrame};
 use crate::textures::TextureSet;
 
 /// The speed a vehicle must pass for its tires to throw dust (units a second).
@@ -323,6 +323,14 @@ impl VehicleDust {
             keep
         });
         self.live = self.live.saturating_sub(gone);
+    }
+
+    /// The dust made since the last hand-over into `out`, for the GPU particle pool ([`Emitter::hand_over`]) instead of
+    /// [`VehicleDust::draws`].
+    pub fn hand_over(&mut self, out: &mut SpriteFrame, textures: &mut TextureSet<'_>) {
+        for k in self.emitters.values_mut() {
+            k.emitter.hand_over(out, textures, "dust", &mut self.live);
+        }
     }
 
     /// The dust as draws, each emitter at its center's distance from `eye`, billboards along the camera's `right` and `up`.

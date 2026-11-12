@@ -4,7 +4,9 @@
 
 use crate::hd::cells::StaticGeometry;
 use crate::hd::particle_light::{ParticleLight, shape_sprites};
+use crate::hd::sprites::GpuSprites;
 use crate::hd::{DynamicObject, HdDraw, TextureTable, clouds, material, post, sh, shadow, sky};
+use crate::particles::SpriteFrame;
 use crate::source::Eye;
 use crate::textures::TextureSet;
 use crate::{Blend, Draw};
@@ -195,6 +197,9 @@ pub struct HdScene<G> {
     pub particles_generation: u64,
     /// Which particle draws are lit (none: all unlit, as TGE draws them).
     pub particle_light: Option<ParticleLight>,
+    /// The GPU particle pool's records and the frame's hand-over ([`HdScene::set_particles_decals_and_sprites`]); drawn where
+    /// the renderer runs the pool.
+    pub sprites: GpuSprites,
     /// Whether the last sync put off static geometry textures still being decoded (a live window's build decodes new ones on a
     /// decoder thread).
     pub textures_pending: bool,
@@ -278,6 +283,7 @@ impl<G> HdScene<G> {
             particles: Vec::new(),
             particles_generation: 0,
             particle_light: None,
+            sprites: GpuSprites::default(),
             textures_pending: false,
             lightmap: None,
             lightmap_generation: 0,
@@ -313,11 +319,27 @@ impl<G> HdScene<G> {
         decals: &[(f32, Draw)],
         textures: TextureSet,
     ) {
+        self.set_particles_decals_and_sprites(particles, decals, None, textures);
+    }
+
+    /// [`HdScene::set_particles_and_decals`] with the frame's hand-over to the GPU particle pool ([`HdScene::sprites`]: its
+    /// looks' textures indices into the same `textures`); `None` hands over nothing (the pool's particles stay as they are).
+    pub fn set_particles_decals_and_sprites(
+        &mut self,
+        particles: &[(f32, Draw)],
+        decals: &[(f32, Draw)],
+        sprites: Option<&SpriteFrame>,
+        textures: TextureSet,
+    ) {
         let local: Vec<usize> = textures
             .into_textures()
             .into_iter()
             .map(|t| self.textures.intern(t))
             .collect();
+        if let Some(frame) = sprites {
+            self.sprites
+                .push(frame, |t| local.get(t).copied(), self.particle_light);
+        }
         // (None before and none now: the renderer keeps what it has.)
         if self.particles.is_empty() && particles.is_empty() && decals.is_empty() {
             return;
@@ -349,6 +371,14 @@ impl<G> HdScene<G> {
         }
         self.particles = out;
         self.particles_generation = self.particles_generation.wrapping_add(1);
+    }
+
+    /// Hands `frame` to the GPU particle pool, its looks' textures indices into the scene's own table (a frame built without a
+    /// texture set: the checks', the examples').
+    pub fn push_sprites(&mut self, frame: &SpriteFrame) {
+        let n = self.textures.textures.len();
+        self.sprites
+            .push(frame, |t| (t < n).then_some(t), self.particle_light);
     }
 
     /// Towards the sun as the sky shows it: the sun the server's box paints ([`HdScene::painted_sun`]), else the physical sky's

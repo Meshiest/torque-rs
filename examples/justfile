@@ -50,7 +50,8 @@ shots_tolerance := "--max-delta 1 --max-pixels 32"
 # Every example's offscreen pictures, each recipe's into its own folder below `dir` (the character, level demo, arena and vehicle
 # demo shots, the arena's name and menu shots, the HUD shots and `showcase --examples`), to compare with `shots-diff` after a
 # change. Not drawn: the clips (they need ffmpeg), the race track pictures and `showcase`'s front-page grid. Run it on the same
-# machine and GPU as the folder it is compared with
+# machine and GPU as the folder it is compared with. `TORQUE_GPU_PARTICLES=1` in the environment draws every example's
+# particles through the renderer's GPU particle pool (off by default), for the two ways' pictures compared
 shots-all dir="../target/shots":
     just --justfile character/justfile shots "{{absolute_path(dir)}}/character"
     just --justfile level-demo/justfile shots "{{absolute_path(dir)}}/level-demo"

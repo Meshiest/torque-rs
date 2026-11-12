@@ -33,6 +33,10 @@
 //!
 //! The datablocks come through [`ParticleDatablocks`] (TGE's client set reads its records' fields).
 //!
+//! **On the GPU** (the enhanced renderer's particle pool): [`Emitter::hand_over`] moves the particles made since the last frame
+//! out of the emitter into a [`SpriteFrame`] instead of [`Emitter::draw`] drawing them; the emitter's emission (when and where,
+//! its random numbers) is the same either way.
+//!
 //! Credit: follows TGE 1.4's `game/fx/particleEngine.cc`, `game/projectile.cc` (the trail) and `math/mRandom.cc` (Copyright (C)
 //! GarageGames.com, Inc.), as Torque3D carries them under the MIT license (`T3D/fx/particleEmitter.cpp`, `T3D/fx/particle.cpp`,
 //! `T3D/projectile.cpp`: Copyright (c) 2012 GarageGames, LLC; Copyright (C) 2015 Faust Logic, Inc.; `math/mRandom.cpp`: Copyright
@@ -49,6 +53,10 @@ use glam::Vec3;
 use crate::math::{Mat, unit_over};
 use crate::textures::TextureSet;
 use crate::{Blend, Cull, Draw, Filter, Sampler, TexEnv, Vertex};
+
+#[path = "particles_gpu.rs"]
+mod gpu;
+pub use gpu::{GpuSpawn, SPRITE_SAMPLER, SpriteFrame, SpriteLook};
 
 /// The most texture names [`take_missing_textures`] keeps between takes.
 const MAX_MISSING_NAMES: usize = 64;

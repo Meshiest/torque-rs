@@ -5,11 +5,23 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 34] = [
+pub const FILES: [(&str, &str); 37] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("forward.wgsl", include_str!("../shaders/forward.wgsl")),
     ("particles.wgsl", include_str!("../shaders/particles.wgsl")),
+    (
+        "gpu_particle_types.wgsl",
+        include_str!("../shaders/gpu_particle_types.wgsl"),
+    ),
+    (
+        "gpu_particles.wgsl",
+        include_str!("../shaders/gpu_particles.wgsl"),
+    ),
+    (
+        "gpu_sprite.wgsl",
+        include_str!("../shaders/gpu_sprite.wgsl"),
+    ),
     ("clusters.wgsl", include_str!("../shaders/clusters.wgsl")),
     ("tonemap.wgsl", include_str!("../shaders/tonemap.wgsl")),
     ("shadow.wgsl", include_str!("../shaders/shadow.wgsl")),
@@ -151,11 +163,18 @@ pub enum Permutation {
     Clouds,
     /// The static cells' clusters' cull and the compaction of their draw lists (compute).
     Cull,
+    /// The forward pass's module with the GPU particle pool's sprite vertex entry (`vs_gpu_sprite`), of the same constants.
+    Sprite {
+        clustered: bool,
+        front_layer: bool,
+    },
+    /// The GPU particle pool's frame: its step, spawns and lists (compute).
+    Particles,
 }
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 29] = [
+    pub const ALL: [Permutation; 34] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -197,6 +216,23 @@ impl Permutation {
         Permutation::Wboit,
         Permutation::Clouds,
         Permutation::Cull,
+        Permutation::Sprite {
+            clustered: true,
+            front_layer: false,
+        },
+        Permutation::Sprite {
+            clustered: false,
+            front_layer: false,
+        },
+        Permutation::Sprite {
+            clustered: true,
+            front_layer: true,
+        },
+        Permutation::Sprite {
+            clustered: false,
+            front_layer: true,
+        },
+        Permutation::Particles,
     ];
 
     pub fn name(self) -> String {
@@ -230,6 +266,13 @@ impl Permutation {
             Permutation::Wboit => "wboit.wgsl".to_string(),
             Permutation::Clouds => "clouds.wgsl".to_string(),
             Permutation::Cull => "cull.wgsl".to_string(),
+            Permutation::Sprite {
+                clustered,
+                front_layer,
+            } => format!(
+                "forward.wgsl with gpu_sprite.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer})"
+            ),
+            Permutation::Particles => "gpu_particles.wgsl".to_string(),
         }
     }
 
@@ -294,6 +337,24 @@ impl Permutation {
                 file("skyfog.wgsl"),
                 file("cloudshadow.wgsl"),
                 file("water.wgsl")
+            ),
+            Permutation::Sprite {
+                clustered,
+                front_layer,
+            } => format!(
+                "{}\n{}\n{}",
+                Permutation::Forward {
+                    clustered,
+                    front_layer
+                }
+                .source(),
+                file("gpu_particle_types.wgsl"),
+                file("gpu_sprite.wgsl")
+            ),
+            Permutation::Particles => format!(
+                "{}\n{}",
+                file("gpu_particle_types.wgsl"),
+                file("gpu_particles.wgsl")
             ),
             Permutation::Hiz => file("hiz.wgsl").to_string(),
             Permutation::Ssr => format!("{}\n{}\n{}", common, full, file("ssr.wgsl")),

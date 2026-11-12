@@ -43,6 +43,7 @@ use torque_render_scene::hd::{
 use torque_render_scene::images::scale_columns;
 use torque_render_scene::math::Mat;
 use torque_render_scene::moving::ShapeDraws;
+use torque_render_scene::particles::SpriteFrame;
 use torque_render_scene::shapecache::next_stamp;
 use torque_render_scene::shapes::{Loaded, ShapeParts, highest_detail, load, shape_draws};
 use torque_render_scene::source::Eye;
@@ -1492,6 +1493,32 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         self.scene.particle_light = rule.filter(|_| lit);
     }
 
+    /// Whether the frames hand their emitters' particles to the renderer's GPU particle pool ([`HdWorld::gpu_particles_on`])
+    /// instead of drawing them on the CPU. `TORQUE_GPU_PARTICLES=1` in the environment turns the pool on for the run whatever the
+    /// features say (the two paths' pictures compared).
+    pub fn gpu_particles(&mut self) -> bool {
+        let Some(world) = &mut self.world else {
+            return false;
+        };
+        if gpu_particles_forced() {
+            world.features.gpu_particles = true;
+        }
+        world.gpu_particles_on()
+    }
+
+    /// [`WorldView::set_particles_and_decals`] with the frame's hand-over to the GPU particle pool (its looks' textures indices
+    /// into the same `textures`; None: nothing handed over).
+    pub fn set_particles_decals_and_sprites(
+        &mut self,
+        particles: &[(f32, Draw)],
+        decals: &[(f32, Draw)],
+        sprites: Option<&SpriteFrame>,
+        textures: TextureSet,
+    ) {
+        self.scene
+            .set_particles_decals_and_sprites(particles, decals, sprites, textures);
+    }
+
     /// The frame's particles and decals (the decals' draws lie on surfaces: not faded into them as the particles are), their
     /// textures indices into `textures`.
     pub fn set_particles_and_decals(
@@ -1777,6 +1804,12 @@ fn mesh_object_of(local: &[usize], draws: &[Draw], id: u32) -> DynamicObject {
         stamp: None,
         nodes: Vec::new(),
     }
+}
+
+/// Whether the environment turns the GPU particle pool on for the run (`TORQUE_GPU_PARTICLES=1`), read once.
+fn gpu_particles_forced() -> bool {
+    static FORCED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FORCED.get_or_init(|| std::env::var_os("TORQUE_GPU_PARTICLES").is_some_and(|v| v == "1"))
 }
 
 #[cfg(test)]
