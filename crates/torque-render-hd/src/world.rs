@@ -21,8 +21,9 @@
 //! **Anti-aliasing and AO** ([`post`]; the ladder is `torque_render_scene::hd::post`): the frame is drawn at the quality's internal
 //! size (75 %, 85 %, 100 %, 100 %) with, under the TAA, a sub-pixel jitter (Halton(2, 3), 8 phases). The prepass also writes each
 //! pixel's motion (the camera's and, for a shape that moved since the last frame, its own: its previous transform) and normal. Before
-//! the opaque pass the AO pass (GTAO at High and Ultra, SSAO at Medium; half resolution but at Ultra) estimates the ambient
-//! occlusion with a pattern fixed per pixel and its spatial filter smooths it (no history: nothing lags behind a moving shape),
+//! the opaque pass the AO pass (GTAO at High and Ultra, SSAO at Medium; half resolution unless the image settings ask for full)
+//! estimates the ambient occlusion with a pattern fixed per pixel and its spatial filter smooths it (no history: nothing lags
+//! behind a moving shape),
 //! which the forward pass upsamples by depth into the ambient light. After the translucent pass the TAA resolve
 //! (with TAAU when the internal frame is smaller) writes the history at the output's size; at Low the FXAA-style filter runs
 //! instead. The tonemap pass reads that (scaling it up at Low) and at Ultra sharpens it. The specular AA (normal variance) is in the
@@ -5612,7 +5613,7 @@ impl<E: HdExtension> HdWorld<E> {
             camera.height,
             self.render_scale.scale(&pq, camera.width, camera.height),
         );
-        let ao_scale = if pq.ao_full_res { 1 } else { 2 };
+        let ao_scale = image.ao_scale();
         let ao_on = self.features.ambient_occlusion && pq.ao != AoMethod::Off;
         let plain = self.debug == DebugView::Off;
         let mut extras = ExtraDrawn::default();

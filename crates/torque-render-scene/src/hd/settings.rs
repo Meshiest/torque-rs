@@ -25,6 +25,11 @@ pub struct ImageSettings {
     pub clouds_opt_in: bool,
     /// The share of the ambient occlusion applied.
     pub ao_strength: f32,
+    /// The ambient occlusion estimated at the internal frame's full resolution; else at half, upsampled by depth, which every
+    /// quality does by default: a quarter of the texels, the depth upsample keeping the occlusion off other surfaces. The
+    /// full-resolution estimate differs only along the edges of shapes: about half a level of 255 on average, up to tens of
+    /// levels at the worst edge pixels.
+    pub ao_full_res: bool,
     /// The sharpen's strength (0 to 1) where the quality has it.
     pub sharpen: f32,
     /// The water is clear: absorbing toward its colour along the path to the floor, scattering, foam where it is shallow, its
@@ -51,8 +56,9 @@ pub struct ImageSettings {
 
 impl ImageSettings {
     /// The engine's settings: fixed exposure, the neutral tonemap and grade, the whole frame mixed into a low bloom, a small bright sun
-    /// disk with strong limb darkening, volumetrics and volumetric clouds always on, full AO, a light sharpen, clear water, linear
-    /// light and blending, the physical sky and the height fog; the occlusion smooth only where the scene asks.
+    /// disk with strong limb darkening, volumetrics and volumetric clouds always on, the AO at full strength estimated at half
+    /// resolution, a light sharpen, clear water, linear light and blending, the physical sky and the height fog; the occlusion smooth
+    /// only where the scene asks.
     pub const DEFAULT: ImageSettings = ImageSettings {
         exposure: ExposureMode::Fixed(1.0),
         tonemap: Tonemap::Neutral,
@@ -82,6 +88,7 @@ impl ImageSettings {
         volumetrics_need_fog: false,
         clouds_opt_in: false,
         ao_strength: 1.0,
+        ao_full_res: false,
         sharpen: 0.2,
         clear_water: true,
         linear_light: true,
@@ -121,6 +128,11 @@ impl ImageSettings {
     /// The share of the ambient occlusion applied.
     pub fn ao_strength(self) -> f32 {
         self.ao_strength
+    }
+
+    /// How many internal pixels a side one AO texel stands for: 1 with `ao_full_res`, else 2.
+    pub fn ao_scale(self) -> u32 {
+        if self.ao_full_res { 1 } else { 2 }
     }
 
     /// The sharpen's strength (0 to 1) where the quality has it.

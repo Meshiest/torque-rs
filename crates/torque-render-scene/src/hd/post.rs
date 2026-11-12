@@ -4,7 +4,8 @@
 //!
 //! **The ladder**: Low draws at 75 % with our FXAA-style edge filter and no AO; Medium at 85 % with TAAU and SSAO (8 taps,
 //! half resolution); High at 100 % with TAA and GTAO at half resolution; Ultra at 100 % with TAA, the contrast-adaptive sharpen and
-//! GTAO at full resolution.
+//! GTAO at half resolution too. Every quality's AO is upsampled by depth; the image settings' `ao_full_res`
+//! ([`crate::hd::settings::ImageSettings::ao_full_res`]) estimates it at the internal frame's full resolution instead.
 //!
 //! **The jitter**: frame `k` of a history samples at the pixel's centre plus (`halton(k mod 8 + 1, 2)` less 1/2, `halton(k mod 8 + 1, 3)`
 //! less 1/2) pixels (x right, y down); the count starts at 0 on every cut, so a frame after the same number of warm-up frames is the same
@@ -52,12 +53,10 @@ pub struct PostQuality {
     /// The contrast-adaptive sharpen after the TAA.
     pub sharpen: bool,
     pub ao: AoMethod,
-    /// The AO at the internal frame's full resolution (else at half, upsampled by depth).
-    pub ao_full_res: bool,
 }
 
 impl Quality {
-    /// Low 75 % FXAA-style, no AO; Medium 85 % TAAU, SSAO; High 100 % TAA, GTAO half; Ultra 100 % TAA + sharpen, GTAO full.
+    /// Low 75 % FXAA-style, no AO; Medium 85 % TAAU, SSAO; High 100 % TAA, GTAO half; Ultra 100 % TAA + sharpen, GTAO half.
     pub fn post(self) -> PostQuality {
         match self {
             Quality::Low => PostQuality {
@@ -65,28 +64,24 @@ impl Quality {
                 aa: AntiAliasing::Fxaa,
                 sharpen: false,
                 ao: AoMethod::Off,
-                ao_full_res: false,
             },
             Quality::Medium => PostQuality {
                 render_scale: 0.85,
                 aa: AntiAliasing::Taa,
                 sharpen: false,
                 ao: AoMethod::Ssao,
-                ao_full_res: false,
             },
             Quality::High => PostQuality {
                 render_scale: 1.0,
                 aa: AntiAliasing::Taa,
                 sharpen: false,
                 ao: AoMethod::Gtao,
-                ao_full_res: false,
             },
             Quality::Ultra => PostQuality {
                 render_scale: 1.0,
                 aa: AntiAliasing::Taa,
                 sharpen: true,
                 ao: AoMethod::Gtao,
-                ao_full_res: true,
             },
         }
     }

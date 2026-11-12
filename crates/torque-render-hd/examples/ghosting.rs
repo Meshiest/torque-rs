@@ -16,9 +16,10 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>] [--trace] [--gpu-particles]`: `--audit` draws each scene again with each pass's history off on its own
-//! (`HdWorld::histories`) and the reflection capture drawn whole every frame; `--out` writes the worst frame of each scene, its
-//! reference and their difference (`--frame <n>`: that frame too); `--trace` prints each frame's share off. Each row ends with
+//! [--max-trail <percent>] [--quality low|medium|high|ultra] [--trace] [--gpu-particles]`: `--audit` draws each scene again
+//! with each pass's history off on its own (`HdWorld::histories`) and the reflection capture drawn whole every frame; `--out`
+//! writes the worst frame of each scene, its reference and their difference (`--frame <n>`: that frame too); `--quality` draws
+//! every scene at that quality in place of its own; `--trace` prints each frame's share off. Each row ends with
 //! the run's GPU time a frame (ms, the whole frame, the sun mask's pass and the anti-aliasing's; with the device's timestamps).
 //! The command fails when a gated scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to settle
 //! and a `ghosting::MAX_TRAIL` % trail); the cloud, mirror and thin-far scenes report their numbers without gating (their
@@ -794,6 +795,7 @@ struct Args {
     max_settle: Option<usize>,
     max_trail: Option<f64>,
     gpu_particles: bool,
+    quality: Option<Quality>,
 }
 
 fn args() -> Result<Args, String> {
@@ -806,6 +808,7 @@ fn args() -> Result<Args, String> {
         max_settle: Some(MAX_SETTLE),
         max_trail: Some(MAX_TRAIL),
         gpu_particles: false,
+        quality: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -819,6 +822,10 @@ fn args() -> Result<Args, String> {
             "--out" => a.out = Some(PathBuf::from(value()?)),
             "--max-settle" => a.max_settle = Some(value()?.parse().map_err(|e| format!("{e}"))?),
             "--max-trail" => a.max_trail = Some(value()?.parse().map_err(|e| format!("{e}"))?),
+            "--quality" => {
+                let v = value()?;
+                a.quality = Some(Quality::named(&v).ok_or(format!("no quality {v}"))?);
+            }
             _ => return Err(format!("unknown argument {arg}")),
         }
     }
@@ -837,7 +844,10 @@ fn main() -> Result<(), String> {
     );
     println!("{}", Measure::HEADER);
     let mut failed = Vec::new();
-    for shot in shots() {
+    for mut shot in shots() {
+        if let Some(q) = args.quality {
+            shot.quality = q;
+        }
         if args.shot.as_deref().is_some_and(|s| s != shot.name) {
             continue;
         }

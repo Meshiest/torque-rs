@@ -78,9 +78,11 @@ fn block(l: [f32; 3], h: [f32; 3]) -> Draw {
     )
 }
 
-fn scene(quality: Quality) -> PlainScene {
+fn scene(quality: Quality, full_res: bool) -> PlainScene {
+    let mut mode = HdMode::new(quality);
+    mode.image.ao_full_res = full_res;
     let mut s = PlainScene {
-        mode: Some(HdMode::new(quality)),
+        mode: Some(mode),
         ..PlainScene::default()
     };
     s.sun.towards = [-0.6, -0.2, 0.775];
@@ -134,9 +136,15 @@ fn scene(quality: Quality) -> PlainScene {
     s
 }
 
-/// The occlusion alone at `quality` from `from` looking at `to`, and the camera.
-fn draw(gpu: &Gpu, quality: Quality, from: [f32; 3], to: [f32; 3]) -> (Frame, HdCamera) {
-    let mut s = scene(quality);
+/// The occlusion alone at `quality` (`full_res`: estimated at the whole frame's resolution) from `from` looking at `to`, and the
+/// camera.
+fn draw(
+    gpu: &Gpu,
+    (quality, full_res): (Quality, bool),
+    from: [f32; 3],
+    to: [f32; 3],
+) -> (Frame, HdCamera) {
+    let mut s = scene(quality, full_res);
     let eye = look_at(from, to);
     s.eye = Some(eye);
     s.fov = 70;
@@ -212,7 +220,12 @@ fn the_wall_about_a_block_darkens_without_banding() {
         }
     };
     let mut failures = Vec::new();
-    for quality in [Quality::Medium, Quality::High, Quality::Ultra] {
+    for quality in [
+        (Quality::Medium, false),
+        (Quality::High, false),
+        (Quality::Ultra, false),
+        (Quality::Ultra, true),
+    ] {
         let (frame, camera) = draw(&gpu, quality, [3.5, -2.5, 2.0], [0.0, -0.3, 1.1]);
         // Lines on the wall at a distance from the block (beside it and over it), along which its occlusion is about even.
         let lines = |r: f32| {

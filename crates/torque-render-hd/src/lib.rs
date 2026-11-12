@@ -37,6 +37,13 @@
 //! - The GPU particle pool (`world.rs`'s `gpu_particles` module, [`HdFeatures::gpu_particles`], off by default) keeps the CPU
 //!   path's particles and pictures: the same particles alive, the same picture every run, the CPU path's within a few levels
 //!   (`tests/gpu_particles.rs`); its draws are the forward pass's fragment entries over its own vertex entry.
+//! - The AO pass runs at half the internal frame's resolution at every quality (`ImageSettings::ao_full_res` asks for the whole;
+//!   `ImageSettings::ao_scale` is the one place that says which): an AO texel stands for the internal pixel at its top left block
+//!   (`ao.wgsl`, `ao_filter.wgsl`), and the forward pass upsamples the four texels about a pixel by their bilinear weights times
+//!   how near each one's eye distance (the pass's `g`) is the pixel's (`ambient_occlusion` in `forward.wgsl`). A change to the
+//!   pass, its noise or its filter keeps the 4 x 4 tile's period in AO texels, and is judged at both scales
+//!   (`tests/ao_banding.rs`; `level-profile --scene office --quality ultra` for the `ao` mark, under
+//!   the bench lock).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are

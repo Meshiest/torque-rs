@@ -64,7 +64,7 @@ fn the_jittered_camera_moves_the_image_by_the_offset() {
 fn the_ladder_and_the_sizes() {
     assert_eq!(Quality::Low.post().aa, AntiAliasing::Fxaa);
     assert_eq!(Quality::Medium.post().ao, AoMethod::Ssao);
-    assert!(Quality::Ultra.post().sharpen && Quality::Ultra.post().ao_full_res);
+    assert!(Quality::Ultra.post().sharpen);
     assert_eq!(internal_size(1920, 1080, 0.85), (1632, 918));
     assert_eq!(internal_size(1280, 720, 1.0), (1280, 720));
     assert_eq!(internal_size(1, 1, 0.5), (1, 1));

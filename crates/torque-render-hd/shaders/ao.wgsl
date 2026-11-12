@@ -1,4 +1,4 @@
-// Ambient occlusion: one pass at the AO's resolution (half the internal frame's at High, the whole at Ultra) that estimates
+// Ambient occlusion: one pass at the AO's resolution (half the internal frame's, or the whole when the image settings ask) that estimates
 // the occlusion at each AO texel's pixel (the top left of its block) from the depth prepass and its normals. Each frame's estimate
 // stands alone: its noise is fixed per AO texel (the same every frame) and the spatial filter after this pass (`ao_filter.wgsl`)
 // averages it out, so nothing lags behind a moving shape, a moving light or a moving camera.
