@@ -1,7 +1,7 @@
 //! The classic dialect end to end: TGE 1.4-style scripts compiled with [`Profile::tge14`], then each DSO written,
 //! read back, decoded, checked and turned into its text form and back, all without a difference.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use torque_mods::content::{ContentCaps, Hash, encode_content, from_hex, hex, summarize_files};
 use torque_mods::{CacheStore, ContentCache, DiskStore, MemoryStore, index_of};
 
-mod common;
 use torque_testkit::Rng;
 
 fn folder(name: &str) -> PathBuf {

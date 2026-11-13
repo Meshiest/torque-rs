@@ -363,7 +363,7 @@ lane's writer. The client mirrors it: `EngineWire` events become the feed's.
   `late_net_tests.rs`, torque-trace-hash's `tests/late_net.rs`).
 - The command RPCs' tag tables are the connection's own, apart from the ghost records' (`EventLayer`'s `command_send` and `command_remote`):
   a command re-keying a slot never changes what a ghost record's string means.
-- TGE mode's bytes do not move (`cargo test -p torque-net --test tge_golden`, `cargo test -p torque-trace-hash --test wire_golden`).
+- TGE mode's bytes do not move (`cargo test -p torque-net --test main tge_golden::`, `cargo test -p torque-trace-hash --test main wire_golden::`).
 - A net game of Torque's parts with its own connection part and a payload layer over Torque's writes the goldens' bytes
   (`net_game_a_net_game_of_torques_parts_writes_the_goldens_bytes` in `wire_golden`); the slots' rules are `net_game_*` in
   `torque-app-server`.

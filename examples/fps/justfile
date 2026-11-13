@@ -29,7 +29,7 @@ client *args:
 # The arena shooter's headless check: a host and a second client over 127.0.0.1 meet through the LAN list, one shoots the
 # other (a round spent, a hit), and a chat line reaches the other client
 check:
-    cargo test -p torque-example-fps --test arena
+    cargo test -p torque-example-fps --test main arena::
 
 # The arena shooter's review pictures (menu, LAN list, first-person view, another player, a bolt), drawn offscreen into `dir`
 shots dir="../../target/fps-shots":

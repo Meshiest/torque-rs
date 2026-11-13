@@ -200,14 +200,14 @@ lua-client-web:
 
 # The client-script realm's tests: its escape suite, its fuel, memory and tier cases, natively (the Lua extension's workspace)
 lua-client-test:
-    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script -- --nocapture
+    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test main client_script:: -- --nocapture
 
 # The Lua tests on the web: the cases of `lua-test` run natively, then built for a browser with the page's Lua module and run
 # under Node and in headless Chrome from the cursor guard (web/lua-check.mjs). Needs what `lua-web` needs and Chrome
 lua-web-check:
     node web/guard-scan.mjs
     node --test web/lua.test.mjs
-    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --test lua
+    cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --test main lua::
     node web/lua-build.mjs --check
     node "{{web_target}}/lua-web/check/lua-node.mjs"
     npm install --prefix "{{web_target}}/web-tools/node" --no-audit --no-fund --silent --save-exact puppeteer-core@24.43.1
@@ -263,14 +263,14 @@ client-script-fuzz:
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-gui client_script -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-client-script-format -- --nocapture
     $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test -p torque-test-app --test gui_layout_realm --test client_script_end_to_end -- --nocapture
-    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test client_script hostile_lua -- --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_FUZZ = "1"; cargo test --manifest-path crates/torque-plugin-lua/Cargo.toml --features client-script --test main client_script::hostile_lua -- --nocapture
 
 # The time a realm costs a frame (crates/torque-plugin-client-script/tests/bench.rs): the real guest under Wasmtime in a client's
 # GUI, counting the canvas's drawing of the realm's controls, with a font and without one: a hostile realm at its caps within 3 ms of
 # the scene alone at p99, an idle realm with 1,024 controls within 0.3 ms at p50. `tiers` are the tiers granted (`ui`, `net`). A timing run: run it with nothing else loading the machine. Needs what `lua-web` needs
 client-script-bench tiers="ui,net":
     node web/lua-build.mjs --client
-    $env:TORQUE_CLIENT_SCRIPT_BENCH_TIERS = "{{tiers}}"; $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test --profile client-script-check -p torque-plugin-client-script --test bench -- --ignored --nocapture
+    $env:TORQUE_CLIENT_SCRIPT_BENCH_TIERS = "{{tiers}}"; $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test --profile client-script-check -p torque-plugin-client-script --test main bench:: -- --ignored --nocapture
 
 # The client-script realm's hardening suite, one command: the guest built and its hash listed, the escape, fuel and memory suites
 # natively and under Wasmtime (whose cases also hold every case's parity number), the fuzz and authority suites at full counts,
@@ -335,7 +335,7 @@ bundle-repro-check other=(justfile_directory() / ".claude" / "worktrees" / "bund
 # asset is reported, and the trace world run from a compiled script hashes as it does from its source
 bundle-content-check:
     cargo test -p torque-bundle --test content
-    cargo test -p torque-trace-hash --test precompiled
+    cargo test -p torque-trace-hash --test main precompiled::
 
 # Builds everything with the oldest supported Rust (install that toolchain with rustup first)
 msrv:
@@ -354,7 +354,7 @@ dif-verify:
 # same `.dts` bytes, and 300,000 fuzz cases of the reader with 0 panics. The arena's shots and fps tests with the `.glb`
 # shapes: `ARENA_SHAPES=glb` before `just examples fps shots` and `cargo nextest run -p torque-example-fps`.
 gltf-verify:
-    cargo test -p torque-import --test fixtures -- --nocapture
+    cargo test -p torque-import --test main fixtures:: -- --nocapture
     cargo test -p torque-example-assets every_shape_through_a_glb_makes_the_same_dts
     $env:TORQUE_IMPORT_FUZZ_CASES = "300000"; cargo test --release -p torque-import --lib the_reader_never_panics -- --nocapture
 
@@ -395,4 +395,4 @@ bench-mimalloc:
 
 # The hostile-mod fuzz at its full 100,000 cases (the default of `just test` is 2,000)
 fuzz-mods:
-    $env:TORQUE_FUZZ_MODS = "100000"; cargo nextest run -p torque-mods --test fuzz --release
+    $env:TORQUE_FUZZ_MODS = "100000"; cargo nextest run -p torque-mods --test main fuzz:: --release

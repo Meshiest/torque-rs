@@ -3,8 +3,7 @@
 //! with the same colors within a few levels. A moving shape standing in a decal's box takes none of it unless it takes decals,
 //! a box around the eye still draws, a frame's boxes are drawn one instanced draw a texture, and Low draws none.
 
-#[path = "../examples/decal_kit/mod.rs"]
-mod decal_kit;
+use crate::decal_kit;
 
 use decal_kit::{DecalTextures, Surface, decal};
 use torque_render_core::{Frame, Gpu};

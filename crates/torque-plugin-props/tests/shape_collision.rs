@@ -1,8 +1,7 @@
 //! Props that collide as their shape's collision meshes: the hulls a server and a predicting client make from one shape, a
 //! datablock's fallbacks (no collision mesh, a cap, a file that is not there) and a hostile shape file.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use std::rc::Rc;
 

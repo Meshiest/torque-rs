@@ -2,8 +2,7 @@
 //! ghosts, a winch's length follows, a joint goes with its prop, a grapple puts the server's tether on the client's predicted
 //! Player bit for bit, and the server's natives refuse what is not theirs to make.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerProps, Rig, RigProps, clients};
 use torque_game::player_tether::TetherSource;

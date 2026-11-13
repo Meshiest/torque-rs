@@ -5,7 +5,7 @@
 //! The server runs the Lua game mode, so this test needs the Lua extension (Luau's C++) and is ignored by `cargo test`:
 //! `just examples mods-demo test` runs it.
 
-mod common;
+use crate::common;
 
 use torque::app::App;
 use torque::app::shots::Seat;

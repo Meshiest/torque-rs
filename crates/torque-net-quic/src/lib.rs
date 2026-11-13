@@ -96,7 +96,7 @@
 //! names.
 //!
 //! **Checks.** `cargo test -p torque-net-quic` (the fuzz smokes at their defaults); `TORQUE_FUZZ_QUIC=100000 cargo test -p
-//! torque-net-quic --release --test quic_fuzz`; `TORQUE_FUZZ_H3=100000 cargo test -p torque-net-quic --release --test
+//! torque-net-quic --release --test main quic_fuzz::`; `TORQUE_FUZZ_H3=100000 cargo test -p torque-net-quic --release --test
 //! h3_fuzz`; `cargo clippy -p torque-net-quic --all-targets -- -D warnings`;
 //! `cargo tree --workspace --all-features -i tokio` prints nothing; `cargo tree -i aws-lc-rs` shows only str0m's path.
 

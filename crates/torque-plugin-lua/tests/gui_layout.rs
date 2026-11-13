@@ -1,8 +1,7 @@
 //! The layout containers driven from Lua through the object API: a client's Lua sets a container's fields and its
 //! children's layout fields, and the next GUI frame lays them out.
 
-#[path = "common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::{files, run};
 use torque_engine::{ClientStage, EngineBuilder};

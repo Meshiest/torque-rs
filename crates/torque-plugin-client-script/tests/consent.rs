@@ -1,7 +1,7 @@
 //! Consent: nothing of a realm before the player's answer, what is remembered, which abilities a policy and an answer come to,
 //! and that no script can reach the remembered choices.
 
-mod common;
+use crate::common;
 
 use common::*;
 use torque_client_script_format::{Grants, Tier, Value};

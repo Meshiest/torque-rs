@@ -1,10 +1,10 @@
 //! A map terrain's rays against brute force: on every sample `.ter`, rays walked over the grid
 //! against every triangle of every square under the segment (Möller and Trumbore's test), and vertical drops against the height
 //! of the square's two triangles as drawing cuts them (`torque_maps::ter::split45`, interpolated directly). 100,000 rays and 10,000
-//! drops a file in a release build (`cargo test -p torque-collide --release --test terrain_heightfield`), fewer in a debug one; every
+//! drops a file in a release build (`cargo test -p torque-collide --release --test main terrain_heightfield::`), fewer in a debug one; every
 //! hit within 1e-4 m. Skips without the samples.
 
-mod map_samples;
+use crate::map_samples;
 
 use std::sync::Arc;
 

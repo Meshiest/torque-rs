@@ -1,7 +1,7 @@
 //! The default layout end to end: zip and folder mods overriding scripts, adding datablocks and assets, load order, the
 //! prerequisites, disabling, the limits' refusals, and what a server sends.
 
-mod common;
+use crate::common;
 
 use common::{files, server};
 use torque_engine::{

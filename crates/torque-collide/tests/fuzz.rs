@@ -3,7 +3,7 @@
 //! It must not panic, and every loop must stay within its cap. `TORQUE_FUZZ_CONVEX` sets the number of pairs (default 2,000;
 //! the full run is 100,000).
 
-mod common;
+use crate::common;
 
 use common::{Rng, TEST_HULL, TestBoxes, TestGround, TestHulls, custom};
 use torque_collide::collision::{CollisionList, MAX_COLLISIONS};

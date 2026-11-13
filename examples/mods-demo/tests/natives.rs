@@ -1,5 +1,5 @@
 //! The natives of the demo's script engines (the engine's plugins, the props plugin's and the mods'), compared with the snapshot
-//! files in `tests/natives/`. `TORQUE_BLESS=1 cargo test -p torque-example-mods-demo --test natives` rewrites them. The Lua
+//! files in `tests/natives/`. `TORQUE_BLESS=1 cargo test -p torque-example-mods-demo --test main natives::` rewrites them. The Lua
 //! extension is not loaded here, so the mods that need it are skipped and their functions are not listed. The demo speaks the
 //! engine's own protocol whatever `TORQUE_NET_PROTOCOL` says (the props need it), so there is one listing a side.
 

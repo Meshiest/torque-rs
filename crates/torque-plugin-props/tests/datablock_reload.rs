@@ -2,8 +2,7 @@
 //! it: each body is made again with the new numbers at the exact pose and velocities it had, through the server's drain of the
 //! changed datablocks, with a real server over the memory transport.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Rig, RigProps, files};
 use torque_game::scene::refresh;

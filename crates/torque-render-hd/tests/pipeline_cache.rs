@@ -1,6 +1,6 @@
 //! How long the enhanced renderer's pipelines take to make with an empty pipeline cache and with the one it saved (a Vulkan
 //! adapter with pipeline caches; skipped with a note without one). A measurement, run on its own:
-//! `cargo test --release -p torque-render-hd --test pipeline_cache -- --ignored --nocapture`. A driver that keeps its own
+//! `cargo test --release -p torque-render-hd --test main pipeline_cache:: -- --ignored --nocapture`. A driver that keeps its own
 //! cache per program (NVIDIA's) has it cold only on a program's first run, such as the first after a build.
 
 use std::path::Path;

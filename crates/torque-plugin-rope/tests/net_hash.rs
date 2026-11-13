@@ -5,8 +5,7 @@
 //! The rope's crate draws with the renderer, which does not build for wasm32, so this does not join `torque-trace-hash`'s native =
 //! wasm comparison (`just trace-hash`).
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerRopes, Rig, RigRopes, engine, files};
 use torque_trace_hash::hash::TraceHasher;

@@ -116,6 +116,6 @@ The rules and their tests are in `crates/torque-transfer` (`lib.rs`'s Maintainin
 `net::uploads` is the host's side of the two seams (`ServerLinks`, `ClientLinks`). The mods download uses the same block size and hashes.
 
 Checks: `cargo test -p torque-transfer` (the 16 MiB upload with 5% loss, resume at half, every refusal, the counted-allocator peak),
-`TORQUE_FUZZ_UPLOAD=100000 cargo test -p torque-transfer --test hostile`, `cargo test -p torque-engine upload`,
-`cargo test -p torque-example-minimal-engine --test uploads` (both protocols), and the wire goldens and `just trace-hash`, which a game with no
+`TORQUE_FUZZ_UPLOAD=100000 cargo test -p torque-transfer --test main hostile::`, `cargo test -p torque-engine upload`,
+`cargo test -p torque-example-minimal-engine --test main uploads::` (both protocols), and the wire goldens and `just trace-hash`, which a game with no
 upload kind must leave unchanged.

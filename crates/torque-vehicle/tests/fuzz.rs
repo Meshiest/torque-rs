@@ -2,7 +2,7 @@
 //! both classes, many ticks. 0 panics; the caps hold (sub-steps per tick, rays per tick, the collision queue).
 //! `VEHICLE_FUZZ` sets the run count (default 300).
 
-mod common;
+use crate::common;
 
 use common::Gen;
 use torque_collide::ObjectId;

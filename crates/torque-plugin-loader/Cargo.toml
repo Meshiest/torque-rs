@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "plugins", "ffi", "extension", "gamedev"]
 categories = ["game-engines", "external-ffi-bindings"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The host side of the C ABI (`torque-plugin-abi`): `NativeExtensionsPlugin` finds the libraries in `plugins/`, has the player
 # approve each by its SHA-256 hash, loads it and adds what it registers as a plugin of its own id. A game opts in by depending
@@ -109,3 +111,7 @@ mem_forget = "warn"
 [[bench]]
 name = "native_call"
 harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "torquescript", "console", "vm", "scripting"]
 categories = ["game-development", "compilers"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 [dependencies]
 # The clock: `std::time` natively, the browser's clock on the web.
@@ -28,6 +30,10 @@ winapi-util = "0.1.11"
 [features]
 # `testing`: the script test helpers other crates' tests share. Never a normal dependency's feature.
 testing = []
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

@@ -2,7 +2,7 @@
 //! in one at a time. Each pass is timed; the bound is loose (a debug build on a busy machine) but far below what a blocked
 //! read or an unbounded pass would take.
 
-mod common;
+use crate::common;
 
 use std::io::Write;
 use std::net::TcpStream;

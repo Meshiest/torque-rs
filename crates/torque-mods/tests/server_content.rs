@@ -1,7 +1,7 @@
 //! What a server sends is content, never script: on a client (and a server) the files mounted from a server cannot be read,
 //! listed or run as script, whatever their names.
 
-mod common;
+use crate::common;
 
 use common::files;
 use torque_engine::{

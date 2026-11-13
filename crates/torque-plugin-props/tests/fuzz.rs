@@ -6,8 +6,7 @@
 //! - Hostile callers: the `prop*` functions and `propCheckPlacement` called with junk on a running server: nothing panics and the
 //!   caps hold.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::RigProps as _;
 

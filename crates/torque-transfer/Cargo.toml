@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "upload", "networking", "gamedev"]
 categories = ["network-programming", "game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The upload protocol's state machines: the server's policy (size, quota, concurrency and in-flight limits), its scheduler of
 # block requests, its staging and resume, and the client's half. No sockets and no clock: the host passes the time and moves the
@@ -29,6 +31,10 @@ testing = []
 torque-transfer = { path = ".", features = ["testing"] }
 # The counting allocator of the memory test (the workspace forbids the `unsafe` a hand-written one needs).
 peak_alloc = "0.3.0"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

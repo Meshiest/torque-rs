@@ -10,6 +10,8 @@ publish.workspace = true
 keywords = ["torque", "determinism", "testing", "wasm"]
 categories = ["game-development", "development-tools::testing"]
 default-run = "trace-hash"
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # Each scenario runs a server (`MinimalPlugins` and the plugin under test) and a client over an in-memory link for 600 ticks,
 # feeds the client scripted inputs, and hashes the server's and the client's per-tick state; the Rapier world's scenario steps
@@ -77,6 +79,10 @@ harness = false
 [[bench]]
 name = "client"
 harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

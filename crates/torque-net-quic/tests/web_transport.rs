@@ -4,7 +4,7 @@
 //! reports the datagram room the prefix leaves; the server's certificate hashes rotate on the fake clock and the hash a page
 //! took stays good across one rotation; a server without WebTransport refuses the `h3` handshake.
 
-mod common;
+use crate::common;
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;

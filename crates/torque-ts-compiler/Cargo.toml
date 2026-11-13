@@ -9,10 +9,16 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "torquescript", "compiler", "scripting"]
 categories = ["compilers", "game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 [dependencies]
 torque-ts-bytecode = { path = "../torque-ts-bytecode" }
 torque-ts-text = { path = "../torque-ts-text" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

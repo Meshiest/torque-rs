@@ -10,9 +10,9 @@
 //! request, and a server the gate opened never sends more, before it is established, than the datagrams it got since it
 //! last sent.
 //!
-//! `TORQUE_FUZZ_ENGINE_HANDSHAKE=<n> cargo test -p torque-net --test engine_fuzz` runs `n` rounds (20,000 by default).
+//! `TORQUE_FUZZ_ENGINE_HANDSHAKE=<n> cargo test -p torque-net --test main engine_fuzz::` runs `n` rounds (20,000 by default).
 
-mod engine_common;
+use crate::engine_common;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

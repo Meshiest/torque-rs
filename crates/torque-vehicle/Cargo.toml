@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "vehicle", "physics", "rigid-body", "gamedev"]
 categories = ["game-development", "simulation"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The vehicles of the server step: a rigid body and the Wheeled and Flying vehicles, as pure state and steps over
 # `collide`. Std only.
@@ -25,6 +27,10 @@ stats_alloc = { workspace = true }
 [[bench]]
 name = "tick"
 harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

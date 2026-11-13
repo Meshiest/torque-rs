@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The renderers' device layer: the wgpu adapter, device and queue (`Gpu`), the backends and their order, the sample counts,
 # offscreen and window targets, the frame read back, and the GUI pass with its backdrop blur.
@@ -77,3 +79,7 @@ zero_sized_map_values = "warn"
 # Process control belongs to the host, never to a library.
 exit = "warn"
 mem_forget = "warn"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

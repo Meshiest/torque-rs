@@ -1,7 +1,7 @@
 //! TCPObject and HTTPObject against peers on 127.0.0.1: connects, lines both ways, a failed connect, a listen that accepts,
 //! and HTTP requests. The scripts log each callback into `$log` in the order it came.
 
-mod common;
+use crate::common;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

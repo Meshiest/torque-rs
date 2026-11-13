@@ -9,7 +9,10 @@
 # whole workspace (and its doc tests), Windows (when on) only the crates whose behavior depends on the platform
 # (sockets, the window and input, files, the GPU through WARP, audio, the room service, the script VM's file rules). The
 # other crates are pure logic the Linux run already covers, and the example games' long headless runs stay on Linux.
-# Tests run under cargo-nextest, which runs the test binaries in parallel.
+# Tests run under cargo-nextest, which runs the test binaries in parallel. One job builds the tests once and runs them in both
+# protocols. Pushes and pull requests run nextest's `ci` profile, which leaves out the picture suites and the longest
+# randomized suites (minutes each on the runner, see .config/nextest.toml); a run started by hand runs every test.
+# Every job has a timeout, so a hang cannot run on for hours.
 #
 # GPU crates: crates that draw through wgpu build and lint on both runners (wgpu compiles without a GPU). Their tests
 # that need an adapter get Mesa's software Vulkan driver (lavapipe, `mesa-vulkan-drivers`) on Linux and WARP on Windows;
@@ -50,6 +53,7 @@ jobs:
   fmt:
     name: rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -66,6 +70,7 @@ jobs:
         # Windows is off for now (owner, 2026-11-06): `os: [ubuntu-latest, windows-latest]` turns it back on.
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System libraries
@@ -80,17 +85,20 @@ jobs:
       - name: The umbrella crate with no default features
         run: cargo clippy -p torque --no-default-features -- -D warnings
 
+  # The test job also runs Torque's half of the network matrix (the `net-matrix` recipe) from the same build: the engine's
+  # protocol is the plugin groups' default, and Torque's is an opt-in a game keeps, so the suites that follow the protocol, the
+  # rope's TGE client, the wire goldens, the natives lists and the examples' headless runs run again with it.
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.partition }}/3)
+    name: test (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         # Windows is off for now (owner, 2026-11-06): `os: [ubuntu-latest, windows-latest]` turns it back on.
         os: [ubuntu-latest]
-        # The tests in three jobs that run side by side (nextest's `--partition`); each builds the workspace from the
-        # same cache.
-        partition: [1, 2, 3]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      NEXTEST_PROFILE: ${{ github.event_name == 'workflow_dispatch' && 'default' || 'ci' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System libraries
@@ -105,55 +113,39 @@ jobs:
           tool: cargo-nextest
       - name: Tests (the whole workspace)
         if: runner.os == 'Linux'
-        run: cargo nextest run --workspace --all-features --no-fail-fast --partition hash:${{ matrix.partition }}/3
+        run: cargo nextest run --workspace --all-features --no-fail-fast
       - name: Doc tests
-        if: runner.os == 'Linux' && matrix.partition == 1
+        if: runner.os == 'Linux'
         run: cargo test --workspace --all-features --doc
       - name: Tests (the crates with platform-dependent behavior)
         if: runner.os == 'Windows'
         run: >-
-          cargo nextest run --all-features --no-fail-fast --partition hash:${{ matrix.partition }}/3
+          cargo nextest run --all-features --no-fail-fast
           -p torque-client -p torque-server -p torque-resource -p torque-rooms -p torque-ts-vm
           -p torque-app -p torque-render-core -p torque-render-hd -p torque-audio
       - name: Examples
-        if: matrix.partition == 1
         shell: bash
         run: |
           for example in script shape collide net; do
             cargo run -p torque --example "$example"
           done
-
-  # The test job runs the engine's own protocol, the plugin groups' default. Torque's protocol is an opt-in a game keeps, so
-  # its half of the network matrix (the `net-matrix` recipe) runs here: the suites that follow the protocol, the rope's TGE client,
-  # the wire goldens and the natives lists, and the examples' headless runs.
-  tge-protocol:
-    name: test (Torque's protocol)
-    runs-on: ubuntu-latest
-    env:
-      TORQUE_NET_PROTOCOL: tge
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: System libraries
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev mesa-vulkan-drivers fonts-dejavu-core
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
-        with:
-          tool: cargo-nextest
+      # The packages are picked with a filter, not `-p`, so the workspace's build (and its features) is reused as it is.
       - name: The network matrix's suites in Torque's protocol
+        if: runner.os == 'Linux'
+        env:
+          TORQUE_NET_PROTOCOL: tge
         run: >-
-          cargo nextest run --all-features --no-fail-fast
-          -p torque-example-minimal -p torque-example-minimal-engine -p torque-example-character
-          -p torque-example-level-demo -p torque-example-fps -p torque-example-vehicle-demo -p torque-example-mods-demo
-          -p torque-plugin-rope -p torque-mods -p torque-plugin-props -p torque-trace-hash -p torque-app-server
-      - name: The TGE goldens and the natives lists
-        run: |
-          cargo nextest run --all-features -p torque-net --test tge_golden
-          cargo nextest run --all-features -p torque-app --test natives
-      - name: The examples' headless runs
+          cargo nextest run --workspace --all-features --no-fail-fast -E '
+          package(torque-example-minimal) | package(torque-example-minimal-engine) | package(torque-example-character)
+          | package(torque-example-level-demo) | package(torque-example-fps) | package(torque-example-vehicle-demo)
+          | package(torque-example-mods-demo) | package(torque-plugin-rope) | package(torque-mods) | package(torque-plugin-props)
+          | package(torque-trace-hash) | package(torque-app-server)
+          | (binary_id(torque-net::main) & test(/^tge_golden::/)) | (binary_id(torque-app::main) & test(/^natives::/))'
+      - name: The examples' headless runs in Torque's protocol
+        if: runner.os == 'Linux'
         shell: bash
+        env:
+          TORQUE_NET_PROTOCOL: tge
         run: |
           for example in script shape collide net; do
             cargo run -p torque --example "$example"
@@ -163,6 +155,7 @@ jobs:
   docs:
     name: rustdoc, the script reference and the guide
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System libraries
@@ -191,6 +184,7 @@ jobs:
   server-deps:
     name: the server crate has no drawing, GUI, audio or window crates
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -209,6 +203,7 @@ jobs:
   web-guard:
     name: browser check guard
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: No script opens a browser except through the guard
@@ -222,6 +217,7 @@ jobs:
   trace-hash:
     name: trace hash (native = wasm32)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-10-16
@@ -239,6 +235,7 @@ jobs:
   msrv:
     name: MSRV
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: System libraries
@@ -252,6 +249,7 @@ jobs:
   deny:
     name: cargo-deny
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0

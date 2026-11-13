@@ -63,10 +63,14 @@ pub const DRAWING_CRATES: &[&str] = &[
 ];
 
 /// Whether a crate of this name is a renderer, window, input, audio, GUI or client crate. `torque-app` (the client's half, and
-/// its `torque-app-` crates) is one; `torque-app-server` is not.
+/// its `torque-app-` crates) is one; `torque-app-server` is not, and neither is `bevy_mikktspace`, the tangent math the model
+/// importer links (no dependencies, nothing drawn).
 pub fn is_drawing(name: &str) -> bool {
     if name == "torque-app" || (name.starts_with("torque-app-") && name != "torque-app-server") {
         return true;
+    }
+    if name == "bevy_mikktspace" {
+        return false;
     }
     DRAWING_CRATES.iter().any(|crate_name| {
         name.strip_prefix(crate_name)
@@ -167,6 +171,7 @@ mod tests {
         }
         for name in [
             "torque-app-server",
+            "bevy_mikktspace",
             "torque-server",
             "torque-game",
             "serde",

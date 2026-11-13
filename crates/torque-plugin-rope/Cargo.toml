@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "rope", "physics", "plugin", "gamedev"]
 categories = ["game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # A rope shown on the client and, with a server, sent to every client: the `RopeData` datablock class and the `rope*` console functions (torque-engine's script registry), a
 # position-based simulation run once per client tick, and render passes (torque-app's `render()` registry): the tubes into
@@ -52,6 +54,10 @@ criterion = { workspace = true }
 [[bench]]
 name = "sim"
 harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

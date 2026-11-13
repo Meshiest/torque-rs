@@ -4,9 +4,9 @@
 //! only by a CONNECT that judges well; a server's answer is never more than a few hundred bytes to any byte sequence; and
 //! the QPACK and Huffman decoders take everything without a panic.
 //!
-//! `TORQUE_FUZZ_H3=<n> cargo test -p torque-net-quic --test h3_fuzz` runs `n` rounds (10,000 by default).
+//! `TORQUE_FUZZ_H3=<n> cargo test -p torque-net-quic --test main h3_fuzz::` runs `n` rounds (10,000 by default).
 
-mod common;
+use crate::common;
 
 use common::Rng;
 use quinn_proto::{Dir, Side, StreamId};

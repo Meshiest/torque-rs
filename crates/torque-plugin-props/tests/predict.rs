@@ -2,8 +2,7 @@
 //! long walk, a Player riding a sliding prop and pushing a row, predicted impulses (one the server makes too, one it never
 //! does, and the caps), and the client's own shots.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Link, PeerProps, Rig, RigProps, engine, files};
 use torque_app::GameFiles;

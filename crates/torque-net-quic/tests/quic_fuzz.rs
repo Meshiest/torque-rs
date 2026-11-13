@@ -6,9 +6,9 @@
 //! the server never sends it more than three times what it received from it plus one datagram (quinn-proto's bound); the
 //! flood makes the server answer with Retry; the connections and the inbox stay under their caps.
 //!
-//! `TORQUE_FUZZ_QUIC=<n> cargo test -p torque-net-quic --test quic_fuzz` runs `n` rounds (20,000 by default).
+//! `TORQUE_FUZZ_QUIC=<n> cargo test -p torque-net-quic --test main quic_fuzz::` runs `n` rounds (20,000 by default).
 
-mod common;
+use crate::common;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};

@@ -2,7 +2,7 @@
 //! from small sample files (`TORQUE_FUZZ_MAPS` and `TORQUE_FUZZ_SEED` override the count and the seed). 0 panics and every case's
 //! requests under the caps.
 
-mod common;
+use crate::common;
 
 use torque_maps::fuzz::{Kind, Seed, run, synthetic_seeds};
 

@@ -220,7 +220,7 @@ is exact and what is not:
 - **Held, not extrapolated:** the parent's motion after its latest record. The moves a correction replays all come after the
   server state it sent, so no record covers them; the client holds the parent's latest pose through the replay, as it holds a
   moving object that is no one's child. A rider is therefore corrected no more often on a hung deck than on the same deck
-  moved by itself (`cargo test -p torque-plugin-hierarchy --test ride`), and the same figure on the same deck held still is
+  moved by itself (`cargo test -p torque-plugin-hierarchy --test main ride::`), and the same figure on the same deck held still is
   never corrected.
 - **Bodies the client runs itself** (the vehicle it drives, a ghost vehicle it runs ahead) carry their children from where the
   client runs them, and the client's own predicted object carries its children from where it is before each move, as the
@@ -265,7 +265,7 @@ state in its parent's frame, and the client predicts it there:
   client holds no ghost of, runs no move (`unplaced` in the predictor's counts), and the next tick that places the parent
   replays the moves that waited.
 
-`cargo test -p torque-plugin-hierarchy --test turret` runs the case of the example above: one client drives the tank and a
+`cargo test -p torque-plugin-hierarchy --test main turret::` runs the case of the example above: one client drives the tank and a
 second controls a turret on its roof, turning it and looking up and down, at latencies of 0 and 3 ticks. The gunner is
 corrected no more often than for the same moves on a base that never moves (none, either way), the driver as often with the
 gunner as without, and the gunner draws the turret within a millimetre of where its drawn tank and the turret's local pose

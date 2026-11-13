@@ -3,8 +3,7 @@
 //! handover between a ghost and the channel in both directions and on a lossy link, and the client's collision with the props
 //! it was sent that way.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use std::collections::BTreeSet;
 

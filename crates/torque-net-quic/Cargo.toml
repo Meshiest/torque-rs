@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "quic", "networking", "gamedev"]
 categories = ["network-programming", "game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # Native only: nothing here builds for a browser (browsers get WebTransport through the page's API, later), and neither
 # torque-net nor the trace-hash harness depends on it. No async runtime: the endpoint is sans-IO and driven from the hosts'
@@ -51,27 +53,8 @@ torque-server = { path = "../torque-server", features = ["web"] }
 
 # The tests that drive a QUIC client need the client endpoint.
 [[test]]
-name = "h3_fuzz"
-required-features = ["client"]
-
-[[test]]
-name = "combined"
-required-features = ["client"]
-
-[[test]]
-name = "pair"
-required-features = ["client"]
-
-[[test]]
-name = "plain"
-required-features = ["client"]
-
-[[test]]
-name = "quic_fuzz"
-required-features = ["client"]
-
-[[test]]
-name = "web_transport"
+name = "main"
+path = "tests/main.rs"
 required-features = ["client"]
 
 [lints]

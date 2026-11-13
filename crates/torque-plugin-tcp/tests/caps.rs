@@ -1,6 +1,6 @@
 //! Each cap of [`TcpLimits`] refusing past its limit, on the loopback.
 
-mod common;
+use crate::common;
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

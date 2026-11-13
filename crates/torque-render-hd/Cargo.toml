@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The enhanced renderer on the GPU: our own WGSL (`shaders/`) composed with a registered extension's chunks, its passes, and
 # the helpers they share, over a `torque-render-core` device and `torque-render-scene`'s frame data.
@@ -41,6 +43,10 @@ torque-gui = { path = "../torque-gui" }
 [[bench]]
 name = "upload"
 harness = false
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

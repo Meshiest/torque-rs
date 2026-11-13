@@ -3,9 +3,9 @@
 //!
 //! These bytes never change within a framing version: a change to engine wire bytes is a new framing version (`ENGINE_FRAMING`)
 //! with a test and golden file named for it. The file was written once with `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-net
-//! --test engine_golden_v5`; blessing it again under the same version means the framing changed, which it must not.
+//! --test main engine_golden_v5::`; blessing it again under the same version means the framing changed, which it must not.
 
-mod engine_common;
+use crate::engine_common;
 
 use std::fmt::Write as _;
 

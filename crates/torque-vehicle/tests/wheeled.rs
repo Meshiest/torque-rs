@@ -1,7 +1,7 @@
 //! WheeledVehicle: a hand-worked `updateForces` tick on flat ground, the datablock's `preload`, `onNewDataBlock`, the wheel
 //! methods, determinism.
 
-mod common;
+use crate::common;
 
 use common::host::Ground;
 use torque_collide::ObjectId;

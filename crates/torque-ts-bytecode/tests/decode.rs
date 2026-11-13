@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{Sample, encode, t3d};
 use torque_ts_bytecode::DsoFile;

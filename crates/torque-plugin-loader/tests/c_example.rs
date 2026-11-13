@@ -2,7 +2,7 @@
 //! found (`CC`, else `cc`, `clang` or `gcc`), built as a library, loaded from a plugins folder and called. With no
 //! compiler, or one that cannot link a shared library here, the test says so and passes.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 use std::process::Command;

@@ -1,8 +1,7 @@
 //! Networked ropes that change over time or come as events: reels and taut ropes, lifetimes and fades, one-shot ropes, and predicted
 //! ropes, each with a real server and two engine clients over the memory transport.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Peer, PeerRopes, Rig, create, off_the_line, rope, two};
 

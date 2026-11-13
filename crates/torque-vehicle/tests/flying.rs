@@ -1,6 +1,6 @@
 //! FlyingVehicle: a hand-worked thrust, the hover lift, the steering damping, determinism.
 
-mod common;
+use crate::common;
 
 use common::host::Ground;
 use torque_collide::ObjectId;

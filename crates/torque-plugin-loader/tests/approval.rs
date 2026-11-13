@@ -3,7 +3,7 @@
 //! Every question goes to a callback: nothing waits on a terminal or opens a window. The plugin is off until game.toml
 //! or the flag turns it on.
 
-mod common;
+use crate::common;
 
 use std::cell::RefCell;
 use std::path::Path;

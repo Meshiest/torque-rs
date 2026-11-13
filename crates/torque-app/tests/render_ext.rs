@@ -164,7 +164,7 @@ fn plain_picture() -> Vec<u8> {
     let _ = std::fs::remove_file(&path);
     let status = Command::new(std::env::current_exe().expect("the test binary"))
         .args([
-            "a_tint_extension_differs_when_on_and_matches_the_plain_view_when_off",
+            "render_ext::a_tint_extension_differs_when_on_and_matches_the_plain_view_when_off",
             "--exact",
             "--test-threads=1",
         ])

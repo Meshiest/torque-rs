@@ -1,5 +1,5 @@
 //! The natives the arena shooter's client and server script engines have, compared with the snapshot files in `tests/natives/`.
-//! A change to what scripts can call shows as a diff here; `TORQUE_BLESS=1 cargo test -p torque-example-fps --test natives`
+//! A change to what scripts can call shows as a diff here; `TORQUE_BLESS=1 cargo test -p torque-example-fps --test main natives::`
 //! rewrites the snapshot files.
 
 use std::cell::RefCell;

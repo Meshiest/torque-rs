@@ -7,8 +7,7 @@ use torque_engine::{Engine, EngineBuilder};
 use torque_plugin_rope::{RopeEnd, RopeParams, RopePlugin, RopeShared, RopeStyle};
 use torque_render_core::Frame;
 
-#[path = "pictures/common.rs"]
-mod common;
+use crate::common;
 use common::*;
 
 fn engine() -> Engine {

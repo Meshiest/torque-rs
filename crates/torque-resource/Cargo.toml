@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "resources", "zip", "gamedev"]
 categories = ["game-development", "filesystem"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The resource layer: a game folder read-only, its zips mounted as folders, the scripts' writes in memory. The script engine's
 # FileHost is what it serves.
@@ -25,6 +27,10 @@ rustix = { version = "1", default-features = false, features = ["fs", "std"] }
 [dev-dependencies]
 # The CRC-32 of the hand-made archives' entries.
 torque-bytes = { path = "../torque-bytes" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

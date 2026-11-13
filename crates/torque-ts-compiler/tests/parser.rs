@@ -1,7 +1,7 @@
 //! The parser: the trees it builds (precedence and associativity as the grammar's tables have them), the lines
 //! its nodes get, its syntax error report, and its bounds.
 
-mod common;
+use crate::common;
 
 use std::time::Instant;
 

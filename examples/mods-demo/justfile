@@ -58,7 +58,7 @@ shots dir="../../target/mods-demo-shots":
 # play (the list of games, the download screen, a bot's place taken, the keys, browsers' downloads over WebSocket and a data
 # channel), and the pitch's floor in every frame drawn. They build the Lua extension (Luau's C++), so `cargo test` leaves them out
 test:
-    cargo test -p torque-example-mods-demo --test demo --test multiplayer --test frames -- --include-ignored
+    cargo test -p torque-example-mods-demo --test main -- --include-ignored demo:: multiplayer:: frames::
 
 # The game for browsers and desktops in one match: its browser build (join-only), then the soccer server on UDP and the web
 # on 127.0.0.1:{{port}}, serving that build; a browser joins at http://127.0.0.1:{{port}}/ and a desktop client joins

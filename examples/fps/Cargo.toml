@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "example", "multiplayer", "gamedev"]
 categories = ["game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The server (torque-server's main loop and network host over torque-game's classes) and each client (torque-client's
 # connection over TGE's records) talk over UDP, or a browser's client over WebSocket (`fps-server --transport both`); a host runs its server in the same process and joins it over the loopback
@@ -54,6 +56,10 @@ path = "src/bin/fps-client.rs"
 [[bin]]
 name = "fps-server"
 path = "src/bin/fps-server.rs"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

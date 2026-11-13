@@ -3,7 +3,7 @@
 //! script state) the same as an idle realm of the same grants; one that makes calls changes the server only inside the
 //! handlers a game registered, which the test counts.
 
-mod common;
+use crate::common;
 
 use common::*;
 use torque_client_script_format::ui::{Kind, Prop, PropValue, write_props};

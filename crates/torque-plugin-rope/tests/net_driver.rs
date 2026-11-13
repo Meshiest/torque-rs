@@ -1,8 +1,7 @@
 //! Offsets on a networked rope's ends and a rope that follows a driver, end to end: a real server and engine clients over the memory
 //! transport.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use std::cell::Cell;
 use std::rc::Rc;

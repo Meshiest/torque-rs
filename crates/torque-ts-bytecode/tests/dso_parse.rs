@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{empty, encode, encode_without_local_variables, sample, t3d};
 use torque_ts_bytecode::{Dialect, DsoError, DsoFile, FileLayout, StringTable};

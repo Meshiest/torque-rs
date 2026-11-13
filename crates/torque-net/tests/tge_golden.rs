@@ -8,7 +8,7 @@
 //! rate prefix are pinned as well.
 //!
 //! The goldens are in `golden/tge_sessions.txt`. After a change that is meant to alter the wire,
-//! `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-net --test tge_golden` writes the file again.
+//! `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-net --test main tge_golden::` writes the file again.
 
 use std::fmt::Write as _;
 use std::net::SocketAddr;

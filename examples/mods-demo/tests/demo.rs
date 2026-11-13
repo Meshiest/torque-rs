@@ -7,7 +7,7 @@
 //! compiler and are ignored by `cargo test`): `just examples mods-demo test` runs them. `TORQUE_LUA_LIBRARY` names a library
 //! built already.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

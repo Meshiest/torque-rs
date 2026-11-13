@@ -175,7 +175,7 @@
 //!
 //! **Checks.** `cargo test -p torque-plugin-hierarchy`; `cargo test -p torque-test-app --test hierarchy_net --test
 //! hierarchy_pictures`; `TORQUE_FUZZ_HIERARCHY_NET=100000 cargo test -p
-//! torque-plugin-hierarchy --release --test net_fuzz`; `cargo clippy -p torque-plugin-hierarchy --all-targets -- -D
+//! torque-plugin-hierarchy --release --test main net_fuzz::`; `cargo clippy -p torque-plugin-hierarchy --all-targets -- -D
 //! warnings`; `just trace-hash` (the `tge` lines unchanged); the wire goldens; the native effects listing
 //! (torque-test-app's `loader_native_effects`).
 

@@ -47,7 +47,7 @@ poison the world; a wasm32 build aborts on one, which the checks are there to pr
 
 - `cargo test -p torque-physics-rapier`: the terrain's triangles against the engine's terrain heights, cells built on first
   use, rest on terrain and interiors, refusals, caps, the budget, and two worlds holding the same bits.
-- `TORQUE_FUZZ_RAPIER=100000 cargo test -p torque-physics-rapier --test fuzz`: hostile hulls, terrains, interiors,
+- `TORQUE_FUZZ_RAPIER=100000 cargo test -p torque-physics-rapier --test main fuzz::`: hostile hulls, terrains, interiors,
   transforms and limits: no panic, every count within its cap.
 - `cargo bench -p torque-physics-rapier --bench step`: 64 boxes for 100 ticks, and a one-body scratch world built and stepped.
 

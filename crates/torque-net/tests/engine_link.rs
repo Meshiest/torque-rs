@@ -1,7 +1,7 @@
 //! Engine-mode sessions over test links: the connect flow on validated and plain links, reliability under loss, lane budgets,
 //! the datagram size of each tick, amplification and the cookie's binding.
 
-mod engine_common;
+use crate::engine_common;
 
 use std::collections::BTreeSet;
 

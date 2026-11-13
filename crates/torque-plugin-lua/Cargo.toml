@@ -9,6 +9,8 @@ repository = "https://github.com/Meshiest/torque-rs"
 publish = false
 keywords = ["torque", "lua", "luau", "mods", "gamedev"]
 categories = ["game-engines"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # Its own workspace, like examples/native-extension: Luau is C++, built by `mlua`'s vendored sources, and the engine's own
 # workspace builds with no C++ compiler. Build the library a game loads from its `plugins/` folder with
@@ -119,3 +121,7 @@ panic = "abort"
 # The client-script guest (`just lua-client-web`): the same, in its own output folder.
 [profile.web-lua-client]
 inherits = "web-lua"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"

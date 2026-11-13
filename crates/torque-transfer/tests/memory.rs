@@ -2,7 +2,7 @@
 //! the client's reads, the chunk layer's queues and holds, the server's staging and its re-hash take above what was allocated
 //! when the upload began (the content itself, which the client's source holds, is allocated before).
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

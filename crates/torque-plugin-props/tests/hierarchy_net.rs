@@ -2,8 +2,7 @@
 //! no update for the parent's motion), never as resting while its parent moves, and its prediction finds a child where the
 //! parent's latest pose and its local pose put it and leaves the prop and its parents to the server.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerProps, Rig, RigProps, files};
 use torque_app::GameFiles;

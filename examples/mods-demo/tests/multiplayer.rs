@@ -6,7 +6,7 @@
 //! The server runs the Lua game mode, so these tests need the Lua extension (Luau's C++) and are ignored by `cargo test`:
 //! `just examples mods-demo test` runs them.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};

@@ -1,10 +1,8 @@
 //! Networked ropes drawn offscreen by the clients that were sent them: the same rope seen by two clients, a taut rope, and a
 //! temporary rope fading out. `TORQUE_ROPE_PICTURES=<folder>` also writes the pictures there as PNGs.
 
-#[path = "pictures/common.rs"]
-mod common;
-#[path = "net/rig.rs"]
-mod rig;
+use crate::common;
+use crate::rig;
 
 use common::{SIZE, WHOLE, changed, gpu, save, shot_from, view};
 use rig::{Rig, engine, files, rope};

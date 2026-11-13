@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "mods", "plugins", "gamedev"]
 categories = ["game-development", "filesystem"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # `ModsPlugin`: mounts the mods a game's folders and zips hold over its files and runs their scripts as TorqueScript packages.
 # How a mod is found, named, ordered and enabled is a set of slots (`ModLayout`, `ModOrder`, ...) with `mod.toml` as the default.
@@ -48,6 +50,10 @@ torque = { path = "../torque", default-features = false, features = ["app", "mod
 torque-example-minimal-engine = { path = "../../examples/minimal-engine" }
 # A second layout's manifest format.
 serde_json = "1.0.140"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

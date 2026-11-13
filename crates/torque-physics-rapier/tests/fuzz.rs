@@ -1,7 +1,7 @@
 //! Hostile hulls, terrain, interiors, transforms and limits: no call panics or poisons the world, and every count stays within
 //! its cap. `TORQUE_FUZZ_RAPIER=<n>` sets the iterations (default 2,000).
 
-mod common;
+use crate::common;
 
 use std::rc::Rc;
 

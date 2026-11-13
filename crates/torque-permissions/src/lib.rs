@@ -50,7 +50,7 @@
 //!
 //! Checks: `cargo test -p torque-permissions`, with the fuzz at a million rounds as
 //! `TORQUE_FUZZ_PERMISSIONS=1000000 cargo test -p torque-permissions`; then the engine's `cargo test -p torque-engine permissions`
-//! and the script side's `cargo test -p torque-example-minimal-engine --test permissions`.
+//! and the script side's `cargo test -p torque-example-minimal-engine --test main permissions::`.
 
 #![warn(missing_docs)]
 

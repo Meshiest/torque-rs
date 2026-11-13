@@ -2,7 +2,7 @@
 //! decoded instructions), the tables and the line-break and local-variable tables, round trips through the bytes,
 //! the text form and the decoder, the messages, the bounds, and another build's dialect.
 
-mod common;
+use crate::common;
 
 use std::time::Instant;
 

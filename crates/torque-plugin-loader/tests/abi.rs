@@ -6,7 +6,7 @@
 // The hand-written extension below speaks the C ABI as a C one would, through raw pointers.
 #![allow(unsafe_code)]
 
-mod common;
+use crate::common;
 
 use std::ffi::c_void;
 use std::sync::Mutex;

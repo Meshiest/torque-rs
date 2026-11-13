@@ -109,8 +109,8 @@
 //!
 //! **Checks.** `cargo test -p torque-engine rpc` (it holds the permission table and the limit tests), the fuzz as `TORQUE_FUZZ_RPC=1000000 cargo test -p torque-engine --lib rpc_fuzz`,
 //! `cargo test -p torque-macros --test ui` (`TRYBUILD=overwrite` rewrites the expected compiler output), `cargo test -p
-//! torque-example-minimal-engine --test rpc`, the wire goldens (`cargo test -p torque-net --test tge_golden`, `cargo test -p
-//! torque-trace-hash --test wire_golden`) and `just trace-hash` (a game with no RPC must not change a byte), and `just script-reference` (its sample plugin registers one RPC of each kind, so a change to the script natives or to how a message's layout text reads must change the RPC page too).
+//! torque-example-minimal-engine --test main rpc::`, the wire goldens (`cargo test -p torque-net --test main tge_golden::`, `cargo test -p
+//! torque-trace-hash --test main wire_golden::`) and `just trace-hash` (a game with no RPC must not change a byte), and `just script-reference` (its sample plugin registers one RPC of each kind, so a change to the script natives or to how a message's layout text reads must change the RPC page too).
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;

@@ -3,8 +3,7 @@
 //! in proportion to its steps. The default run calls a fixed eighth of them; `TORQUE_FUZZ_VM=<n>` calls them all with
 //! 1 MiB arguments.
 
-#[path = "../../torque-ts-vm/tests/sweep/mod.rs"]
-mod sweep;
+use crate::sweep;
 
 use std::collections::HashSet;
 use std::net::{Ipv4Addr, SocketAddr};

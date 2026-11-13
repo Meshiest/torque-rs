@@ -10,8 +10,7 @@
 //! no correction, and for at most `MAX_HOLD_TICKS` drains however the client acknowledges; Torque's protocol applies it at once, as Torque does, and the client corrects once a server packet until the
 //! record arrives.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Link, Rig, files};
 use torque_app::GameFiles;

@@ -2,7 +2,7 @@
 //! strikes, a flush past the budget is spread over frames, a flush is checked whole before any of it applies, and the layouts
 //! its ops ask for are laid out once a frame, not once an op.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

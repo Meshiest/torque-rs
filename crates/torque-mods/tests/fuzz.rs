@@ -7,8 +7,6 @@
 //! file's cap, and the zip reader's own bounds (a directory capped, an entry inflated at most its declared size plus one
 //! byte) are what keep the cases that are refused small.
 
-mod common;
-
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use torque_engine::Engine;

@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "interior", "terrain", "map", "gamedev"]
 categories = ["game-development", "parser-implementations"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # lists read as data. Std only, no external dependency: these files come from servers and download sites, so the readers are
 # lists read as data. Std only (and `torque-bytes`, std only too): these files come from servers and download sites, so the readers are
@@ -28,6 +30,10 @@ testing = []
 torque-maps = { path = ".", features = ["testing"] }
 # Decodes the PNGs the encoder writes.
 torque-images = { path = "../torque-images" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

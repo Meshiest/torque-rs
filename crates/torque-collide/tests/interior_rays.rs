@@ -4,7 +4,7 @@
 //! interior_rays`), fewer in a debug one; every hit within 1e-4 m. The hulls' faces also hold every hull point behind every
 //! plane and wind clockwise seen from outside (the polygon lists' order). Skips without the samples.
 
-mod map_samples;
+use crate::map_samples;
 
 use std::sync::Arc;
 

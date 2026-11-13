@@ -87,7 +87,7 @@
 //! natives before, a normal server's after, each refusal, a failed step that reads nothing, a retry after a failed factory,
 //! `start_with_net_files`) and torque-trace-hash's `tests/late_net.rs` (a client's session writes the same datagrams as
 //! against a server started on the link, in both protocols): `cargo test -p torque-app-server --lib -- late_net_` and
-//! `cargo test -p torque-trace-hash --test late_net`. A new part of the host goes in `wire_host` before the passes, never in
+//! `cargo test -p torque-trace-hash --test main late_net::`. A new part of the host goes in `wire_host` before the passes, never in
 //! one of its callers.
 //!
 //! **A [`server::GameServer`] is a server host** (`torque_server::server::GameServer`), so torque-app's

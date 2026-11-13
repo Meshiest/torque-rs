@@ -1,7 +1,7 @@
 //! Uploads over a link that loses packets: a 16 MiB upload arrives with the right hash, a resume after a disconnect asks only for
 //! what is missing, and a client that breaks the rules loses its connection.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

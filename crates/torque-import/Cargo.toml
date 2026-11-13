@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "gltf", "dts", "import", "gamedev"]
 categories = ["game-development", "parser-implementations", "rendering::data-formats"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # Readers turn files into `torque-modelcore`; the `dts` module writes the model layer as a shape (through
 # `torque-shape-builder`) and reads a shape into it. glTF is behind the `gltf` feature (the `gltf` crate reads the JSON;
@@ -31,6 +33,10 @@ gltf = ["dep:gltf", "dep:serde_json", "dep:torque-resource"]
 
 [dev-dependencies]
 serde_json = "1.0.140"
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

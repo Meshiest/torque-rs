@@ -32,7 +32,7 @@
 //! The test is ignored in an ordinary run: its numbers are wall-clock times, and `client-script-bench` runs it under the
 //! machine's bench lock. It needs the guest (`just lua-client-web`) at TORQUE_CLIENT_GUEST, else the build folder's `lua-web`.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::rc::Rc;

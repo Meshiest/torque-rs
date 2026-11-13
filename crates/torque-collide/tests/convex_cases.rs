@@ -3,7 +3,7 @@
 //! `ClippedPolyList`), the convexes the builders make (the Torque classes' and the test classes' through the builder seam), the
 //! working set's order, and GJK distances of known pairs.
 
-mod common;
+use crate::common;
 
 use common::{TEST_HULL, TestBoxes, TestGround, TestHulls, custom, view_at};
 use torque_collide::convex::{Convex, ConvexKind, ConvexSource, HullSlot, WorkingSet};

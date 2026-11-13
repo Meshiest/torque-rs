@@ -26,7 +26,7 @@
 //!   it); the CPU field is the shader's (`the_cpu_field_is_the_shaders`).
 //! - Extension points: a translucent object's own clip (the weighted blend's stages would take the slots as the opaque pass
 //!   does); a per-draw edge texture (another binding in group 1).
-//! - Checks: `cargo test -p torque-render-hd --test dissolve`, `cargo test -p torque-render-hd --lib shaders`,
+//! - Checks: `cargo test -p torque-render-hd --test main dissolve::`, `cargo test -p torque-render-hd --lib shaders`,
 //!   `cargo test -p torque-render-scene dissolve`.
 
 use torque_render_scene::hd::dissolve::{HdDissolve, WHOLE};

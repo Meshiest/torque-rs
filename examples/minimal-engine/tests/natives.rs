@@ -1,6 +1,6 @@
 //! The natives of the example's script engines, compared with the snapshot files in `tests/natives/` and with the hand-wired
 //! example's: the engine's server and client have every native that example's have, and the snapshots here say what else
-//! `DefaultPlugins` adds. `TORQUE_BLESS=1 cargo test -p torque-example-minimal-engine --test natives` rewrites the snapshot files.
+//! `DefaultPlugins` adds. `TORQUE_BLESS=1 cargo test -p torque-example-minimal-engine --test main natives::` rewrites the snapshot files.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};

@@ -3,7 +3,7 @@
 //! jumps in time. After every operation the caps must hold (staging memory and disk, the staged bytes of a kind, the sessions, a
 //! player's uploads at once), nothing may panic, and in the end nothing may be left held.
 
-mod common;
+use crate::common;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;

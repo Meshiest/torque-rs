@@ -1,7 +1,7 @@
 //! Random set, clear, delete and move operations against the tree: the caps hold, nothing forms a cycle, a keep-world change
 //! keeps the world pose, and a second run gives the same bits.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

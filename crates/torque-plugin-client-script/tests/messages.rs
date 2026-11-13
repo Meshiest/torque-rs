@@ -1,7 +1,7 @@
 //! Messages and calls between a realm and its server: every cap holds where the bytes arrive, a realm reaches only the RPCs
 //! marked for it, and a hostile peer on either end gets nothing past the caps.
 
-mod common;
+use crate::common;
 
 use std::rc::Rc;
 

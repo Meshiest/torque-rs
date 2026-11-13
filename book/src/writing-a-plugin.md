@@ -141,7 +141,7 @@ script object that is then moved and deleted).
 The drawing needs a GPU but no window: attach a world view to the engine's renderer, draw a small scene with and without the
 plugin and compare pixels (`tests/picture.rs`: the rope's sag is on the picture, the floor under it is darker for its shadow,
 and nothing above the posts changed). Look at the pictures too: `TORQUE_ROPE_PICTURES=<folder> cargo test -p torque-plugin-rope
---test picture` writes them.
+--test main picture::` writes them.
 
 ## What the real plugin adds
 

@@ -4,7 +4,7 @@
 //!
 //! The wire check: a session of it writes the bytes a client of TGE's conn game writes, in either protocol, and TGE's bytes are
 //! pinned in `golden/conn_game_sessions.txt` (recorded with TGE's client before the conn game was a type parameter). After a
-//! change that is meant to alter the wire, `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-trace-hash --test conn_game` writes
+//! change that is meant to alter the wire, `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-trace-hash --test main conn_game::` writes
 //! the file again.
 
 use std::cell::{Cell, RefCell};
@@ -30,7 +30,7 @@ use torque_gui::Gui;
 use torque_trace_hash::rig::fix_server_keys;
 use torque_ts_vm::vm::{Native, Vm};
 
-mod common;
+use crate::common;
 
 use common::{Link, SERVER, client};
 

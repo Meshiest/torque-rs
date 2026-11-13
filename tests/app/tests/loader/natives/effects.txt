@@ -504,6 +504,8 @@ ShapeBase::applyDamage -
 ShapeBase::applyImpulse -
 ShapeBase::applyRepair -
 ShapeBase::canCloak -
+ShapeBase::clearDissolve -
+ShapeBase::dissolve -
 ShapeBase::getAIRepairPoint -
 ShapeBase::getCameraFov -
 ShapeBase::getControllingClient -
@@ -512,6 +514,7 @@ ShapeBase::getDamageFlash -
 ShapeBase::getDamageLevel -
 ShapeBase::getDamagePercent -
 ShapeBase::getDamageState -
+ShapeBase::getDissolve -
 ShapeBase::getEnergyLevel -
 ShapeBase::getEnergyPercent -
 ShapeBase::getEyePoint -
@@ -559,6 +562,7 @@ ShapeBase::setDamageFlash -
 ShapeBase::setDamageLevel -
 ShapeBase::setDamageState -
 ShapeBase::setDamageVector -
+ShapeBase::setDissolveLook -
 ShapeBase::setEnergyLevel -
 ShapeBase::setHidden -
 ShapeBase::setImageAmmo -

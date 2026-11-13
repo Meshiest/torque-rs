@@ -2,7 +2,7 @@
 //! border word, `dif::parse_with_border_pad`), and every interior passes the check.
 //! Skips when there is no sample folder (`TORQUE_MAPS_DIR`).
 
-mod common;
+use crate::common;
 
 use torque_maps::{dif, dml, ter};
 

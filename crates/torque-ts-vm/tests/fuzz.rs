@@ -7,9 +7,8 @@
 //! 1 MiB arguments for the natives, and `TORQUE_FUZZ_SEED=<n>` starts from another seed; a failure names the round and its
 //! seed, so it can be run again.
 
-#[path = "../../torque-ts-compiler/tests/common/mod.rs"]
-mod common;
-mod sweep;
+use crate::common;
+use crate::sweep;
 
 use std::rc::Rc;
 

@@ -3,7 +3,7 @@
 //! tree must pass its audit, and every cap must hold. `TORQUE_FUZZ_HIERARCHY` sets the number of operations (default 2,000;
 //! the full run is 1,000,000).
 
-mod common;
+use crate::common;
 
 use common::{Rng, random_local, random_pose};
 use torque_collide::math::{IDENTITY, Matrix};

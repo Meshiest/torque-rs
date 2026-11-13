@@ -1,7 +1,7 @@
 //! The Lua extension built as its own library and loaded from a `plugins/` folder, as a game loads it: the same scripts
 //! run as with it linked in.
 
-mod common;
+use crate::common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

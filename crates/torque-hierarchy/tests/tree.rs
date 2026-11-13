@@ -1,6 +1,6 @@
 //! The tree's rules, one scenario each: refusals, caps, the keep modes, the scale rule, resolve order and the deletes.
 
-mod common;
+use crate::common;
 
 use common::{World, pose_error};
 use torque_collide::math::{IDENTITY, Matrix, mul_p, quat_matrix};

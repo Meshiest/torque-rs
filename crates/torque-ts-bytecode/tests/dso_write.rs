@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{empty, encode, sample, t3d};
 use torque_ts_bytecode::dso::MAX_LOCAL_NAME_BYTES;

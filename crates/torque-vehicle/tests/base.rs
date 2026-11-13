@@ -1,6 +1,6 @@
 //! The base Vehicle: the sub-step cap, the collision queue across sub-steps, `resolveCollision`'s 50 passes, the wake rules.
 
-mod common;
+use crate::common;
 
 use common::host::Ground;
 use torque_collide::math::{Box3, F3, IDENTITY};

@@ -1,6 +1,6 @@
 //! The natives of the app layer's bare script engines, compared with the snapshot files in `tests/natives/`: a client made from
 //! `ClientSetup::default()`, a server over a script that starts nothing, and the page bridge's. A change to what scripts can
-//! call shows as a diff here; `TORQUE_BLESS=1 cargo test -p torque-app --test natives` rewrites the snapshot files.
+//! call shows as a diff here; `TORQUE_BLESS=1 cargo test -p torque-app --test main natives::` rewrites the snapshot files.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};

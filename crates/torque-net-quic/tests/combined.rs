@@ -4,7 +4,7 @@
 //! answers (the per-address caps count the real address), a connection that ends is reported gone through it, and both sides
 //! are serviced.
 
-mod common;
+use crate::common;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 

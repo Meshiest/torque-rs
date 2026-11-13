@@ -39,7 +39,7 @@ CI (`.github/workflows/ci.yml`) runs on Linux and Windows and fails on any of:
 
 The `natives` tests compare the natives each example's and the app layer's script engines have with the snapshot files under
 `tests/natives/`. A change that adds, removes or alters a native fails them; `TORQUE_BLESS=1 cargo test --workspace
---all-features --test natives` rewrites the snapshot files, and the diff is part of the change.
+--all-features natives::` rewrites the snapshot files, and the diff is part of the change.
 
 Debug builds carry line tables for this workspace's crates and no debug info for dependencies; for a debugger session set
 `CARGO_PROFILE_DEV_DEBUG=2`. `cargo build --release` is the quick optimized build; `--profile dist` is release with fat LTO

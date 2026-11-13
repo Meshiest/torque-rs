@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "physics", "props", "plugin", "gamedev"]
 categories = ["game-development", "simulation"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # Props: the `PropData` datablock class and the `Prop` ghost class, one persistent Rapier world a server steps after each tick's
 # objects, the `prop*` console functions (a server API: no client entry point), a collision source on each side (players
@@ -70,6 +72,10 @@ required-features = ["rope"]
 [[test]]
 name = "joint_rope_pictures"
 required-features = ["rope"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

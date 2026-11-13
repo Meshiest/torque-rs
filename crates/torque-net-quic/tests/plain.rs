@@ -1,6 +1,6 @@
 //! Plain datagrams beside QUIC (`QuicServer::pass_plain`): what reaches the host, from where, and what it may answer.
 
-mod common;
+use crate::common;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 

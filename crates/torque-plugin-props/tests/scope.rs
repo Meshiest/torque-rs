@@ -2,8 +2,7 @@
 //! object, an always-in-scope one and the ghost-always set, for one connection and for every one. (Against a scene hierarchy:
 //! torque-plugin-hierarchy's `net` tests.)
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Rig, clients};
 use torque_engine::scope::{Audience, ScopeControl};

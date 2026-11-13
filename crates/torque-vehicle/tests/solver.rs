@@ -1,7 +1,7 @@
 //! The solver seam: a solver the host hands the step is called in order, a delegate to TGE's body gives TGE's result bit for
 //! bit, and a solver that runs out of budget stops the tick where it was.
 
-mod common;
+use crate::common;
 
 use std::cell::RefCell;
 use std::rc::Rc;

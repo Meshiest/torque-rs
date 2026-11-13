@@ -8,7 +8,7 @@
 //! client without the plugin the server has); a refusal by the ticket (a client signing in under another secret).
 //!
 //! The goldens are in `golden/wire_sessions.txt`. After a change that is meant to alter the wire,
-//! `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-trace-hash --test wire_golden` writes the file again.
+//! `TORQUE_BLESS_GOLDEN=1 cargo test -p torque-trace-hash --test main wire_golden::` writes the file again.
 //!
 //! A server of a net game of its own made of Torque's parts (Torque's table and ghosts, a connection part of its own, a
 //! payload layer that counts what passes through Torque's event layer) writes the same bytes: its plain and gated sessions are
@@ -39,7 +39,7 @@ use torque_server::net::torque::{TgeGhostGame, TorqueNet};
 use torque_trace_hash::rig::{Control, Mode, Rig, fix_server_keys};
 use torque_trace_hash::scenarios::Baseline;
 
-mod common;
+use crate::common;
 
 use common::{Link, SERVER, Wire, client};
 

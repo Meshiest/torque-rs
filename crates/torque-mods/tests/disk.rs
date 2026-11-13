@@ -1,7 +1,7 @@
 //! Mods on the player's disk: folders and zips of a folder outside the game's files, with links never followed.
 #![cfg(not(target_family = "wasm"))]
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

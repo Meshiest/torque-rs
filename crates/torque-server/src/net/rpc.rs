@@ -43,7 +43,7 @@
 //!   before its own handler runs (`ClientHooks::realm`); without an inbox it is not queued. `ServerRpc::connections` and
 //!   `conn_of` let a plugin address clients by connection (the client-script plugin's offer and natives).
 //!
-//! Checks: `cargo test -p torque-server --lib net::rpc`, `cargo test -p torque-example-minimal-engine --test rpc`, and the engine's
+//! Checks: `cargo test -p torque-server --lib net::rpc`, `cargo test -p torque-example-minimal-engine --test main rpc::`, and the engine's
 //! list in its `rpc` docs.
 
 use std::cell::{Cell, RefCell};

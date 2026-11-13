@@ -2,8 +2,7 @@
 //! that walks into a wall of them stops where the server stops it, with no corrections, while the same walk with the table
 //! emptied runs on into the wall and is pulled back by the server over and over.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{Link, PeerProps, Rig, files};
 use torque_engine::{Engine, EngineBuilder};

@@ -1,5 +1,5 @@
 # The website on GitHub Pages: the gallery of the web examples (each played alone, its files fetched by URL), the guide
-# (mdBook) and the API reference (rustdoc), built by `node web/site.mjs` (`just site`) and deployed on pushes to main.
+# (mdBook) and the API reference (rustdoc), built by `node web/site.mjs` (`just site`) and deployed when started by hand.
 #
 # Pages must be enabled in the repository's settings (Settings, Pages) with the source "GitHub Actions".
 # The site is served at https://reheatedcake.io/torque-rs/: the account's custom domain covers its project sites, under the
@@ -15,23 +15,8 @@
 
 name: Pages
 
-# Pushes that cannot change the site (tests, CI settings, the top-level notes) do not build it; run it by hand when needed.
+# Built and deployed only when started by hand (Actions, Pages, Run workflow), to save CI minutes.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**/*_tests.rs"
-      - "crates/*/tests/**"
-      - "examples/*/tests/**"
-      - "crates/*/benches/**"
-      - ".github/workflows/ci.yml"
-      - "CHANGELOG.md"
-      - "CONTRIBUTING.md"
-      - "SECURITY.md"
-      - "README.md"
-      - "deny.toml"
-      - "clippy.toml"
-      - "rustfmt.toml"
   workflow_dispatch:
 
 permissions:

@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "map", "entities", "plugin", "gamedev"]
 categories = ["game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # A server-side event bus over a map's entities (the format-neutral `torque_mapcore::scene::Entity`): outputs, target names,
 # delays and a deterministic queue with caps; the logic entities, triggers and filters as server-only records, and movers as a
@@ -29,6 +31,10 @@ torque-ts-vm = { path = "../torque-ts-vm" }
 [dev-dependencies]
 # The real-map test (skipped when `TORQUE_SOURCE_GAME_DIR` is unset) reads maps through the format crate.
 torque-format-valve = { path = "../torque-format-valve" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

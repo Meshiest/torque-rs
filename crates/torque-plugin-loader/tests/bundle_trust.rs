@@ -2,7 +2,7 @@
 //! compiled into its executable (`shipped`). The bundle's `manifest.toml` lives in the game's folder, so it is only a start-up
 //! report of changed or missing files and approves nothing, whatever it lists. The manifest is the one `torque-bundle` writes.
 
-mod common;
+use crate::common;
 
 use std::cell::Cell;
 use std::path::PathBuf;

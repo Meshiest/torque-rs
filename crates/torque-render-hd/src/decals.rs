@@ -33,7 +33,7 @@
 //!   object that takes no decals.
 //! - Extension points: a per-decal normal map (another binding in group 1); clustered lists in place of the per-texture runs
 //!   if decals ever take many textures.
-//! - Checks: `cargo test -p torque-render-hd --test projected_decals`, `cargo test -p torque-render-hd --lib shaders`,
+//! - Checks: `cargo test -p torque-render-hd --test main projected_decals::`, `cargo test -p torque-render-hd --lib shaders`,
 //!   `cargo test -p torque-render-scene decals`, and `cargo run -p torque-render-hd --release --example decals-profile` (under
 //!   the GPU bench lock: it prints the pass's median against its 0.5 ms mark).
 

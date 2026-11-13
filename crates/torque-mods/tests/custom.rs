@@ -2,7 +2,7 @@
 //! an enable list kept in a script file) loads the same fixture differently from the default, and each slot is replaced on its
 //! own. The limits and the path rules still hold for a custom layout.
 
-mod common;
+use crate::common;
 
 use common::{files, server};
 use serde_json::Value;

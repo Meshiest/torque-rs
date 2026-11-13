@@ -164,7 +164,7 @@ catalog-shots dir="../../target/level-catalog-shots":
 # `lua-client-web` builds
 catalog-test:
     just --justfile ../../justfile --working-directory ../.. lua-client-web
-    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test catalog --test multiplayer -- --include-ignored
+    $env:TORQUE_CLIENT_GUEST = "{{web_target}}/lua-web/torque_lua_client.wasm"; $env:TORQUE_CLIENT_GUEST_REQUIRED = "1"; cargo test -p torque-example-level-demo --test main -- --include-ignored catalog:: multiplayer::
 
 # The catalog's pictures (the mod's `icons/`): each kind of the office's props drawn from its shape on a plain floor by a fixed camera,
 # offscreen (no window), 128 x 128, into `dir` (the mod's own folder by default)

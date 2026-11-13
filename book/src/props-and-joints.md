@@ -482,7 +482,7 @@ from where it was shown; one never confirmed within two seconds fades out. **A w
 (`PropPrediction::spawns` gives each with its opacity).
 
 **Its error and cost.** Over the memory transport with about 100 ms there and back and 2% of the datagrams lost
-(`cargo test -p torque-plugin-props --test predict`): a held crate dragged on a 600-tick walk is drawn with no jump past the
+(`cargo test -p torque-plugin-props --test main predict::`): a held crate dragged on a 600-tick walk is drawn with no jump past the
 server's own crate's (the largest change of its drawn step from one tick to the next is the server's), a mean correction of 2.2
 cm; riding a sliding raft and pushing a row of four, 0.6 cm, with 4 corrections of the Player's own prediction against 74 without
 prop prediction; a predicted push the server makes too, under 1 cm; one it never makes is back where the server has it within
@@ -511,25 +511,25 @@ office (197 props, all asleep) that took a frame from about 7.7 to 4.1 ms in its
 `cargo test -p torque-plugin-props`: the quantization's precision and stability, the records' wire form and hostile bytes, the
 caps, sleep, freeze, pushes and the budget in the world alone; a server and two clients over the memory transport (states that
 match the server's, sleepers that cost nothing, the share of each packet, the command's checks and rate, orphans, a client
-without the plugin refused); a client that speaks only Torque's protocol (it is sent no prop, frozen or not, and a client with no channel is ghosted every prop); `--test frozen` (2,000 frozen props reach a client as 256 ghosts and 1,744 channel entries, each drawn once and collided with once; a prop handed between ghost and channel in both directions with one picture every tick, on a clean and a lossy link; a late client; a client that leaves), `--test frozen_predict` (a figure walks into a wall of channel props and stops where the server stops it with as few corrections as against ghosts, where a client blind to the table is pulled back over and over), `--test scope` and `--test frozen_messages` (a hostile server's bytes); and the fuzzers. The `props-drop` scenario of
+without the plugin refused); a client that speaks only Torque's protocol (it is sent no prop, frozen or not, and a client with no channel is ghosted every prop); `--test main frozen::` (2,000 frozen props reach a client as 256 ghosts and 1,744 channel entries, each drawn once and collided with once; a prop handed between ghost and channel in both directions with one picture every tick, on a clean and a lossy link; a late client; a client that leaves), `--test main frozen_predict::` (a figure walks into a wall of channel props and stops where the server stops it with as few corrections as against ghosts, where a client blind to the table is pulled back over and over), `--test main scope::` and `--test main frozen_messages::` (a hostile server's bytes); and the fuzzers. The `props-drop` scenario of
 `just trace-hash` (64 crates dropped and walked through, a server and a predicting client) prints the same hash native and wasm32.
 
-Joints: `--test joints` (in the world alone: a hard tether under a 10 unit/s pull stays within 1 cm of its length every tick over
+Joints: `--test main joints::` (in the world alone: a hard tether under a 10 unit/s pull stays within 1 cm of its length every tick over
 600, a soft one settles within 5% of its rest stretch, a winch reaches its target within 2% of the planned time and stalls past
 its force, a weld creeps at most 1 mm over 600 ticks under load, a hinge holds its limits within half a degree, breaking, the caps,
-a joint through a freeze, a new world and its prop's going), `--test joints_net` (the clients' books, a winch's length, a
+a joint through a freeze, a new world and its prop's going), `--test main joints_net::` (the clients' books, a winch's length, a
 grapple's tether bit for bit on the client), `--features rope --test joint_rope` (a taut joint rope straight within 1 mm, a slack
 one hanging, a rope that follows its joint over the network and goes with it). The `props-joints` scenario of `just trace-hash`
 (a figure running and jumping on a grapple, with a hard and a soft tether, a winch, a weld and a motored hinge around it) prints
 the same hash native and wasm32, with 0 corrections of the figure's prediction.
 
-Hierarchy: `--test hierarchy` (a driven child within 1 mm of its resolved pose every tick of 600, a part's local pose bit for bit
+Hierarchy: `--test main hierarchy::` (a driven child within 1 mm of its resolved pose every tick of 600, a part's local pose bit for bit
 over 600 ticks under load, an unparented prop within 1% of its parent's point velocity, a prop with a joint refused, freezing,
-deleting and a world made again with children) and `--test hierarchy_net` (a client finds a child where its parent puts it and never
+deleting and a world made again with children) and `--test main hierarchy_net::` (a client finds a child where its parent puts it and never
 draws it as resting); the `hierarchy-props` scenario of `just trace-hash` hashes a lift with driven children and bodies with parts
 under a walking figure, native and wasm32.
 
-Collision as the shape: `--test shape_collision` (a server and a client hold the same hulls for a shape, refuse the same ones past
+Collision as the shape: `--test main shape_collision::` (a server and a client hold the same hulls for a shape, refuse the same ones past
 a cap, and a fuzzer feeds a hostile shape file to both; the datablock's fallbacks and their notes; a predicting client steps a
 prop with the hulls the server made) and, in the world alone (`src/hulls_tests.rs`), a crate that rests in an L-shaped prop's
 notch where a box would hold it on top, the mass a datablock gives the whole shape, and a hulled prop that sleeps where it rests.
@@ -539,7 +539,7 @@ box, whatever it could have built (`a_client_that_built_other_hulls_than_the_ser
 `src/hulls_tests.rs`). Points in a tilted plane, on a line or on a point become a box and never reach the hull builder
 (`torque-physics-rapier`'s `world` tests). `rapier-compound` of `just trace-hash` drops compounds onto the hills and the keep.
 
-Prediction: `--test predict` (the carry, the ride and the push, a predicted push the server makes too and one it never makes, the
+Prediction: `--test main predict::` (the carry, the ride and the push, a predicted push the server makes too and one it never makes, the
 caps, a projectile's push held to its cap, the shooter's own shot and its explosion). The `carry` and `projectile-props`
 scenarios of `just trace-hash` (a crate carried on a grapple; shots and explosions of the figure's own at the crate it holds)
 hash a client that predicts props, native and wasm32.

@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "torquescript", "tcp", "http", "plugin"]
 categories = ["game-development", "network-programming"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The console classes TCPObject and HTTPObject on every server and client script engine: outbound connections, listen sockets
 # and HTTP requests (HTTPS through rustls), polled once a tick with caps on sockets, lookups, bytes and line length. Nothing
@@ -41,6 +43,10 @@ rustls = { version = "0.23.31", default-features = false, features = ["ring", "s
 [[test]]
 name = "https"
 required-features = ["https"]
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

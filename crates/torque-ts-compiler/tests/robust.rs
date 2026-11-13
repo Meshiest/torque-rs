@@ -2,7 +2,7 @@
 //! the worst inputs we know (a `switch` whose large test expression is compiled once per `or` value, four
 //! million tokens). Each compile runs through [`compile`], which has its own worker thread.
 
-mod common;
+use crate::common;
 
 use std::process::Command;
 use std::time::Instant;
@@ -477,7 +477,7 @@ fn pathological_inputs_stay_within_fixed_time_and_memory() {
     for name in CASES {
         let out = Command::new(&test_binary)
             .args([
-                "pathological_child",
+                "robust::pathological_child",
                 "--exact",
                 "--nocapture",
                 "--test-threads=1",

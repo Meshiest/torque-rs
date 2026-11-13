@@ -2,7 +2,7 @@
 //! console functions and global work, and its natives are the same plugin's compiled in, to the listing line (the
 //! snapshot `tests/natives/sample.txt`; `TORQUE_BLESS=1` rewrites it).
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

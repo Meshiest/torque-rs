@@ -1,8 +1,7 @@
 //! Rope ends hung from a child of the scene hierarchy follow the child where the client resolves it (its parents' poses times its
 //! local pose), not the pose its own record last carried: a real server and an engine client over the memory transport.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerRopes, Rig, RigRopes, create, engine, files, rope};
 use torque_app::GameFiles;

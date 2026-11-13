@@ -1,7 +1,7 @@
 //! The world's rules: map pieces made as the engine's collision holds them, built by cell on first use; bodies checked, held
 //! and capped; the budget paid before work; two worlds given the same calls the same bits.
 
-mod common;
+use crate::common;
 
 use common::{Rng, box_hull, free, interior, terrain};
 use rapier3d::prelude::{QueryFilter, Ray, Vector};

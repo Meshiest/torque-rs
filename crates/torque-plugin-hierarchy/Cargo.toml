@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "scene-graph", "hierarchy", "plugin", "gamedev"]
 categories = ["game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # The server side of the scene hierarchy: the `SceneObject` methods that parent objects (a server API: no client entry point),
 # the tree a server keeps (torque-hierarchy) plugged into the scene's seam (torque-game's `scene::links`), the resolve after
@@ -41,6 +43,10 @@ torque-plugin-props = { path = "../torque-plugin-props" }
 torque-ghost-world = { path = "../torque-ghost-world" }
 # The ride test's predicting client over a link with latency, and its deck hung or moved by itself.
 torque-trace-hash = { path = "../torque-trace-hash" }
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

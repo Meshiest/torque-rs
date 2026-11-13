@@ -2,7 +2,7 @@
 //! shared channel binding, the identity checks (given, trusted on first use, changed), migration, and an engine session
 //! pair that delivers the same events over the QUIC link as over the memory link.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};

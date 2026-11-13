@@ -81,8 +81,8 @@
 //!   (`cs_spawn` takes the free slots in request order), a sort (a pass after `cs_scatter` over a bucket's list),
 //!   trails (another vertex entry over the same lists), the governor's rule (`cs_governor`: the scales it writes are
 //!   all the vertex stage reads).
-//! - Checks: `cargo test -p torque-render-hd --test gpu_particles` (the pictures, the atlas blend, the fill governor's
-//!   budget and time, the late bucket, a sprite over bare sky), `--test gpu_particles_motion` (a fall onto a floor
+//! - Checks: `cargo test -p torque-render-hd --test main gpu_particles::` (the pictures, the atlas blend, the fill governor's
+//!   budget and time, the late bucket, a sprite over bare sky), `--test main gpu_particles_motion::` (a fall onto a floor
 //!   stops above it and bounces by the elasticity, comes to rest, flies on off the screen and behind a wall; turbulence
 //!   off moves nothing and on moves a bounded amount the same every run; a 3-pixel sprite is a round dot; the pool read
 //!   back with `gpu_particle_states`), `cargo test -p torque-render-scene --lib -- sprites atlas`, `cargo run -p

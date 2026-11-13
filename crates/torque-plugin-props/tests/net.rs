@@ -1,8 +1,7 @@
 //! A real server and two engine clients over the memory transport: props spawned by script and by a client's command, the state
 //! each client is sent, the share of each packet the props take, sleepers that cost nothing, owners that leave.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerProps, Rig, RigProps, clients};
 

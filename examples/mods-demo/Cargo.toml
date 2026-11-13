@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 keywords = ["torque", "mods", "lua", "example", "gamedev"]
 categories = ["game-development"]
+# The integration tests are one program, `tests/main.rs`, with a module per file: fewer links.
+autotests = false
 
 # A server whose game mode is a mod (`game/mods/soccer`: TorqueScript for the datablocks, Lua for the rules) and two clients that
 # download the mod's content when they join and play the match. The Lua extension is built apart (`just lua`) and loaded from a
@@ -43,6 +45,10 @@ gizmos = ["torque/gizmos"]
 # A packaged game (`just bundle examples/mods-demo`): the game folder and the Lua extension are read from beside the
 # executable (`game/`, `plugins/`) instead of from this crate's folder and the build folder.
 bundled = []
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
 
 [lints]
 workspace = true

@@ -60,7 +60,7 @@
 //! manifest's format itself, so a change to `manifest`'s format must change `torque_plugin_loader::BundleManifest` too;
 //! `crates/torque-plugin-loader/tests/bundle_trust.rs` writes the manifest with `manifest::write` and compares its verdict with
 //! `manifest::verify`. A game must not write into its own folder, or it reports itself changed at the next start. **Check
-//! commands:** `cargo test -p torque-plugin-loader --test bundle_trust`, `just bundle examples/mods-demo` (its headless round
+//! commands:** `cargo test -p torque-plugin-loader --test main bundle_trust::`, `just bundle examples/mods-demo` (its headless round
 //! loads the Lua extension by the hash compiled into it).
 //!
 //! **Reproducible from any folder.** Two checkouts of one commit in different folders give byte-identical archives

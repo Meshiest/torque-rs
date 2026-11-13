@@ -171,7 +171,7 @@
 //! digest) follow. A write and a redeclare do the same work. The work is charged to the next steps as a spawn's is, so a script
 //! that edits a datablock of a thousand props every tick is bounded by the step budget and the props' caps. Held by
 //! `tests/datablock_reload.rs` (64 props, a redeclare doubling `mass`: 64 bodies at the new mass, position error 0, velocities
-//! bit-equal) and `world_tests::a_refit_keeps...`. Check: `cargo test -p torque-plugin-props --test datablock_reload` under
+//! bit-equal) and `world_tests::a_refit_keeps...`. Check: `cargo test -p torque-plugin-props --test main datablock_reload::` under
 //! `TORQUE_NET_PROTOCOL=tge` and `=engine`.
 //!
 //! **Props that collide as their shape.** A datablock's `collision` field (`PropCollision`; it is in the datablock record, so
@@ -370,7 +370,7 @@
 //! - A sleeping prop a joint changes wakes (a sleeper otherwise settles back where it lay, and a winch would never lift it):
 //!   `a_winch_reaches_its_target_within_two_percent_of_the_planned_time`, `a_hinge_holds_its_limits_within_half_a_degree`.
 //! - A projectile's hit pushes its prop along the shot, held to the cap, and both `onCollision`s run; without plugin shapes a
-//!   projectile is Torque's: `a_projectile_pushes_a_prop_along_its_flight_held_to_the_cap` (`--test predict`) and every TGE
+//!   projectile is Torque's: `a_projectile_pushes_a_prop_along_its_flight_held_to_the_cap` (`--test main predict::`) and every TGE
 //!   line of `just trace-hash` unchanged. An impulse at the center leaves a body's spin as it is (torque-physics-rapier), so the
 //!   pushes of every earlier line hash as before.
 //! - A grapple's pull on a prop is the momentum of the pair's reduced mass ([`joints::grapple_pull`]), the same on the server and
@@ -406,7 +406,7 @@
 //!   `bystanders_are_made_in_ascending_id_order_among_the_pushers`; a box that turns hostile loses its old body:
 //!   `a_bystander_whose_box_turns_hostile_loses_its_body`. A hold made against a wall, the holder's own box solid to
 //!   its prop, neither throws the prop, jitters it nor moves the holder:
-//!   `a_hold_made_against_a_wall_neither_explodes_nor_jitters_nor_pushes_the_holder` (`--test joints`).
+//!   `a_hold_made_against_a_wall_neither_explodes_nor_jitters_nor_pushes_the_holder` (`--test main joints::`).
 //! - Predicted impulses touch only predicted props, are capped a tick and in size, are never sent, and one the server does not
 //!   make eases out: `predicted_impulses_are_capped_and_never_sent`,
 //!   `a_predicted_impulse_the_server_never_makes_eases_out_with_no_pop`,

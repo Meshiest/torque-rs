@@ -1,7 +1,6 @@
 //! Networked ropes end to end: a real server and engine clients over the memory transport.
 
-#[path = "net/rig.rs"]
-mod rig;
+use crate::rig;
 
 use rig::{PeerRopes, Rig, RigRopes, create, engine, files, rope, two};
 use torque_plugin_rope::{Anchor, Rope, RopeEnd};
