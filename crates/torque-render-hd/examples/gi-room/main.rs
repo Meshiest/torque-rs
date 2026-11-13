@@ -14,8 +14,8 @@
 //! - `--blocks N` times the voxels' update while one block of room B's wall is taken out or put back each frame for N frames:
 //!   the `gi voxels` mark's median and worst milliseconds (under the bench lock);
 //! - `--compare` draws the two rooms with global illumination until the probes settle (every probe traced every frame) and
-//!   compares each region's ambient with the reference's (the door open), and room B's with room A's (the door shut: the
-//!   leak);
+//!   compares each region's ambient with the reference's (the door open), point by point over the doorway's surfaces, and
+//!   room B's with room A's (the door shut: the leak);
 //! - `--repeat` draws each scene's picture with global illumination twice, each in a new renderer, and counts the pixels that
 //!   differ.
 
@@ -32,7 +32,7 @@ use torque_render_scene::hd::kit::look_at;
 use torque_render_scene::hd::{HdCamera, HdMode, Quality};
 
 use crate::reference::{Traced, luminance};
-use crate::scenes::{Room, TestScene};
+use crate::scenes::{Region, Room, TestScene};
 
 /// Frames drawn for each picture (the anti-aliasing's history and the capture's faces settle over them).
 const FRAMES: usize = 48;
@@ -281,8 +281,9 @@ fn blocks(gpu: &Gpu, quality: Quality, frames: usize) -> Result<(), String> {
 /// Frames drawn for the probes to settle before the comparison (every probe traced every frame).
 const SETTLE: usize = 96;
 
-/// The probes' ambient over each region of `t` (its points' mean), after the frames that settle them.
-fn probe_regions(gpu: &Gpu, t: &mut TestScene, quality: Quality) -> Result<Vec<[f32; 3]>, String> {
+/// A renderer whose probes have settled on `t` (every probe traced every frame), seen from the door so both rooms are in the
+/// finest cascade and the finest voxels (the probes, not their distance, judged).
+fn settled(gpu: &Gpu, t: &mut TestScene, quality: Quality) -> Result<HdWorld<Room>, String> {
     let (w, h) = scenes::SIZE;
     let target = gpu.offscreen(w / 4, h / 4).map_err(|e| e.to_string())?;
     let mut world: HdWorld<Room> = HdWorld::new(gpu);
@@ -290,7 +291,6 @@ fn probe_regions(gpu: &Gpu, t: &mut TestScene, quality: Quality) -> Result<Vec<[
     world.gi_mut().converge = true;
     t.scene.mode = Some(HdMode::new(quality));
     let camera = t.camera;
-    // From the door, so both rooms are in the finest cascade and the finest voxels (the probes, not their distance, judged).
     t.camera = HdCamera::new(
         look_at([0.25, 0.0, 1.5], [-3.0, 0.0, 1.0]),
         90.0_f32,
@@ -300,27 +300,74 @@ fn probe_regions(gpu: &Gpu, t: &mut TestScene, quality: Quality) -> Result<Vec<[
     );
     draw(gpu, &mut world, t, &target, SETTLE)?;
     t.camera = camera;
-    let mut out = Vec::new();
-    for r in &t.regions {
-        let points: Vec<([f32; 3], [f32; 3])> = r
-            .points(POINTS)
-            .into_iter()
-            .map(|p| (p, r.normal))
-            .collect();
+    Ok(world)
+}
+
+/// The probes' ambient over each region (its `POINTS` x `POINTS` points' mean).
+fn probe_regions(world: &mut HdWorld<Room>, regions: &[Region]) -> Result<Vec<[f32; 3]>, String> {
+    regions
+        .iter()
+        .map(|r| {
+            let got = world.gi_ambient_at(&r.facing(POINTS))?;
+            let sum = got
+                .iter()
+                .fold([0.0f32; 3], |a, b| std::array::from_fn(|k| a[k] + b[k]));
+            Ok(sum.map(|c| c / got.len() as f32))
+        })
+        .collect()
+}
+
+/// The mean and the largest of `offs` (each a share off the reference, none negative).
+fn mean_and_worst(offs: &[f32]) -> (f32, f32) {
+    let mean = offs.iter().sum::<f32>() / offs.len().max(1) as f32;
+    (mean, offs.iter().copied().fold(0.0, f32::max))
+}
+
+/// Sample points a side of each doorway region.
+const DOORWAY_POINTS: usize = 8;
+
+/// The probes against the reference point by point over the open doorway's surfaces: each surface's mean and worst point
+/// (a band or a blotch the regions' means smooth over).
+fn doorway(world: &mut HdWorld<Room>, traced: &Traced, quality: Quality) -> Result<(), String> {
+    let mut all = Vec::new();
+    for r in scenes::doorway_regions() {
+        let points = r.facing(DOORWAY_POINTS);
+        let want = traced.points(&points);
         let got = world.gi_ambient_at(&points)?;
-        let sum = got
+        let offs: Vec<f32> = want
             .iter()
-            .fold([0.0f32; 3], |a, b| std::array::from_fn(|k| a[k] + b[k]));
-        out.push(sum.map(|c| c / got.len() as f32));
+            .zip(&got)
+            .map(|(a, b)| {
+                let (a, b) = (luminance(*a), luminance(*b));
+                ((b - a) / a.max(1e-9)).abs()
+            })
+            .collect();
+        let (mean, worst) = mean_and_worst(&offs);
+        println!(
+            "{:<14} mean {:>5.1} %, worst point {:>5.1} %",
+            r.name,
+            mean * 100.0,
+            worst * 100.0
+        );
+        all.extend(offs);
     }
-    Ok(out)
+    let (mean, worst) = mean_and_worst(&all);
+    println!(
+        "doorway ({}): the probes' ambient off the reference's by {:.1} % on average, {:.1} % at the worst point",
+        quality.name(),
+        mean * 100.0,
+        worst * 100.0
+    );
+    Ok(())
 }
 
 /// The probes against the reference on the two rooms' regions (the door open), and the leak into room B (the door shut).
 fn compare(gpu: &Gpu, quality: Quality) -> Result<(), String> {
     let mut open = scenes::two_rooms(true);
-    let reference = Traced::of(&open.scene).regions(&open.regions, POINTS);
-    let probes = probe_regions(gpu, &mut open, quality)?;
+    let traced = Traced::of(&open.scene);
+    let reference = traced.regions(&open.regions, POINTS);
+    let mut world = settled(gpu, &mut open, quality)?;
+    let probes = probe_regions(&mut world, &open.regions)?;
     println!(
         "{:<14} {:>10} {:>10} {:>8}",
         "region", "reference", "probes", "off"
@@ -332,16 +379,17 @@ fn compare(gpu: &Gpu, quality: Quality) -> Result<(), String> {
         offs.push(off.abs());
         println!("{:<14} {a:>10.5} {b:>10.5} {:>7.1} %", r.name, off * 100.0);
     }
-    let mean = offs.iter().sum::<f32>() / offs.len() as f32;
-    let worst = offs.iter().copied().fold(0.0f32, f32::max);
+    let (mean, worst) = mean_and_worst(&offs);
     println!(
         "two rooms ({}): the probes' ambient off the reference's by {:.1} % on average, {:.1} % at worst",
         quality.name(),
         mean * 100.0,
         worst * 100.0
     );
+    doorway(&mut world, &traced, quality)?;
     let mut shut = scenes::two_rooms(false);
-    let probes = probe_regions(gpu, &mut shut, quality)?;
+    let mut world = settled(gpu, &mut shut, quality)?;
+    let probes = probe_regions(&mut world, &shut.regions)?;
     let room = |prefix: &str| {
         let v: Vec<f32> = shut
             .regions

@@ -81,6 +81,14 @@ impl Region {
         }
         out
     }
+
+    /// The region's `n` x `n` sample points, each with the region's normal.
+    pub fn facing(&self, n: usize) -> Vec<([f32; 3], [f32; 3])> {
+        self.points(n)
+            .into_iter()
+            .map(|p| (p, self.normal))
+            .collect()
+    }
 }
 
 /// A test scene: its frame, the camera of its picture and the surfaces the checks sample.
@@ -141,7 +149,8 @@ const fn block(lo: [f32; 3], hi: [f32; 3], color: [u8; 3]) -> Block {
     Block { lo, hi, color }
 }
 
-/// The boxes as static cells (each box in the cell its middle lies in), one untextured slot, `generation` their build.
+/// The boxes as static cells (each box in the cell its middle lies in), one untextured slot, `generation` their build: a
+/// renderer keeps a cell whose key and generation it already holds, so scenes drawn by one renderer take distinct generations.
 pub fn cells_of(blocks: &[Block], generation: u64) -> StaticCells {
     let mut by_cell: BTreeMap<[i32; 3], Vec<[HdVertex; 4]>> = BTreeMap::new();
     for b in blocks {
@@ -242,10 +251,17 @@ const WALL: [u8; 3] = [200, 196, 188];
 const FLOOR: [u8; 3] = [150, 128, 104];
 const RED: [u8; 3] = [190, 60, 48];
 const BLUE: [u8; 3] = [70, 100, 170];
+const DOOR: [u8; 3] = [120, 84, 56];
+
+/// The cells' generations of the scenes drawn by one renderer (each distinct: see [`cells_of`]).
+const OPEN_GENERATION: u64 = 1;
+const SHUT_GENERATION: u64 = 2;
+const COURTYARD_GENERATION: u64 = 3;
 
 /// The two rooms' boxes: room A from x -6 to 0, room B from 0.5 to 6.5 (y -3 to 3, z 0 to 3), the wall between them half a
-/// unit thick with a door 1.2 wide and 2.2 high when `door`, A's west wall blue and its south wall red.
-pub fn two_rooms_blocks(door: bool) -> Vec<Block> {
+/// unit thick with a doorway 1.2 wide and 2.2 high, open when `open` and else filled by a brown door set a tenth of a unit
+/// back from room A's side, A's west wall blue and its south wall red.
+pub fn two_rooms_blocks(open: bool) -> Vec<Block> {
     let mut b = vec![
         block([-6.5, -3.5, -0.5], [7.0, 3.5, 0.0], FLOOR),
         block([-6.5, -3.5, 3.0], [7.0, 3.5, 3.5], WALL),
@@ -255,12 +271,11 @@ pub fn two_rooms_blocks(door: bool) -> Vec<Block> {
         block([0.25, -3.5, 0.0], [7.0, -3.0, 3.0], WALL),
         block([-6.5, 3.0, 0.0], [7.0, 3.5, 3.0], WALL),
     ];
-    if door {
-        b.push(block([0.0, -3.0, 0.0], [0.5, -0.6, 3.0], WALL));
-        b.push(block([0.0, 0.6, 0.0], [0.5, 3.0, 3.0], WALL));
-        b.push(block([0.0, -0.6, 2.2], [0.5, 0.6, 3.0], WALL));
-    } else {
-        b.push(block([0.0, -3.0, 0.0], [0.5, 3.0, 3.0], WALL));
+    b.push(block([0.0, -3.0, 0.0], [0.5, -0.6, 3.0], WALL));
+    b.push(block([0.0, 0.6, 0.0], [0.5, 3.0, 3.0], WALL));
+    b.push(block([0.0, -0.6, 2.2], [0.5, 0.6, 3.0], WALL));
+    if !open {
+        b.push(block([0.1, -0.6, 0.0], [0.4, 0.6, 2.2], DOOR));
     }
     b
 }
@@ -364,25 +379,62 @@ fn two_rooms_regions() -> Vec<Region> {
     ]
 }
 
-/// The two rooms (`door` open or shut: the leak test), lit by room A's ceiling panel at night, seen from A's south-west corner
-/// toward the door.
-pub fn two_rooms(door: bool) -> TestScene {
+/// The open doorway's surfaces (its jambs' faces, its lintel's underside and the floor under it): where the probes' cascades
+/// meet thin walls on both sides, the doorway check's points.
+pub fn doorway_regions() -> Vec<Region> {
+    let (x, y, z) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    let s = |v: [f32; 3], k: f32| v.map(|c| c * k);
+    let r = |name, center, u, v, normal| Region {
+        name,
+        center,
+        u,
+        v,
+        normal,
+    };
+    vec![
+        r("south jamb", [0.25, -0.6, 1.1], s(x, 0.25), s(z, 1.1), y),
+        r(
+            "north jamb",
+            [0.25, 0.6, 1.1],
+            s(x, 0.25),
+            s(z, 1.1),
+            s(y, -1.0),
+        ),
+        r(
+            "lintel",
+            [0.25, 0.0, 2.2],
+            s(x, 0.25),
+            s(y, 0.6),
+            s(z, -1.0),
+        ),
+        r("threshold", [0.25, 0.0, 0.0], s(x, 0.25), s(y, 0.6), z),
+    ]
+}
+
+/// The two rooms (the door `open` or shut: the leak test), lit by room A's ceiling panel at night, seen from A's south-west
+/// corner toward the door.
+pub fn two_rooms(open: bool) -> TestScene {
     let mut scene = PlainScene {
         frame: HdScene::new(StaticCells::default()),
         mode: Some(HdMode::new(Quality::Ultra)),
         time: 0.0,
     };
     let (light, emitter) = panel();
-    let mut blocks = two_rooms_blocks(door);
+    let mut blocks = two_rooms_blocks(open);
     blocks.extend(block_wall());
     let s = &mut scene.frame;
-    s.cells = cells_of(&blocks, 1);
+    let generation = if open {
+        OPEN_GENERATION
+    } else {
+        SHUT_GENERATION
+    };
+    s.cells = cells_of(&blocks, generation);
     s.planes = vec![planes_of(&[emitter], false)];
     s.area_lights = vec![light];
     night(s);
     let camera = camera_of(s, [-5.4, -2.4, 1.8], [2.5, 1.2, 0.6]);
     TestScene {
-        name: if door { "two-rooms" } else { "two-rooms-shut" },
+        name: if open { "two-rooms" } else { "two-rooms-shut" },
         scene,
         camera,
         regions: two_rooms_regions(),
@@ -475,7 +527,7 @@ pub fn courtyard() -> TestScene {
     }
     let ground = block([-40.0, -40.0, -0.5], [40.0, 40.0, 0.0], [130, 120, 100]);
     let s = &mut scene.frame;
-    s.cells = cells_of(&blocks, 1);
+    s.cells = cells_of(&blocks, COURTYARD_GENERATION);
     s.planes = vec![planes_of(&[ground], true)];
     s.atmosphere = true;
     s.visible_distance = 600.0;

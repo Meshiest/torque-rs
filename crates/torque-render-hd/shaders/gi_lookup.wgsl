@@ -45,9 +45,8 @@ fn gi_cascade(cascade: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> vec4<f3
         let dist = max(length(to), 1e-4);
         let dir = to / dist;
         let tri = mix(1.0 - f, f, vec3<f32>(off));
-        var w = tri.x * tri.y * tri.z;
         let wrap = (dot(dir, n) + 1.0) * 0.5;
-        w = w * (wrap * wrap + 0.02);
+        var w = wrap * wrap + 0.02;
         let tile = gi_probe_tile(cascade, s);
         let m = textureSampleLevel(gi_atlas, gi_samp, gi_oct_uv(tile, GI_DEPTH_TILE, GI_DEPTH_INNER, gi_state.probes.atlas.z, -dir), 0.0).xy;
         if dist > m.x {
@@ -58,9 +57,12 @@ fn gi_cascade(cascade: u32, p: vec3<f32>, n: vec3<f32>, v: vec3<f32>) -> vec4<f3
             w = w * max(cheb * cheb * cheb, 0.0);
         }
         w = max(w, 1e-6) * probe.w;
+        // The crush (a probe the surface barely sees counts far less) before the distance's weight: after it, the trilinear
+        // blend between neighbors would turn into steps.
         if w < 0.2 {
             w = w * w * w / 0.04;
         }
+        w = w * tri.x * tri.y * tri.z;
         let irr = textureSampleLevel(gi_atlas, gi_samp, gi_oct_uv(tile, GI_IRR_TILE, GI_IRR_INNER, 0.0, n), 0.0).rgb;
         sum = sum + irr * w;
         total = total + w;

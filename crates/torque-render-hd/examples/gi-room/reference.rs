@@ -309,35 +309,54 @@ impl Traced {
             .enumerate()
             .map(|(r, region)| {
                 let points = region.points(n);
-                let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
-                let chunk = points.len().div_ceil(threads);
-                let sums: Vec<[f32; 3]> = std::thread::scope(|s| {
-                    let handles: Vec<_> = points
-                        .chunks(chunk)
-                        .enumerate()
-                        .map(|(c, ps)| {
-                            s.spawn(move || {
-                                ps.iter()
-                                    .enumerate()
-                                    .map(|(k, &p)| {
-                                        let seed = ((r * 1000 + c * chunk + k) as u32)
-                                            .wrapping_mul(0x9e37_79b9);
-                                        self.ambient(p, region.normal, seed)
-                                    })
-                                    .fold([0.0; 3], add)
-                            })
-                        })
-                        .collect();
-                    handles
-                        .into_iter()
-                        .map(|h| h.join().expect("a reference thread"))
-                        .collect()
+                let traced = on_threads(&points, |k, &p| {
+                    self.ambient(p, region.normal, seed(r * 1000 + k))
                 });
-                let total = sums.into_iter().fold([0.0; 3], add);
+                let total = traced.into_iter().fold([0.0; 3], add);
                 scale(total, 1.0 / points.len() as f32)
             })
             .collect()
     }
+
+    /// The ambient radiance at each point facing its normal (on all the machine's threads; seeded apart from the regions').
+    pub fn points(&self, points: &[([f32; 3], [f32; 3])]) -> Vec<[f32; 3]> {
+        on_threads(points, |k, &(p, n)| {
+            self.ambient(p, n, seed(POINT_SEEDS + k))
+        })
+    }
+}
+
+/// The first seed index of `Traced::points` (past every region's).
+const POINT_SEEDS: usize = 1 << 20;
+
+/// The paths' seed of the `index`th point traced.
+fn seed(index: usize) -> u32 {
+    (index as u32).wrapping_mul(0x9e37_79b9)
+}
+
+/// `f` of each item and its index, the items split over all the machine's threads, in the items' order.
+fn on_threads<T: Sync, R: Send>(items: &[T], f: impl Fn(usize, &T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(4, |t| t.get());
+    let chunk = items.len().div_ceil(threads).max(1);
+    let f = &f;
+    std::thread::scope(|s| {
+        let handles: Vec<_> = items
+            .chunks(chunk)
+            .enumerate()
+            .map(|(c, part)| {
+                s.spawn(move || {
+                    part.iter()
+                        .enumerate()
+                        .map(|(k, item)| f(c * chunk + k, item))
+                        .collect::<Vec<R>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("a reference thread"))
+            .collect()
+    })
 }
 
 /// A hashed stream of uniform numbers in [0, 1) (PCG's output of a counter).

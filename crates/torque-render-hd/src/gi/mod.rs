@@ -30,9 +30,10 @@
 //! - **The shading** (`gi_lookup.wgsl`, `gi_forward.wgsl`): the forward pass's ambient (`shade_surf`'s `ambient_linear`) goes
 //!   through the probes in the global illumination's own forward modules ([`crate::shaders::Permutation::GiForward`]: the one
 //!   line `shaders::GI_HOOK` names, changed when the module is composed; the plain modules are as they were). The point is
-//!   looked up a little off its surface and toward the eye; eight probes a cascade weighted by distance, by the normal (a probe
-//!   behind the surface counts next to nothing) and by Chebyshev's bound on their depth moments; a cascade's outer two probes
-//!   fade to the next, the last to the sky's irradiance. The probes take the light capture's bounce out of the sky's
+//!   looked up a little off its surface and toward the eye; eight probes a cascade weighted by the normal (a probe behind the
+//!   surface counts next to nothing) and by Chebyshev's bound on their depth moments, a small weight crushed toward nothing, and
+//!   then by distance (trilinear: crushed after it, the blend between neighbors would turn into steps); a cascade's outer two
+//!   probes fade to the next, the last to the sky's irradiance. The probes take the light capture's bounce out of the sky's
 //!   irradiance where they are drawn (the capture stays for the reflections). Moving shapes receive it and cast none.
 //!
 //! # Maintaining
@@ -64,8 +65,9 @@
 //!   (`the_forward_pass_changes_one_line`): with it off every picture is as it was.
 //! - Measured by `gi-room` (not unit tests: they take the scenes and minutes): the probes against the path-traced reference
 //!   on the two rooms' floors and walls seen from the door (`--compare`: each region's mean and the worst region; the
-//!   reference shadows an area light by its center as the forward pass does), the leak through a shut door (room B under 2 %
-//!   of room A), two runs' pictures the same (`--repeat`).
+//!   reference shadows an area light by its center as the forward pass does), the same point by point over the doorway's jambs,
+//!   lintel and threshold (where the probes meet thin walls on both sides: a band shows as a bad worst point), the leak through
+//!   a shut door (room B under 2 % of room A), two runs' pictures the same (`--repeat`).
 //!
 //! Extension points: a new source kind is a `SourceKey` and a branch of `Sources::sync`; a light kind is a branch of
 //! `voxel_light` in `gi_light.wgsl` (with the forward pass's function); a cost budget is a [`GiTier`] field.
