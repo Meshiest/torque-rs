@@ -36,6 +36,9 @@
 //! ([`office::ServerScripts`]) is framed only while the player is in the world, so the catalog opens over the office and not
 //! over the join screen, which shows no server controls.
 //!
+//! **Profiles.** `level-profile` times the office's and the valley's views offscreen (under the bench lock); `--gi` turns the
+//! renderer's global illumination on and waits for its voxels before timing.
+//!
 //! **Invariants**, each with the test that guards it (`tests/office.rs` unless named):
 //! - The office's building is one interior that passes the builder's verification:
 //!   `the_office_builds_into_one_interior_that_passes_verification`.

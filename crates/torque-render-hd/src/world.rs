@@ -430,6 +430,8 @@ struct FrameKey {
     buffers: [wgpu::Buffer; 7],
     views: [wgpu::TextureView; 10],
     samplers: [wgpu::Sampler; 3],
+    /// The global illumination's probe atlas and state.
+    gi: (wgpu::TextureView, wgpu::Buffer),
 }
 
 /// What the tonemap pass's group binds.
@@ -1132,6 +1134,14 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     forward_layout: wgpu::PipelineLayout,
     /// The forward modules by (clustered, gamma blend).
     forward: HashMap<(bool, bool), wgpu::ShaderModule>,
+    /// The forward modules and pipelines not in use: the global illumination's while the frames draw without it, the plain
+    /// ones while they draw with it ([`HdWorld::set_gi_shading`]), and whether the modules in use are the global
+    /// illumination's.
+    forward_aside: (
+        HashMap<(bool, bool), wgpu::ShaderModule>,
+        HashMap<PipelineKey, wgpu::RenderPipeline>,
+    ),
+    gi_shading: bool,
     clusters_pipeline: wgpu::ComputePipeline,
     tonemap_module: wgpu::ShaderModule,
     tonemap_pipeline_layout: wgpu::PipelineLayout,
@@ -1338,6 +1348,8 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     refl: reflect::Reflections,
     /// The diffuse ambient's irradiance from the sky cube and the capture.
     irradiance: irradiance::IrradiancePipe,
+    /// The global illumination ([`crate::gi`]).
+    gi: crate::gi::Gi,
     /// A plane (its height) the planar reflection is drawn for whether or not the scene has water (the SSR check's reference).
     pub planar_override: Option<f32>,
     /// Reflected rays as a mirror's (no roughness; the reflections' checks).
@@ -2473,6 +2485,20 @@ pub(crate) fn frame_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
             wgpu::TextureSampleType::Float { filterable: true },
             wgpu::TextureViewDimension::D2Array,
         ),
+        // The global illumination's probes: their atlas, their state and the atlas's sampler ([`crate::gi::Gi`]; only the
+        // global illumination's forward module reads them).
+        texture_entry(
+            22,
+            wgpu::TextureSampleType::Float { filterable: true },
+            wgpu::TextureViewDimension::D2,
+        ),
+        storage(23, true, wgpu::ShaderStages::FRAGMENT),
+        wgpu::BindGroupLayoutEntry {
+            binding: 24,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
     ]
 }
 
@@ -2669,6 +2695,7 @@ impl<E: HdExtension> HdWorld<E> {
             ],
         });
         let refl = reflect::Reflections::new(&device, cache, frame_size::<E>() as u64);
+        let gi = crate::gi::Gi::new(&device);
         let irradiance = irradiance::IrradiancePipe::new(
             &device,
             cache,
@@ -3068,6 +3095,8 @@ impl<E: HdExtension> HdWorld<E> {
                     )
                 })
                 .collect(),
+            forward_aside: (HashMap::new(), HashMap::new()),
+            gi_shading: false,
             tonemap_module: module(&device, Permutation::Tonemap),
             pipeline_cache: pipeline_cache.clone(),
             device,
@@ -3186,6 +3215,7 @@ impl<E: HdExtension> HdWorld<E> {
             stats: DrawStats::default(),
             refl,
             irradiance,
+            gi,
             planar_override: None,
             mirror_reflections: false,
             capture_every_frame: false,
@@ -3423,6 +3453,10 @@ impl<E: HdExtension> HdWorld<E> {
                 self.shadows.gather_sampler.clone(),
                 self.shadows.trans_sampler.clone(),
             ],
+            gi: {
+                let (atlas, state, _) = self.gi.frame_bindings();
+                (atlas.clone(), state.clone())
+            },
         };
         locked(&self.frame_groups).get(key, || {
             self.make_frame_group(frame, background, contact, ao, front)
@@ -3518,6 +3552,15 @@ impl<E: HdExtension> HdWorld<E> {
                     resource: self.irradiance.output.as_entire_binding(),
                 },
                 tv(21, &self.ltc_table.1),
+                tv(22, self.gi.frame_bindings().0),
+                wgpu::BindGroupEntry {
+                    binding: 23,
+                    resource: self.gi.frame_bindings().1.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 24,
+                    resource: wgpu::BindingResource::Sampler(self.gi.frame_bindings().2),
+                },
             ],
         })
     }
@@ -3629,6 +3672,38 @@ impl<E: HdExtension> HdWorld<E> {
         );
         self.pipelines.insert(key, pipeline);
         self.pipelines_made += 1;
+    }
+
+    /// Puts the global illumination's forward modules in use (`on`) or the plain ones, with the pipelines made of them (each
+    /// set kept aside while the other is in use: a quality change back and forth makes nothing again). The plain modules'
+    /// pictures are as they were: the global illumination's are their own permutation ([`Permutation::GiForward`]).
+    fn set_gi_shading(&mut self, on: bool) {
+        if self.gi_shading == on {
+            return;
+        }
+        // The warm-up's pipelines are of the modules in use: they go in with them.
+        self.take_warmed(true);
+        if on && self.forward_aside.0.is_empty() {
+            self.forward_aside.0 = self
+                .forward
+                .keys()
+                .map(|&(clustered, front_layer)| {
+                    (
+                        (clustered, front_layer),
+                        module(
+                            &self.device,
+                            Permutation::GiForward {
+                                clustered,
+                                front_layer,
+                            },
+                        ),
+                    )
+                })
+                .collect();
+        }
+        std::mem::swap(&mut self.forward, &mut self.forward_aside.0);
+        std::mem::swap(&mut self.pipelines, &mut self.forward_aside.1);
+        self.gi_shading = on;
     }
 
     /// Starts making the pipelines the effects draw with (`effect_keys`: particles, ribbons, bolt trails, decals and tire
@@ -6111,6 +6186,36 @@ impl<E: HdExtension> HdWorld<E> {
         self.irradiance.reset(&self.queue);
     }
 
+    /// The global illumination's state ([`crate::gi`]).
+    pub fn gi(&self) -> &crate::gi::Gi {
+        &self.gi
+    }
+
+    /// The global illumination's state to change ([`crate::gi::Gi::enabled`], [`crate::gi::Gi::converge`], a new scene's
+    /// [`crate::gi::Gi::reset`]).
+    pub fn gi_mut(&mut self) -> &mut crate::gi::Gi {
+        &mut self.gi
+    }
+
+    /// A picture of the global illumination's voxels from `camera` (linear light), as the last frame left them; None before a
+    /// frame with global illumination.
+    pub fn gi_debug_image(
+        &mut self,
+        camera: &HdCamera,
+        view: crate::gi::GiView,
+    ) -> Result<Option<crate::gi::GiImage>, HdError> {
+        self.gi.debug_image(&self.device, &self.queue, camera, view)
+    }
+
+    /// The global illumination's ambient (linear radiance) at each point facing its normal, as the last frame left the probes;
+    /// black past them (the checks' comparison with a reference).
+    pub fn gi_ambient_at(
+        &mut self,
+        points: &[([f32; 3], [f32; 3])],
+    ) -> Result<Vec<[f32; 3]>, HdError> {
+        self.gi.query(&self.device, &self.queue, points)
+    }
+
     /// Adds `pass` at `stage` of every frame from the next, after the passes already there ([`crate::passes`]).
     pub fn add_pass(&mut self, stage: PassStage, pass: impl HdPass) {
         self.passes.add(stage, Box::new(pass));
@@ -6192,6 +6297,12 @@ impl<E: HdExtension> HdWorld<E> {
         if let Some(pbr) = &mut self.pbr {
             pbr.parallax = quality == torque_render_scene::hd::Quality::Ultra;
         }
+        let gi_tier = self
+            .gi
+            .enabled
+            .then(|| crate::gi::GiTier::of(quality))
+            .flatten();
+        self.set_gi_shading(gi_tier.is_some());
         let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
         let pq = quality.post();
         let (iw, ih) = internal_size(
@@ -7096,11 +7207,61 @@ impl<E: HdExtension> HdWorld<E> {
                 .map(|t| (&t.queries, Q_VIEWS_BEGIN, Q_VIEWS_END)),
         ) && self.timer.is_some();
         mark!("views");
-        if let Some((params, faces)) = self.irradiance_params(scene, &image) {
+        let gi_on = {
+            // The glowing surfaces' lights sit just before the area lights where those keep their shapes (their surfaces'
+            // voxels emit instead).
+            let glow = if self.features.glow_lights && self.uploaded_area {
+                let n = scene
+                    .glow_lights
+                    .min(scene.lights.len())
+                    .min(self.area_start);
+                ((self.area_start - n) as u32, self.area_start as u32)
+            } else {
+                (0, 0)
+            };
+            let sun = sun_linear(&scene.sun);
+            let lights = crate::gi::GiLights {
+                bytes: &self.light_bytes,
+                count: self.light_count as u32,
+                area_start: self.area_start as u32,
+                glow,
+                sun: (self.features.sun_shadows && sun.iter().any(|c| *c > 0.0))
+                    .then_some((scene.sun.towards, sun)),
+            };
+            let frame = crate::gi::GiFrame {
+                scene: &**scene,
+                eye: icam.eye,
+                tier: gi_tier,
+                lights: &lights,
+            };
+            self.gi.prepare(
+                &self.device,
+                &self.queue,
+                self.pipeline_cache.as_ref(),
+                frame,
+            )
+        };
+        if let Some((mut params, faces)) = self.irradiance_params(scene, &image) {
+            // The probes take the light capture's place in the ambient (the capture stays for the reflections).
+            params.bounce &= !gi_on;
             self.irradiance
                 .encode(&self.queue, &mut encoder, &params, faces);
         }
         mark!("irradiance");
+        if gi_on {
+            self.gi.encode_voxels(&self.device, &mut encoder);
+            mark!("gi voxels");
+            self.gi.encode_light(
+                &self.device,
+                &mut encoder,
+                &self.lights,
+                &self.irradiance.output,
+            );
+            mark!("gi light");
+            self.gi
+                .encode_probes(&self.device, &mut encoder, &self.irradiance.output);
+            mark!("gi probes");
+        }
         let _ = set_pass_kind(PassKind::Main);
         let clear_colour = scene.clear.map(|c| f64::from(srgb_to_linear(c)));
         let frame_group = self.frame_group(

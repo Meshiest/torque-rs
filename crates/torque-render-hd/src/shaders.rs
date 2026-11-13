@@ -5,7 +5,7 @@
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 46] = [
+pub const FILES: [(&str, &str); 58] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("area.wgsl", include_str!("../shaders/area.wgsl")),
@@ -88,6 +88,21 @@ pub const FILES: [(&str, &str); 46] = [
         include_str!("../shaders/dissolve_shadow.wgsl"),
     ),
     ("decals.wgsl", include_str!("../shaders/decals.wgsl")),
+    ("gi_common.wgsl", include_str!("../shaders/gi_common.wgsl")),
+    ("gi_scene.wgsl", include_str!("../shaders/gi_scene.wgsl")),
+    ("gi_voxel.wgsl", include_str!("../shaders/gi_voxel.wgsl")),
+    ("gi_debug.wgsl", include_str!("../shaders/gi_debug.wgsl")),
+    ("gi_light.wgsl", include_str!("../shaders/gi_light.wgsl")),
+    ("gi_grid.wgsl", include_str!("../shaders/gi_grid.wgsl")),
+    ("gi_sky.wgsl", include_str!("../shaders/gi_sky.wgsl")),
+    ("gi_lookup.wgsl", include_str!("../shaders/gi_lookup.wgsl")),
+    ("gi_probe.wgsl", include_str!("../shaders/gi_probe.wgsl")),
+    ("gi_bounce.wgsl", include_str!("../shaders/gi_bounce.wgsl")),
+    (
+        "gi_forward.wgsl",
+        include_str!("../shaders/gi_forward.wgsl"),
+    ),
+    ("gi_query.wgsl", include_str!("../shaders/gi_query.wgsl")),
 ];
 
 /// An extension's WGSL, composed into the renderer's modules: its uniforms' blocks, its hooks and its own entry points (the
@@ -213,6 +228,21 @@ pub enum Permutation {
     /// The opaque pass's forward module (clustered) with the projected decals' entries (`decals.wgsl`: `vs_decal`,
     /// `fs_decal_multiply`, `fs_decal_alpha`).
     Decals,
+    /// The global illumination's voxel tiles from the static triangles (compute).
+    GiVoxel,
+    /// A picture of the global illumination's voxels (compute).
+    GiDebug,
+    /// The global illumination's voxels lit (compute; the forward pass's lights and their diffuse shading).
+    GiLight,
+    /// The global illumination's probes traced and blended (compute).
+    GiProbe,
+    /// The forward pass with the global illumination's ambient (the main view where the frame draws it).
+    GiForward {
+        clustered: bool,
+        front_layer: bool,
+    },
+    /// The probes' ambient at listed points (compute; the checks').
+    GiQuery,
 }
 
 /// What [`Permutation::Dissolve`] turns into plain functions in the forward pass's text, and what it calls them.
@@ -223,7 +253,7 @@ pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 49] = [
+    pub const ALL: [Permutation; 58] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -329,6 +359,27 @@ impl Permutation {
             parallax: true,
         },
         Permutation::Decals,
+        Permutation::GiVoxel,
+        Permutation::GiDebug,
+        Permutation::GiLight,
+        Permutation::GiProbe,
+        Permutation::GiForward {
+            clustered: true,
+            front_layer: false,
+        },
+        Permutation::GiForward {
+            clustered: false,
+            front_layer: false,
+        },
+        Permutation::GiForward {
+            clustered: true,
+            front_layer: true,
+        },
+        Permutation::GiForward {
+            clustered: false,
+            front_layer: true,
+        },
+        Permutation::GiQuery,
     ];
 
     pub fn name(self) -> String {
@@ -385,6 +436,17 @@ impl Permutation {
                 "forward.wgsl with pbr.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer}, PARALLAX = {parallax})"
             ),
             Permutation::Decals => "forward.wgsl with decals.wgsl".to_string(),
+            Permutation::GiVoxel => "gi_voxel.wgsl".to_string(),
+            Permutation::GiDebug => "gi_debug.wgsl".to_string(),
+            Permutation::GiLight => "gi_light.wgsl".to_string(),
+            Permutation::GiProbe => "gi_probe.wgsl".to_string(),
+            Permutation::GiForward {
+                clustered,
+                front_layer,
+            } => format!(
+                "forward.wgsl with gi_forward.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer})"
+            ),
+            Permutation::GiQuery => "gi_query.wgsl".to_string(),
         }
     }
 
@@ -600,8 +662,106 @@ impl Permutation {
                 file("clouds.wgsl")
             ),
             Permutation::Cull => file("cull.wgsl").to_string(),
+            Permutation::GiVoxel => format!(
+                "{}
+{}",
+                file("gi_common.wgsl"),
+                file("gi_voxel.wgsl")
+            ),
+            Permutation::GiDebug => format!(
+                "{}
+{}
+{}",
+                file("gi_common.wgsl"),
+                file("gi_scene.wgsl"),
+                file("gi_debug.wgsl")
+            ),
+            // The forward pass's light words and diffuse terms as they are in its files (one shading of each kind).
+            Permutation::GiLight => {
+                let gi_bounce = format!(
+                    "{}\n{}\n{}\n{}",
+                    file("gi_grid.wgsl"),
+                    file("gi_sky.wgsl"),
+                    file("gi_lookup.wgsl"),
+                    file("gi_bounce.wgsl")
+                );
+                format!(
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}",
+                    file("common.wgsl")
+                        .lines()
+                        .find(|l| l.starts_with("const PI: f32"))
+                        .unwrap_or_default(),
+                    excerpt(file("common.wgsl"), "struct Light {"),
+                    excerpt(file("common.wgsl"), "fn cone_share("),
+                    excerpt(file("forward.wgsl"), "fn falloff("),
+                    file("area.wgsl"),
+                    file("gi_common.wgsl"),
+                    file("gi_scene.wgsl"),
+                    gi_bounce,
+                    file("gi_light.wgsl")
+                )
+            }
+            Permutation::GiProbe => format!(
+                "{}\n{}\n{}\n{}\n{}",
+                file("gi_common.wgsl"),
+                file("gi_scene.wgsl"),
+                file("gi_grid.wgsl"),
+                file("gi_sky.wgsl"),
+                file("gi_probe.wgsl")
+            ),
+            // The forward pass's one hook: the ambient its shading takes (the sky's irradiance) passed through the probes'.
+            Permutation::GiForward {
+                clustered,
+                front_layer,
+            } => format!(
+                "{}\n{}\n{}\n{}\n{}",
+                Permutation::Forward {
+                    clustered,
+                    front_layer
+                }
+                .source()
+                .replacen(GI_HOOK.0, GI_HOOK.1, 1),
+                file("gi_common.wgsl"),
+                file("gi_grid.wgsl"),
+                file("gi_lookup.wgsl"),
+                file("gi_forward.wgsl")
+            ),
+            Permutation::GiQuery => format!(
+                "{}\n{}\n{}\n{}",
+                file("gi_common.wgsl"),
+                file("gi_grid.wgsl"),
+                file("gi_lookup.wgsl"),
+                file("gi_query.wgsl")
+            ),
         }
     }
+}
+
+/// The forward pass's line the global illumination's module changes (`shade_surf`'s ambient), and what it becomes.
+pub(crate) const GI_HOOK: (&str, &str) = (
+    "let amb = ambient_linear(n);",
+    "let amb = gi_ambient(p, n, ambient_linear(n));",
+);
+
+/// The item of `text` that begins with `start` (a function or a struct), through the line that closes it (`}` or `};` at the
+/// line's start); empty when there is none, which fails the module's validation.
+pub(crate) fn excerpt<'a>(text: &'a str, start: &str) -> &'a str {
+    let Some(at) = text.find(start) else {
+        return "";
+    };
+    let rest = &text[at..];
+    let end = [
+        "
+}
+", "
+};
+",
+    ]
+    .iter()
+    .filter_map(|e| rest.find(e).map(|i| i + e.len()))
+    .min()
+    .unwrap_or(rest.len());
+    &rest[..end]
 }
 
 /// naga's verdict on one module: `Ok` or the error as text.

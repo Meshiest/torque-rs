@@ -131,6 +131,10 @@ different.
   particles lit by the sun, the sky and lights; TAA, ambient occlusion, bloom and automatic exposure; four quality
   levels, Low to Ultra. Optional ground textures that hide tiling (`HdScene::ground_variation`) and a cloud clock of
   their own (`HdScene::cloud_time`). A ghosting check example measures how fast each history settles.
+- `torque-render-hd`: global illumination (alpha) at High and Ultra behind `Gi::enabled` (off by default): a voxel clipmap of the
+  static triangles about the eye, lit by the sun and the point, spot and area lights with the forward pass's own light terms,
+  and cascades of irradiance probes whose rays march those voxels; the forward pass's diffuse ambient comes from the probes in
+  place of the light capture's bounce. Moving shapes receive it and cast none.
 - `torque-render-hd`: area lights (`HdScene::area_lights`): rectangles and tubes with soft highlights the shape of the
   light, by linearly transformed cosines (after Heitz, Dupuy, Hill and Neubelt 2016) over a GGX table the crate fits itself
   (`torque_render_scene::hd::ltc`), at High and Ultra; Low and Medium draw them as point lights. Their shadows are a point

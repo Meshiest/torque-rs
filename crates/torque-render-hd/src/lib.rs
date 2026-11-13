@@ -9,6 +9,8 @@
 //!
 //! # Maintaining
 //!
+//! The global illumination keeps its own map, flow and rules in [`gi`]'s Maintaining section (`gi/mod.rs`).
+//!
 //! Rules a change must keep, each guarded by a test:
 //! - Nothing past the device's largest buffer is asked of it: an upload whose loose draws or particles do not fit leaves them out
 //!   for the frame and counts it ([`HdWorld::oversize_uploads`]), the meshes' places too, so no draw reads another frame's places
@@ -199,6 +201,7 @@ pub mod exposure;
 pub mod ext;
 pub mod froxels;
 pub mod ghosting;
+pub mod gi;
 #[cfg(feature = "gizmos")]
 pub mod gizmos;
 pub mod irradiance;

@@ -4,7 +4,9 @@
 //! (`torque_render_hd::profile`).
 //!
 //! `cargo run -p torque-example-level-demo --release --example level-profile -- [--frames N] [--scene office|valley]
-//! [--quality high|ultra] [--view <valley view>] [--size WxH]`. The machine's load moves the means; the medians stand.
+//! [--quality high|ultra] [--view <valley view>] [--size WxH] [--gi]`. The machine's load moves the means; the medians stand.
+//! `--gi` turns the renderer's global illumination on and settles until its voxels are all made (its passes are the `gi`
+//! marks).
 
 use torque::app::shots::Seat;
 use torque::app::window::offscreen_gpu;
@@ -22,6 +24,8 @@ const SIZE: (u32, u32) = (1280, 720);
 const OFFICE_CORNER: [f32; 2] = [-18.0, -12.0];
 /// The frames drawn before the measured ones (the histories and the pipelines settled).
 const SETTLE: usize = 30;
+/// The most frames more drawn for the global illumination's voxels to be made.
+const GI_SETTLE: usize = 3000;
 
 struct Args {
     frames: usize,
@@ -29,6 +33,7 @@ struct Args {
     quality: Option<Quality>,
     view: Option<String>,
     size: (u32, u32),
+    gi: bool,
 }
 
 fn args() -> Result<Args, String> {
@@ -38,6 +43,7 @@ fn args() -> Result<Args, String> {
         quality: None,
         view: None,
         size: SIZE,
+        gi: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -46,6 +52,7 @@ fn args() -> Result<Args, String> {
             "--frames" => a.frames = value()?.parse().map_err(|e| format!("{e}"))?,
             "--scene" => a.scene = Some(value()?),
             "--view" => a.view = Some(value()?),
+            "--gi" => a.gi = true,
             "--size" => {
                 let v = value()?;
                 let (w, h) = v.split_once('x').ok_or("--size needs WxH")?;
@@ -72,11 +79,20 @@ fn profile(
     to: [f32; 3],
     quality: Quality,
     frames: usize,
+    gi: bool,
 ) -> Result<Profile, String> {
     seat.view.set_quality(quality);
     seat.eye = Some(with_fov(look_at(from, to)));
     seat.view.reset_history();
+    seat.view.renderer().gi_mut().enabled = gi;
     for _ in 0..SETTLE {
+        seat.frame(gpu)?;
+    }
+    // The global illumination's voxels all made (a frame makes a budget of them).
+    for _ in 0..GI_SETTLE {
+        if !gi || seat.view.renderer().gi().pending() == 0 {
+            break;
+        }
         seat.frame(gpu)?;
     }
     let mut p = Profile::begin(seat.view.renderer());
@@ -109,6 +125,7 @@ fn main() -> Result<(), String> {
                 at(30.0, 4.0, 0.8),
                 q,
                 args.frames,
+                args.gi,
             )?;
             println!("office {} {}x{}", q.name(), args.size.0, args.size.1);
             print!("{}", p.report(0.05));
@@ -123,7 +140,7 @@ fn main() -> Result<(), String> {
             }
             let from = valley_eye(from);
             for &q in &qualities {
-                let p = profile(&gpu, &mut seat, from, to, q, args.frames)?;
+                let p = profile(&gpu, &mut seat, from, to, q, args.frames, args.gi)?;
                 println!("{name} {} {}x{}", q.name(), args.size.0, args.size.1);
                 print!("{}", p.report(0.05));
             }
