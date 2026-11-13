@@ -12,6 +12,7 @@ mod distortion;
 mod gpu_particles;
 mod gpu_particles_motion;
 mod grain_still;
+mod half_history;
 mod offscreen_casters;
 mod pbr_materials;
 mod pipeline_cache;

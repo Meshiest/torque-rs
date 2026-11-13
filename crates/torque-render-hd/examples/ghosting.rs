@@ -17,10 +17,12 @@
 //! more than [`TOLERANCE`] of 255 from the reference; a frame is within where at most [`AREA_OK`] of its pixels are off.
 //!
 //! `cargo run -p torque-render-hd --release --example ghosting -- [--audit] [--shot <name>] [--out <dir>] [--max-settle <frames>]
-//! [--max-trail <percent>] [--quality low|medium|high|ultra] [--trace] [--gpu-particles] [--march]`: `--audit` draws each
+//! [--max-trail <percent>] [--quality low|medium|high|ultra] [--upscaler off|temporal] [--upscale-scale <share>] [--trace]
+//! [--gpu-particles] [--march]`: `--audit` draws each
 //! scene again with each pass's history off on its own (`HdWorld::histories`) and the reflection capture drawn whole every
 //! frame; `--out` writes the worst frame of each scene, its reference and their difference (`--frame <n>`: that frame too);
-//! `--quality` draws every scene at that quality in place of its own; `--march` draws the volumetric light with the march alone
+//! `--quality` draws every scene at that quality in place of its own; `--upscaler` draws High and Ultra through that upscaler
+//! (`HdWorld::upscaling`, off by default) at the quality's share or `--upscale-scale`'s; `--march` draws the volumetric light with the march alone
 //! at every quality (the froxel grid off, `HdFeatures::froxel_fog`); `--trace` prints each frame's share off. Each row ends with
 //! the run's GPU time a frame (ms, the whole frame, the sun mask's pass and the anti-aliasing's; with the device's timestamps).
 //! The command fails when a gated scene drawn by default passes the limits (by default `ghosting::MAX_SETTLE` frames to settle
@@ -37,6 +39,7 @@ use torque_render_hd::ghosting::{self, AREA_OK, Image, MAX_SETTLE, MAX_TRAIL, Me
 use torque_render_hd::{HdWorld, ParticlePool};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::{Lcg, box_object, look_at};
+use torque_render_scene::hd::post::{Upscaler, Upscaling};
 use torque_render_scene::hd::scatter::{ScatterLook, ScatterTable};
 use torque_render_scene::hd::{
     DynamicObject, HdCamera, HdDraw, HdLight, HdMode, HdScene, HdSpot, Quality, material,
@@ -811,8 +814,9 @@ struct Drawer {
 }
 
 impl Drawer {
-    fn new(gpu: &Gpu, sprites: bool) -> Result<Drawer, String> {
+    fn new(gpu: &Gpu, sprites: bool, upscaling: Upscaling) -> Result<Drawer, String> {
         let mut world = HdWorld::new(gpu);
+        world.upscaling = upscaling;
         world.features.gpu_particles = if sprites {
             ParticlePool::On
         } else {
@@ -846,9 +850,10 @@ fn references(
     shot: &Shot,
     sprites: bool,
     march: bool,
+    upscaling: Upscaling,
 ) -> Result<Vec<Arc<Image>>, String> {
     let mut stage = Stage::new(shot, sprites);
-    let mut d = Drawer::new(gpu, sprites)?;
+    let mut d = Drawer::new(gpu, sprites, upscaling)?;
     d.world.features.froxel_fog = !march;
     let mut out: Vec<Arc<Image>> = Vec::with_capacity(shot.frames);
     let mut last: Option<State> = None;
@@ -889,6 +894,7 @@ struct Args {
     max_trail: Option<f64>,
     gpu_particles: bool,
     quality: Option<Quality>,
+    upscaling: Upscaling,
     march: bool,
 }
 
@@ -903,6 +909,7 @@ fn args() -> Result<Args, String> {
         max_trail: Some(MAX_TRAIL),
         gpu_particles: false,
         quality: None,
+        upscaling: Upscaling::OFF,
         march: false,
     };
     let mut it = std::env::args().skip(1);
@@ -921,6 +928,13 @@ fn args() -> Result<Args, String> {
             "--quality" => {
                 let v = value()?;
                 a.quality = Some(Quality::named(&v).ok_or(format!("no quality {v}"))?);
+            }
+            "--upscaler" => {
+                let v = value()?;
+                a.upscaling.upscaler = Upscaler::named(&v).ok_or(format!("no upscaler {v}"))?;
+            }
+            "--upscale-scale" => {
+                a.upscaling.scale = Some(value()?.parse().map_err(|e| format!("{e}"))?);
             }
             _ => return Err(format!("unknown argument {arg}")),
         }
@@ -947,10 +961,10 @@ fn main() -> Result<(), String> {
         if args.shot.as_deref().is_some_and(|s| s != shot.name) {
             continue;
         }
-        let refs = references(&gpu, &shot, args.gpu_particles, args.march)?;
+        let refs = references(&gpu, &shot, args.gpu_particles, args.march, args.upscaling)?;
         for (name, set) in ghosting::settings::<NoExtension>(args.audit) {
             let mut stage = Stage::new(&shot, args.gpu_particles);
-            let mut d = Drawer::new(&gpu, args.gpu_particles)?;
+            let mut d = Drawer::new(&gpu, args.gpu_particles, args.upscaling)?;
             d.world.features.froxel_fog = !args.march;
             set(&mut d.world);
             let mut areas = Vec::with_capacity(shot.frames);

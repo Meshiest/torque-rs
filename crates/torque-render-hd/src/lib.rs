@@ -172,6 +172,36 @@
 //!   `track-profile --place crest --quality ultra`. The grid is made when a frame with lights first needs it at Ultra (no
 //!   pipelines before), and let go after a few frames that gather none.
 //!
+//! The upscaler ([`upscale`]; the setting is [`HdWorld::upscaling`], off by default):
+//! - Module map: `upscale.rs` holds the seam ([`upscale::Upscale`], [`upscale::UpscaleInputs`], [`upscale::make`]) and the
+//!   engine's method ([`upscale::TemporalUpscaler`]); `shaders/tsr_gather.wgsl` is its reprojection and tests,
+//!   `tsr.wgsl` its blend, `tsr_half.wgsl` or `tsr_full.wgsl` its history's read ([`HdWorld::history_precision`]: half floats,
+//!   or 32-bit ones for the precision check), and `tonemap_tsr.wgsl` the tonemap's confidence-weighted sharpen
+//!   ([`shaders::Permutation::TonemapUpscaled`], composed from `tonemap.wgsl` by [`shaders::TONEMAP_TSR_RENAMES`]).
+//! - The flow, a frame: `Quality::post_with` gives High and Ultra the upscaler's anti-aliasing (`AntiAliasing::Tsr`) and its
+//!   internal share; the frame is drawn jittered as for the TAA; in the TAA's place `world.rs` hands the upscaler an
+//!   [`upscale::UpscaleInputs`] (the colour, depth and motion at the internal size, the jitter, the exposure, no reactive mask
+//!   yet, the reset flag, the output at the output's size and last frame's, and the engine's extras: last frame's depth and
+//!   motion, the sun's masks, the frame uniform) and it writes the output, which the late composites, the reflections' copy and
+//!   the tonemap read as they read the TAA's shown colour. The upscaler is made the first frame that upscales, again when the
+//!   method or the precision changes; it keeps its own targets (moments, ring, a 32-bit history) at the output's size.
+//! - The seam takes what FSR 2/3 and DLSS need; a new method is a new `Upscaler` setting, a type implementing
+//!   [`upscale::Upscale`] and an arm in [`upscale::make`]. It writes the output whole, in [`post::SHOWN_FORMAT`], with the
+//!   frames its history holds in alpha (Ultra's sharpen reads them; a method without a count writes at least
+//!   [`upscale::SHARPEN_FULL_FRAMES`]); FSR's own sharpen would replace that one.
+//! - Invariants: with the setting off nothing of the upscaler is made or composed: every module the frame draws is the one main
+//!   draws (`the_permutations_without_pbr_materials_are_unchanged` pins `taa.wgsl` and `tonemap.wgsl`), the frame index keeps
+//!   its period of 1024 (an upscaled frame's is [`upscale::UPSCALED_FRAME_PERIOD`], for the ring), and the ghosting rows are
+//!   main's. Low and Medium ignore the setting (`the_upscaler_is_off_by_default_and_takes_high_and_ultra_only`). The half-float
+//!   history reaches the 32-bit one's running mean within a level (`tests/half_history.rs`: `tsr.wgsl`'s `stored` rounds by a
+//!   dither so the mean is kept).
+//! - Extension points: the upscaler's thresholds are the constants at the top of `tsr.wgsl`, each with what it trades; a new
+//!   test on the history goes in `tsr_gather.wgsl`'s `gather`.
+//! - Check commands: the `ghosting` example with `--upscaler temporal` (every row against the same example without it, under
+//!   the bench lock); `level-profile --scene office --quality high --size 1920x1080 --upscaler temporal`, and `--scene valley
+//!   --view valley-lake`, against the same without `--upscaler` for the frame's and the `anti-aliasing` marks (under the bench
+//!   lock); `cargo test -p torque-render-hd --test main half_history::`.
+//!
 //! The volumetric clouds' GPU time (the `clouds` mark of `track-profile --place crest` and `level-profile --view valley-sea`,
 //! under the bench lock; the `clouds` row of the `ghosting` example for their history, and the vehicle demo's `--cloud-shots`
 //! against main's for their look) rests on `clouds.wgsl`'s refined march looking for cloud in at most `REFINED_STEPS` long steps
@@ -220,6 +250,7 @@ pub mod shadows;
 pub mod sky;
 pub mod slots;
 pub mod ssr;
+pub mod upscale;
 pub mod volumetric;
 pub mod water;
 mod world;

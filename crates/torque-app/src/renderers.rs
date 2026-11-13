@@ -40,6 +40,7 @@ use torque_engine::{ClientStage, EngineBuilder, Plugin, PluginId, VmMut, VmRef};
 use torque_render_core::{Gpu, wgpu};
 use torque_render_hd::HdFeatures;
 use torque_render_hd::ext::PlainScene;
+use torque_render_scene::hd::post::{Upscaler, Upscaling};
 use torque_render_scene::hd::{HdCamera, HdMode, ImageSettings, Quality};
 use torque_ts_vm::vm::Vm;
 
@@ -189,6 +190,32 @@ impl RenderFeatures {
                 ..ImageSettings::DEFAULT
             },
             quality,
+        }
+    }
+}
+
+/// The engine's renderer's prefs (the client's script engine has them; [`WorldView::read_prefs`](crate::view::WorldView::read_prefs)
+/// reads them).
+#[derive(torque_engine::Prefs)]
+#[prefs(prefix = "$Pref::Render")]
+pub struct RenderPrefs {
+    /// The upscaler High and Ultra draw with: `off` (every pixel of the window, the default) or `temporal` (a smaller frame
+    /// brought up to the window's size by the temporal upscaler). Any other word is off.
+    #[pref(default = "off")]
+    pub upscaler: String,
+    /// The share of the window's pixels a side the upscaler draws: 0 for the quality's own (0.8 at High, 0.83 at Ultra), else
+    /// held to 0.5 to 1.
+    #[pref(default = 0.0, range = 0.0..=1.0)]
+    pub upscale_scale: f32,
+}
+
+impl RenderPrefs {
+    /// The renderer's upscaling setting these prefs ask for.
+    #[must_use]
+    pub fn upscaling(&self) -> Upscaling {
+        Upscaling {
+            upscaler: Upscaler::named(&self.upscaler).unwrap_or_default(),
+            scale: (self.upscale_scale > 0.0).then_some(self.upscale_scale),
         }
     }
 }
@@ -581,8 +608,11 @@ impl Plugin for RendererPlugin {
             make: None,
         });
         feature_set(engine);
-        // The projected decals' cap (`GhostScene::read_prefs` reads it).
-        engine.client_script().prefs::<crate::ghosts::DecalPrefs>();
+        // The projected decals' cap (`GhostScene::read_prefs` reads it) and the upscaler (`WorldView::read_prefs`).
+        engine
+            .client_script()
+            .prefs::<crate::ghosts::DecalPrefs>()
+            .prefs::<RenderPrefs>();
     }
 }
 

@@ -4,8 +4,9 @@
 //! (`torque_render_hd::profile`).
 //!
 //! `cargo run -p torque-example-level-demo --release --example level-profile -- [--frames N] [--scene office|valley]
-//! [--quality high|ultra] [--view <valley view>] [--size WxH] [--gi]`. The machine's load moves the means; the medians stand.
-//! `--gi` turns the renderer's global illumination on and settles until its voxels are all made (its passes are the `gi`
+//! [--quality high|ultra] [--view <valley view>] [--size WxH] [--gi] [--upscaler off|temporal] [--upscale-scale <share>]`.
+//! The machine's load moves the means; the medians stand. `--upscaler` draws through that upscaler (off by default) at the
+//! quality's share or `--upscale-scale`'s (`HdWorld::upscaling`). `--gi` turns the renderer's global illumination on and settles until its voxels are all made (its passes are the `gi`
 //! marks).
 
 use torque::app::shots::Seat;
@@ -17,6 +18,7 @@ use torque_render_core::Gpu;
 use torque_render_hd::profile::Profile;
 use torque_render_scene::hd::Quality;
 use torque_render_scene::hd::kit::look_at;
+use torque_render_scene::hd::post::{Upscaler, Upscaling};
 
 /// The pictures' size unless `--size` says otherwise.
 const SIZE: (u32, u32) = (1280, 720);
@@ -34,6 +36,7 @@ struct Args {
     view: Option<String>,
     size: (u32, u32),
     gi: bool,
+    upscaling: Upscaling,
 }
 
 fn args() -> Result<Args, String> {
@@ -44,6 +47,7 @@ fn args() -> Result<Args, String> {
         view: None,
         size: SIZE,
         gi: false,
+        upscaling: Upscaling::OFF,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -53,6 +57,14 @@ fn args() -> Result<Args, String> {
             "--scene" => a.scene = Some(value()?),
             "--view" => a.view = Some(value()?),
             "--gi" => a.gi = true,
+            "--upscaler" => {
+                let v = value()?;
+                a.upscaling.upscaler =
+                    Upscaler::named(&v).ok_or_else(|| format!("no upscaler {v}"))?;
+            }
+            "--upscale-scale" => {
+                a.upscaling.scale = Some(value()?.parse().map_err(|e| format!("{e}"))?);
+            }
             "--size" => {
                 let v = value()?;
                 let (w, h) = v.split_once('x').ok_or("--size needs WxH")?;
@@ -116,6 +128,7 @@ fn main() -> Result<(), String> {
     if wants("office") {
         let files = GameFiles::bundled().map_err(|e| e.to_string())?;
         let mut seat = seat_on(&gpu, files, args.size, "office")?;
+        seat.view.renderer().upscaling = args.upscaling;
         let at = |x: f32, y: f32, z: f32| [x + OFFICE_CORNER[0], y + OFFICE_CORNER[1], z];
         for &q in &qualities {
             let p = profile(
@@ -134,6 +147,7 @@ fn main() -> Result<(), String> {
     if wants("valley") {
         let files = GameFiles::bundled().map_err(|e| e.to_string())?;
         let mut seat = seat_on(&gpu, files, args.size, "valley")?;
+        seat.view.renderer().upscaling = args.upscaling;
         for (name, from, to) in VALLEY_VIEWS {
             if args.view.as_deref().is_some_and(|v| v != name) {
                 continue;

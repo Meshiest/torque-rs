@@ -134,6 +134,11 @@ different.
 - `torque-render-hd`: at Ultra the point and spot lights light the fog through a froxel grid beside the sun's god rays, with
   soft shadows; each froxel takes its lights at points spread through its depth, so a moving light's beam and shadows sweep
   the haze smoothly.
+- `torque-render-hd`: an upscaler setting (`HdWorld::upscaling`, `$Pref::Render::Upscaler` and `UpscaleScale`), off by
+  default. `temporal` draws High at 80 % and Ultra at 83 % a side (or a set share from 50 %) and brings the frame up to the
+  output's size with a temporal upscaler whose still pixels take the exact mean of their own samples over the jitter's
+  period, in half floats, with Ultra's sharpen as strong as each pixel's history is long. The upscaler is one seam
+  (`upscale::Upscale`, `UpscaleInputs`) taking what FSR 2/3 and DLSS take, so other methods can be added beside it.
 - `torque-render-hd`: global illumination (alpha) at High and Ultra behind `Gi::enabled` (off by default): a voxel clipmap of the
   static triangles about the eye, lit by the sun and the point, spot and area lights with the forward pass's own light terms,
   and cascades of irradiance probes whose rays march those voxels; the forward pass's diffuse ambient comes from the probes in

@@ -2,7 +2,7 @@
 
 # Prefs
 
-Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 26 prefs.
+Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[derive(Prefs)]`). A read in Rust clamps the value to the range; the global keeps what a script wrote. 28 prefs.
 
 | Pref | Type | Default | Range | What it is for | Where |
 |---|---|---|---|---|---|
@@ -32,3 +32,5 @@ Prefs are `$Pref::` globals a plugin gives a default before any script runs (`#[
 | `$Pref::Props::OrphanSeconds` | float | `120.0` | 0 to 3600 | Seconds a prop outlives its owner's connection. | server; needs `torque.props` |
 | `$Pref::Props::StepBudget` | int | `4000000` | 1000 to 1000000000 | The physics work a tick may take (work units); a step past it does not run and the awake cap is lowered for a while. | server; needs `torque.props` |
 | `$Pref::Props::Substeps` | int | `4` | 1 to 8 | The physics sub-steps of a 32 ms tick, read when the server makes its world. | server; needs `torque.props` |
+| `$Pref::Render::Upscaler` | string | `off` |  | The upscaler High and Ultra draw with: `off` (every pixel of the window, the default) or `temporal` (a smaller frame brought up to the window's size by the temporal upscaler). Any other word is off. | client |
+| `$Pref::Render::UpscaleScale` | float | `0.0` | 0 to 1 | The share of the window's pixels a side the upscaler draws: 0 for the quality's own (0.8 at High, 0.83 at Ultra), else held to 0.5 to 1. | client |

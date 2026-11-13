@@ -4,8 +4,10 @@
 
 use torque_render_scene::hd::reflect::{CAPTURE_MIPS, CAPTURE_SIZE};
 
+use crate::upscale::{HistoryPrecision, SHARPEN_FULL_FRAMES};
+
 /// The shader files, by name (embedded at build time).
-pub const FILES: [(&str, &str); 58] = [
+pub const FILES: [(&str, &str); 63] = [
     ("common.wgsl", include_str!("../shaders/common.wgsl")),
     ("brdf.wgsl", include_str!("../shaders/brdf.wgsl")),
     ("area.wgsl", include_str!("../shaders/area.wgsl")),
@@ -35,6 +37,17 @@ pub const FILES: [(&str, &str); 58] = [
     ("ao.wgsl", include_str!("../shaders/ao.wgsl")),
     ("ao_filter.wgsl", include_str!("../shaders/ao_filter.wgsl")),
     ("taa.wgsl", include_str!("../shaders/taa.wgsl")),
+    (
+        "tsr_gather.wgsl",
+        include_str!("../shaders/tsr_gather.wgsl"),
+    ),
+    ("tsr.wgsl", include_str!("../shaders/tsr.wgsl")),
+    ("tsr_half.wgsl", include_str!("../shaders/tsr_half.wgsl")),
+    ("tsr_full.wgsl", include_str!("../shaders/tsr_full.wgsl")),
+    (
+        "tonemap_tsr.wgsl",
+        include_str!("../shaders/tonemap_tsr.wgsl"),
+    ),
     ("fxaa.wgsl", include_str!("../shaders/fxaa.wgsl")),
     ("reflect.wgsl", include_str!("../shaders/reflect.wgsl")),
     ("water.wgsl", include_str!("../shaders/water.wgsl")),
@@ -149,6 +162,9 @@ pub enum Permutation {
     },
     Clusters,
     Tonemap,
+    /// The tonemap after the temporal upscaler: `tonemap.wgsl` with Ultra's sharpen weighted by the history's confidence
+    /// (`tonemap_tsr.wgsl`, [`TONEMAP_TSR_RENAMES`]).
+    TonemapUpscaled,
     /// The shadow maps' casters; `unclipped`: the device clamps depth (pancaking), else the vertex stage does.
     Shadow {
         unclipped: bool,
@@ -165,6 +181,9 @@ pub enum Permutation {
     AoFilter,
     /// The temporal anti-aliasing resolve.
     Taa,
+    /// The temporal upscaler's resolve with its history in half or 32-bit floats (`tsr_gather.wgsl`, `tsr.wgsl`, then
+    /// `tsr_half.wgsl` or `tsr_full.wgsl`).
+    Tsr(HistoryPrecision),
     /// The Low quality's FXAA-style edge filter.
     Fxaa,
     /// The forward pass of a secondary view (the water's mirrored camera, a light capture's face): every light in turn (no clusters of
@@ -245,6 +264,12 @@ pub enum Permutation {
     GiQuery,
 }
 
+/// What [`Permutation::TonemapUpscaled`] changes in the tonemap's text: the sharpen's weight takes the confidence.
+pub const TONEMAP_TSR_RENAMES: [(&str, &str); 1] = [(
+    "let wt = amp * peak;",
+    "let wt = amp * peak * confidence(xy);",
+)];
+
 /// What [`Permutation::Dissolve`] turns into plain functions in the forward pass's text, and what it calls them.
 pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
     ("@vertex\nfn vs_main(", "fn vs_main_of("),
@@ -253,7 +278,7 @@ pub const DISSOLVE_RENAMES: [(&str, &str); 2] = [
 
 impl Permutation {
     /// Every module the renderer can build.
-    pub const ALL: [Permutation; 58] = [
+    pub const ALL: [Permutation; 61] = [
         Permutation::Forward {
             clustered: true,
             front_layer: false,
@@ -272,6 +297,7 @@ impl Permutation {
         },
         Permutation::Clusters,
         Permutation::Tonemap,
+        Permutation::TonemapUpscaled,
         Permutation::Shadow { unclipped: true },
         Permutation::Shadow { unclipped: false },
         Permutation::Contact,
@@ -280,6 +306,8 @@ impl Permutation {
         Permutation::Ao { gtao: false },
         Permutation::AoFilter,
         Permutation::Taa,
+        Permutation::Tsr(HistoryPrecision::Half),
+        Permutation::Tsr(HistoryPrecision::Full),
         Permutation::Fxaa,
         Permutation::View,
         Permutation::Water,
@@ -390,12 +418,15 @@ impl Permutation {
             } => format!("forward.wgsl (CLUSTERED = {clustered}, FRONT_LAYER = {front_layer})"),
             Permutation::Clusters => "clusters.wgsl".to_string(),
             Permutation::Tonemap => "tonemap.wgsl".to_string(),
+            Permutation::TonemapUpscaled => "tonemap.wgsl with tonemap_tsr.wgsl".to_string(),
             Permutation::Shadow { unclipped } => format!("shadow.wgsl (UNCLIPPED = {unclipped})"),
             Permutation::Contact => "contact.wgsl".to_string(),
             Permutation::ContactFilter => "contact_filter.wgsl".to_string(),
             Permutation::Ao { gtao } => format!("ao.wgsl (GTAO = {gtao})"),
             Permutation::AoFilter => "ao_filter.wgsl".to_string(),
             Permutation::Taa => "taa.wgsl".to_string(),
+            Permutation::Tsr(HistoryPrecision::Half) => "tsr.wgsl with tsr_half.wgsl".to_string(),
+            Permutation::Tsr(HistoryPrecision::Full) => "tsr.wgsl with tsr_full.wgsl".to_string(),
             Permutation::Fxaa => "fxaa.wgsl".to_string(),
             Permutation::View => {
                 "forward.wgsl (a secondary view: CLUSTERED = false, CLIP = true)".to_string()
@@ -598,6 +629,16 @@ impl Permutation {
             }
             Permutation::Clusters => format!("{}\n{}", common, file("clusters.wgsl")),
             Permutation::Tonemap => format!("{}\n{}", full, file("tonemap.wgsl")),
+            Permutation::TonemapUpscaled => {
+                let mut tonemap = Permutation::Tonemap.source();
+                for (from, to) in TONEMAP_TSR_RENAMES {
+                    tonemap = tonemap.replacen(from, to, 1);
+                }
+                format!(
+                    "{tonemap}\nconst SHARPEN_FULL_FRAMES: f32 = {SHARPEN_FULL_FRAMES:?};\n{}",
+                    file("tonemap_tsr.wgsl")
+                )
+            }
             Permutation::Shadow { unclipped } => format!(
                 "const UNCLIPPED: bool = {unclipped};\n{}\n{}",
                 file("shadow.wgsl"),
@@ -621,6 +662,17 @@ impl Permutation {
             ),
             Permutation::AoFilter => format!("{}\n{}\n{}", common, full, file("ao_filter.wgsl")),
             Permutation::Taa => format!("{}\n{}\n{}", common, full, file("taa.wgsl")),
+            Permutation::Tsr(precision) => format!(
+                "{}\n{}\n{}\n{}\n{}",
+                common,
+                full,
+                file("tsr_gather.wgsl"),
+                file("tsr.wgsl"),
+                file(match precision {
+                    HistoryPrecision::Half => "tsr_half.wgsl",
+                    HistoryPrecision::Full => "tsr_full.wgsl",
+                })
+            ),
             Permutation::Fxaa => format!("{}\n{}", full, file("fxaa.wgsl")),
             Permutation::Atmosphere => {
                 format!("{}\n{}", file("skycommon.wgsl"), file("atmosphere.wgsl"))

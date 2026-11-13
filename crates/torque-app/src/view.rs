@@ -55,6 +55,7 @@ use torque_render_scene::world::ShapeWorld;
 use torque_render_scene::{Assets, Blend, Cull, Draw, Filter, Sampler, TexEnv, Texture, Vertex};
 use torque_shapes::instance::ShapeInstance;
 use torque_shapes::shape::Shape;
+use torque_ts_vm::vm::Vm;
 
 #[cfg(feature = "gizmos")]
 use crate::gizmos::{GizmoPainter, Gizmos};
@@ -603,6 +604,19 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         })
     }
 
+    /// Reads the renderer's prefs ([`RenderPrefs`](crate::renderers::RenderPrefs)) from the client's script engine `vm`: the
+    /// upscaler High and Ultra draw with ([`HdWorld::upscaling`]). [`attach_to`](Self::attach_to) reads them; a game that
+    /// changes them later reads them again.
+    pub fn read_prefs(&mut self, vm: &Vm) {
+        use torque_engine::VmPrefs;
+        let upscaling = vm.prefs::<crate::renderers::RenderPrefs>().upscaling();
+        match (&mut self.world, &mut self.carried) {
+            (Some(world), _) => world.upscaling = upscaling,
+            (None, Some(Carried::Settings(settings))) => settings.upscaling = upscaling,
+            (None, _) => {}
+        }
+    }
+
     /// The engine's renderer's quality step.
     pub fn set_quality(&mut self, quality: Quality) {
         self.quality = quality;
@@ -651,6 +665,7 @@ impl<E: HdExtension<Scene: ViewScene>> WorldView<E> {
         host: &mut crate::Host<C, S>,
     ) {
         let vm = host.server.vm_mut();
+        self.read_prefs(vm);
         if let Some(slot) = RendererSlot::of(vm)
             && let Err(e) = self.attach_slot(slot)
         {

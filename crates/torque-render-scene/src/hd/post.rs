@@ -7,6 +7,10 @@
 //! GTAO at half resolution too. Every quality's AO is upsampled by depth; the image settings' `ao_full_res`
 //! ([`crate::hd::settings::ImageSettings::ao_full_res`]) estimates it at the internal frame's full resolution instead.
 //!
+//! **Upscaling** ([`Upscaling`], a setting, off by default): with [`Upscaler::Temporal`] High and Ultra draw a smaller
+//! internal frame (by default 80 % and 83 % a side) and the temporal upscaler ([`AntiAliasing::Tsr`]) brings it up to the
+//! output's size ([`Quality::post_with`]); Low and Medium keep their own anti-aliasing whatever the setting.
+//!
 //! **The jitter**: frame `k` of a history samples at the pixel's centre plus (`halton(k mod 8 + 1, 2)` less 1/2, `halton(k mod 8 + 1, 3)`
 //! less 1/2) pixels (x right, y down); the count starts at 0 on every cut, so a frame after the same number of warm-up frames is the same
 //! frame.
@@ -32,6 +36,82 @@ pub enum AntiAliasing {
     Fxaa,
     /// Temporal anti-aliasing (with the render scale below 1: TAAU, the history at the output's size).
     Taa,
+    /// The temporal upscaler ([`Upscaler::Temporal`]): the TAA's tests with a history that holds longer where the image
+    /// flickers, kept in half floats, and a sharpen as strong as the history is long.
+    Tsr,
+}
+
+impl AntiAliasing {
+    /// Whether the frame keeps a temporal history (and is drawn jittered).
+    #[must_use]
+    pub fn is_temporal(self) -> bool {
+        matches!(self, AntiAliasing::Taa | AntiAliasing::Tsr)
+    }
+}
+
+/// The upscaler that brings High's and Ultra's internal frame up to the output's size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Upscaler {
+    /// None: High and Ultra draw every pixel of the output through the TAA.
+    #[default]
+    Off,
+    /// The engine's temporal upscaler ([`AntiAliasing::Tsr`]).
+    Temporal,
+}
+
+impl Upscaler {
+    pub const ALL: [Upscaler; 2] = [Upscaler::Off, Upscaler::Temporal];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Upscaler::Off => "off",
+            Upscaler::Temporal => "temporal",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Upscaler> {
+        Upscaler::ALL
+            .into_iter()
+            .find(|u| u.name().eq_ignore_ascii_case(name.trim()))
+    }
+}
+
+/// The upscaling setting: the upscaler, and the internal frame's share a side it draws at (None: the quality's default,
+/// [`Upscaling::DEFAULT_HIGH`] and [`Upscaling::DEFAULT_ULTRA`]; a share is held to [`Upscaling::MIN_SCALE`] to 1).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Upscaling {
+    pub upscaler: Upscaler,
+    pub scale: Option<f32>,
+}
+
+impl Upscaling {
+    /// No upscaling (the default).
+    pub const OFF: Upscaling = Upscaling {
+        upscaler: Upscaler::Off,
+        scale: None,
+    };
+    /// The temporal upscaler at the quality's own share.
+    pub const TEMPORAL: Upscaling = Upscaling {
+        upscaler: Upscaler::Temporal,
+        scale: None,
+    };
+    /// The share High and Ultra draw at by default.
+    pub const DEFAULT_HIGH: f32 = 0.8;
+    pub const DEFAULT_ULTRA: f32 = 0.83;
+    /// The least share a set scale is held to (the same floor as [`RenderScale::MIN`]).
+    pub const MIN_SCALE: f32 = RenderScale::MIN;
+
+    /// The internal frame's share at `quality` when it is upscaled: None for no upscaler and at Low and Medium.
+    #[must_use]
+    pub fn scale_at(self, quality: Quality) -> Option<f32> {
+        let default = match (self.upscaler, quality) {
+            (Upscaler::Off, _) | (_, Quality::Low | Quality::Medium) => return None,
+            (Upscaler::Temporal, Quality::High) => Upscaling::DEFAULT_HIGH,
+            (Upscaler::Temporal, Quality::Ultra) => Upscaling::DEFAULT_ULTRA,
+        };
+        let s = self.scale.filter(|s| s.is_finite()).unwrap_or(default);
+        Some(s.clamp(Upscaling::MIN_SCALE, 1.0))
+    }
 }
 
 /// Which ambient occlusion the frame has.
@@ -85,6 +165,21 @@ impl Quality {
             },
         }
     }
+
+    /// [`Quality::post`] with `upscaling`: where it upscales (High and Ultra with an upscaler) the internal frame is its share
+    /// and the anti-aliasing the upscaler's; Ultra's sharpen then follows the history's confidence.
+    #[must_use]
+    pub fn post_with(self, upscaling: Upscaling) -> PostQuality {
+        let pq = self.post();
+        match upscaling.scale_at(self) {
+            Some(render_scale) => PostQuality {
+                render_scale,
+                aa: AntiAliasing::Tsr,
+                ..pq
+            },
+            None => pq,
+        }
+    }
 }
 
 /// The radical inverse of `index` in `base` (Halton's sequence; index 0 is 0).
@@ -115,7 +210,7 @@ impl PostQuality {
     /// [`MAX_TAA_INTERNAL_PIXELS`] with the TAA.
     pub fn render_scale_at(&self, width: u32, height: u32) -> f32 {
         let px = f64::from(width) * f64::from(height);
-        if self.aa != AntiAliasing::Taa || px <= MAX_TAA_INTERNAL_PIXELS {
+        if !self.aa.is_temporal() || px <= MAX_TAA_INTERNAL_PIXELS {
             return self.render_scale;
         }
         self.render_scale

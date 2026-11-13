@@ -528,3 +528,44 @@ fn a_renderer_that_cannot_be_made_is_refused_and_the_one_drawing_stays() {
     ));
     assert_eq!(view.current_renderer(), Some(FlatRenderer::ID));
 }
+
+/// The upscaler's prefs: off by default (a fresh script engine has no such global), the temporal upscaler by its name at the
+/// quality's share or a set one, and any other word off.
+#[test]
+fn the_render_prefs_choose_the_upscaler() {
+    use torque_engine::VmPrefs;
+    use torque_render_scene::hd::post::{Upscaler, Upscaling};
+
+    use crate::renderers::RenderPrefs;
+
+    let mut vm = torque_ts_vm::vm::Vm::new();
+    assert_eq!(vm.prefs::<RenderPrefs>().upscaling(), Upscaling::OFF);
+    for (upscaler, scale, read) in [
+        ("temporal", "0", Upscaling::TEMPORAL),
+        (
+            "Temporal",
+            "0.9",
+            Upscaling {
+                upscaler: Upscaler::Temporal,
+                scale: Some(0.9),
+            },
+        ),
+        (
+            "fsr",
+            "0.9",
+            Upscaling {
+                upscaler: Upscaler::Off,
+                scale: Some(0.9),
+            },
+        ),
+        ("off", "-1", Upscaling::OFF),
+    ] {
+        vm.set_global("$Pref::Render::Upscaler", upscaler);
+        vm.set_global("$Pref::Render::UpscaleScale", scale);
+        assert_eq!(
+            vm.prefs::<RenderPrefs>().upscaling(),
+            read,
+            "{upscaler} {scale}"
+        );
+    }
+}

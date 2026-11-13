@@ -89,7 +89,9 @@ use torque_render_scene::hd::cells::StaticGeometry;
 use torque_render_scene::hd::grade::{ExposureMode, Tonemap};
 use torque_render_scene::hd::ltc::{self, LTC_SIZE};
 use torque_render_scene::hd::lut::{CubeLut, LUT_SIZE};
-use torque_render_scene::hd::post::{AntiAliasing, AoMethod, RenderScale, internal_size, jitter};
+use torque_render_scene::hd::post::{
+    AntiAliasing, AoMethod, RenderScale, Upscaler, Upscaling, internal_size, jitter,
+};
 use torque_render_scene::hd::settings::ImageSettings;
 
 use crate::distortion::{self, DistortFrame, Distortion};
@@ -106,6 +108,7 @@ use crate::post::{
 use crate::shaders::Permutation;
 use crate::shadows::{MAX_DIRTY, ObjectCaster, ShadowInput, Shadows};
 pub use crate::shadows::{ShadowStats, ShadowSwitches};
+use crate::upscale::{HistoryPrecision, UPSCALED_FRAME_PERIOD, Upscale, UpscaleInputs};
 use crate::{
     DEPTH_FORMAT, DRAW_KIND_MARKS, HDR_FORMAT, PASS_KIND_MARKS, PASS_KIND_NAMES, PASSES, PassKind,
     arena, bloom, capture, clouds, colour, cull, exposure, froxels, invert, irradiance, module,
@@ -437,7 +440,7 @@ struct FrameKey {
 /// What the tonemap pass's group binds.
 #[derive(PartialEq)]
 struct TonemapKey {
-    views: [wgpu::TextureView; 3],
+    views: [wgpu::TextureView; 4],
     buffers: [wgpu::Buffer; 2],
     sampler: wgpu::Sampler,
 }
@@ -596,6 +599,7 @@ struct Targets {
     depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
     prepass_depths: [wgpu::Texture; 2],
+    prepass_depth_views: [wgpu::TextureView; 2],
     /// The prepass's motion of this frame and the last (one texture twice without the TAA).
     motions: [wgpu::Texture; 2],
     motion_views: [wgpu::TextureView; 2],
@@ -650,6 +654,8 @@ struct Targets {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TargetUse {
     pub taa: bool,
+    /// The temporal resolve is the upscaler's (the TAA's history is not made; the upscaler keeps its own).
+    pub upscaled: bool,
     pub fxaa: bool,
     pub ao: bool,
     pub contact: bool,
@@ -1144,8 +1150,11 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     gi_shading: bool,
     clusters_pipeline: wgpu::ComputePipeline,
     tonemap_module: wgpu::ShaderModule,
+    /// The tonemap after the upscaler (its sharpen follows the history's confidence), made when an upscaler first runs.
+    tonemap_upscaled_module: Option<wgpu::ShaderModule>,
     tonemap_pipeline_layout: wgpu::PipelineLayout,
-    tonemap_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
+    /// The tonemap's pipelines by target format and whether the frame was upscaled.
+    tonemap_pipelines: HashMap<(wgpu::TextureFormat, bool), wgpu::RenderPipeline>,
     pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
     /// The physically based materials' path, made when a scene first holds a material ([`crate::pbr`]), and its pipelines by
     /// key and parallax.
@@ -1344,6 +1353,13 @@ pub struct HdWorld<E: HdExtension = NoExtension> {
     pub grain: f32,
     /// The share of the output's pixels drawn ([`RenderScale`]; a window's setting, `Auto` for the checks).
     pub render_scale: RenderScale,
+    /// The upscaler High and Ultra draw with ([`Upscaling`]; off by default: they draw every pixel through the TAA).
+    pub upscaling: Upscaling,
+    /// The temporal upscaler's history in half floats (the default) or in 32-bit ones (the reference its precision check
+    /// compares the half floats with).
+    pub history_precision: HistoryPrecision,
+    /// The upscaler made for [`Self::upscaling`] and [`Self::history_precision`] (None until a frame upscales).
+    upscaler: Option<((Upscaler, HistoryPrecision), Box<dyn Upscale>)>,
     /// The reflections.
     refl: reflect::Reflections,
     /// The diffuse ambient's irradiance from the sky cube and the capture.
@@ -2533,6 +2549,8 @@ pub struct HdSettings {
     pub histories: Histories,
     pub debug: DebugView,
     pub render_scale: RenderScale,
+    pub upscaling: Upscaling,
+    pub history_precision: HistoryPrecision,
     pub gpu_cull: bool,
     pub occlusion: bool,
     pub lod: bool,
@@ -2691,6 +2709,12 @@ impl<E: HdExtension> HdWorld<E> {
                     5,
                     wgpu::TextureSampleType::Float { filterable: true },
                     wgpu::TextureViewDimension::D3,
+                ),
+                // The upscaler's output (its alpha the history's frames: the sharpen's confidence; unread without one).
+                texture_entry(
+                    6,
+                    wgpu::TextureSampleType::Float { filterable: false },
+                    wgpu::TextureViewDimension::D2,
                 ),
             ],
         });
@@ -3080,6 +3104,9 @@ impl<E: HdExtension> HdWorld<E> {
             auto_exposure: false,
             grain: 0.0,
             render_scale: RenderScale::Auto,
+            upscaling: Upscaling::OFF,
+            history_precision: HistoryPrecision::Half,
+            upscaler: None,
             forward: [(true, false), (false, false), (true, true), (false, true)]
                 .into_iter()
                 .map(|(clustered, front_layer)| {
@@ -3098,6 +3125,7 @@ impl<E: HdExtension> HdWorld<E> {
             forward_aside: (HashMap::new(), HashMap::new()),
             gi_shading: false,
             tonemap_module: module(&device, Permutation::Tonemap),
+            tonemap_upscaled_module: None,
             pipeline_cache: pipeline_cache.clone(),
             device,
             queue,
@@ -3885,17 +3913,23 @@ impl<E: HdExtension> HdWorld<E> {
         self.lut_key = Some(key);
     }
 
-    fn ensure_tonemap(&mut self, format: wgpu::TextureFormat) {
-        if self.tonemap_pipelines.contains_key(&format) {
+    fn ensure_tonemap(&mut self, format: wgpu::TextureFormat, upscaled: bool) {
+        if self.tonemap_pipelines.contains_key(&(format, upscaled)) {
             return;
         }
+        let module = if upscaled {
+            self.tonemap_upscaled_module
+                .get_or_insert_with(|| module(&self.device, Permutation::TonemapUpscaled))
+        } else {
+            &self.tonemap_module
+        };
         let p = self
             .device
             .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("hd tonemap"),
                 layout: Some(&self.tonemap_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &self.tonemap_module,
+                    module,
                     entry_point: Some("vs_full"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &[],
@@ -3904,7 +3938,7 @@ impl<E: HdExtension> HdWorld<E> {
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
-                    module: &self.tonemap_module,
+                    module,
                     entry_point: Some("fs_tonemap"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -3916,7 +3950,7 @@ impl<E: HdExtension> HdWorld<E> {
                 multiview_mask: None,
                 cache: self.pipeline_cache.as_ref(),
             });
-        self.tonemap_pipelines.insert(format, p);
+        self.tonemap_pipelines.insert((format, upscaled), p);
         self.pipelines_made += 1;
     }
 
@@ -5765,7 +5799,7 @@ impl<E: HdExtension> HdWorld<E> {
         let history = [0, 1].map(|_| {
             tex(
                 "hd taa history",
-                taa_outer,
+                if uses.upscaled { one } else { taa_outer },
                 HISTORY_FORMAT,
                 target | wgpu::TextureUsages::COPY_SRC,
             )
@@ -5957,6 +5991,7 @@ impl<E: HdExtension> HdWorld<E> {
             depth,
             depth_view,
             prepass_depths,
+            prepass_depth_views,
             motions,
             motion_views,
             normal_view,
@@ -6131,11 +6166,9 @@ impl<E: HdExtension> HdWorld<E> {
         // x 1 for WBOIT, y 1 for coloured sun shadows; z 1 where no TAA averages a per-pixel pattern (the anti-aliasing off or
         // the FXAA-style filter, a debug view): the near detail's fade is a cut there; w 1 where the frame is shown through the
         // FXAA-style filter (Low): the shadows' filter keeps a fixed pattern (no speckle). Then last frame's effect time.
-        let taa = self.features.anti_aliasing
-            && quality.post().aa == torque_render_scene::hd::post::AntiAliasing::Taa
-            && self.debug == DebugView::Off;
-        let fxaa = self.features.anti_aliasing
-            && quality.post().aa == torque_render_scene::hd::post::AntiAliasing::Fxaa;
+        let aa = quality.post_with(self.upscaling).aa;
+        let taa = self.features.anti_aliasing && aa.is_temporal() && self.debug == DebugView::Off;
+        let fxaa = self.features.anti_aliasing && aa == AntiAliasing::Fxaa;
         let flag = |v: bool| if v { 1.0 } else { 0.0 };
         push_f32(
             &mut b,
@@ -6174,6 +6207,22 @@ impl<E: HdExtension> HdWorld<E> {
         b.extend_from_slice(&self.ext.frame_ext(scene));
         debug_assert_eq!(b.len(), frame_size::<E>());
         b
+    }
+
+    /// Makes the upscaler [`Self::upscaling`] and [`Self::history_precision`] ask for, unless it is the one there.
+    fn ensure_upscaler(&mut self) {
+        let made_for = (self.upscaling.upscaler, self.history_precision);
+        if self.upscaler.as_ref().is_some_and(|(f, _)| *f == made_for) {
+            return;
+        }
+        self.upscaler = crate::upscale::make(
+            made_for.0,
+            &self.device,
+            self.pipeline_cache.as_ref(),
+            made_for.1,
+        )
+        .map(|u| (made_for, u));
+        self.pipelines_made += 1;
     }
 
     /// Starts the histories again (as a cut does): the next frame is the first of a new history, its jitter phase 0. A frame drawn
@@ -6304,7 +6353,7 @@ impl<E: HdExtension> HdWorld<E> {
             .flatten();
         self.set_gi_shading(gi_tier.is_some());
         let surfaces = varied_ground(self.ext.surfaces(scene), scene.ground_variation);
-        let pq = quality.post();
+        let pq = quality.post_with(self.upscaling);
         let (iw, ih) = internal_size(
             camera.width,
             camera.height,
@@ -6315,10 +6364,15 @@ impl<E: HdExtension> HdWorld<E> {
         let plain = self.debug == DebugView::Off;
         let mut extras = ExtraDrawn::default();
         let wboit = self.features.wboit && plain;
-        let taa = self.features.anti_aliasing && pq.aa == AntiAliasing::Taa && plain;
+        let taa = self.features.anti_aliasing && pq.aa.is_temporal() && plain;
         let fxaa = self.features.anti_aliasing && pq.aa == AntiAliasing::Fxaa && plain;
+        let upscaled = taa && pq.aa == AntiAliasing::Tsr;
+        if upscaled {
+            self.ensure_upscaler();
+        }
         let uses = TargetUse {
             taa,
+            upscaled,
             fxaa,
             ao: ao_on,
             contact: self.features.contact_shadows && quality.shadows().contact_steps > 0,
@@ -6389,7 +6443,12 @@ impl<E: HdExtension> HdWorld<E> {
             &[
                 j[0],
                 j[1],
-                (self.temporal.frame % 1024) as f32,
+                (self.temporal.frame
+                    % if upscaled {
+                        UPSCALED_FRAME_PERIOD
+                    } else {
+                        1024
+                    }) as f32,
                 if self.temporal.taa_written && self.histories.taa {
                     1.0
                 } else {
@@ -6430,7 +6489,7 @@ impl<E: HdExtension> HdWorld<E> {
         }
         cpu_mark!("begin: frame bytes");
         let format = target.map_or(LDR_FORMAT, |t| t.1);
-        self.ensure_tonemap(format);
+        self.ensure_tonemap(format, upscaled);
         self.ensure_lut(&image);
 
         // What is drawn, in order, with its pipeline and texture.
@@ -8239,7 +8298,41 @@ impl<E: HdExtension> HdWorld<E> {
         let _ = set_pass_kind(PassKind::Post);
         // The anti-aliasing: the TAA resolve into this frame's history, or the FXAA-style filter.
         let aa_timed = (taa || fxaa) && self.timer.is_some();
-        if taa || fxaa {
+        if upscaled {
+            let (_, upscaler) = self.upscaler.as_mut().expect("made with the frame's uses");
+            upscaler.encode(
+                &self.device,
+                &mut encoder,
+                UpscaleInputs {
+                    color: &targets.hdr_view,
+                    depth: &targets.prepass_depth_views[p],
+                    motion: &targets.motion_views[p],
+                    jitter: j,
+                    exposure: &self.exposure.state,
+                    reactive: None,
+                    reset: !(self.temporal.taa_written && self.histories.taa),
+                    internal_size: [iw, ih],
+                    output_size: [camera.width, camera.height],
+                    output: &targets.shown_views[p],
+                    output_before: &targets.shown_views[1 - p],
+                    depth_before: &targets.prepass_depth_views[1 - p],
+                    motion_before: &targets.motion_views[1 - p],
+                    sun_mask: &targets.contact_views[p],
+                    sun_mask_before: &targets.contact_views[1 - p],
+                    frame: &self.frame,
+                    frame_index: self.temporal.frame,
+                    parity: p,
+                    timestamps: self
+                        .timer
+                        .as_ref()
+                        .map(|t| wgpu::RenderPassTimestampWrites {
+                            query_set: &t.queries,
+                            beginning_of_pass_write_index: Some(Q_AA_BEGIN),
+                            end_of_pass_write_index: Some(Q_AA_END),
+                        }),
+                },
+            );
+        } else if taa || fxaa {
             let view = if taa {
                 &targets.history_views[p]
             } else {
@@ -8512,8 +8605,15 @@ impl<E: HdExtension> HdWorld<E> {
         debug_assert_eq!(post.len() as u64, POST_BYTES);
         self.queue.write_buffer(&self.post_uniform, 0, &post);
         let bloom = self.bloom.result().unwrap_or(&self.white);
+        // The upscaler's output (the sharpen's confidence); a frame without one binds the same stand-in every frame.
+        let upscaled_view = &targets.shown_views[if upscaled { p } else { 0 }];
         let key = TonemapKey {
-            views: [source.clone(), bloom.clone(), self.lut_view.clone()],
+            views: [
+                source.clone(),
+                bloom.clone(),
+                self.lut_view.clone(),
+                upscaled_view.clone(),
+            ],
             buffers: [self.post_uniform.clone(), self.exposure.state.clone()],
             sampler: self.post.linear.clone(),
         };
@@ -8540,6 +8640,7 @@ impl<E: HdExtension> HdWorld<E> {
                         resource: self.exposure.state.as_entire_binding(),
                     },
                     tv(5, &self.lut_view),
+                    tv(6, upscaled_view),
                 ],
             })
         });
@@ -8577,7 +8678,7 @@ impl<E: HdExtension> HdWorld<E> {
                 0.0,
                 1.0,
             );
-            pass.set_pipeline(&self.tonemap_pipelines[&format]);
+            pass.set_pipeline(&self.tonemap_pipelines[&(format, upscaled)]);
             pass.set_bind_group(0, &tonemap_group, &[]);
             pass.draw(0..3, 0..1);
             crate::count_draws(1);
@@ -8825,6 +8926,8 @@ impl<E: HdExtension> HdWorld<E> {
             histories: self.histories,
             debug: self.debug,
             render_scale: self.render_scale,
+            upscaling: self.upscaling,
+            history_precision: self.history_precision,
             gpu_cull: self.gpu_cull,
             occlusion: self.occlusion,
             lod: self.lod,
@@ -8855,6 +8958,8 @@ impl<E: HdExtension> HdWorld<E> {
         self.histories = settings.histories;
         self.debug = settings.debug;
         self.render_scale = settings.render_scale;
+        self.upscaling = settings.upscaling;
+        self.history_precision = settings.history_precision;
         self.gpu_cull = settings.gpu_cull;
         self.occlusion = settings.occlusion;
         self.lod = settings.lod;
@@ -9177,14 +9282,25 @@ impl<E: HdExtension> HdWorld<E> {
         Ok((w, h, halves(&bytes)))
     }
 
-    /// The TAA's history the last frame wrote (the output's size): RGB and, in alpha, the frames it holds.
+    /// The TAA's (or the upscaler's) history the last frame wrote (the output's size): RGB and, in alpha, the frames it holds.
     pub fn read_history(&self) -> Result<(u32, u32, Vec<[f32; 4]>), HdError> {
         let t = self.targets.as_ref().ok_or("nothing drawn yet")?;
         let p = match self.output {
             Output::Shown(p) | Output::Present(p) => p,
             _ => return Err("the last frame had no TAA".to_string()),
         };
-        let (w, h, bytes) = self.read_texture(&t.history[p], 16)?;
+        let history = if t.uses.upscaled {
+            match self.upscaler.as_ref().and_then(|(_, u)| u.history(p)) {
+                Some(h) => h,
+                None => {
+                    let (w, h, bytes) = self.read_texture(&t.shown[p], 8)?;
+                    return Ok((w, h, halves(&bytes)));
+                }
+            }
+        } else {
+            &t.history[p]
+        };
+        let (w, h, bytes) = self.read_texture(history, 16)?;
         let px = bytes
             .as_chunks::<16>()
             .0

@@ -109,3 +109,46 @@ fn a_moved_shape_points_back_to_where_it_was() {
     };
     assert_eq!(still.motion(), COLUMN_IDENTITY);
 }
+
+/// Upscaling is off by default and leaves every quality as it is; the temporal upscaler takes High and Ultra to their shares
+/// (or the set one, held to its range) and leaves Low and Medium alone.
+#[test]
+fn the_upscaler_is_off_by_default_and_takes_high_and_ultra_only() {
+    assert_eq!(Upscaling::default(), Upscaling::OFF);
+    for q in Quality::ALL {
+        assert_eq!(q.post_with(Upscaling::OFF), q.post(), "{q:?}");
+    }
+    for q in [Quality::Low, Quality::Medium] {
+        assert_eq!(q.post_with(Upscaling::TEMPORAL), q.post(), "{q:?}");
+    }
+    for (q, scale) in [(Quality::High, 0.8), (Quality::Ultra, 0.83)] {
+        let pq = q.post_with(Upscaling::TEMPORAL);
+        assert_eq!(
+            pq,
+            PostQuality {
+                render_scale: scale,
+                aa: AntiAliasing::Tsr,
+                ..q.post()
+            }
+        );
+    }
+    let set = |s: f32| {
+        Quality::High
+            .post_with(Upscaling {
+                scale: Some(s),
+                ..Upscaling::TEMPORAL
+            })
+            .render_scale
+    };
+    assert_eq!(set(0.67), 0.67);
+    assert_eq!(set(0.1), Upscaling::MIN_SCALE);
+    assert_eq!(set(3.0), 1.0);
+    assert_eq!(set(f32::NAN), Upscaling::DEFAULT_HIGH);
+    assert!(AntiAliasing::Tsr.is_temporal() && AntiAliasing::Taa.is_temporal());
+    assert!(!AntiAliasing::Fxaa.is_temporal());
+    for u in Upscaler::ALL {
+        assert_eq!(Upscaler::named(u.name()), Some(u));
+    }
+    assert_eq!(Upscaler::named(" Temporal "), Some(Upscaler::Temporal));
+    assert_eq!(Upscaler::named("fsr"), None);
+}

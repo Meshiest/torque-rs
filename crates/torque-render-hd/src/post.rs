@@ -35,14 +35,14 @@ pub const MOTION_STRIDE: u64 = 256;
 /// The most distinct object ids the motion target holds (its w is 1 + the id in a half float: every integer to 2048 is exact).
 pub const MOTION_IDS: u32 = 2047;
 
-fn module(device: &wgpu::Device, p: Permutation) -> wgpu::ShaderModule {
+pub(crate) fn module(device: &wgpu::Device, p: Permutation) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(&p.name()),
         source: wgpu::ShaderSource::Wgsl(p.source().into()),
     })
 }
 
-fn texture(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn texture(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -55,7 +55,7 @@ fn texture(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn depth(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn depth(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -68,7 +68,7 @@ fn depth(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn frame_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn frame_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -81,7 +81,7 @@ fn frame_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn filtering(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn filtering(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
