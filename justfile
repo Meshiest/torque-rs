@@ -358,6 +358,13 @@ gltf-verify:
     cargo test -p torque-example-assets every_shape_through_a_glb_makes_the_same_dts
     $env:TORQUE_IMPORT_FUZZ_CASES = "300000"; cargo test --release -p torque-import --lib the_reader_never_panics -- --nocapture
 
+# The compressed textures' pass condition: 30 generated images baked into KTX 2.0 files (BC7 PSNR at least 40 dB, BC5 mean
+# normal error at most 2 degrees, cutout coverage of every level of 16 x 16 or more within 2 % of level 0, 0 differing bytes
+# written again, OpenEXR to R16 within 1 step), then 300,000 fuzz cases each of the KTX 2.0 and OpenEXR readers with 0 panics
+texture-verify:
+    $env:RAYON_NUM_THREADS = "4"; cargo run --release -p torque-render-scene --example texture-verify
+    $env:TORQUE_FUZZ_TEXTURES = "300000"; cargo test --release -p torque-images --lib texture_fuzz -- --nocapture
+
 # What CI checks, in one go (rustdoc with warnings as errors is part of it)
 ci: check test deny book
     just examples headless

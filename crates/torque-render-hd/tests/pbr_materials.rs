@@ -283,17 +283,24 @@ fn map(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> MapImage {
 
 /// The floor in a low sun from +X under a dim sky, of `maps`: its mean luminance at the screen's middle.
 fn lit_floor(gpu: &Gpu, maps: MapImages, rough: f32, metal: f32) -> f32 {
-    let mut s = uniform_sky_scene();
-    s.clear = [0.3; 3];
-    s.sun.ambient = [0.2; 3];
-    s.sun.diffuse = [0.8; 3];
-    s.sun.towards = [0.8, 0.0, 0.6];
     let m = PbrMaterial {
         roughness: rough,
         metal,
         ..PbrMaterial::default()
     };
-    let built = pbr::build(&m, "floor", maps, &mut s.textures).expect("the maps");
+    lit_floor_of(gpu, |s| {
+        pbr::build(&m, "floor", maps, &mut s.textures).expect("the maps")
+    })
+}
+
+/// The floor of the material `make` puts in the scene's tables, lit as [`lit_floor`]'s.
+fn lit_floor_of(gpu: &Gpu, make: impl FnOnce(&mut PlainScene) -> HdMaterial) -> f32 {
+    let mut s = uniform_sky_scene();
+    s.clear = [0.3; 3];
+    s.sun.ambient = [0.2; 3];
+    s.sun.diffuse = [0.8; 3];
+    s.sun.towards = [0.8, 0.0, 0.6];
+    let built = make(&mut s);
     let id = s.materials.intern(built);
     s.objects
         .push(object(1, [0.0; 3], 6.0, floor(6.0, 4.0), Some(id)));
@@ -444,6 +451,7 @@ fn textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_erro
         .map(|k| vec![200u8; 4 * (wide >> k).max(1) as usize])
         .collect();
     let a = s.textures.intern(torque_render_scene::Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "wide".into(),
         width: wide,
         height: 1,
@@ -451,6 +459,7 @@ fn textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_erro
     });
     // 4 x 4 with twenty levels.
     let b = s.textures.intern(torque_render_scene::Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "deep".into(),
         width: 4,
         height: 4,
@@ -475,4 +484,98 @@ fn textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_erro
     let cam = camera(&mut s, [0.0, -10.0, 1.0], [0.0; 3], 40);
     let world = draw_frames(&gpu, &s, &cam, 2);
     world.finish().expect("no device error");
+}
+
+/// A 64 x 64 material's maps: a colored grain, normals leaning toward and away from the sun in bands, and an ORM of two
+/// roughnesses.
+fn banded_maps() -> MapImages {
+    let enc = |v: f32| ((v * 0.5 + 0.5) * 255.0).round() as u8;
+    MapImages {
+        base: Some(map(64, 64, |x, y| {
+            [150 + (x % 7 * 9) as u8, 120 + (y % 5 * 11) as u8, 90, 255]
+        })),
+        normal: Some(map(64, 64, |x, _| {
+            let a = ((x as f32 / 64.0) * std::f32::consts::TAU * 2.0).sin() * 0.5;
+            [enc(a.sin()), 128, enc(a.cos()), 255]
+        })),
+        orm: Some(map(64, 64, |_, y| {
+            [255, if y < 32 { 90 } else { 200 }, 0, 255]
+        })),
+        ..MapImages::default()
+    }
+}
+
+#[test]
+fn a_baked_material_draws_as_its_uncompressed_maps() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let m = PbrMaterial::default();
+    let plain = lit_floor_of(&gpu, |s| {
+        pbr::build(&m, "floor", banded_maps(), &mut s.textures).expect("the maps")
+    });
+    let files: std::collections::HashMap<String, Vec<u8>> = pbr::bake(&m, banded_maps(), None)
+        .expect("bakes")
+        .into_iter()
+        .map(|b| (format!("{}.ktx2", b.role.name()), b.file))
+        .collect();
+    let named = PbrMaterial {
+        base: Some("base.ktx2".into()),
+        normal: Some("normal.ktx2".into()),
+        orm: Some("orm.ktx2".into()),
+        ..m.clone()
+    };
+    let mut formats = Vec::new();
+    let baked = lit_floor_of(&gpu, |s| {
+        let mut read = |p: &str| files.get(p).cloned();
+        let built = pbr::load(&named, "floor", &mut read, &mut s.textures).expect("loads");
+        formats = s.textures.textures.iter().map(|t| t.format).collect();
+        built
+    });
+    println!("uncompressed {plain:.4}, baked {baked:.4}");
+    assert!(
+        formats
+            .iter()
+            .all(|f| matches!(f, torque_render_scene::TexelFormat::Block(_)))
+    );
+    assert!((baked - plain).abs() < 0.02 * plain, "{baked} vs {plain}");
+}
+
+#[test]
+fn a_block_texture_of_partial_blocks_is_decoded_on_the_cpu() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    // 6 x 6: not whole blocks, so no GPU takes it as BC7; it goes up decoded.
+    let color = [180u8, 140, 100, 255];
+    let rgba = |w: u32, h: u32| color.repeat((w * h) as usize);
+    let levels: Vec<Vec<u8>> = [(6, 6), (3, 3), (1, 1)]
+        .into_iter()
+        .map(|(w, h)| images::bc::encode(images::bc::BlockFormat::Bc7, &rgba(w, h), w, h).unwrap())
+        .collect();
+    let m = PbrMaterial::default();
+    let blocks = lit_floor_of(&gpu, |s| {
+        let base = s.textures.intern(torque_render_scene::Texture {
+            path: "blocks".into(),
+            width: 6,
+            height: 6,
+            levels: std::sync::Arc::new(levels),
+            format: torque_render_scene::TexelFormat::Block(images::bc::BlockFormat::Bc7),
+        });
+        HdMaterial {
+            base: Some(base),
+            ..HdMaterial::of_factors(&m)
+        }
+    });
+    let plain = lit_floor(
+        &gpu,
+        MapImages {
+            base: Some(map(6, 6, |_, _| color)),
+            ..MapImages::default()
+        },
+        m.roughness,
+        m.metal,
+    );
+    println!("decoded {blocks:.4}, RGBA8 {plain:.4}");
+    assert!((blocks - plain).abs() < 0.02 * plain, "{blocks} vs {plain}");
 }

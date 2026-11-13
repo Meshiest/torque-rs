@@ -38,6 +38,8 @@ torque-resource = { path = "../torque-resource" }
 torque-scene = { path = "../torque-scene" }
 
 [dev-dependencies]
+# The tests' and `texture-verify`'s OpenEXR files.
+exr = { version = "1.74", default-features = false }
 # The tests' synthetic interiors and terrain (`maps::synth`).
 maps = { package = "torque-maps", path = "../torque-maps", features = ["testing"] }
 # The tests' synthetic shapes (`shapes::synth`).

@@ -5,7 +5,7 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 
 use torque_render_scene::hd::kit::Lcg;
-use torque_render_scene::{Assets, Texture};
+use torque_render_scene::{Assets, TexelFormat, Texture};
 
 /// The particle textures by the names the datablocks give them.
 pub const SPARK: &str = "fx/spark";
@@ -276,6 +276,7 @@ fn texture(name: &str, side: usize, rgba: Vec<u8>) -> Texture {
         width: side as u32,
         height: side as u32,
         levels: Arc::new(vec![rgba]),
+        format: TexelFormat::Rgba8,
     }
 }
 

@@ -327,6 +327,7 @@ fn dirt() -> Texture {
         }
     }
     Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "ghosting dirt".into(),
         width: N as u32,
         height: N as u32,
@@ -347,6 +348,7 @@ fn puff() -> Texture {
         }
     }
     Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "ghosting puff".into(),
         width: N as u32,
         height: N as u32,

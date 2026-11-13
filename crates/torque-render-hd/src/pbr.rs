@@ -119,7 +119,8 @@ impl PbrGpu {
         (&self.modules[&key], &self.pipeline_layout)
     }
 
-    /// Makes the groups of the scene's materials not yet on the GPU. `textures` are the scene's texture table's views (sRGB),
+    /// Makes the groups of the scene's materials not yet on the GPU. `textures` are the scene's texture table's views (sRGB
+    /// where the format has an sRGB form; a map's linear view is its texture's own format),
     /// `white` the view a missing map binds.
     pub(crate) fn sync(
         &mut self,
@@ -137,7 +138,7 @@ impl PbrGpu {
                     || white.clone(),
                     |v| {
                         v.texture().create_view(&wgpu::TextureViewDescriptor {
-                            format: Some(wgpu::TextureFormat::Rgba8Unorm),
+                            format: Some(v.texture().format()),
                             ..wgpu::TextureViewDescriptor::default()
                         })
                     },

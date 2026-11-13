@@ -6,9 +6,11 @@
 //! The materials are made in code (a brushed metal, a stone wall with a height map, wood, a woven fabric, a painted plastic, gold
 //! and a rough ground) unless `--library <dir>` names a folder of materials: each folder in it that holds a `.mat.toml` sidecar
 //! is one (its maps beside it, any material library's that has base color, normal, ORM or separate maps and height). Nothing is
-//! read outside that folder.
+//! read outside that folder. The maps' KTX 2.0 files baked beside them (`torque-render-scene`'s `pbr-bake` example) are taken
+//! when present; `--plain-maps` leaves them out (the uncompressed chains, to compare). The library's load time and the bytes
+//! its maps take on the GPU are printed once.
 //!
-//! `cargo run -p torque-render-hd --release --example pbr-gallery -- <dir> [--library <dir>]`; with `--cost` it prints the
+//! `cargo run -p torque-render-hd --release --example pbr-gallery -- <dir> [--library <dir>] [--plain-maps]`; with `--cost` it prints the
 //! frame's and the opaque pass's GPU times of the shapes in the sun with their materials and with the same draws plain (under
 //! the bench lock).
 
@@ -330,9 +332,18 @@ fn synthetic() -> Vec<(&'static str, PbrMaterial, MapImages)> {
     out
 }
 
+/// A library of materials: its folder, and whether its baked KTX 2.0 files are left out.
+struct Library {
+    dir: PathBuf,
+    plain_maps: bool,
+}
+
 /// The library's materials: each folder in `dir` (sorted) holding a `.mat.toml` with one material, its maps read from that
 /// folder only (the sidecar's paths are checked to stay inside it), each file within [`MAX_FILE_BYTES`].
-fn library(dir: &Path, scene: &mut HdScene<StaticCells>) -> Result<Vec<Mat3>, String> {
+fn library(lib: &Library, scene: &mut HdScene<StaticCells>) -> Result<Vec<Mat3>, String> {
+    let dir = &lib.dir;
+    let started = std::time::Instant::now();
+    let held = scene.textures.bytes();
     let mut folders: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("{}: {e}", dir.display()))?
         .filter_map(Result::ok)
@@ -383,7 +394,12 @@ fn library(dir: &Path, scene: &mut HdScene<StaticCells>) -> Result<Vec<Mat3>, St
         let name = folder
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
-        let mut read = |rel: &str| read_capped(&folder.join(rel));
+        let mut read = |rel: &str| {
+            if lib.plain_maps && rel.to_ascii_lowercase().ends_with(".ktx2") {
+                return None;
+            }
+            read_capped(&folder.join(rel))
+        };
         match pbr::load(
             &m,
             &sidecar.to_string_lossy(),
@@ -398,6 +414,21 @@ fn library(dir: &Path, scene: &mut HdScene<StaticCells>) -> Result<Vec<Mat3>, St
             Err(e) => eprintln!("{name}: {e}"),
         }
     }
+    static PRINTED: std::sync::Once = std::sync::Once::new();
+    PRINTED.call_once(|| {
+        let bc = scene
+            .textures
+            .textures
+            .iter()
+            .filter(|t| matches!(t.format, torque_render_scene::TexelFormat::Block(_)))
+            .count();
+        println!(
+            "library: {} materials in {:.2} s, their maps {:.1} MiB ({bc} block-compressed textures)",
+            out.len(),
+            started.elapsed().as_secs_f64(),
+            (scene.textures.bytes() - held) as f64 / f64::from(1 << 20)
+        );
+    });
     Ok(out)
 }
 
@@ -784,10 +815,10 @@ fn write_png(path: &Path, frame: &torque_render_core::Frame) -> Result<(), Strin
 /// The gallery's materials: the library's (when given and it holds any) or those made in code, with the ground's last.
 fn materials(
     scene: &mut HdScene<StaticCells>,
-    lib: Option<&Path>,
+    lib: Option<&Library>,
 ) -> Result<(Vec<Mat3>, Mat3), String> {
     let mut mats = match lib {
-        Some(dir) => library(dir, scene)?,
+        Some(lib) => library(lib, scene)?,
         None => Vec::new(),
     };
     if mats.is_empty() {
@@ -813,7 +844,7 @@ fn materials(
 }
 
 /// The frame's and the opaque pass's GPU medians of the shapes in the sun, with and without their materials.
-fn cost(gpu: &Gpu, lib: Option<&Path>, quality: Quality) -> Result<(), String> {
+fn cost(gpu: &Gpu, lib: Option<&Library>, quality: Quality) -> Result<(), String> {
     for with_material in [false, true] {
         let mut s = base_scene(quality);
         let (mats, ground) = materials(&mut s.frame, lib)?;
@@ -863,11 +894,13 @@ fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut dir = None;
     let mut lib = None;
+    let mut plain_maps = false;
     let mut cost_quality = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--library" => lib = it.next().map(PathBuf::from),
+            "--plain-maps" => plain_maps = true,
             "--cost" => {
                 cost_quality = Some(
                     it.next()
@@ -878,9 +911,10 @@ fn main() -> Result<(), String> {
             _ => dir = Some(PathBuf::from(a)),
         }
     }
+    let lib = lib.map(|dir| Library { dir, plain_maps });
     let gpu = Gpu::new().map_err(|e| e.to_string())?;
     if let Some(q) = cost_quality {
-        return cost(&gpu, lib.as_deref(), q);
+        return cost(&gpu, lib.as_ref(), q);
     }
     let dir = dir.unwrap_or_else(|| "pbr-gallery".into());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -926,7 +960,7 @@ fn main() -> Result<(), String> {
     ];
     for (name, setup) in pictures {
         let mut s = base_scene(Quality::Ultra);
-        let (mats, ground) = materials(&mut s.frame, lib.as_deref())?;
+        let (mats, ground) = materials(&mut s.frame, lib.as_ref())?;
         let cam = setup(&mut s, &mats, &ground);
         let mut world: HdWorld = HdWorld::new(&gpu);
         world.reset_history();

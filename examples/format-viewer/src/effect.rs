@@ -35,6 +35,7 @@ fn puff(r: &mut Renderer) -> usize {
         }
     }
     r.scene.frame.textures.intern(torque_render_scene::Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "viewer-puff".into(),
         width: 64,
         height: 64,

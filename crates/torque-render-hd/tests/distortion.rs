@@ -110,6 +110,7 @@ fn setup(bar: bool) -> Setup {
     let s = &mut scene.frame;
     // The map: every texel bends to screen +x (r 1, g 0.5: the normal map's xy (1, 0)).
     let map = s.textures.intern(Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "bend".into(),
         width: 1,
         height: 1,

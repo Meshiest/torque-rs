@@ -1599,6 +1599,46 @@ pub fn f32_to_f16(v: f32) -> u16 {
 /// above it dropped until it fits, as the lightmap does), its size, and how many levels from it (no more than its full chain
 /// has, at least one). A texture whose last level is still over `max` keeps a level of `max` (its bytes do not fit and are
 /// left unwritten): it is never a validation error.
+/// How a table texture goes to the GPU: the texture's format, and the block format decoded on the CPU first (none when the
+/// levels go up as they are).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UploadPlan {
+    pub(crate) format: wgpu::TextureFormat,
+    pub(crate) decode: Option<images::bc::BlockFormat>,
+}
+
+/// The [`UploadPlan`] of a texture of `format` whose first uploaded level is `w0` x `h0`: block formats go up as they are on
+/// a device with BC textures when that level is whole blocks (a GPU's block texture is), else they are decoded to RGBA8; RGBA8
+/// goes up as RGBA8.
+pub(crate) fn upload_plan(
+    format: torque_render_scene::TexelFormat,
+    bc: bool,
+    w0: u32,
+    h0: u32,
+) -> UploadPlan {
+    use images::bc::BlockFormat as B;
+    use torque_render_scene::TexelFormat as F;
+    let whole = w0.is_multiple_of(4) && h0.is_multiple_of(4);
+    match format {
+        F::Block(b) if bc && whole => UploadPlan {
+            format: match b {
+                B::Bc4 => wgpu::TextureFormat::Bc4RUnorm,
+                B::Bc5 => wgpu::TextureFormat::Bc5RgUnorm,
+                B::Bc7 => wgpu::TextureFormat::Bc7RgbaUnorm,
+            },
+            decode: None,
+        },
+        F::Block(b) => UploadPlan {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            decode: Some(b),
+        },
+        F::Rgba8 => UploadPlan {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            decode: None,
+        },
+    }
+}
+
 pub(crate) fn texture_fit(
     width: u32,
     height: u32,
@@ -3812,6 +3852,16 @@ impl<E: HdExtension> HdWorld<E> {
             t.levels.len(),
             self.device.limits().max_texture_dimension_2d,
         );
+        let plan = upload_plan(
+            t.format,
+            self.device
+                .features()
+                .contains(wgpu::Features::TEXTURE_COMPRESSION_BC),
+            w0,
+            h0,
+        );
+        let srgb = plan.format.add_srgb_suffix();
+        let srgb_views = [srgb];
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some(&t.path),
             size: wgpu::Extent3d {
@@ -3822,9 +3872,13 @@ impl<E: HdExtension> HdWorld<E> {
             mip_level_count: count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: plan.format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+            view_formats: if srgb == plan.format {
+                &[]
+            } else {
+                &srgb_views
+            },
         });
         for (i, level) in t.levels.iter().skip(first).take(count as usize).enumerate() {
             let (w, h) = ((w0 >> i).max(1), (h0 >> i).max(1));
@@ -3834,9 +3888,21 @@ impl<E: HdExtension> HdWorld<E> {
                 t.width.checked_shr(k).unwrap_or(0).max(1),
                 t.height.checked_shr(k).unwrap_or(0).max(1),
             );
-            if own != (w, h) || (level.len() as u64) < 4 * u64::from(w) * u64::from(h) {
+            if own != (w, h) || (level.len() as u64) < t.format.level_bytes(w, h) {
                 continue;
             }
+            let bytes: std::borrow::Cow<'_, [u8]> = match plan.decode {
+                Some(b) => {
+                    match images::bc::decode(b, &level[..b.level_bytes(w, h) as usize], w, h) {
+                        Ok(rgba) => rgba.into(),
+                        Err(_) => continue,
+                    }
+                }
+                None => level.as_slice().into(),
+            };
+            let (bw, bh) = plan.format.block_dimensions();
+            let block_bytes = plan.format.block_copy_size(None).unwrap_or(4);
+            let (cols, rows) = (w.div_ceil(bw), h.div_ceil(bh));
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &tex,
@@ -3844,21 +3910,22 @@ impl<E: HdExtension> HdWorld<E> {
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                level,
+                &bytes,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(4 * w),
-                    rows_per_image: Some(h),
+                    bytes_per_row: Some(cols * block_bytes),
+                    rows_per_image: Some(rows),
                 },
+                // A block format's level is copied as whole blocks (its physical size).
                 wgpu::Extent3d {
-                    width: w,
-                    height: h,
+                    width: cols * bw,
+                    height: rows * bh,
                     depth_or_array_layers: 1,
                 },
             );
         }
         tex.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+            format: Some(srgb),
             ..wgpu::TextureViewDescriptor::default()
         })
     }

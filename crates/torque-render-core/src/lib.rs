@@ -86,8 +86,8 @@ pub fn pick_samples(supported: &[u32], wanted: u32) -> u32 {
 
 /// The optional features the HDR renderer uses when the adapter has them: GPU timestamps (its frame times),
 /// timestamps between passes (per-pass GPU times), `Rg11b10Ufloat` render targets (bloom), depth clip control (shadow pancaking),
-/// filterable 32-bit float textures, and for its indirect draws a first instance in the arguments (a draw names its cluster)
-/// and the draw count read from a buffer.
+/// filterable 32-bit float textures, for its indirect draws a first instance in the arguments (a draw names its cluster)
+/// and the draw count read from a buffer, and BC textures (the physically based materials' maps go up block-compressed).
 /// The device asks for those of them the adapter offers; a single-sampled frame depends on none.
 pub fn hd_wanted() -> wgpu::Features {
     wgpu::Features::TIMESTAMP_QUERY
@@ -97,6 +97,7 @@ pub fn hd_wanted() -> wgpu::Features {
         | wgpu::Features::FLOAT32_FILTERABLE
         | wgpu::Features::INDIRECT_FIRST_INSTANCE
         | wgpu::Features::MULTI_DRAW_INDIRECT_COUNT
+        | wgpu::Features::TEXTURE_COMPRESSION_BC
 }
 
 /// Why a frame could not be drawn.

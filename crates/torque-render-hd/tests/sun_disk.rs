@@ -62,6 +62,7 @@ fn scene() -> PlainScene {
     s.atmosphere = true;
     // (An unused texture keeps the table's first slot as the examples have it.)
     let _ = s.textures.intern(Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "white".into(),
         width: 1,
         height: 1,

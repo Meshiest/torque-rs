@@ -14,6 +14,8 @@ glam = { workspace = true }
 web-time = "1.1"
 torque-render-core = { path = "../torque-render-core" }
 torque-render-scene = { path = "../torque-render-scene" }
+# A block-compressed map is decoded to RGBA8 on a device without BC textures.
+images = { package = "torque-images", path = "../torque-images" }
 # Waits on an error scope (the arena checks its buffers were made).
 pollster = "0.4"
 # The shaders' validation (every file and permutation; the same naga wgpu compiles them with).

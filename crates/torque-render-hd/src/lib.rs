@@ -124,9 +124,15 @@
 //!   metalness 0 and 1 (`tests/pbr_materials.rs`); a change to the shading goes in `brdf.wgsl` and keeps both furnaces.
 //!   Parallax marches the height map at Ultra only. Any table texture is uploaded within the device's side, its top levels
 //!   dropped until it fits and never more levels than its chain has (`texture_fit`;
-//!   `textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_error`). Only loose objects' draws (shapes) take materials: planes, cells and the
-//!   sky ignore a draw's material. The `pbr-gallery` example draws the look (`--library` a folder of sidecars, `--cost` the
-//!   opaque pass with and without the materials).
+//!   `textures_past_the_devices_side_or_with_too_many_levels_upload_without_an_error`). A block-compressed map
+//!   ([`torque_render_scene::TexelFormat::Block`]) goes up as BC4, BC5 or BC7 when the device has `TEXTURE_COMPRESSION_BC`
+//!   (asked for by `hd_wanted`) and its first uploaded level is whole blocks, each level copied as whole blocks; otherwise
+//!   each level is decoded to RGBA8 on the CPU as it goes up (`upload_plan`;
+//!   `block_textures_go_up_as_blocks_only_on_a_bc_device_and_in_whole_blocks`, `a_block_texture_of_partial_blocks_is_decoded_on_the_cpu`).
+//!   A map's linear view is its texture's own format, its color view the sRGB form where there is one; a baked material draws
+//!   as its uncompressed maps within 2 % (`a_baked_material_draws_as_its_uncompressed_maps`). Only loose objects' draws (shapes) take materials: planes, cells and the
+//!   sky ignore a draw's material. The `pbr-gallery` example draws the look (`--library` a folder of sidecars, `--plain-maps`
+//!   leaving out their baked files, `--cost` the opaque pass with and without the materials).
 //!
 //! Costs a frame must not grow back (`benches/upload.rs` and the `frame-cpu` example, timed under the bench lock):
 //! - No bind group is made a frame while nothing it binds changed: the forward passes' frame groups and the tonemap group are

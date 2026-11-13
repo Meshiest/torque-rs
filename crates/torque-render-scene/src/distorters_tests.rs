@@ -96,6 +96,7 @@ fn a_bending_decal_is_a_distorter_that_fades_with_it_and_one_that_only_bends_dra
     // In a scene its map is the scene's table's.
     let mut scene = HdScene::new(());
     let _ = scene.textures.intern(crate::Texture {
+        format: crate::TexelFormat::Rgba8,
         path: "other".into(),
         width: 1,
         height: 1,

@@ -1,6 +1,6 @@
 [package]
 name = "torque-images"
-description = "Image decoding for torque-rs: PNG, JPEG and mip chains"
+description = "Image decoding for torque-rs: PNG, JPEG, mip chains, KTX 2.0, block compression and OpenEXR"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,11 +11,21 @@ keywords = ["torque", "image", "png", "jpeg", "gamedev"]
 categories = ["multimedia::images", "game-development"]
 
 # Image decoders for the renderer (no GPU): PNG through the `png` crate, expanded the way libpng's transforms do (no gamma), JPEG as
-# our own implementation of libjpeg 6b's decoder, and TGE's mip chain. Every decoder reads hostile bytes: a value or an error, never a panic.
+# our own implementation of libjpeg 6b's decoder, and TGE's mip chain; KTX 2.0 files, BC4/BC5/BC7 blocks and OpenEXR maps for the
+# physically based materials. Every decoder reads hostile bytes: a value or an error, never a panic.
 
 [dependencies]
 png = "0.18"
 torque-bytes = { path = "../torque-bytes" }
+# BC4, BC5 and BC7 blocks on the CPU, both ways (`bc`): a Rust version of Intel's ISPC compressor, no GPU.
+block_compression = { version = "0.11", default-features = false, features = ["bc15", "bc7"] }
+# OpenEXR maps (`exr`), decoded on the calling thread.
+exr = { version = "1.74", default-features = false }
+# The block rows of a level encode in parallel.
+rayon = "1.11"
+# Zstandard levels of KTX 2.0 files (`ktx2`).
+ruzstd = "0.9"
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

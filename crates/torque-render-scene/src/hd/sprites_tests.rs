@@ -313,6 +313,7 @@ fn table_of(n: usize) -> TextureTable {
     let mut t = TextureTable::default();
     for i in 0..n {
         t.intern(crate::Texture {
+            format: crate::TexelFormat::Rgba8,
             path: format!("frame{i}"),
             width: 4,
             height: 4,

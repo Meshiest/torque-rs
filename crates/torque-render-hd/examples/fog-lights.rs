@@ -71,6 +71,7 @@ fn checker() -> Texture {
         }
     }
     Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "checker".into(),
         width: 64,
         height: 64,

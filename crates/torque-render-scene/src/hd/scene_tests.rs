@@ -68,6 +68,7 @@ fn a_frames_particles_are_unlit_sprites_and_the_additive_ones_glow() {
     let mut scene = HdScene::new(StaticCells::<()>::default());
     // A texture the table held before: the particles' set's first is the table's second.
     scene.textures.intern(crate::Texture {
+        format: crate::TexelFormat::Rgba8,
         path: "other.png".to_string(),
         width: 1,
         height: 1,

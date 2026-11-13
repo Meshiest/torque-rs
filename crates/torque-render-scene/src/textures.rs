@@ -655,6 +655,7 @@ fn decode_texture(
         }
     }
     Ok(Texture {
+        format: crate::TexelFormat::Rgba8,
         path: path.to_string(),
         width: bitmap.width,
         height: bitmap.height,

@@ -13,6 +13,7 @@ fn solid(w: u32, h: u32, rgba: [u8; 4]) -> Texture {
         (lw, lh) = ((lw / 2).max(1), (lh / 2).max(1));
     }
     Texture {
+        format: crate::TexelFormat::Rgba8,
         path: "solid".into(),
         width: w,
         height: h,
@@ -89,6 +90,7 @@ fn no_atlas_for_one_frame_too_many_or_a_frame_with_no_texels() {
     assert!(build(&[&t]).is_none());
     assert!(build(&vec![&t; MAX_FRAMES + 1]).is_none());
     let empty = Texture {
+        format: crate::TexelFormat::Rgba8,
         path: "e".into(),
         width: 4,
         height: 4,

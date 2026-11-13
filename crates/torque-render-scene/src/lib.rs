@@ -114,6 +114,18 @@
 //!   (`a_scene_of_many_large_maps_is_refused_past_its_texture_budget`) or its factors are out of range
 //!   (`tests/pbr_memory.rs`). The uniform's layout is `pbr.wgsl`'s
 //!   `PbrMaterial` (`the_uniform_holds_the_factors_maps_and_alpha_mode`): a field added goes in both.
+//! - A cutout material's color chain keeps level 0's coverage on every level ([`hd::pbr::coverage`]; ties split evenly, no
+//!   alpha left within 8 steps of the cutoff so a block encoder flips none: `a_cutout_keeps_its_coverage_down_the_chain`).
+//! - Baked maps ([`hd::pbr::bake`], [`hd::pbr::bake_files`]): the same chains, then BC7 (color, ORM), BC5 (normal) or BC4
+//!   (height) in KTX 2.0 files with Zstandard levels; a map whose sides are not whole blocks stays RGBA8
+//!   (`sides_that_are_not_whole_blocks_bake_uncompressed`). [`hd::pbr::load`] takes a role's baked file beside its images
+//!   ([`hd::pbr::baked_path`]) only when its source stamp (the images' bytes and the chains' settings) matches, or when the
+//!   images are not there (`a_baked_file_of_other_sources_is_passed_over_for_the_maps`), and a sidecar may name `.ktx2`
+//!   (and `.exr`) maps itself; a KTX 2.0 map's format must fit its role, its header is checked against the map side cap
+//!   before a level is decoded, and its levels count against the material's working memory and the scene's budget as they
+//!   are (`a_sidecar_may_name_ktx2_maps_and_a_wrong_or_broken_one_fails_the_material`). A [`Texture`]'s levels are RGBA8
+//!   unless it is such a map ([`TexelFormat`]); every other reader of a texture's levels may keep assuming RGBA8. The
+//!   pass condition is `just texture-verify` (the `texture-verify` example and `torque-images`' fuzz).
 
 pub mod camera;
 pub mod decals;
@@ -270,9 +282,32 @@ pub struct Texture {
     pub path: String,
     pub width: u32,
     pub height: u32,
-    /// Level 0 first; each level's RGBA8 bytes, rows top to bottom. Shared: the decoded-texture cache and every frame
-    /// that draws the file hold one copy.
+    /// Level 0 first; each level's bytes in [`Texture::format`], rows top to bottom. Shared: the decoded-texture cache and
+    /// every frame that draws the file hold one copy.
     pub levels: std::sync::Arc<Vec<Vec<u8>>>,
+    /// How the levels hold their texels: RGBA8 for every texture but a physically based material's maps
+    /// ([`hd::pbr`]), which may be block-compressed.
+    pub format: TexelFormat,
+}
+
+/// How a [`Texture`]'s levels hold their texels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum TexelFormat {
+    /// Four bytes a texel: R, G, B, A.
+    #[default]
+    Rgba8,
+    /// Rows of 4 x 4 blocks, top to bottom ([`::images::bc`]).
+    Block(::images::bc::BlockFormat),
+}
+
+impl TexelFormat {
+    /// The bytes of a level of `w` x `h`.
+    pub const fn level_bytes(self, w: u32, h: u32) -> u64 {
+        match self {
+            TexelFormat::Rgba8 => 4 * w as u64 * h as u64,
+            TexelFormat::Block(b) => b.level_bytes(w, h),
+        }
+    }
 }
 
 /// The sun as GL light 0: a directional light with no specular term in effect (the materials' specular is GL's default black).

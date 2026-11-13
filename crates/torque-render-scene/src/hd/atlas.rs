@@ -57,6 +57,7 @@ pub fn build(frames: &[&Texture]) -> Option<Atlas> {
     }
     Some(Atlas {
         texture: Texture {
+            format: crate::TexelFormat::Rgba8,
             path: format!("flipbook {}x{} of {}", cell.0, cell.1, frames.len()),
             width,
             height,

@@ -861,6 +861,7 @@ fn a_generated_texture_enters_a_frames_set_once() {
     let files = Files(Vec::new());
     let mut textures = TextureSet::new(&files);
     let t = Arc::new(Texture {
+        format: crate::TexelFormat::Rgba8,
         path: "map lightmap 1 0".into(),
         width: 2,
         height: 2,

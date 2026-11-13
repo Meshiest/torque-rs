@@ -1362,6 +1362,7 @@ pub(crate) fn make(inputs: &Inputs, key: u64, plan: Plan) -> (Lit, Report) {
 
 fn texture(path: String, size: [u32; 2], texels: Vec<u8>) -> Arc<Texture> {
     Arc::new(Texture {
+        format: crate::TexelFormat::Rgba8,
         path,
         width: size[0],
         height: size[1],

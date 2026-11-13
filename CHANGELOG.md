@@ -151,6 +151,13 @@ different.
   Mips filtered in linear light, with normal maps' lost detail kept as roughness. Draws without a material draw as
   before.
 - `torque-render-scene`: `HdDraw` has a new `pbr` field (its material and tangents; `None` for a plain draw).
+- `torque-render-hd`: compressed material maps. A material's maps bake into KTX 2.0 files with Zstandard levels (BC7 for
+  color and ORM, BC5 for normals, BC4 for height, the whole mip chain as the loader makes it) that the loader takes beside
+  the images while they are up to date, or that a sidecar names itself; they go to the GPU as BC textures, or are decoded on
+  the CPU on a device without them. OpenEXR height and other single-channel maps load too. Cutout materials keep their
+  coverage down the mip chain. KTX 2.0, Zstandard and OpenEXR files are read as untrusted input, bounded from their headers.
+- `torque-render-scene`: `Texture` has a new `format` field (`TexelFormat::Rgba8` for every texture but a block-compressed
+  material map).
 - `torque::app`: interiors as static meshes kept on the GPU and culled there, with their shadows cached, so interiors
   that stay put cost nothing on the CPU each frame.
 - `torque-render-core::pipeline_cache`: compiled pipelines kept in a per-user wgpu pipeline cache on Vulkan, keyed by

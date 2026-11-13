@@ -431,6 +431,7 @@ fn looks_past_the_buckets_are_hidden_and_the_rest_drawn() {
     let looks: Vec<SpriteLook> = (0..80u8)
         .map(|k| {
             let t = s.frame.textures.intern(Texture {
+                format: torque_render_scene::TexelFormat::Rgba8,
                 path: format!("tint{k}"),
                 width: 1,
                 height: 1,
@@ -654,6 +655,7 @@ fn solid_texture(size: u32, rgba: [u8; 4]) -> Texture {
         side /= 2;
     }
     Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: format!("solid{rgba:?}"),
         width: size,
         height: size,

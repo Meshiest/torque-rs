@@ -169,6 +169,7 @@ impl Renderer {
         let t = c.texture(path)?;
         let levels: Vec<Vec<u8>> = t.levels.iter().map(|l| l.rgba.clone()).collect();
         Some(self.scene.frame.textures.intern(Texture {
+            format: torque_render_scene::TexelFormat::Rgba8,
             path: path.to_string(),
             width: t.levels[0].width,
             height: t.levels[0].height,
@@ -422,6 +423,7 @@ pub fn ground(r: &mut Renderer, half: f32, z: f32) -> HdDraw {
         }
     }
     let t = r.scene.frame.textures.intern(Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "viewer-ground".into(),
         width: 64,
         height: 64,

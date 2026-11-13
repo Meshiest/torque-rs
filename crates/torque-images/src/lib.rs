@@ -7,6 +7,8 @@
 //! - [`jpeg`]: `GBitmap::readJPEG` over libjpeg 6b (`6b  27-Mar-1998`): our own Rust implementation of the decoder with the
 //!   defaults `jpeg_read_header` sets (the slow integer IDCT, fancy upsampling, block smoothing, no colour quantisation).
 //! - [`mip`]: `GBitmap::extrudeMipLevels`, the box filter TGE builds mip levels with on the CPU, pointer arithmetic and all.
+//! - [`ktx2`], [`bc`], [`exr`]: the physically based materials' files, none of them TGE's: KTX 2.0 textures (stored or
+//!   Zstandard levels), BC4, BC5 and BC7 blocks both ways on the CPU, and OpenEXR maps read as 16-bit texels.
 //!
 //! **The formats** are TGE's `GBitmap::BitmapFormat` as the loaders pick them: [`Format::Alpha`] (one byte, uploaded as `GL_ALPHA`) for
 //! a grey PNG and a greyscale JPEG, [`Format::Rgb`] and [`Format::Rgba`]. [`Bitmap::to_rgba8`] is the texel GL builds from each.
@@ -44,8 +46,20 @@
 //!   (`jpeg::tests::coefficient_memory_follows_the_rows_the_scans_reach`); the sample tie still bounds a full decode (about 8 KiB
 //!   of memory a file byte at the cap).
 //! - With restart markers on and no input left, the rest of a scan is skipped (`restart_scans_with_no_input_left_stop_at_once`).
+//! - A KTX 2.0 file is checked whole from its header before any level is allocated or decoded ([`ktx2::header`]: every range
+//!   in the file, each level its format's size, the levels and key/value data within [`ktx2::Limits`]), and a Zstandard level
+//!   decodes into exactly its declared length with the decoder's window held to it
+//!   (`a_zstandard_level_of_the_wrong_length_is_refused`); written and read again it is the same bytes
+//!   (`every_format_writes_and_reads_back_byte_for_byte`). An OpenEXR file's headers are checked (flat, sides, channels, an
+//!   offset table that fits) before a pixel is decoded, and one channel is kept. Both readers' fuzz is `texture_fuzz`
+//!   (`TORQUE_FUZZ_TEXTURES`; `just texture-verify` runs 300,000 cases each). A new format goes in [`ktx2::Ktx2Format`]
+//!   with its descriptor, size and the fuzz's seeds; [`bc::decode`] gives what a GPU samples, since a device without BC
+//!   textures uploads it.
 
+pub mod bc;
+pub mod exr;
 pub mod jpeg;
+pub mod ktx2;
 pub mod lru;
 pub mod mip;
 pub mod png;
@@ -54,6 +68,8 @@ pub mod png;
 mod fuzz;
 #[cfg(test)]
 mod testenc;
+#[cfg(test)]
+mod texture_fuzz;
 
 use std::fmt;
 

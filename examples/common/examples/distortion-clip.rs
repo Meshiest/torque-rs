@@ -59,6 +59,7 @@ fn haze_map() -> Texture {
         }
     }
     Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "distortion haze".into(),
         width: HAZE_MAP,
         height: HAZE_MAP,

@@ -52,6 +52,7 @@ fn scene() -> PlainScene {
     let s = &mut scene.frame;
     s.atmosphere = true;
     let _ = s.textures.intern(Texture {
+        format: torque_render_scene::TexelFormat::Rgba8,
         path: "white".into(),
         width: 1,
         height: 1,

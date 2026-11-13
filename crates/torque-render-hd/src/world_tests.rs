@@ -319,3 +319,33 @@ fn a_texture_past_the_devices_side_drops_its_top_levels_and_never_has_too_many()
     // A single level over the side: clamped (left unwritten), still a valid texture.
     assert_eq!(texture_fit(20000, 10, 1, 8192), (0, 8192, 10, 1));
 }
+
+#[test]
+fn block_textures_go_up_as_blocks_only_on_a_bc_device_and_in_whole_blocks() {
+    use images::bc::BlockFormat as B;
+    use torque_render_scene::TexelFormat as F;
+    let plan = |f, bc, w, h| {
+        let p = upload_plan(f, bc, w, h);
+        (p.format, p.decode)
+    };
+    use wgpu::TextureFormat as T;
+    assert_eq!(
+        plan(F::Block(B::Bc7), true, 64, 32),
+        (T::Bc7RgbaUnorm, None)
+    );
+    assert_eq!(plan(F::Block(B::Bc5), true, 4, 4), (T::Bc5RgUnorm, None));
+    assert_eq!(plan(F::Block(B::Bc4), true, 8, 4), (T::Bc4RUnorm, None));
+    // No BC on the device, or a first level that is not whole blocks: decoded to RGBA8 on the CPU.
+    assert_eq!(
+        plan(F::Block(B::Bc7), false, 64, 32),
+        (T::Rgba8Unorm, Some(B::Bc7))
+    );
+    assert_eq!(
+        plan(F::Block(B::Bc4), true, 6, 4),
+        (T::Rgba8Unorm, Some(B::Bc4))
+    );
+    assert_eq!(plan(F::Rgba8, true, 64, 64), (T::Rgba8Unorm, None));
+    // The color views: sRGB forms where the format has one.
+    assert_eq!(T::Bc7RgbaUnorm.add_srgb_suffix(), T::Bc7RgbaUnormSrgb);
+    assert_eq!(T::Bc5RgUnorm.add_srgb_suffix(), T::Bc5RgUnorm);
+}
