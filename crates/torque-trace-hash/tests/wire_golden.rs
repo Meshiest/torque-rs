@@ -124,8 +124,10 @@ fn game(pack: bool) -> GameFiles {
     files
 }
 
+/// A folder of this process alone: the tests that run the same session run side by side in their own processes.
 fn cache_dir(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("wire-golden-{name}"))
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("wire-golden-{name}-{}", std::process::id()))
 }
 
 fn server_mods() -> ModsPlugin {
