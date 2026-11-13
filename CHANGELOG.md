@@ -388,6 +388,10 @@ different.
   lanes, and per-address and per-network caps on a server's sessions. Plain engine UDP refuses a public bind. A server with an
   auth provider challenges each connect and takes only a ticket made for that challenge, once (bound to the QUIC connection's
   TLS exporter on that link); the mods download asks for blocks with the `torque.mods.get` RPC.
+- What only Torque's protocol needs to tell its peers apart lives in two modules, `torque_net::tge` (the handshake's extension
+  argument, the channels word that ends an accept) and `torque_server::net::tge_compat` (`$Server::EngineClasses`, the marking
+  of an accepted connection as the engine's), re-exported at the paths they had; `PeerKind` is the one query over them. The
+  engine's protocol does not read `$Server::EngineClasses`.
 - The QUIC link (`torque-net-quic`, the `quic` feature, on by default natively): TLS 1.3, QUIC's address validation with Retry
   under load, congestion control and connection migration, the server known by the hash of its identity key (pinned, or
   trusted on first use in `known_servers`), and WebTransport sessions for browsers on the same port. In the engine's protocol

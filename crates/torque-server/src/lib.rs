@@ -5,6 +5,12 @@
 //!
 //! # Maintaining
 //!
+//! **What only Torque's protocol needs lives in `net::tge_compat`**: the `$Server::EngineClasses` word, marking an accepted
+//! connection as the engine's own (`mark_accepted`, `GhostHub::set_engine_peer`) and the one warning a server of the engine's
+//! protocol gives when a script still sets the word. `PeerKind::of` is the one query over it; a feature that differs by peer
+//! asks `PeerKind`, never the word or the mark (`net::peer::tests`, `net::tge_compat::tests`). The engine's protocol reads none
+//! of it, so a change there moves no engine-mode byte and the TGE goldens (`wire_golden`) pin the rest.
+//!
 //! **A ghost record's engine extensions follow the peer as the datablocks' do**: `TgeSource` packs with
 //! `NetWidths::extensions` for a `PeerKind::Engine` peer alone, so a ShapeBase's cloak group carries its dissolve
 //! (`torque_ghosts::shapebase::DissolveField`, from `torque_game::scene::dissolve` through the view's `dissolve*` fields) to

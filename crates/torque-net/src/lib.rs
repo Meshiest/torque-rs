@@ -42,6 +42,8 @@
 //! - [`engine`]: engine mode's own framing, which owes TGE nothing: the link contract, the connect messages (with a stateless
 //!   cookie only on plain links), packets with prioritized lanes and budgets, and the sessions of both sides. Not used by the
 //!   TGE path.
+//! - [`tge`]: what only Torque's own protocol has in its handshake (the extension argument, the channels word of an accept),
+//!   re-exported at the paths it had before.
 //! - [`profile`]: what a game sets (the event registry, the handshake's types, strings, versions, form and extension, the server
 //!   query's version fields, the ghost limit, the datablock id width), with TGE 1.4's defaults.
 //!
@@ -49,6 +51,10 @@
 //! returns `Err` on overrun (TGE's returns zeros).
 //!
 //! # Maintaining
+//!
+//! **What only Torque's handshake has lives in [`tge`]**: the extension argument and its limits, the channels word of an accept
+//! and its reading, the manifest's channel match. `handshake`, `profile` and `connect` re-export or call it, so the old paths
+//! and the bytes are the same (`tge::tests`, `tests/tge_golden.rs`); engine mode reads none of it.
 //!
 //! **A change to what an engine session's payload writes is a new [`engine::ENGINE_FRAMING`]**, as a change to the framing is:
 //! framing 5 is the distortion block of `ShapeBaseData` and `DecalData` records, 4 the ShapeBase cloak group's dissolve
@@ -164,6 +170,7 @@ pub mod remote;
 pub mod serverquery;
 pub mod stand_in;
 pub mod strcoder;
+pub mod tge;
 
 #[cfg(test)]
 mod testids;

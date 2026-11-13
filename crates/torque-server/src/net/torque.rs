@@ -37,6 +37,7 @@ use torque_ts_vm::vm::Vm;
 use super::ghosts::{Conns, Entry, GhostGame, GhostHub, Registry, SourceEnv};
 use super::hostevent::{GameEvents, ReceiveCx};
 use super::peer::PeerKind;
+pub use super::tge_compat::ENGINE_CLASSES_GLOBAL;
 use super::{NetGame, NetShared, pump};
 use crate::server::{NetHost, Phase};
 use torque_engine::scope::ScopeControl;
@@ -186,11 +187,6 @@ fn ghost_always_of<'a>(vm: &'a Vm, reg: &Registry) -> Cow<'a, [ObjId]> {
     ids.sort_unstable();
     Cow::Owned(ids)
 }
-
-/// The global that makes a server ghost the engine's own classes (`torque_ghosts::light`'s, and the plugins') to every
-/// client, not only to the engine's own (the local connection, a client granted the handshake's extension): set it to 1 when every client is the
-/// engine's (a TGE client cannot read their records).
-pub const ENGINE_CLASSES_GLOBAL: &str = "$Server::EngineClasses";
 
 /// The world as one connection's ghost manager sees it, for the length of one call.
 pub struct TgeSource<'a> {

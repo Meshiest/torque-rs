@@ -301,6 +301,10 @@ lines. The `tge` lines never move.
 - `torque-net/src/engine/`: the framing and sessions (`framing.rs`, `session.rs`, `lanes.rs`, `gate.rs`); `table.rs`, a server's
   sessions with the per-source caps; `order.rs`, the wide packet numbers in send order; `bridge.rs`, the connect as the connect
   fields, block and ticket context both protocols judge; `link.rs`, the link contract and `LinkKind`.
+- `torque-net/src/tge.rs` and `torque-server/src/net/tge_compat.rs`: everything only Torque's protocol needs to tell its peers
+  apart (the handshake's extension argument, the channels word of an accept, `$Server::EngineClasses`, the marking of an accepted
+  connection as the engine's), re-exported at the paths it had before. `net/peer.rs` holds `PeerKind`, the one query over it; the
+  engine's protocol reads none of it.
 - `torque-server/src/net/engine.rs`: the server's host wiring (`EngineHost`), called from `pump.rs` (receive, `handle_request`,
   the send pass) and `conn.rs` (the drop). `rpc.rs`: `RpcLanes`, the RPC lanes' carrier. `transport.rs`: `Transport::link_kind`,
   `Transport::channel_binding` and `check_plain_engine_bind`.

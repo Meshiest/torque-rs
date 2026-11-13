@@ -910,7 +910,7 @@ fn wire_host<G: NetGame>(
         // classes go to all of them (a game that also takes TGE clients leaves the engine without networked plugins).
         server
             .vm
-            .set_global(torque_server::net::torque::ENGINE_CLASSES_GLOBAL, "1");
+            .set_global(torque_server::net::tge_compat::ENGINE_CLASSES_GLOBAL, "1");
     }
     // The address the socket is bound to is the one clients dial unless the host says otherwise
     // ([`GameServer::set_public_address`]); a socket bound to every interface leaves it unknown.

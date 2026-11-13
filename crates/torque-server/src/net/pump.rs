@@ -601,19 +601,7 @@ pub(super) fn handle_request<G: NetGame>(
                     |c| c.ghost_bits,
                 );
                 sh.payload.on_accept(conn, obj, bits);
-                // The client's channels matched the gate's: it reads the channels' section from the first data packet.
-                if sh.hs.connection(conn).is_some_and(|c| c.channels) {
-                    sh.payload.mark_channels(conn);
-                }
-                // A client of the engine's own (the handshake's extension): new objects are scoped as they come and its
-                // datablocks go with the codecs' window for it.
-                if request.extension {
-                    sh.payload.mark_peer(conn);
-                    if let Some(hub) = sh.ghosts.clone() {
-                        hub.set_fresh(conn, true);
-                        hub.set_engine_peer(conn);
-                    }
-                }
+                super::tge_compat::mark_accepted(&mut sh, conn, &request);
             }
             if let Some(old) = replaced {
                 drop_conn(vm, shared, old, None, DeleteMode::Immediate);

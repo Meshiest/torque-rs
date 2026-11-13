@@ -4,13 +4,14 @@
 //!
 //! In Torque's protocol a peer is a [`PeerKind::Tge`] client (Torque's classes and datablocks only: a real TGE client cannot read
 //! the others' records), or an [`PeerKind::EnginePeer`] when the host marked it as the engine's own (the local connection, a client
-//! granted the handshake's extension) or the server says every client is ([`ENGINE_CLASSES_GLOBAL`]). On a server that speaks the
-//! engine's own protocol every peer is the engine's: [`PeerKind::Engine`].
+//! granted the handshake's extension) or the server says every client is ([`ENGINE_CLASSES_GLOBAL`](super::tge_compat::ENGINE_CLASSES_GLOBAL)). On a server that speaks the
+//! engine's own protocol every peer is the engine's: [`PeerKind::Engine`]. What marks a peer of Torque's protocol as the
+//! engine's lives in [`super::tge_compat`]; nothing in it is read in the engine's protocol.
 
 use torque_engine::ProtocolKind;
 use torque_ts_vm::vm::Vm;
 
-use super::torque::ENGINE_CLASSES_GLOBAL;
+use super::tge_compat::engine_classes_global;
 
 /// The protocol a server speaks, as an extension of its script engine. A server that has none speaks Torque's
 /// ([`ProtocolKind::Tge`]); the host sets it from the engine's protocol slot when it makes the server.
@@ -53,12 +54,6 @@ impl PeerKind {
     pub fn sees_engine_classes(self) -> bool {
         self != PeerKind::Tge
     }
-}
-
-/// Whether the server says all its clients are the engine's ([`ENGINE_CLASSES_GLOBAL`] true).
-fn engine_classes_global(vm: &Vm) -> bool {
-    vm.global(ENGINE_CLASSES_GLOBAL)
-        .is_some_and(|v| torque_ts_vm::text::atof(&v) != 0.0)
 }
 
 #[cfg(test)]

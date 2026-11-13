@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use super::super::tge_compat::ENGINE_CLASSES_GLOBAL;
 use super::*;
 
 fn engine_mode(vm: &mut Vm) {

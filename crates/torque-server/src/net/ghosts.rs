@@ -791,14 +791,6 @@ impl<G: GhostGame> GhostHub<G> {
         }
     }
 
-    /// Marks `conn`'s peer as the engine's own client (the local connection, or a client that said so when it connected): the
-    /// game may ghost it classes that other clients do not know.
-    pub fn set_engine_peer(&self, conn: ConnId) {
-        if let Some(c) = self.0.borrow_mut().conns.get_mut(&conn) {
-            c.engine_peer = true;
-        }
-    }
-
     /// What the peer of `conn` is ([`PeerKind::of`]) on the server of `vm`.
     pub fn peer_kind(&self, vm: &Vm, conn: ConnId) -> PeerKind {
         let marked = self

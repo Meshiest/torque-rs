@@ -24,6 +24,7 @@ use crate::NetError;
 use crate::bits::{BitReader, BitWriter};
 use crate::cap::NET_MAX_GHOST_BITS;
 use crate::handshake::HandshakeTypes;
+pub use crate::tge::{HandshakeExtension, WideLimit};
 
 /// The ghost limit of a connection when nothing sets one: TGE's `MaxGhostCount` (`1 << GhostIdBitSize`, 12 bits).
 pub const DEFAULT_GHOST_LIMIT: u32 = 1 << 12;
@@ -73,36 +74,6 @@ impl Default for RejectStrings {
             ghost_bits: b"CHR_PROTOCOL".to_vec(),
         }
     }
-}
-
-/// A handshake extension: a client that appends [`HandshakeExtension::arg`] to its connect arguments asks for it, the server
-/// takes the argument off before the host sees the arguments and answers with [`HandshakeExtension::accept_word`] after the
-/// accept, and the connection gets the wider ghost-id width and the packet size named here. A peer without the extension never
-/// sees any of it: a server ignores an argument it has no parameter for and a client stops reading the accept where its form ends.
-///
-/// Any client may name the argument, so the widths and sizes given here are what a stranger can make the server keep.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HandshakeExtension {
-    /// The connect argument that asks for the extension (the last one of the request).
-    pub arg: Vec<u8>,
-    /// The word the server appends to the accept it sends a client that asked.
-    pub accept_word: u32,
-    /// The ghost-id width such a connection gets when it is wider than the standard one (at most [`NET_MAX_GHOST_BITS`]).
-    pub ghost_bits: Option<u8>,
-    /// The size such a connection's sections fill a packet to, in place of the rate's ([`crate::protocol::Protocol::set_packet_bytes`]).
-    pub packet_bytes: Option<u32>,
-    /// A bound on the network connections wider than the form's widest standard width ([`HandshakeForm::ghost_bits_range`]);
-    /// `None` sets none.
-    pub wide_limit: Option<WideLimit>,
-}
-
-/// How many network connections (the local one never counts) may hold a ghost-id width above the standard maximum at once, and
-/// how many ghost slots (`2^width` a connection) their tables may hold in all: a connection that would pass either gets the
-/// standard width instead. It bounds what strangers asking for the extension can make the server keep.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WideLimit {
-    pub clients: usize,
-    pub slots: u64,
 }
 
 /// What a game's connection class adds to the handshake beside Torque's fields (its `writeConnectRequest` and
@@ -212,15 +183,9 @@ impl HandshakeProfile {
     /// Takes the extension's argument off the end of a request's arguments; whether it was there (always false without an
     /// extension).
     pub fn take_extension_arg(&self, args: &mut Vec<Vec<u8>>) -> bool {
-        let Some(ext) = self.extension.as_ref() else {
-            return false;
-        };
-        if args.last().is_some_and(|a| *a == ext.arg) {
-            args.pop();
-            true
-        } else {
-            false
-        }
+        self.extension
+            .as_ref()
+            .is_some_and(|ext| ext.take_arg(args))
     }
 }
 

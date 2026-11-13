@@ -229,7 +229,8 @@ sent. In Torque's protocol an engine with nothing networked sends no manifest an
 in the engine's protocol ([Network protocols](network-protocols.md)) the manifest is part of every connect and always judged. A plain TGE client
 meeting a networked server is refused as one that has none of the plugins ("you do not have it"); a server that wants both kinds
 of client leaves its plugins without a `net_version`, and the engine's classes then go only to the clients a game says are the
-engine's own (`$Server::EngineClasses`, which a server whose gate admitted every client sets for itself). Over a connection that
+engine's own (`$Server::EngineClasses`, which a server whose gate admitted every client sets for itself; the engine's protocol
+ignores it, because every client there is the engine's own). Over a connection that
 did not read plugin classes a TGE client is never sent them: `tests/tge_client.rs` runs a client with Torque's codec alone against
 a server with a rope, and it reads its packets and sees no rope.
 

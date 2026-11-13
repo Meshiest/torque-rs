@@ -521,13 +521,7 @@ impl ConnectGate for ManifestGate {
     }
 
     fn matches_channels(&self, fields: &ConnectFields) -> bool {
-        let theirs = fields
-            .block
-            .as_ref()
-            .and_then(|b| b.manifest.as_ref())
-            .map(|m| &m.channels);
-        self.manifest.channels.count() > 0
-            && theirs.is_some_and(|t| self.manifest.channels.same_as(t))
+        crate::tge::manifest_matches_channels(&self.manifest, fields)
     }
 
     fn check(
