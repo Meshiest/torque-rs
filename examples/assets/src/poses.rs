@@ -675,8 +675,8 @@ pub(crate) fn flinches(b: &mut ShapeBuilder, body: &Body<'_>) {
             keyed(l.legs[leg], &|k| hip(step[k])),
             keyed(l.knees[leg], &|k| turns(&[(X, -22.0 * step[k])])),
         ];
-        for side in 0..2 {
-            rotations.push(keyed(l.arms[side], &|k| shoulders(punch[k])));
+        for &arm in l.arms.iter().take(2) {
+            rotations.push(keyed(arm, &|k| shoulders(punch[k])));
         }
         b.blend_sequence(SequenceDef {
             name,

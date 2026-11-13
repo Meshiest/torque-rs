@@ -577,8 +577,8 @@ fn pose(
         local.insert(i, math::node_matrix(*q, *t));
     }
     out.extend(local.iter().map(|(i, m)| (*i, *m)));
-    for i in first..end {
-        let parent = shape.nodes[i].parent;
+    for (i, node) in shape.nodes.iter().enumerate().take(end).skip(first) {
+        let parent = node.parent;
         if let Ok(parent) = usize::try_from(parent)
             && let (Some(p), Some(l)) = (out.get(&parent).copied(), local.get(&i))
         {

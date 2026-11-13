@@ -2711,11 +2711,8 @@ pub fn player_data<W: PredictWorld>(
     fl!(up_resist_factor, "upResistFactor");
     fl!(min_impact_speed, "minImpactSpeed");
     fl!(ground_impact_min_speed, "groundImpactMinSpeed");
-    for k in 0..3 {
-        d.bounding_box[k] = predicted_side(
-            f("boundingBox", k as u32, d.bounding_box[k]),
-            d.bounding_box[k],
-        );
+    for (k, side) in d.bounding_box.iter_mut().enumerate() {
+        *side = predicted_side(f("boundingBox", k as u32, *side), *side);
     }
     game.player_preload(&mut d);
     Some(d)

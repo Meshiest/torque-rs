@@ -306,11 +306,11 @@ impl Bloom {
         for k in 1..chain.sizes.len() {
             put(1 + k as u64, chain.sizes[k - 1], chain.sizes[k], [0.0; 4]);
         }
-        for k in 0..chain.up.len() {
+        for (k, &size) in chain.sizes.iter().enumerate().take(chain.up.len()) {
             put(
                 1 + u64::from(MAX_LEVELS) + k as u64,
-                chain.sizes[k],
-                chain.sizes[k],
+                size,
+                size,
                 [0.0, 0.0, BLOOM_SPREAD, 0.0],
             );
         }

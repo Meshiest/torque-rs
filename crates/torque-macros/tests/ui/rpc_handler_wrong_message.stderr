@@ -13,8 +13,9 @@ error[E0271]: expected `{closure@rpc_handler_wrong_message.rs:23:17}` to return 
 note: required by a bound in `RpcBuilder::<'_, Req, Resp, torque_engine::rpc::ToServer>::server`
   --> $WORKSPACE/crates/torque-engine/src/rpc.rs
    |
+   | impl<Req: NetMessage, Resp: NetMessage> RpcBuilder<'_, Req, Resp, ToServer> {
+...
    |     pub fn server<F>(self, handler: F) -> RpcRef<Req, Resp>
-   |            ------ required by a bound in this associated function
    |     where
    |         F: for<'c> Fn(&mut RpcCx<'c>, Req) -> Result<Resp, RpcError> + 'static,
    |                                               ^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `RpcBuilder::<'_, Req, Resp, ToServer>::server`

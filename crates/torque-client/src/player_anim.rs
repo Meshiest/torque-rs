@@ -534,8 +534,8 @@ impl PlayerAnimation {
         }
         let vel = m.local_velocity();
         let (mut best, mut chosen, mut forward) = (MIN_MATCH, action::ROOT, true);
-        for i in action::FIRST_MOVE..action::MOVES.min(self.actions.len()) {
-            let a = &self.actions[i];
+        let moves = self.actions.iter().enumerate().take(action::MOVES);
+        for (i, a) in moves.skip(action::FIRST_MOVE) {
             if a.sequence.is_none() || a.motion.speed == 0.0 {
                 continue;
             }

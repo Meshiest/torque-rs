@@ -1217,11 +1217,11 @@ impl ShapeInstance {
             self.nodes[n] = m;
         }
         if self.scale_animated {
-            for n in a..b {
+            for (n, node) in self.nodes.iter_mut().enumerate().take(b).skip(a) {
                 if n < SET_BITS && set_has(&masks.hands_off, n) {
                     continue;
                 }
-                scales.apply(kind, &mut self.nodes[n], n);
+                scales.apply(kind, node, n);
             }
         }
         // The nodes the callback sets.

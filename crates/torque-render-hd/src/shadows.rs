@@ -1786,13 +1786,13 @@ impl Shadows {
         // The transmittance maps follow their static cascades.
         let coloured = input.coloured && self.trans.is_some() && !cs.is_empty();
         if coloured {
-            for i in 0..cs.len() {
+            for (i, valid) in self.trans_valid.iter_mut().enumerate().take(cs.len()) {
                 let redrawn = jobs
                     .iter()
                     .any(|j| matches!(j, Job::Cascade { layer, .. } if *layer == i));
-                if redrawn || !self.trans_valid[i] {
+                if redrawn || !*valid {
                     jobs.push(Job::Transmit { layer: i });
-                    self.trans_valid[i] = true;
+                    *valid = true;
                 }
             }
         }

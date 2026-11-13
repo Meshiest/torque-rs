@@ -465,7 +465,7 @@ pub fn draws(
         .len()
         .saturating_sub(CLOUD_OFFSET)
         .min(MAX_CLOUD_LAYERS);
-    for i in 0..layers {
+    for (i, cloud) in main.clouds.iter().enumerate().take(layers) {
         let Some(t) = names
             .get(CLOUD_OFFSET + i)
             .filter(|n| !n.is_empty())
@@ -473,8 +473,8 @@ pub fn draws(
         else {
             continue;
         };
-        let height = main.clouds[i].height;
-        if main.clouds[i].speed != 0.0 {
+        let height = cloud.height;
+        if cloud.speed != 0.0 {
             notes.push(format!(
                 "sky: cloud layer {i} moves with the client's clock; drawn at offset 0"
             ));

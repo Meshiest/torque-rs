@@ -1,13 +1,11 @@
 error[E0599]: no method named `server` found for struct `RpcBuilder<'_, Note, (), torque_engine::rpc::ToClient>` in the current scope
   --> tests/ui/rpc_server_handler_on_client_rpc.rs:17:10
    |
-13 | /     engine
-14 | |         .net()
-15 | |         .rpc::<Note, ()>("note")
-16 | |         .to_client()
-17 | |         .server(|_cx: &mut RpcCx, _note: Note| -> Result<(), RpcError> { Ok(()) });
-   | |         -^^^^^^ method not found in `RpcBuilder<'_, Note, (), torque_engine::rpc::ToClient>`
-   | |_________|
-   |
+13 |     engine
+14 |         .net()
+15 |         .rpc::<Note, ()>("note")
+16 |         .to_client()
+17 |         .server(|_cx: &mut RpcCx, _note: Note| -> Result<(), RpcError> { Ok(()) });
+   |          ^^^^^^ method not found in `RpcBuilder<'_, Note, (), torque_engine::rpc::ToClient>`
    |
    = note: the method was found for `RpcBuilder<'_, Req, Resp, torque_engine::rpc::ToServer>`

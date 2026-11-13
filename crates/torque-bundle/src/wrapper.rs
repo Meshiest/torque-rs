@@ -24,7 +24,8 @@ pub const ENV: &str = "TORQUE_BUNDLE_RUSTC_WRAPPER";
 pub const VERSION: u32 = 1;
 
 /// The program to run the builds under: this one when it is `torque-bundle`, else (a test binary of this crate) the
-/// `torque-bundle` built beside it or one folder up.
+/// `torque-bundle` in the profile folder above it: beside it or one folder up in cargo's older layout (`deps/`), five up
+/// in its build folder layout (`build/<package>/<hash>/out/`).
 ///
 /// # Errors
 /// When there is none.
@@ -36,7 +37,7 @@ pub fn program() -> Result<PathBuf, String> {
     }
     this.ancestors()
         .skip(1)
-        .take(2)
+        .take(5)
         .map(|dir| dir.join(&name))
         .find(|candidate| candidate.is_file())
         .ok_or_else(|| format!("cannot find {name} to run the builds under"))

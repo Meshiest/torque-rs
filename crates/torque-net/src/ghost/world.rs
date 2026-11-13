@@ -146,10 +146,10 @@ impl ObjectSource for World {
         let Some(o) = self.objs.get(&obj) else {
             return 0;
         };
-        for b in 0..8 {
+        for (b, &field) in o.fields.iter().enumerate() {
             if mask & (1 << b) != 0 {
                 w.write_flag(true);
-                w.write_bits(u32::from(o.fields[b]), 8);
+                w.write_bits(u32::from(field), 8);
             } else {
                 w.write_flag(false);
             }
@@ -266,9 +266,9 @@ pub struct Toy {
 pub struct ToyCodec;
 
 fn read_record(t: &mut Toy, r: &mut BitReader) -> Result<(), NetError> {
-    for b in 0..8 {
+    for field in &mut t.fields {
         if r.read_flag()? {
-            t.fields[b] = Some(r.read_bits(8)? as u8);
+            *field = Some(r.read_bits(8)? as u8);
         }
     }
     if r.read_flag()? {

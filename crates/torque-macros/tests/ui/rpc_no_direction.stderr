@@ -1,15 +1,12 @@
 error[E0599]: no method named `server` found for struct `RpcBuilder<'_, Note, (), Unset>` in the current scope
   --> tests/ui/rpc_no_direction.rs:16:10
    |
-13 |       engine
-   |       ------
-   |       |
-   |  _____method `server` is available on `&mut EngineBuilder`
-   | |
-14 | |         .net()
-15 | |         .rpc::<Note, ()>("note")
-16 | |         .server(|_cx: &mut RpcCx, _note: Note| -> Result<(), RpcError> { Ok(()) });
-   | |_________-^^^^^^
+13 |     engine
+   |     ------ method `server` is available on `&mut EngineBuilder`
+14 |         .net()
+15 |         .rpc::<Note, ()>("note")
+16 |         .server(|_cx: &mut RpcCx, _note: Note| -> Result<(), RpcError> { Ok(()) });
+   |          ^^^^^^
    |
 help: there is a method `to_server` with a similar name, but with different arguments
   --> $WORKSPACE/crates/torque-engine/src/rpc.rs

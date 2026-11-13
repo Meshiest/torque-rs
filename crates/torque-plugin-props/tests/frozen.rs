@@ -137,8 +137,8 @@ fn two_thousand_frozen_props_reach_a_client_as_ghosts_under_the_threshold_and_ov
     assert_eq!(stats.sets, 2 * 1744);
     // Nothing was ever refused or dropped.
     assert_eq!(stats.refused, 0);
-    for k in 0..2 {
-        let book = rig.peers[k].book();
+    for peer in rig.peers.iter().take(2) {
+        let book = peer.book();
         let b = book.0.borrow();
         assert_eq!(b.frozen().rejected, 0);
     }
