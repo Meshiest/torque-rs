@@ -295,10 +295,14 @@ impl Effect for Fog {
         &mut self.nodes
     }
 
-    /// The lantern's own glow about it.
-    fn lights(&self, t: f32, frame: u32) -> Vec<HdLight> {
+    /// The lantern's own glow about it, wavering: random keys eight times a second, eased between (a new random value every
+    /// frame or two makes the lit haze step).
+    fn lights(&self, t: f32, _frame: u32) -> Vec<HdLight> {
         let (at, _) = Fog::lantern(t);
-        let flicker = 0.9 + 0.1 * super::hash(frame / 2);
+        let x = t.max(0.0) * 8.0;
+        let k = x as u32;
+        let (a, b) = (super::hash(k), super::hash(k + 1));
+        let flicker = 0.9 + 0.1 * (a + (b - a) * super::smooth(x.fract()));
         vec![HdLight {
             carrier: Some(LANTERN),
             ..light(at, [1.0, 0.72, 0.42], 1.6 * flicker, 5.0)

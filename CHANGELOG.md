@@ -131,6 +131,9 @@ different.
   particles lit by the sun, the sky and lights; TAA, ambient occlusion, bloom and automatic exposure; four quality
   levels, Low to Ultra. Optional ground textures that hide tiling (`HdScene::ground_variation`) and a cloud clock of
   their own (`HdScene::cloud_time`). A ghosting check example measures how fast each history settles.
+- `torque-render-hd`: at Ultra the point and spot lights light the fog through a froxel grid beside the sun's god rays, with
+  soft shadows; each froxel takes its lights at points spread through its depth, so a moving light's beam and shadows sweep
+  the haze smoothly.
 - `torque-render-hd`: global illumination (alpha) at High and Ultra behind `Gi::enabled` (off by default): a voxel clipmap of the
   static triangles about the eye, lit by the sun and the point, spot and area lights with the forward pass's own light terms,
   and cascades of irradiance probes whose rays march those voxels; the forward pass's diffuse ambient comes from the probes in

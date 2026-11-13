@@ -6,6 +6,8 @@
 //! column; after the opaque pass the sum at each pixel's depth is added over the frame. The sun's god rays stay the volumetric
 //! march's ([`crate::volumetric`]), drawn beside the grid: a pixel's own ray keeps the shafts' edges, which a froxel's width blurs.
 //!
+//! A slice far from the eye is several units deep, so each froxel takes its lights at points spread along its stretch of the
+//! ray, sharing the shadow's taps among them: an edge sweeping through the haze moves in small steps, not a slice at once.
 //! The grid is taken from the scene alone every frame (no noise, no history), so a light switched or moved shows in the fog at
 //! once. Both grids are `Rgba16Float` 3D textures written as write-only storage, which WebGPU allows.
 

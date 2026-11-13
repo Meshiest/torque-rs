@@ -5,14 +5,17 @@
 //
 // - Slices: the view depth `z = far (s / slices)^2` for the slice coordinate s (0 at the eye, `slices` at the grid's far end): thin
 //   near the eye, about 3 units deep at 50 for a far end of 220.
-// - cs_inject, a thread a froxel, at its center: the medium, the god rays' thin medium (volumetric.wgsl's: sky.vol, thinning with
+// - cs_inject, a thread a froxel: the medium at its center, the god rays' thin medium (volumetric.wgsl's: sky.vol, thinning with
 //   the height fog's falloff) and the fog's: the distance fog's extinction (its keep, `((end - d) / (end - start))^2`, is
 //   exp(-optical depth): the extinction 2 / (end - d) inside the fog's range, 1 / (end - d) for the linear fog) and the height
 //   fog's (its extinction at the center's height). The sun's and the sky's light in the fog is already its color; what the
 //   medium adds here is the point lights' light it scatters, from the lights the froxel's cluster holds (the forward pass's
 //   masks), each with its falloff, its cone and its shadow cubes' soft taps, times `fx.grid.w`, in the forward pass's radiance
-//   convention (pi times the phase times the light). rgb: that light per unit length, a: the extinction. Every frame from the
-//   scene alone (no noise, no history): a light switched on or moved shows in the fog at once.
+//   convention (pi times the phase times the light). rgb: that light per unit length, a: the extinction. A slice far from the
+//   eye is several units deep, so the lights are taken at FOG_DEPTH_TAPS points spread along the cell's stretch of its
+//   column's ray, each with its share of the shadow's taps: a cone's or a shadow's edge sweeping through the cell moves its
+//   light in small steps, not a slice's worth at once. Every frame from the scene alone (no noise, no history): a light
+//   switched on or moved shows in the fog at once, and a still scene's grid is the same every frame.
 // - cs_integrate, a thread a column: the froxels summed front to back (each slice's light integrated over its depth against its
 //   own extinction, Hillaire 2015), every froxel holding the sum up to its far boundary (rgb) and the transmittance there (a).
 // - fs_composite, at the internal size, added over the opaque frame: the sum at the pixel's depth (the sky: the far end), the grid
@@ -40,12 +43,16 @@
 @group(2) @binding(4) var sky_linear: sampler;
 
 // The fog's soft shadows: the cone of directions a point looks for blockers in (radians), a lamp's size (units: the penumbra
-// behind a blocker grows with it), the widest penumbra (radians) and the taps; and how far off the glow's peak is taken.
+// behind a blocker grows with it), the widest penumbra (radians), the taps looking for blockers and the shadow's taps (each a
+// froxel, shared by its points); and how far off the glow's peak is taken.
 const FOG_SEARCH: f32 = 0.12;
 const FOG_LIGHT_SIZE: f32 = 0.15;
 const FOG_PENUMBRA_MAX: f32 = 0.3;
-const FOG_SHADOW_TAPS: u32 = 8u;
+const FOG_SEARCH_TAPS: u32 = 8u;
+const FOG_SHADOW_TAPS: u32 = 16u;
 const FOG_CORE: f32 = 1.5;
+// The points along a froxel's stretch of its ray the lights are taken at (both kinds of taps divide evenly among them).
+const FOG_DEPTH_TAPS: u32 = 4u;
 
 // The grid's uniform (froxels.rs::encode writes it).
 struct Froxels {
@@ -140,50 +147,80 @@ fn light_tap(light: Light, d: vec3<f32>, dist: f32) -> f32 {
     return clamp(1.0 - dark, 0.0, 1.0);
 }
 
-// A light's shadow in the fog at `p` (`ax`, `ay`: the froxel's width and height there), as a lamp of FOG_LIGHT_SIZE casts it
-// (Fernando 2005): the blockers found over a cone of directions about the light's, their mean distance setting the penumbra's
-// width at p (none behind a wall right in front of p, wide behind a lamp's own shade), then the cubes' taps over that cone,
-// each compared at p's own distance. A soft edge, not a froxel-sized staircase or a hard line, and a point shut in a room
-// whose walls are near it lies in no penumbra: no light leaks in.
-fn light_visible(light: Light, p: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>) -> f32 {
-    let s = light.shadow;
-    if shadows.point.z <= 0.0 || (s.y <= 0.0 && s.w <= 0.0) {
-        return 1.0;
-    }
-    let to = p - light.pos_radius.xyz;
-    let dist = length(to);
-    if dist < 1e-4 {
-        return 1.0;
-    }
-    let w = to / dist;
+// The basis about the unit direction `w` (from a light) its shadow taps' disk lies in.
+fn tap_basis(w: vec3<f32>) -> mat2x3<f32> {
     let helper = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(w.z) > 0.9);
     let t1 = normalize(cross(w, helper));
-    let t2 = cross(w, t1);
+    return mat2x3<f32>(t1, cross(w, t1));
+}
+
+// A light's light over a froxel's points `q` through its soft shadow, as a lamp of FOG_LIGHT_SIZE casts it (Fernando 2005):
+// `w` is each point's share of the light (0: the light does not reach it), the result the sum of each times its visibility.
+// Each point the light reaches takes every FOG_DEPTH_TAPS-th tap of the disks from its own index on (so each spans the
+// disk): first it looks for blockers over a cone of directions about its own, then the blockers' mean distance sets the
+// penumbra's width (none behind a wall right in front, wide behind a lamp's own shade, at least the froxel's: `ax`, `ay`),
+// and each point's taps over that width are compared at its own distance. A soft edge, not a froxel-sized staircase or a hard
+// line, moving through the cell in small steps as it sweeps; a point shut in a room whose walls are near it lies in no
+// penumbra, so no light leaks in.
+fn shadowed(
+    light: Light,
+    q: array<vec3<f32>, FOG_DEPTH_TAPS>,
+    w: array<f32, FOG_DEPTH_TAPS>,
+    ax: vec3<f32>,
+    ay: vec3<f32>,
+) -> f32 {
+    var total = 0.0;
+    for (var j = 0u; j < FOG_DEPTH_TAPS; j = j + 1u) {
+        total = total + w[j];
+    }
+    let s = light.shadow;
+    if shadows.point.z <= 0.0 || (s.y <= 0.0 && s.w <= 0.0) {
+        return total;
+    }
     let radius = max(light.pos_radius.w, 1e-4);
     let slot = i32(select(s.z, s.x, s.x >= 0.0 && s.y > 0.0));
-    let receiver = dist - 0.05 - 0.02 * dist;
+    let taps = FOG_SHADOW_TAPS / FOG_DEPTH_TAPS;
     var blockers = 0.0;
     var found = 0u;
-    for (var k = 0u; k < FOG_SHADOW_TAPS; k = k + 1u) {
-        let o = vogel(k, FOG_SHADOW_TAPS, 0.0) * FOG_SEARCH;
-        let b = cube_depth(slot, normalize(w + t1 * o.x + t2 * o.y)) * radius;
-        if b < receiver {
-            blockers = blockers + b;
-            found = found + 1u;
+    for (var j = 0u; j < FOG_DEPTH_TAPS; j = j + 1u) {
+        if w[j] <= 0.0 {
+            continue;
+        }
+        let to = q[j] - light.pos_radius.xyz;
+        let dist = max(length(to), 1e-4);
+        let n = to / dist;
+        let t = tap_basis(n);
+        let receiver = dist - 0.05 - 0.02 * dist;
+        for (var k = j; k < FOG_SEARCH_TAPS; k = k + FOG_DEPTH_TAPS) {
+            let b = cube_depth(slot, normalize(n + t * (vogel(k, FOG_SEARCH_TAPS, 0.0) * FOG_SEARCH))) * radius;
+            if b < receiver {
+                blockers = blockers + b;
+                found = found + 1u;
+            }
         }
     }
     if found == 0u {
-        return 1.0;
+        return total;
     }
     let blocker = max(blockers / f32(found), 0.05);
-    let froxel = 0.5 * max(length(ax), length(ay)) / dist;
-    let spread = min(max(FOG_LIGHT_SIZE * (dist - blocker) / (blocker * dist), froxel), FOG_PENUMBRA_MAX);
-    var lit = 0.0;
-    for (var k = 0u; k < FOG_SHADOW_TAPS; k = k + 1u) {
-        let o = vogel(k, FOG_SHADOW_TAPS, 0.0) * spread;
-        lit = lit + light_tap(light, normalize(w + t1 * o.x + t2 * o.y), dist);
+    let cell = 0.5 * max(length(ax), length(ay));
+    var seen = 0.0;
+    for (var j = 0u; j < FOG_DEPTH_TAPS; j = j + 1u) {
+        if w[j] <= 0.0 {
+            continue;
+        }
+        let to = q[j] - light.pos_radius.xyz;
+        let dist = max(length(to), 1e-4);
+        let n = to / dist;
+        let t = tap_basis(n);
+        let spread = min(max(FOG_LIGHT_SIZE * (dist - blocker) / (blocker * dist), cell / dist), FOG_PENUMBRA_MAX);
+        var lit = 0.0;
+        for (var k = j; k < FOG_SHADOW_TAPS; k = k + FOG_DEPTH_TAPS) {
+            lit = lit + light_tap(light, normalize(n + t * (vogel(k, FOG_SHADOW_TAPS, 0.0) * spread)), dist);
+        }
+        seen = seen + w[j] * lit / f32(taps);
     }
-    return lit / f32(FOG_SHADOW_TAPS);
+    return seen;
 }
 
 // A spot's cone in the fog: its soft edge twice as wide, reaching half its width past the outer angle (the fog's own spread
@@ -206,9 +243,27 @@ fn fog_falloff(d: f32, radius: f32) -> f32 {
     return w * w / (1.0 + 0.25 * (d * d + FOG_CORE * FOG_CORE));
 }
 
-// The point lights' light at `p` (depth `z`, on the ray `dir`; `ax`, `ay` the froxel's width and height there) the medium
-// scatters toward the eye, per unit of its scattering.
-fn lights_at(p: vec3<f32>, z: f32, uv: vec2<f32>, dir: vec3<f32>, ax: vec3<f32>, ay: vec3<f32>) -> vec3<f32> {
+// A froxel's stretch of its column's ray, from `near` to `near + along`: what its lights are taken over.
+struct Stretch {
+    near: vec3<f32>,
+    along: vec3<f32>,
+};
+
+// The froxel's point `j` of FOG_DEPTH_TAPS: the middle of the j-th of as many equal parts of its stretch.
+fn point_of(c: Stretch, j: u32) -> vec3<f32> {
+    return c.near + c.along * ((f32(j) + 0.5) / f32(FOG_DEPTH_TAPS));
+}
+
+// The point lights' light in a froxel (its center at depth `z` on the ray `dir`, `ax`, `ay` its width and height there), the
+// mean over the FOG_DEPTH_TAPS points of its stretch `c`, that the medium scatters toward the eye, per unit of its scattering.
+fn lights_at(
+    z: f32,
+    uv: vec2<f32>,
+    dir: vec3<f32>,
+    ax: vec3<f32>,
+    ay: vec3<f32>,
+    c: Stretch,
+) -> vec3<f32> {
     let tiles = frame.clusters.xyz;
     let count = min(frame.clusters.w, MAX_LIGHTS);
     let tx = min(u32(uv.x * f32(tiles.x)), tiles.x - 1u);
@@ -232,18 +287,27 @@ fn lights_at(p: vec3<f32>, z: f32, uv: vec2<f32>, dir: vec3<f32>, ax: vec3<f32>,
             }
             shaded = shaded + 1u;
             let light = lights[i];
-            let to = light.pos_radius.xyz - p;
-            let d = length(to);
-            if d >= light.pos_radius.w {
-                continue;
+            var each = array<f32, FOG_DEPTH_TAPS>();
+            var points = array<vec3<f32>, FOG_DEPTH_TAPS>();
+            var reached = false;
+            for (var j = 0u; j < FOG_DEPTH_TAPS; j = j + 1u) {
+                points[j] = point_of(c, j);
+                let to = light.pos_radius.xyz - points[j];
+                let d = length(to);
+                if d >= light.pos_radius.w {
+                    continue;
+                }
+                let l = select(vec3<f32>(0.0, 0.0, 1.0), to / d, d > 1e-6);
+                let e = fog_falloff(d, light.pos_radius.w) * fog_cone(light, l);
+                if e <= 0.0 {
+                    continue;
+                }
+                each[j] = e * henyey_greenstein(dot(dir, l), fx.look.x) / f32(FOG_DEPTH_TAPS);
+                reached = true;
             }
-            let l = select(vec3<f32>(0.0, 0.0, 1.0), to / d, d > 1e-6);
-            let e = fog_falloff(d, light.pos_radius.w) * fog_cone(light, l);
-            if e <= 0.0 {
-                continue;
+            if reached {
+                sum = sum + light.color.rgb * shadowed(light, points, each, ax, ay);
             }
-            let phase = henyey_greenstein(dot(dir, l), fx.look.x);
-            sum = sum + light.color.rgb * (e * phase * light_visible(light, p, ax, ay));
         }
     }
     return SKY_PI * sum;
@@ -269,7 +333,9 @@ fn cs_inject(@builtin(global_invocation_id) id: vec3<u32>) {
     if medium > 0.0 && frame.clusters.w > 0u {
         let ax = world_at_depth(uv + vec2<f32>(1.0 / dims.x, 0.0), z) - p;
         let ay = world_at_depth(uv + vec2<f32>(0.0, 1.0 / dims.y), z) - p;
-        light = medium * lights_at(p, z, uv, dir, ax, ay);
+        let near = world_at_depth(uv, max(slice_depth(k, far), frame.cluster_z.x));
+        let c = Stretch(near, world_at_depth(uv, slice_depth(k + 1.0, far)) - near);
+        light = medium * lights_at(z, uv, dir, ax, ay, c);
     }
     textureStore(froxel_out, id, vec4<f32>(light, sigma));
 }

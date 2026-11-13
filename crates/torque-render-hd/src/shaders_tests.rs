@@ -269,7 +269,8 @@ fn the_cpu_field_is_the_shaders() {
 /// The forward, water, dissolve, sprite and particle entries changed their hashes for the round small sprites and the bounce (the
 /// forward fragment tests a pool sprite's footprint, zero for every other draw); `shots-diff` against main's pictures showed no
 /// other pixel move. The forward entries changed again when the projected decals moved the prepass's id to a `vec2`; the level
-/// shots matched main's exactly.
+/// shots matched main's exactly. The froxels entry changed when a froxel's lights were taken at points along its depth; the
+/// `fog-lights` pictures drawn without the grid or without point lights matched main's exactly.
 const NON_PBR_SOURCES: [(&str, u64); 41] = [
     (
         "forward.wgsl (CLUSTERED = true, FRONT_LAYER = false)",
@@ -311,7 +312,7 @@ const NON_PBR_SOURCES: [(&str, u64); 41] = [
     ("atmosphere.wgsl", 0x39c9bd8b08ea6c07),
     ("sky.wgsl", 0x989fd0754a5928a0),
     ("volumetric.wgsl", 0xdfd7672a3a7fc3f6),
-    ("froxels.wgsl", 0xcdf1508c3477498f),
+    ("froxels.wgsl", 0xfd4404abe73aed6b),
     ("bloom.wgsl", 0x6f4fbe1ca8643292),
     ("exposure.wgsl", 0x7e42d0828fe4962f),
     ("wboit.wgsl", 0x202ec555530680d0),

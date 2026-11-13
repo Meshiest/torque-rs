@@ -159,8 +159,13 @@
 //!   (`a_point_light_in_fog_adds_light_within_its_radius_only`).
 //! - The fog's medium is the distance and height fog's own extinction (`skyfog.wgsl`'s `fog_keep` as a rate along the ray), so
 //!   the lights' light it scatters fades as the fog hides what is behind it.
+//! - A froxel's lights are taken at four points spread along its stretch of the ray, the shadow's sixteen taps (and eight
+//!   looking for blockers) dealt among them so each point's taps span the whole disk: a cone's or a shadow's edge sweeping
+//!   through a deep slice moves its light in small steps. A swinging spot's shadow in fog jumps at most 1.5 times what a grid
+//!   with 32 points and 256 taps a froxel jumps (`a_swinging_lanterns_light_sweeps_the_fog_without_jumps`).
 //! - The grid is taken from the scene alone every frame (no noise, no history), so a light switched or moved shows at once (the
-//!   `fog-lights` row of the `ghosting` example, gated like the rest). The gather's bindings in the compute stage are counted by
+//!   `fog-lights` row of the `ghosting` example, gated like the rest) and a still scene's grid is the same every frame
+//!   (`a_still_scenes_grid_is_the_same_every_frame`). The gather's bindings in the compute stage are counted by
 //!   [`limits`] (WebGPU's defaults hold: the grid is `Rgba16Float` write-only storage, which WebGPU allows in 3D). Its GPU time
 //!   and the march's beside it (at the quality's `VolumetricQuality::froxels` size: a quarter of the pixels a side, 48 steps,
 //!   which keeps the shafts of the half-size march at about half its cost) are the `froxel fog` and `volumetric march` marks of

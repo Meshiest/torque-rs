@@ -1,7 +1,7 @@
 use glam::{Mat4, Vec3, Vec4};
 use torque_render_scene::hd::cells::StaticCells;
 use torque_render_scene::hd::kit::{box_object, look_at};
-use torque_render_scene::hd::{HdCamera, HdLight, HdMode, HdScene, Quality};
+use torque_render_scene::hd::{HdCamera, HdLight, HdMode, HdScene, HdSpot, Quality};
 
 use super::*;
 use crate::HdWorld;
@@ -338,4 +338,132 @@ fn a_frame_without_lights_gathers_no_grid_and_keeps_the_marchs_size() {
         "a grid with no lights"
     );
     assert_eq!(size(&world), beside_grid, "the march's size without lights");
+}
+
+/// The frames of [`swing`] measured, and the frames on either side of each that [`worst_jump`]'s smooth path averages.
+const FRAMES: usize = 64;
+const SMOOTH: usize = 4;
+/// The largest jump [`worst_jump`] allows: 1.5 times the swing's with the froxels' points and taps raised to 32 and 256 a
+/// froxel (0.031: what the grid's own slices leave). With the lights taken at each froxel's center the swing jumps 0.074.
+const MAX_JUMP: f32 = 0.045;
+
+/// The lantern of [`swing`] at swing angle `a` (radians, about the x axis): hung on a cord from above a beam, its cone down the
+/// cord, so the beam's shadow and the cone's edges sweep toward and away from the eye through the fog.
+fn lantern(s: &mut PlainScene, a: f32) {
+    let pivot = Vec3::new(0.0, 11.0, 6.5);
+    let down = Vec3::new(0.0, a.sin(), -a.cos());
+    s.frame.spots = vec![HdSpot {
+        light: HdLight {
+            position: (pivot + down * 1.5).to_array(),
+            color: [30.0, 24.0, 16.0],
+            radius: 14.0,
+            carrier: None,
+        },
+        direction: down.to_array(),
+        inner: 14f32.to_radians(),
+        outer: 32f32.to_radians(),
+        shadows: true,
+    }];
+    s.frame.lights_generation += 1;
+}
+
+/// [`FRAMES`] frames of the lantern swinging at a steady rate in a night fog, seen from the side of its sweep (after a few
+/// frames held at the first angle): each frame's summed grid at its far end, the light each column of the grid adds to the
+/// sky behind it (rgb's largest).
+fn swing(gpu: &torque_render_core::Gpu) -> Vec<Vec<f32>> {
+    let mut world: HdWorld<NoExtension> = HdWorld::new(gpu);
+    let mut s = scene();
+    s.frame.sun.diffuse = [0.0; 3];
+    s.frame.sun.ambient = [0.02; 3];
+    (s.frame.fog.start, s.frame.fog.end) = (0.0, 100.0);
+    s.frame.fog_distance = 0.0;
+    s.frame.objects = vec![box_object(1, [0.0, 11.0, 4.0], [3.0, 0.2, 0.2])];
+    let eye = look_at([0.0, 0.0, 3.0], [0.0, 11.0, 3.0]);
+    s.frame.eye = Some(eye);
+    let camera = HdCamera::new(eye, FOV, FAR, SIZE.0, SIZE.1);
+    let mut out = Vec::with_capacity(FRAMES);
+    for f in 0..FRAMES + 6 {
+        let t = f.saturating_sub(6) as f32 / FRAMES as f32;
+        lantern(&mut s, -0.4 + 0.8 * t);
+        s.frame.generation += 1;
+        world.upload(&s);
+        world.draw(&s, &camera, None).expect("a frame");
+        if f < 6 {
+            continue;
+        }
+        let (dims, sums) = world.read_froxel_sums().expect("read").expect("sums");
+        let back = (dims[0] * dims[1] * (dims[2] - 1)) as usize;
+        out.push(sums[back..].iter().map(|t| brightest(*t)).collect());
+    }
+    out
+}
+
+/// The largest jump in `frames` (each frame's light of every column): a column's change from one frame to the next less the
+/// change of its smooth reference (its light averaged over the [`SMOOTH`] frames on either side and its own, the path a
+/// smoothly moving edge takes), over the brightest column's light.
+fn worst_jump(frames: &[Vec<f32>]) -> f32 {
+    let peak = frames.iter().flatten().fold(0.0f32, |m, v| m.max(*v));
+    let smooth = |t: usize, c: usize| {
+        frames[t - SMOOTH..=t + SMOOTH]
+            .iter()
+            .map(|f| f[c])
+            .sum::<f32>()
+            / (2 * SMOOTH + 1) as f32
+    };
+    let worst = (SMOOTH + 1..frames.len() - SMOOTH)
+        .flat_map(|t| {
+            let steps = frames[t].iter().zip(&frames[t - 1]).map(|(a, b)| a - b);
+            steps
+                .enumerate()
+                .map(move |(c, step)| (step - (smooth(t, c) - smooth(t - 1, c))).abs())
+        })
+        .fold(0.0f32, f32::max);
+    worst / peak.max(1e-6)
+}
+
+#[test]
+fn a_swinging_lanterns_light_sweeps_the_fog_without_jumps() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let worst = worst_jump(&swing(&gpu));
+    assert!(
+        worst <= MAX_JUMP,
+        "the swing jumps {worst:.4} of its brightest column"
+    );
+}
+
+/// The lit grid after each of `frames` frames of `scene` from the origin.
+fn grids(
+    world: &mut HdWorld<NoExtension>,
+    scene: &mut PlainScene,
+    frames: usize,
+) -> Vec<Vec<[f32; 4]>> {
+    let eye = look_at([0.0, 0.0, 2.0], [0.0, 10.0, 2.0]);
+    scene.frame.eye = Some(eye);
+    let camera = HdCamera::new(eye, FOV, FAR, SIZE.0, SIZE.1);
+    (0..frames)
+        .map(|_| {
+            scene.frame.generation += 1;
+            world.upload(scene);
+            world.draw(scene, &camera, None).expect("a frame");
+            world.read_froxels().expect("read").expect("a grid").1
+        })
+        .collect()
+}
+
+#[test]
+fn a_still_scenes_grid_is_the_same_every_frame() {
+    let Some(gpu) = gpu() else {
+        return;
+    };
+    let mut world: HdWorld<NoExtension> = HdWorld::new(&gpu);
+    let mut s = lit_scene(Quality::Ultra);
+    let g = grids(&mut world, &mut s, 4);
+    let lit = g[0].iter().filter(|t| brightest(**t) > 1e-3).count();
+    assert!(lit > 20, "{lit} lit froxels");
+    assert!(
+        g.windows(2).all(|w| w[0] == w[1]),
+        "a still scene's grid changed"
+    );
 }
